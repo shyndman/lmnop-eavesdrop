@@ -149,7 +149,7 @@ class VoiceActivityDetection:
     model_url="https://github.com/snakers4/silero-vad/raw/v5.0/files/silero_vad.onnx",
   ):
     logger = get_logger("vad_download")
-    target_dir = os.path.expanduser("~/.cache/whisper-live/")
+    target_dir = os.path.expanduser("~/.cache/eavesdrop/")
     logger.debug("VAD model target directory", target_dir=target_dir)
 
     # Ensure the target directory exists

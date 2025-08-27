@@ -1,0 +1,59 @@
+# Python virtual environments and caches
+.venv/
+.env
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.pytest_cache/
+.coverage
+.mypy_cache/
+.ruff_cache/
+
+# Development and IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Git and version control
+.git/
+.gitignore
+.gitattributes
+
+# Documentation and development docs
+README.md
+docs/
+*.md
+
+# Testing and development
+tests/
+.pytest.ini
+conftest.py
+test_*.py
+*_test.py
+
+# Build artifacts and dependencies
+build/
+dist/
+*.egg-info/
+node_modules/
+
+# Development configuration
+.pre-commit-config.yaml
+Makefile
+
+# CI/CD and deployment
+.github/
+.dockerignore
+Dockerfile*
+docker-compose*.yml
+
+# Temporary and log files
+*.log
+*.tmp
+tmp/
+temp/

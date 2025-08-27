@@ -8,4 +8,12 @@ conda env list
 conda activate py_3.12
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$CONDA_PREFIX/lib/
 
-python $@
+echo "!!! !!! ENVIRONMENT !!! !!!"
+echo " ~~~ /etc/environment"
+cat /etc/environment;
+
+echo " ~~~ COMMAND"
+env
+
+
+/bin/uv run python $@

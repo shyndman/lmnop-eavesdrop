@@ -10,16 +10,16 @@ RUN apt-get update \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-ARG GFX_ARCH=gfx1103
+ARG GFX_ARCH=gfx1100
 ARG HSA_OVERRIDE_GFX_VERSION
 RUN if [ -z "$GFX_ARCH" ]; then echo "GFX_ARCH build arg is required" && exit 1; fi
 
 ENV PYTORCH_ROCM_ARCH=$GFX_ARCH
-RUN if [ "$GFX_ARCH" = "gfx1103" ] && [ -z "$HSA_OVERRIDE_GFX_VERSION" ]; then \
-      export HSA_OVERRIDE_GFX_VERSION=11.0.3; \
+RUN if [ "$GFX_ARCH" = "gfx1100" ] && [ -z "$HSA_OVERRIDE_GFX_VERSION" ]; then \
+      export HSA_OVERRIDE_GFX_VERSION=11.0.0; \
     fi && \
     if [ -n "$HSA_OVERRIDE_GFX_VERSION" ]; then \
-      echo "export HSA_OVERRIDE_GFX_VERSION=$HSA_OVERRIDE_GFX_VERSION" >> /etc/environment; \
+      conda env config vars set HSA_OVERRIDE_GFX_VERSION="$HSA_OVERRIDE_GFX_VERSION"; \
     fi
 ENV GFX_ARCH=$GFX_ARCH
 ENV CTRANSLATE2_ROOT=/opt/ctranslate2
@@ -59,19 +59,24 @@ RUN git clone --depth 1 --branch v1.1.0 https://github.com/SYSTRAN/faster-whispe
 
 # RUN rm -Rf faster-whisper CTranslate2-rocm
 
-# Create app directory and copy WhisperLive source
+# Copy requirements and install Python dependencies
+# COPY requirements/server.txt /app/
+# RUN conda install --verbose --file server.txt && rm server.txt
+
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:0.8.13 /uv /uvx /bin/
+
+# Create app directory and copy Eavesdrop source
 RUN mkdir /app
 WORKDIR /app
 
-# Copy requirements and install Python dependencies
-COPY requirements/server.txt /app/
-RUN conda install --verbose --file server.txt && rm server.txt
-
-# Additional Pip deps
-RUN conda run pip install soundfile structlog websockets websocket-client
+COPY pyproject.toml /app/pyproject.toml
+COPY uv.lock /app/uv.lock
+RUN /bin/uv venv --system-site-packages
+RUN /bin/uv sync --locked
 
 # Copy eavesdrop source directly from project
-COPY eavesdrop /app/eavesdrop
+COPY src/ /app/src
 COPY docker/entrypoint.sh /app/entrypoint.sh
 
 ENTRYPOINT ["./entrypoint.sh"]

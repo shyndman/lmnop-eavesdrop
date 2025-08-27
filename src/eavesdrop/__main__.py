@@ -29,55 +29,55 @@ def main():
     "--port",
     "-p",
     type=int,
-    default=get_env_or_default("WHISPER_LIVE_PORT", 9090, int),
-    help="Websocket port to run the server on. (Env: WHISPER_LIVE_PORT)",
+    default=get_env_or_default("EAVESDROP_PORT", 9090, int),
+    help="Websocket port to run the server on. (Env: EAVESDROP_PORT)",
   )
   parser.add_argument(
     "--backend",
     "-b",
     type=str,
-    default=get_env_or_default("WHISPER_LIVE_BACKEND", "faster_whisper"),
-    help='Backend: "faster_whisper" (Env: WHISPER_LIVE_BACKEND)',
+    default=get_env_or_default("EAVESDROP_BACKEND", "faster_whisper"),
+    help='Backend: "faster_whisper" (Env: EAVESDROP_BACKEND)',
   )
   parser.add_argument(
     "--faster_whisper_custom_model_path",
     "-fw",
     type=str,
-    default=get_env_or_default("WHISPER_LIVE_FW_MODEL_PATH", None),
-    help="Custom Faster Whisper Model (Env: WHISPER_LIVE_FW_MODEL_PATH)",
+    default=get_env_or_default("EAVESDROP_FW_MODEL_PATH", None),
+    help="Custom Faster Whisper Model (Env: EAVESDROP_FW_MODEL_PATH)",
   )
   parser.add_argument(
     "--omp_num_threads",
     "-omp",
     type=int,
-    default=get_env_or_default("WHISPER_LIVE_OMP_NUM_THREADS", 1, int),
-    help="Number of threads to use for OpenMP (Env: WHISPER_LIVE_OMP_NUM_THREADS)",
+    default=get_env_or_default("EAVESDROP_OMP_NUM_THREADS", 1, int),
+    help="Number of threads to use for OpenMP (Env: EAVESDROP_OMP_NUM_THREADS)",
   )
   parser.add_argument(
     "--no_single_model",
     "-nsm",
     action="store_true",
-    default=get_env_or_default("WHISPER_LIVE_NO_SINGLE_MODEL", False, bool),
-    help="Set this if every connection should instantiate its own model. Only relevant for custom model, passed using -fw. (Env: WHISPER_LIVE_NO_SINGLE_MODEL)",
+    default=get_env_or_default("EAVESDROP_NO_SINGLE_MODEL", False, bool),
+    help="Set this if every connection should instantiate its own model. Only relevant for custom model, passed using -fw. (Env: EAVESDROP_NO_SINGLE_MODEL)"
   )
   parser.add_argument(
     "--max_clients",
     type=int,
-    default=get_env_or_default("WHISPER_LIVE_MAX_CLIENTS", 4, int),
-    help="Maximum clients supported by the server. (Env: WHISPER_LIVE_MAX_CLIENTS)",
+    default=get_env_or_default("EAVESDROP_MAX_CLIENTS", 4, int),
+    help="Maximum clients supported by the server. (Env: EAVESDROP_MAX_CLIENTS)"
   )
   parser.add_argument(
     "--max_connection_time",
     type=int,
-    default=get_env_or_default("WHISPER_LIVE_MAX_CONNECTION_TIME", 300, int),
-    help="Maximum connection time in seconds. (Env: WHISPER_LIVE_MAX_CONNECTION_TIME)",
+    default=get_env_or_default("EAVESDROP_MAX_CONNECTION_TIME", 300, int),
+    help="Maximum connection time in seconds. (Env: EAVESDROP_MAX_CONNECTION_TIME)"
   )
   parser.add_argument(
     "--cache_path",
     "-c",
     type=str,
-    default=get_env_or_default("WHISPER_LIVE_CACHE_PATH", "/app/.cache/whisper-live/"),
-    help="Path to cache the converted ctranslate2 models. (Env: WHISPER_LIVE_CACHE_PATH)",
+    default=get_env_or_default("EAVESDROP_CACHE_PATH", "/app/.cache/eavesdrop/"),
+    help="Path to cache the converted ctranslate2 models. (Env: EAVESDROP_CACHE_PATH)"
   )
   parser.add_argument(
     "--debug_audio_path",
@@ -109,7 +109,7 @@ def main():
     logger.info("Set OMP_NUM_THREADS", threads=args.omp_num_threads)
 
   logger.info(
-    "Starting WhisperLive Server",
+    "Starting Eavesdrop Server",
     port=args.port,
     backend=args.backend,
     max_clients=args.max_clients,

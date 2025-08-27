@@ -1,4 +1,4 @@
-"""Centralized logging configuration for WhisperLive using structlog."""
+"""Centralized logging configuration for Eavesdrop using structlog."""
 
 import logging
 import os

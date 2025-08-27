@@ -517,7 +517,7 @@ class TranscriptionServer:
     single_model=False,
     max_clients=4,
     max_connection_time=600,
-    cache_path="~/.cache/whisper-live/",
+    cache_path="~/.cache/eavesdrop/",
     debug_audio_path=None,
   ):
     """
@@ -535,7 +535,7 @@ class TranscriptionServer:
     import platform
 
     self.logger.info("=" * 50)
-    self.logger.info("WhisperLive Server Configuration:")
+    self.logger.info("Eavesdrop Server Configuration:")
     self.logger.info("=" * 50)
     self.logger.info(f"Host: {host}")
     self.logger.info(f"Port: {port}")

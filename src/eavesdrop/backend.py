@@ -32,7 +32,7 @@ class ServeClientFasterWhisper(ServeClientBase):
     no_speech_thresh=0.45,
     clip_audio=False,
     same_output_threshold=7,
-    cache_path="~/.cache/whisper-live/",
+    cache_path="~/.cache/eavesdrop/",
     translation_queue=None,
   ):
     """

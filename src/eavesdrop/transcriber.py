@@ -4,10 +4,11 @@ import itertools
 import json
 import os
 import zlib
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from inspect import signature
 from math import ceil
-from typing import BinaryIO, Iterable, Optional, Union, cast
+from typing import BinaryIO, cast
 from warnings import warn
 
 import ctranslate2
@@ -104,7 +105,7 @@ class TranscriptionInfo:
   language_probability: float
   duration: float
   duration_after_vad: float
-  all_language_probs:list[tuple[str, float]] | None
+  all_language_probs: list[tuple[str, float]] | None
   transcription_options: TranscriptionOptions
   vad_options: VadOptions
 
@@ -723,7 +724,7 @@ class WhisperModel:
     initial_prompt: str | Iterable[int] | None = None,
     prefix: str | None = None,
     suppress_blank: bool = True,
-    suppress_tokens: list[int]  | None = [-1],
+    suppress_tokens: list[int] | None = [-1],
     without_timestamps: bool = False,
     max_initial_timestamp: float = 1.0,
     word_timestamps: bool = False,
@@ -1033,7 +1034,7 @@ class WhisperModel:
     tokenizer: Tokenizer,
     options: TranscriptionOptions,
     log_progress,
-    encoder_output: Optional[ctranslate2.StorageView] = None,
+    encoder_output: ctranslate2.StorageView | None = None,
   ) -> Iterable[Segment]:
     content_frames = features.shape[-1] - 1
     content_duration = float(content_frames * self.feature_extractor.time_per_frame)
@@ -1161,7 +1162,7 @@ class WhisperModel:
           score += duration - 2.0
         return score
 
-      def is_segment_anomaly(segment: Optional[dict]) -> bool:
+      def is_segment_anomaly(segment: dict | None) -> bool:
         if segment is None or not segment["words"]:
           return False
         words = [w for w in segment["words"] if w["word"] not in punctuation]
@@ -1169,7 +1170,7 @@ class WhisperModel:
         score = sum(word_anomaly_score(w) for w in words)
         return score >= 3 or score + 0.01 >= len(words)
 
-      def next_words_segment(segments: list[dict]) -> Optional[dict]:
+      def next_words_segment(segments: list[dict]) -> dict | None:
         return next((s for s in segments if s["words"]), None)
 
       (
@@ -1641,10 +1642,10 @@ class WhisperModel:
 
   def detect_language(
     self,
-    audio: Optional[np.ndarray] = None,
-    features: Optional[np.ndarray] = None,
+    audio: np.ndarray | None = None,
+    features: np.ndarray | None = None,
     vad_filter: bool = False,
-    vad_parameters: Union[dict, VadOptions] = None,
+    vad_parameters: dict | VadOptions | None = None,
     language_detection_segments: int = 1,
     language_detection_threshold: float = 0.5,
   ) -> tuple[str, float, list[tuple[str, float]]]:
@@ -1708,7 +1709,8 @@ class WhisperModel:
       )
       if language_probability > language_detection_threshold:
         self.logger.debug(
-          f"Language detection threshold met: {language_probability:.3f} > {language_detection_threshold}"
+          "Language detection threshold met: "
+          f"{language_probability:.3f} > {language_detection_threshold}"
         )
         break
       detected_language_info.setdefault(language, []).append(language_probability)
