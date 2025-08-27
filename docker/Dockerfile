@@ -10,9 +10,18 @@ RUN apt-get update \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-ENV PYTORCH_ROCM_ARCH=gfx1100
-ENV HSA_OVERRIDE_GFX_VERSION=11.0.0
-ENV GFX_ARCH=gfx1100
+ARG GFX_ARCH=gfx1103
+ARG HSA_OVERRIDE_GFX_VERSION
+RUN if [ -z "$GFX_ARCH" ]; then echo "GFX_ARCH build arg is required" && exit 1; fi
+
+ENV PYTORCH_ROCM_ARCH=$GFX_ARCH
+RUN if [ "$GFX_ARCH" = "gfx1103" ] && [ -z "$HSA_OVERRIDE_GFX_VERSION" ]; then \
+      export HSA_OVERRIDE_GFX_VERSION=11.0.3; \
+    fi && \
+    if [ -n "$HSA_OVERRIDE_GFX_VERSION" ]; then \
+      echo "export HSA_OVERRIDE_GFX_VERSION=$HSA_OVERRIDE_GFX_VERSION" >> /etc/environment; \
+    fi
+ENV GFX_ARCH=$GFX_ARCH
 ENV CTRANSLATE2_ROOT=/opt/ctranslate2
 ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$CTRANSLATE2_ROOT/lib
 
