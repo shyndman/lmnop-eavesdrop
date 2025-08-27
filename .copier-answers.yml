@@ -1,0 +1,14 @@
+# Changes here will be overwritten by Copier
+_commit: v0.0.14
+_src_path: ../../python-package-template
+claude_design_session: false
+github_user: shyndman
+include_ci_workflow: true
+include_docker_workflow: false
+launch_claude_code: false
+module_name: eavesdrop
+package_name: eavesdrop
+project_name: lmnop:eavesdrop
+python_version: '3.12'
+user_email: scotty.hyndman@gmail.com
+user_name: shyndman
