@@ -6,19 +6,19 @@ import time
 
 import structlog
 from structlog.dev import (
-    BLUE,
-    BRIGHT,
-    CYAN,
-    DIM,
-    GREEN,
-    MAGENTA,
-    RED,
-    RED_BACK,
-    RESET_ALL,
-    YELLOW,
-    Column,
-    ConsoleRenderer,
-    KeyValueColumnFormatter,
+  BLUE,
+  BRIGHT,
+  CYAN,
+  DIM,
+  GREEN,
+  MAGENTA,
+  RED,
+  RED_BACK,
+  RESET_ALL,
+  YELLOW,
+  Column,
+  ConsoleRenderer,
+  KeyValueColumnFormatter,
 )
 from structlog.typing import EventDict, Processor
 
@@ -27,245 +27,243 @@ _PROGRAM_START_TIME = time.time()
 
 
 def hex_to_ansi_fg(hex_color: int) -> str:
-    """Convert hex color (e.g., 0xad8a89) to ANSI 24-bit foreground escape code."""
-    r = (hex_color >> 16) & 0xFF
-    g = (hex_color >> 8) & 0xFF
-    b = hex_color & 0xFF
-    return f"\x1b[38;2;{r};{g};{b}m"
+  """Convert hex color (e.g., 0xad8a89) to ANSI 24-bit foreground escape code."""
+  r = (hex_color >> 16) & 0xFF
+  g = (hex_color >> 8) & 0xFF
+  b = hex_color & 0xFF
+  return f"\x1b[38;2;{r};{g};{b}m"
 
 
 class NerdStyles:
-    reset = RESET_ALL
-    bright = BRIGHT
+  reset = RESET_ALL
+  bright = BRIGHT
 
-    level_critical = RED
-    level_exception = RED
-    level_error = RED
-    level_warn = YELLOW
-    level_info = GREEN
-    level_debug = GREEN
-    level_notset = RED_BACK
+  level_critical = RED
+  level_exception = RED
+  level_error = RED
+  level_warn = YELLOW
+  level_info = GREEN
+  level_debug = GREEN
+  level_notset = RED_BACK
 
-    timestamp = DIM
-    logger_name = BLUE
-    kv_key = CYAN
-    kv_value = MAGENTA
+  timestamp = DIM
+  logger_name = BLUE
+  kv_key = CYAN
+  kv_value = MAGENTA
 
 
 def _relative_time_processor(
-    _logger: structlog.stdlib.BoundLogger, _method_name: str, event_dict: EventDict
+  _logger: structlog.stdlib.BoundLogger, _method_name: str, event_dict: EventDict
 ) -> EventDict:
-    """Add relative timestamp since program start with hours:minutes:seconds.milliseconds format."""
-    elapsed = time.time() - _PROGRAM_START_TIME
+  """Add relative timestamp since program start with hours:minutes:seconds.milliseconds format."""
+  elapsed = time.time() - _PROGRAM_START_TIME
 
-    # Calculate hours, minutes, seconds
-    hours = int(elapsed // 3600)
-    minutes = int((elapsed % 3600) // 60)
-    seconds = elapsed % 60
+  # Calculate hours, minutes, seconds
+  hours = int(elapsed // 3600)
+  minutes = int((elapsed % 3600) // 60)
+  seconds = elapsed % 60
 
-    # ANSI color codes: \x1b[2m for dim/gray, \x1b[90m for darker gray, \x1b[0m to reset
-    gray = "\x1b[2m"  # Normal gray (like original timestamp)
-    dark_gray = "\x1b[90m"  # Darker gray for zeros
-    reset = "\x1b[0m"
+  # ANSI color codes: \x1b[2m for dim/gray, \x1b[90m for darker gray, \x1b[0m to reset
+  gray = "\x1b[2m"  # Normal gray (like original timestamp)
+  dark_gray = "\x1b[90m"  # Darker gray for zeros
+  reset = "\x1b[0m"
 
-    # Format hours with darker gray if zero, normal gray otherwise
-    if hours == 0:
-        hours_str = f"{dark_gray}{hours:02d}{reset}"
-    else:
-        hours_str = f"{gray}{hours:02d}{reset}"
+  # Format hours with darker gray if zero, normal gray otherwise
+  if hours == 0:
+    hours_str = f"{dark_gray}{hours:02d}{reset}"
+  else:
+    hours_str = f"{gray}{hours:02d}{reset}"
 
-    # Format minutes with darker gray if zero, normal gray otherwise
-    if minutes == 0:
-        minutes_str = f"{dark_gray}{minutes:02d}{reset}"
-    else:
-        minutes_str = f"{gray}{minutes:02d}{reset}"
+  # Format minutes with darker gray if zero, normal gray otherwise
+  if minutes == 0:
+    minutes_str = f"{dark_gray}{minutes:02d}{reset}"
+  else:
+    minutes_str = f"{gray}{minutes:02d}{reset}"
 
-    # Always show seconds in normal gray
-    seconds_str = f"{gray}{seconds:06.3f}{reset}"
+  # Always show seconds in normal gray
+  seconds_str = f"{gray}{seconds:06.3f}{reset}"
 
-    # Colons in normal gray too
-    time_str = f"{gray}+{reset}{hours_str}{gray}:{reset}{minutes_str}{gray}:{reset}{seconds_str}"
+  # Colons in normal gray too
+  time_str = f"{gray}+{reset}{hours_str}{gray}:{reset}{minutes_str}{gray}:{reset}{seconds_str}"
 
-    event_dict["timestamp"] = time_str
-    return event_dict
+  event_dict["timestamp"] = time_str
+  return event_dict
 
 
 def _compact_level_processor(
-    _logger: structlog.stdlib.BoundLogger, _method_name: str, event_dict: EventDict
+  _logger: structlog.stdlib.BoundLogger, _method_name: str, event_dict: EventDict
 ) -> EventDict:
-    """Convert log levels to compact 4-character format with 24-bit colors and darker brackets."""
-    # 24-bit color codes: \x1b[38;2;R;G;Bm for foreground, \x1b[48;2;R;G;Bm for background
-    reset = "\x1b[0m"
+  """Convert log levels to compact 4-character format with 24-bit colors and darker brackets."""
+  # 24-bit color codes: \x1b[38;2;R;G;Bm for foreground, \x1b[48;2;R;G;Bm for background
+  reset = "\x1b[0m"
 
-    # Original colors and their 10% darkened versions for brackets
-    level_mapping = {
-        "debug": {
-            "text": f"{hex_to_ansi_fg(0x908caa)}dbug{reset}",  # fg #908caa
-            "bracket": hex_to_ansi_fg(0x827e99),  # 10% darker
-        },
-        "info": {
-            "text": f"{hex_to_ansi_fg(0x9ccfd8)}info{reset}",  # fg #9ccfd8
-            "bracket": hex_to_ansi_fg(0x8cbac2),  # 10% darker
-        },
-        "warning": {
-            "text": f"{hex_to_ansi_fg(0xf6c177)}warn{reset}",  # fg #f6c177
-            "bracket": hex_to_ansi_fg(0xddae6b),  # 10% darker
-        },
-        "error": {
-            "text": f"{hex_to_ansi_fg(0xeb6f92)}eror{reset}",  # fg #eb6f92
-            "bracket": hex_to_ansi_fg(0xd46483),  # 10% darker
-        },
-        "exception": {
-            "text": f"{hex_to_ansi_fg(0xeb6f92)}exc!{reset}",  # fg #eb6f92
-            "bracket": hex_to_ansi_fg(0xd46483),  # 10% darker
-        },
-        "critical": {
-            "text": f"\x1b[48;2;235;111;146;38;2;33;32;46mcrit{reset}",  # bg #eb6f92, fg #21202e
-            "bracket": hex_to_ansi_fg(0xd46483),  # 10% darker
-        },
-    }
+  # Original colors and their 10% darkened versions for brackets
+  level_mapping = {
+    "debug": {
+      "text": f"{hex_to_ansi_fg(0x908CAA)}dbug{reset}",  # fg #908caa
+      "bracket": hex_to_ansi_fg(0x827E99),  # 10% darker
+    },
+    "info": {
+      "text": f"{hex_to_ansi_fg(0x9CCFD8)}info{reset}",  # fg #9ccfd8
+      "bracket": hex_to_ansi_fg(0x8CBAC2),  # 10% darker
+    },
+    "warning": {
+      "text": f"{hex_to_ansi_fg(0xF6C177)}warn{reset}",  # fg #f6c177
+      "bracket": hex_to_ansi_fg(0xDDAE6B),  # 10% darker
+    },
+    "error": {
+      "text": f"{hex_to_ansi_fg(0xEB6F92)}eror{reset}",  # fg #eb6f92
+      "bracket": hex_to_ansi_fg(0xD46483),  # 10% darker
+    },
+    "exception": {
+      "text": f"{hex_to_ansi_fg(0xEB6F92)}exc!{reset}",  # fg #eb6f92
+      "bracket": hex_to_ansi_fg(0xD46483),  # 10% darker
+    },
+    "critical": {
+      "text": f"\x1b[48;2;235;111;146;38;2;33;32;46mcrit{reset}",  # bg #eb6f92, fg #21202e
+      "bracket": hex_to_ansi_fg(0xD46483),  # 10% darker
+    },
+  }
 
-    if "level" in event_dict:
-        original_level = event_dict["level"]
-        if original_level in level_mapping:
-            colors = level_mapping[original_level]
-            event_dict["level"] = (
-                f"{colors['bracket']}[{reset}{colors['text']}{colors['bracket']}]{reset}"
-            )
-        else:
-            event_dict["level"] = original_level
+  if "level" in event_dict:
+    original_level = event_dict["level"]
+    if original_level in level_mapping:
+      colors = level_mapping[original_level]
+      event_dict["level"] = (
+        f"{colors['bracket']}[{reset}{colors['text']}{colors['bracket']}]{reset}"
+      )
+    else:
+      event_dict["level"] = original_level
 
-    return event_dict
+  return event_dict
 
 
 def _debug_event_colorer(
-    _logger: structlog.stdlib.BoundLogger, _method_name: str, event_dict: EventDict
+  _logger: structlog.stdlib.BoundLogger, _method_name: str, event_dict: EventDict
 ) -> EventDict:
-    """Color the event text purple for debug level messages."""
-    # Check both the original level and processed level
-    level = event_dict.get("level", "")
-    if ("debug" in str(level).lower() or level == "debug") and "event" in event_dict:
-        # Color debug event text with #908caa
-        debug_color = hex_to_ansi_fg(0x908caa)
-        reset = "\x1b[0m"
-        event_dict["event"] = f"{debug_color}{event_dict['event']}{reset}"
+  """Color the event text purple for debug level messages."""
+  # Check both the original level and processed level
+  level = event_dict.get("level", "")
+  if ("debug" in str(level).lower() or level == "debug") and "event" in event_dict:
+    # Color debug event text with #908caa
+    debug_color = hex_to_ansi_fg(0x908CAA)
+    reset = "\x1b[0m"
+    event_dict["event"] = f"{debug_color}{event_dict['event']}{reset}"
 
-    return event_dict
+  return event_dict
 
 
 def setup_logging(
-    level: str = "INFO", json_output: bool = False, correlation_id: str | None = None
+  level: str = "INFO", json_output: bool = False, correlation_id: str | None = None
 ) -> None:
-    """Configure structured logging for the application."""
+  """Configure structured logging for the application."""
 
-    # Configure processors
-    processors: list[Processor] = [
-        structlog.stdlib.filter_by_level,
-        structlog.stdlib.add_logger_name,
-        structlog.stdlib.add_log_level,
-        _debug_event_colorer,  # Run before level processing
-        _compact_level_processor,
-        structlog.stdlib.PositionalArgumentsFormatter(),
-        _relative_time_processor,
-        structlog.processors.StackInfoRenderer(),
-        structlog.processors.format_exc_info,
-    ]
+  # Configure processors
+  processors: list[Processor] = [
+    structlog.stdlib.filter_by_level,
+    structlog.stdlib.add_logger_name,
+    structlog.stdlib.add_log_level,
+    _debug_event_colorer,  # Run before level processing
+    _compact_level_processor,
+    structlog.stdlib.PositionalArgumentsFormatter(),
+    _relative_time_processor,
+    structlog.processors.StackInfoRenderer(),
+    structlog.processors.format_exc_info,
+  ]
 
-    # Add correlation ID if provided
-    if correlation_id:
-        processors.insert(0, structlog.contextvars.merge_contextvars)
-        structlog.contextvars.bind_contextvars(correlation_id=correlation_id)
+  # Add correlation ID if provided
+  if correlation_id:
+    processors.insert(0, structlog.contextvars.merge_contextvars)
+    structlog.contextvars.bind_contextvars(correlation_id=correlation_id)
 
-    # Configure output format
-    if json_output:
-        processors.append(structlog.processors.JSONRenderer())
-    else:
-        event_key: str = "event"
-        timestamp_key: str = "timestamp"
-        logger_name_formatter = KeyValueColumnFormatter(
-            key_style=hex_to_ansi_fg(0xad8a89),
-            value_style=hex_to_ansi_fg(0x7d6b95),
-            reset_style=RESET_ALL,
-            value_repr=str,
-            prefix="[",
-            postfix="]",
-        )
-
-        processors.append(
-            ConsoleRenderer(
-                colors=True,
-                columns=[
-                    # Default formatter
-                    Column(
-                        "",
-                        KeyValueColumnFormatter(
-                            key_style=None,
-                            value_style="",
-                            reset_style=RESET_ALL,
-                            value_repr=str,
-                        ),
-                    ),
-                    Column(
-                        timestamp_key,
-                        KeyValueColumnFormatter(
-                            key_style=None,
-                            value_style=DIM,
-                            reset_style=RESET_ALL,
-                            value_repr=str,
-                        ),
-                    ),
-                    Column(
-                        "level",
-                        KeyValueColumnFormatter(
-                            key_style=None,
-                            value_style="",
-                            reset_style=RESET_ALL,
-                            value_repr=str,
-                        ),
-                    ),
-                    Column(
-                        event_key,
-                        KeyValueColumnFormatter(
-                            key_style=None,
-                            value_style=BRIGHT,
-                            reset_style=RESET_ALL,
-                            value_repr=str,
-                            width=30,
-                        ),
-                    ),
-                    Column("logger", logger_name_formatter),
-                    Column("logger_name", logger_name_formatter),
-                ],
-            )
-        )
-
-    # Configure structlog
-    structlog.configure(
-        processors=processors,
-        wrapper_class=structlog.stdlib.BoundLogger,
-        logger_factory=structlog.stdlib.LoggerFactory(),
-        cache_logger_on_first_use=True,
+  # Configure output format
+  if json_output:
+    processors.append(structlog.processors.JSONRenderer())
+  else:
+    event_key: str = "event"
+    timestamp_key: str = "timestamp"
+    logger_name_formatter = KeyValueColumnFormatter(
+      key_style=hex_to_ansi_fg(0xAD8A89),
+      value_style=hex_to_ansi_fg(0x7D6B95),
+      reset_style=RESET_ALL,
+      value_repr=str,
+      prefix="[",
+      postfix="]",
     )
 
-    # Configure standard library logging
-    log_level = getattr(logging, level.upper(), logging.INFO)
-    logging.basicConfig(
-        format="%(message)s",
-        level=log_level,
+    processors.append(
+      ConsoleRenderer(
+        colors=True,
+        columns=[
+          # Default formatter
+          Column(
+            "",
+            KeyValueColumnFormatter(
+              key_style=None,
+              value_style="",
+              reset_style=RESET_ALL,
+              value_repr=str,
+            ),
+          ),
+          Column(
+            timestamp_key,
+            KeyValueColumnFormatter(
+              key_style=None,
+              value_style=DIM,
+              reset_style=RESET_ALL,
+              value_repr=str,
+            ),
+          ),
+          Column(
+            "level",
+            KeyValueColumnFormatter(
+              key_style=None,
+              value_style="",
+              reset_style=RESET_ALL,
+              value_repr=str,
+            ),
+          ),
+          Column(
+            event_key,
+            KeyValueColumnFormatter(
+              key_style=None,
+              value_style=BRIGHT,
+              reset_style=RESET_ALL,
+              value_repr=str,
+              width=30,
+            ),
+          ),
+          Column("logger", logger_name_formatter),
+          Column("logger_name", logger_name_formatter),
+        ],
+      )
     )
+
+  # Configure structlog
+  structlog.configure(
+    processors=processors,
+    wrapper_class=structlog.stdlib.BoundLogger,
+    logger_factory=structlog.stdlib.LoggerFactory(),
+    cache_logger_on_first_use=True,
+  )
+
+  # Configure standard library logging
+  log_level = getattr(logging, level.upper(), logging.INFO)
+  logging.basicConfig(
+    format="%(message)s",
+    level=log_level,
+  )
 
 
 def get_logger(name: str | None = None) -> structlog.stdlib.BoundLogger:
-    """Get a structured logger instance."""
-    return structlog.get_logger(name)
+  """Get a structured logger instance."""
+  return structlog.get_logger(name)
 
 
 def setup_logging_from_env() -> None:
-    """Setup logging using environment variables."""
-    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
-    json_output = os.getenv("JSON_LOGS", "false").lower() in ("true", "1", "yes", "on")
-    correlation_id = os.getenv("CORRELATION_ID")
+  """Setup logging using environment variables."""
+  log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+  json_output = os.getenv("JSON_LOGS", "false").lower() in ("true", "1", "yes", "on")
+  correlation_id = os.getenv("CORRELATION_ID")
 
-    setup_logging(
-        level=log_level, json_output=json_output, correlation_id=correlation_id
-    )
+  setup_logging(level=log_level, json_output=json_output, correlation_id=correlation_id)

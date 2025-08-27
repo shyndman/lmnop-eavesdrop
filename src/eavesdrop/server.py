@@ -558,6 +558,7 @@ class TranscriptionServer:
     # Check network interfaces
     try:
       import netifaces
+
       interfaces = netifaces.interfaces()
       self.logger.info(f"Available network interfaces: {interfaces}")
     except ImportError:

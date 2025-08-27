@@ -58,26 +58,26 @@ def main():
     "-nsm",
     action="store_true",
     default=get_env_or_default("EAVESDROP_NO_SINGLE_MODEL", False, bool),
-    help="Set this if every connection should instantiate its own model. Only relevant for custom model, passed using -fw. (Env: EAVESDROP_NO_SINGLE_MODEL)"
+    help="Set this if every connection should instantiate its own model. Only relevant for custom model, passed using -fw. (Env: EAVESDROP_NO_SINGLE_MODEL)",
   )
   parser.add_argument(
     "--max_clients",
     type=int,
     default=get_env_or_default("EAVESDROP_MAX_CLIENTS", 4, int),
-    help="Maximum clients supported by the server. (Env: EAVESDROP_MAX_CLIENTS)"
+    help="Maximum clients supported by the server. (Env: EAVESDROP_MAX_CLIENTS)",
   )
   parser.add_argument(
     "--max_connection_time",
     type=int,
     default=get_env_or_default("EAVESDROP_MAX_CONNECTION_TIME", 300, int),
-    help="Maximum connection time in seconds. (Env: EAVESDROP_MAX_CONNECTION_TIME)"
+    help="Maximum connection time in seconds. (Env: EAVESDROP_MAX_CONNECTION_TIME)",
   )
   parser.add_argument(
     "--cache_path",
     "-c",
     type=str,
     default=get_env_or_default("EAVESDROP_CACHE_PATH", "/app/.cache/eavesdrop/"),
-    help="Path to cache the converted ctranslate2 models. (Env: EAVESDROP_CACHE_PATH)"
+    help="Path to cache the converted ctranslate2 models. (Env: EAVESDROP_CACHE_PATH)",
   )
   parser.add_argument(
     "--debug_audio_path",
