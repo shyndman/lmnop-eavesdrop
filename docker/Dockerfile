@@ -36,8 +36,12 @@ RUN git clone --depth 1 --branch v2.6.0 https://github.com/pytorch/audio.git \
 # CTranslate2
 RUN git clone https://github.com/arlo-phoenix/CTranslate2-rocm.git --recurse-submodules \
     && cd CTranslate2-rocm \
-    && CLANG_CMAKE_CXX_COMPILER=clang++ CXX=clang++ HIPCXX="$(hipconfig -l)/clang" HIP_PATH="$(hipconfig -R)" \
-       cmake -S . -B build -DWITH_MKL=OFF -DWITH_HIP=ON -DCMAKE_HIP_ARCHITECTURES=$PYTORCH_ROCM_ARCH -DBUILD_TESTS=ON -DWITH_CUDNN=ON \
+    && CLANG_CMAKE_CXX_COMPILER=clang++ CXX=clang++ HIPCXX="$(hipconfig -l)/clang" \
+      HIP_PATH="$(hipconfig -R)" \
+      cmake -S . -B build -DWITH_MKL=OFF \
+      -DWITH_HIP=ON -DCMAKE_HIP_ARCHITECTURES=$PYTORCH_ROCM_ARCH \
+      -DGPU_TARGETS="$PYTORCH_ROCM_ARCH" -DAMDGPU_TARGETS="$PYTORCH_ROCM_ARCH" \
+      -DBUILD_TESTS=ON -DWITH_CUDNN=ON \
     && cmake --build build -- -j16 \
     && cd build \
     && cmake --install . --prefix $CONDA_PREFIX \
@@ -57,7 +61,9 @@ RUN git clone --depth 1 --branch v1.1.0 https://github.com/SYSTRAN/faster-whispe
     && pip install . \
     && pip install pytest scipy
 
-# RUN rm -Rf faster-whisper CTranslate2-rocm
+ENV CT2_CUDA_ALLOCATOR=cub_caching
+ENV CT2_CUDA_CACHING_ALLOCATOR_CONFIG=4,3,12,419430400
+
 
 # Copy requirements and install Python dependencies
 # COPY requirements/server.txt /app/
