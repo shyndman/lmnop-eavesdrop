@@ -12,6 +12,7 @@ from websockets.sync.server import ServerConnection, serve
 
 from .backend import ServeClientFasterWhisper
 from .base import ServeClientBase
+from .gpu import resolve_gpu_index
 from .logs import get_logger
 
 
@@ -259,6 +260,7 @@ class TranscriptionServer:
           clip_audio=options.get("clip_audio", False),
           same_output_threshold=options.get("same_output_threshold", 10),
           cache_path=self.cache_path,
+          device_index=self.device_index,
         )
 
         self.logger.info("initialize_client: Running faster_whisper backend.")
@@ -519,6 +521,7 @@ class TranscriptionServer:
     max_connection_time=600,
     cache_path="~/.cache/eavesdrop/",
     debug_audio_path=None,
+    gpu_serial=None,
   ):
     """
     Run the transcription server.
@@ -526,7 +529,11 @@ class TranscriptionServer:
     Args:
         host (str): The host address to bind the server.
         port (int): The port number to bind the server.
+        gpu_serial (str | None): AMD GPU asic_serial to use for inference.
     """
+    # Resolve GPU index early during server startup
+    self.device_index = resolve_gpu_index(gpu_serial)
+
     self.cache_path = cache_path
     self.debug_audio_path = debug_audio_path
     self.debug_audio_files = {}  # websocket -> (file_handle, filename)
@@ -540,6 +547,9 @@ class TranscriptionServer:
     self.logger.info(f"Host: {host}")
     self.logger.info(f"Port: {port}")
     self.logger.info(f"Backend: {backend}")
+    self.logger.info(f"GPU Device Index: {self.device_index}")
+    if gpu_serial:
+      self.logger.info(f"GPU Serial: {gpu_serial}")
     self.logger.info(f"Single Model Mode: {single_model}")
     self.logger.info(f"Max Clients: {max_clients}")
     self.logger.info(f"Max Connection Time: {max_connection_time}s")

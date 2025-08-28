@@ -97,6 +97,13 @@ def main():
     default=get_env_or_default("CORRELATION_ID", None),
     help="Correlation ID for log tracing. (Env: CORRELATION_ID)",
   )
+  parser.add_argument(
+    "--gpu-serial",
+    "-g",
+    type=str,
+    default=get_env_or_default("EAVESDROP_GPU_SERIAL", None),
+    help="AMD GPU asic_serial to use for inference. Run 'amd-smi static --asic --json' to see available GPUs. (Env: EAVESDROP_GPU_SERIAL)",
+  )
   args = parser.parse_args()
 
   # Setup structured logging
@@ -128,6 +135,7 @@ def main():
     max_connection_time=args.max_connection_time,
     cache_path=args.cache_path,
     debug_audio_path=args.debug_audio_path,
+    gpu_serial=args.gpu_serial,
   )
 
 

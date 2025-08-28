@@ -9,7 +9,7 @@ from numpy import ndarray
 
 from .base import ServeClientBase
 from .logs import get_logger
-from .transcriber import WhisperModel
+from .transcription.whisper_model import WhisperModel
 
 
 class ServeClientFasterWhisper(ServeClientBase):
@@ -32,8 +32,9 @@ class ServeClientFasterWhisper(ServeClientBase):
     no_speech_thresh=0.45,
     clip_audio=False,
     same_output_threshold=7,
-    cache_path="~/.cache/eavesdrop/",
+    cache_path="~/.cache/whisper-live/",
     translation_queue=None,
+    device_index: int = 0,
   ):
     """
     Initialize a ServeClient instance.
@@ -74,6 +75,7 @@ class ServeClientFasterWhisper(ServeClientBase):
       translation_queue,
     )
     self.cache_path = cache_path
+    self.device_index = device_index
     self.model_sizes = [
       "tiny",
       "tiny.en",
@@ -214,10 +216,16 @@ class ServeClientFasterWhisper(ServeClientBase):
           model_to_load = ct2_dir
 
     self.logger.info("Loading model", model=model_to_load)
-    self.logger.debug("Model loading parameters", device=device, compute_type=self.compute_type)
+    self.logger.debug(
+      "Model loading parameters",
+      device=device,
+      compute_type=self.compute_type,
+      device_index=self.device_index,
+    )
     self.transcriber = WhisperModel(
       model_to_load,
       device=device,
+      device_index=self.device_index,
       compute_type=self.compute_type,
       download_root=self.cache_path,
       local_files_only=False,
