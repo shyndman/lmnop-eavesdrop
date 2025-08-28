@@ -3,7 +3,6 @@ import json
 import os
 from collections.abc import Iterable
 from inspect import signature
-from math import ceil
 from typing import BinaryIO, cast
 
 import ctranslate2
@@ -14,15 +13,20 @@ from faster_whisper.feature_extractor import FeatureExtractor
 from faster_whisper.tokenizer import _LANGUAGE_CODES, Tokenizer
 from faster_whisper.utils import download_model, format_timestamp, get_end
 from faster_whisper.vad import (
-    VadOptions,
-    collect_chunks,
-    get_speech_timestamps,
+  VadOptions,
+  collect_chunks,
+  get_speech_timestamps,
 )
 from tqdm import tqdm
 
 from ..logs import get_logger
 from .models import Segment, TranscriptionInfo, TranscriptionOptions, Word
-from .utils import get_ctranslate2_storage, get_compression_ratio, merge_punctuations, restore_speech_timestamps
+from .utils import (
+  get_compression_ratio,
+  get_ctranslate2_storage,
+  merge_punctuations,
+  restore_speech_timestamps,
+)
 
 
 class WhisperModel:
@@ -192,8 +196,8 @@ class WhisperModel:
     without_timestamps: bool = False,
     max_initial_timestamp: float = 1.0,
     word_timestamps: bool = False,
-    prepend_punctuations: str = "\"'\"¿([{-",
-    append_punctuations: str = "\"'.。,，!！?？:：\")]}、",
+    prepend_punctuations: str = '"\'"¿([{-',
+    append_punctuations: str = '"\'.。,，!！?？:：")]}、',
     multilingual: bool = False,
     vad_filter: bool = False,
     vad_parameters: dict | VadOptions | None = None,
@@ -372,7 +376,7 @@ class WhisperModel:
     )
 
     from .utils import get_suppressed_tokens
-    
+
     options = TranscriptionOptions(
       beam_size=beam_size,
       best_of=best_of,
@@ -517,7 +521,7 @@ class WhisperModel:
       seek_points.append(content_frames)
     seek_clips: list[tuple[int, int]] = list(zip(seek_points[::2], seek_points[1::2]))
 
-    punctuation = "\"'\"¿([{-\"'.。,，!！?？:：\")]}、"
+    punctuation = '"\'"¿([{-"\'.。,，!！?？:：")]}、'
 
     idx = 0
     clip_idx = 0

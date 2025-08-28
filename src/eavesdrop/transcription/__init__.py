@@ -1,25 +1,25 @@
 # Re-exports for backward compatibility
-from .models import Word, Segment, TranscriptionOptions, TranscriptionInfo
 from .batched_pipeline import BatchedInferencePipeline
-from .whisper_model import WhisperModel
+from .models import Segment, TranscriptionInfo, TranscriptionOptions, Word
 from .utils import (
-    restore_speech_timestamps,
-    get_ctranslate2_storage,
-    get_compression_ratio,
-    get_suppressed_tokens,
-    merge_punctuations,
+  get_compression_ratio,
+  get_ctranslate2_storage,
+  get_suppressed_tokens,
+  merge_punctuations,
+  restore_speech_timestamps,
 )
+from .whisper_model import WhisperModel
 
 __all__ = [
-    "Word",
-    "Segment", 
-    "TranscriptionOptions",
-    "TranscriptionInfo",
-    "BatchedInferencePipeline",
-    "WhisperModel",
-    "restore_speech_timestamps",
-    "get_ctranslate2_storage", 
-    "get_compression_ratio",
-    "get_suppressed_tokens",
-    "merge_punctuations",
+  "Word",
+  "Segment",
+  "TranscriptionOptions",
+  "TranscriptionInfo",
+  "BatchedInferencePipeline",
+  "WhisperModel",
+  "restore_speech_timestamps",
+  "get_ctranslate2_storage",
+  "get_compression_ratio",
+  "get_suppressed_tokens",
+  "merge_punctuations",
 ]

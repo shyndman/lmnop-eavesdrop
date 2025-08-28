@@ -1,6 +1,7 @@
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from warnings import warn
-from collections.abc import Iterable
+
 from faster_whisper.vad import VadOptions
 
 

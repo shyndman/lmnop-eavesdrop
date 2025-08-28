@@ -1,17 +1,15 @@
-import itertools
 from collections.abc import Iterable
 from math import ceil
 from typing import BinaryIO
 
-import ctranslate2
 import numpy as np
 from faster_whisper.audio import decode_audio, pad_or_trim
 from faster_whisper.tokenizer import Tokenizer
 from faster_whisper.vad import (
-    VadOptions,
-    collect_chunks,
-    get_speech_timestamps,
-    merge_segments,
+  VadOptions,
+  collect_chunks,
+  get_speech_timestamps,
+  merge_segments,
 )
 from tqdm import tqdm
 
@@ -25,6 +23,7 @@ class BatchedInferencePipeline:
     model,
   ):
     from .whisper_model import WhisperModel  # Import here to avoid circular imports
+
     self.model: WhisperModel = model
     self.last_speech_timestamp = 0.0
 
@@ -187,8 +186,8 @@ class BatchedInferencePipeline:
     without_timestamps: bool = True,
     max_initial_timestamp: float = 1.0,
     word_timestamps: bool = False,
-    prepend_punctuations: str = "\"'\"¿([{-",
-    append_punctuations: str = "\"'.。,，!！?？:：\")]}、",
+    prepend_punctuations: str = '"\'"¿([{-',
+    append_punctuations: str = '"\'.。,，!！?？:：")]}、',
     multilingual: bool = False,
     vad_filter: bool = True,
     vad_parameters: dict | VadOptions | None = None,
