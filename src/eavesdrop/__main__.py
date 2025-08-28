@@ -98,11 +98,11 @@ def main():
     help="Correlation ID for log tracing. (Env: CORRELATION_ID)",
   )
   parser.add_argument(
-    "--gpu-serial",
+    "--gpu-name",
     "-g",
     type=str,
-    default=get_env_or_default("EAVESDROP_GPU_SERIAL", None),
-    help="AMD GPU asic_serial to use for inference. Run 'amd-smi static --asic --json' to see available GPUs. (Env: EAVESDROP_GPU_SERIAL)",
+    default=get_env_or_default("EAVESDROP_GPU_NAME", None),
+    help="GPU device name to use for inference. Run 'python -c \"import torch; [print(f'Device {i}: {torch.cuda.get_device_name(i)}') for i in range(torch.cuda.device_count())]\"' to see available GPUs. (Env: EAVESDROP_GPU_NAME)",
   )
   args = parser.parse_args()
 
@@ -135,7 +135,7 @@ def main():
     max_connection_time=args.max_connection_time,
     cache_path=args.cache_path,
     debug_audio_path=args.debug_audio_path,
-    gpu_serial=args.gpu_serial,
+    gpu_name=args.gpu_name,
   )
 
 

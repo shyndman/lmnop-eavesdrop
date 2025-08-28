@@ -521,7 +521,7 @@ class TranscriptionServer:
     max_connection_time=600,
     cache_path="~/.cache/eavesdrop/",
     debug_audio_path=None,
-    gpu_serial=None,
+    gpu_name: str | None = None,
   ):
     """
     Run the transcription server.
@@ -529,10 +529,10 @@ class TranscriptionServer:
     Args:
         host (str): The host address to bind the server.
         port (int): The port number to bind the server.
-        gpu_serial (str | None): AMD GPU asic_serial to use for inference.
+        gpu_name (str | None): GPU device name to use for inference.
     """
     # Resolve GPU index early during server startup
-    self.device_index = resolve_gpu_index(gpu_serial)
+    self.device_index = resolve_gpu_index(gpu_name)
 
     self.cache_path = cache_path
     self.debug_audio_path = debug_audio_path
@@ -548,8 +548,8 @@ class TranscriptionServer:
     self.logger.info(f"Port: {port}")
     self.logger.info(f"Backend: {backend}")
     self.logger.info(f"GPU Device Index: {self.device_index}")
-    if gpu_serial:
-      self.logger.info(f"GPU Serial: {gpu_serial}")
+    if gpu_name:
+      self.logger.info(f"GPU Name: {gpu_name}")
     self.logger.info(f"Single Model Mode: {single_model}")
     self.logger.info(f"Max Clients: {max_clients}")
     self.logger.info(f"Max Connection Time: {max_connection_time}s")
