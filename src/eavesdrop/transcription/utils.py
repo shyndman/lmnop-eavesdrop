@@ -50,15 +50,13 @@ def get_compression_ratio(text: str) -> float:
 
 def get_suppressed_tokens(
   tokenizer: Tokenizer,
-  suppress_tokens: tuple[int] | list[int],
-) -> list[int] | None:
+  suppress_tokens: list[int],
+) -> list[int]:
   if -1 in suppress_tokens:
     suppress_tokens = [t for t in suppress_tokens if t >= 0]
     suppress_tokens.extend(tokenizer.non_speech_tokens)
   elif suppress_tokens is None or len(suppress_tokens) == 0:
     suppress_tokens = []  # interpret empty string as an empty list
-  else:
-    assert isinstance(suppress_tokens, list), "suppress_tokens must be a list"
 
   suppress_tokens.extend(
     [
@@ -70,7 +68,7 @@ def get_suppressed_tokens(
     ]
   )
 
-  return tuple(sorted(set(suppress_tokens)))
+  return list(sorted(set(suppress_tokens)))
 
 
 def merge_punctuations(alignment: list[dict], prepended: str, appended: str) -> None:

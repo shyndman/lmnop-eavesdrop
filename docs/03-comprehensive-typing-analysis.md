@@ -431,3 +431,52 @@ def restore_speech_timestamps(segments: Iterable[Segment], speech_chunks: list[d
 - `utils.py` variable typing consistency
 
 The **highest priority** is resolving inappropriate type unions that force complex runtime type checking and indicate poor API design.
+
+## Implementation Progress
+
+### ✅ Completed Fixes
+
+#### 1. **`get_suppressed_tokens` in `utils.py`** - **COMPLETED**
+**Status**: ✅ Fixed inappropriate type union and runtime type checking
+
+**Changes Applied**:
+- **Parameter type**: `tuple[int] | list[int]` → `list[int]` (eliminated inappropriate union)
+- **Return type**: `list[int] | None` → `list[int]` (semantic correctness - method never returns None)
+- **Removed runtime check**: Deleted `assert isinstance(suppress_tokens, list)` (made redundant by proper typing)
+- **Consistent implementation**: `tuple(sorted(set(...)))` → `list(sorted(set(...)))` (matches return type)
+
+**Impact**: Eliminated one of the "MUST BE FIXED" inappropriate type unions that forced runtime type checking. Method now has semantically correct and consistent typing.
+
+#### 2. **`temperatures` field in `models.py`** - **COMPLETED**
+**Status**: ✅ Fixed inappropriate type union
+
+**Changes Applied**:
+- **Field type**: `list[float] | tuple[float]` → `list[float]` (eliminated inappropriate union)
+
+**Impact**: Eliminated another "MUST BE FIXED" inappropriate type union. All usages and assignments were already compatible with `list[float]`.
+
+#### 3. **`initial_prompt` union syntax and design** - **COMPLETED**
+**Status**: ✅ Fixed union syntax normalization AND eliminated inappropriate union
+
+**Changes Applied**:
+- **Field type**: `(str | Iterable[int]) | None` → `str | None` (eliminated inappropriate union entirely)
+- **Parameter types**: Updated in `whisper_model.py` and `batched_pipeline.py` method signatures
+- **Runtime type checking**: Removed `isinstance(options.initial_prompt, str)` check
+- **Token ID handling**: Removed `else: all_tokens.extend(options.initial_prompt)` branch
+- **Documentation**: Updated docstrings to remove "or iterable of token ids"
+- **Unused import**: Removed `from collections.abc import Iterable` from models.py
+
+**Impact**: Completely eliminated the inappropriate union by removing the token IDs case entirely. API is now much cleaner with single, clear semantics (text string only). No breaking changes - all callsites were already using strings only.
+
+#### 4. **`clip_timestamps` and batch transcription system** - **COMPLETED**
+**Status**: ✅ Eliminated entirely - removed unused batch transcription system
+
+**Changes Applied**:
+- **Removed `BatchedInferencePipeline`**: Deleted entire batch processing system (unused by live transcription)
+- **Removed `clip_timestamps` parameter**: Eliminated from `WhisperModel.transcribe()` method signature
+- **Removed `clip_timestamps` field**: Eliminated from `TranscriptionOptions` dataclass
+- **Removed complex string parsing**: No more `isinstance(clip_timestamps, str)` runtime checks
+- **Removed documentation**: Cleaned up all references to batch processing and clip timestamps
+- **Updated exports**: Removed `BatchedInferencePipeline` from `__init__.py` exports
+
+**Impact**: Eliminated the worst inappropriate type union (`str | list[float]`) by removing the entire unused feature. Significantly simplified the codebase while preserving all live transcription functionality. Zero impact on core WebSocket-based live transcription system.

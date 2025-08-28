@@ -43,18 +43,18 @@ class ServeClientFasterWhisper(ServeClientBase):
     to the client to indicate that the server is ready.
 
     Args:
-        websocket (WebSocket): The WebSocket connection for the client.
-        task (str, optional): The task type, e.g., "transcribe". Defaults to "transcribe".
-        device (str, optional): The device type for Whisper, "cuda" or "cpu". Defaults to None.
-        language (str, optional): The language for transcription. Defaults to None.
-        client_uid (str, optional): A unique identifier for the client. Defaults to None.
-        model (str, optional): The whisper model size. Defaults to 'distil-small.en'
-        initial_prompt (str, optional): Prompt for whisper inference. Defaults to None.
-        single_model (bool, optional): Whether to instantiate a new model for each client connection. Defaults to False.
-        send_last_n_segments (int, optional): Number of most recent segments to send to the client. Defaults to 10.
-        no_speech_thresh (float, optional): Segments with no speech probability above this threshold will be discarded. Defaults to 0.45.
-        clip_audio (bool, optional): Whether to clip audio with no valid segments. Defaults to False.
-        same_output_threshold (int, optional): Number of repeated outputs before considering it as a valid segment. Defaults to 10.
+    websocket: The WebSocket connection for the client.
+    task: The task type, e.g., "transcribe".
+    device: The device type for Whisper, "cuda" or "cpu".
+    language: The language for transcription.
+    client_uid: A unique identifier for the client.
+    model: The whisper model size.
+    initial_prompt: Prompt for whisper inference.
+    single_model: Whether to instantiate a new model for each client connection.
+    send_last_n_segments: Number of most recent segments to send to the client.
+    no_speech_thresh: Segments with no speech probability above this threshold will be discarded.
+    clip_audio: Whether to clip audio with no valid segments.
+    same_output_threshold: Number of repeated outputs before considering it as a valid segment.
 
     """
     self.logger = get_logger("faster_whisper_client")

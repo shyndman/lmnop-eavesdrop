@@ -1,4 +1,3 @@
-from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from warnings import warn
 
@@ -57,8 +56,8 @@ class TranscriptionOptions:
   compression_ratio_threshold: float | None
   condition_on_previous_text: bool
   prompt_reset_on_temperature: float
-  temperatures: list[float] | tuple[float]
-  initial_prompt: (str | Iterable[int]) | None
+  temperatures: list[float]
+  initial_prompt: str | None
   prefix: str | None
   suppress_blank: bool
   suppress_tokens: list[int] | None
@@ -69,7 +68,6 @@ class TranscriptionOptions:
   append_punctuations: str
   multilingual: bool
   max_new_tokens: int | None
-  clip_timestamps: str | list[float]
   hallucination_silence_threshold: float | None
   hotwords: str | None
 

@@ -1,5 +1,4 @@
 # Re-exports for backward compatibility
-from .batched_pipeline import BatchedInferencePipeline
 from .models import Segment, TranscriptionInfo, TranscriptionOptions, Word
 from .utils import (
   get_compression_ratio,
@@ -15,7 +14,6 @@ __all__ = [
   "Segment",
   "TranscriptionOptions",
   "TranscriptionInfo",
-  "BatchedInferencePipeline",
   "WhisperModel",
   "restore_speech_timestamps",
   "get_ctranslate2_storage",

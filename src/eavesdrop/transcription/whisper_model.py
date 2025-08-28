@@ -189,7 +189,7 @@ class WhisperModel:
     no_speech_threshold: float | None = 0.6,
     condition_on_previous_text: bool = True,
     prompt_reset_on_temperature: float = 0.5,
-    initial_prompt: str | Iterable[int] | None = None,
+    initial_prompt: str | None = None,
     prefix: str | None = None,
     suppress_blank: bool = True,
     suppress_tokens: list[int] | None = [-1],
@@ -203,7 +203,6 @@ class WhisperModel:
     vad_parameters: dict | VadOptions | None = None,
     max_new_tokens: int | None = None,
     chunk_length: int | None = None,
-    clip_timestamps: str | list[float] = "0",
     hallucination_silence_threshold: float | None = None,
     hotwords: str | None = None,
     language_detection_threshold: float | None = 0.5,
@@ -241,7 +240,7 @@ class WhisperModel:
         such as repetition looping or timestamps going out of sync.
       prompt_reset_on_temperature: Resets prompt if temperature is above this value.
         Arg has effect only if condition_on_previous_text is True.
-      initial_prompt: Optional text string or iterable of token ids to provide as a
+      initial_prompt: Optional text string to provide as a
         prompt for the first window.
       prefix: Optional text to provide as a prefix for the first window.
       suppress_blank: Suppress blank outputs at the beginning of the sampling.
@@ -265,10 +264,6 @@ class WhisperModel:
         the maximum will be set by the default max_length.
       chunk_length: The length of audio segments. If it is not None, it will overwrite the
         default chunk_length of the FeatureExtractor.
-      clip_timestamps:
-        Comma-separated list start,end,start,end,... timestamps (in seconds) of clips to
-         process. The last end timestamp defaults to the end of the file.
-         vad_filter will be ignored if clip_timestamps is used.
       hallucination_silence_threshold:
         When word_timestamps is True, skip silent periods longer than this threshold
          (in seconds) when a possible hallucination is detected
@@ -301,7 +296,7 @@ class WhisperModel:
 
     self.logger.info("Processing audio with duration %s", format_timestamp(duration))
 
-    if vad_filter and clip_timestamps == "0":
+    if vad_filter:
       if vad_parameters is None:
         vad_parameters = VadOptions()
       elif isinstance(vad_parameters, dict):
@@ -332,11 +327,7 @@ class WhisperModel:
         language = "en"
         language_probability = 1
       else:
-        start_timestamp = (
-          float(clip_timestamps.split(",")[0])
-          if isinstance(clip_timestamps, str)
-          else clip_timestamps[0]
-        )
+        start_timestamp = 0.0
         content_frames = features.shape[-1] - 1
         seek = (
           int(start_timestamp * self.frames_per_second)
@@ -403,7 +394,6 @@ class WhisperModel:
       append_punctuations=append_punctuations,
       multilingual=multilingual,
       max_new_tokens=max_new_tokens,
-      clip_timestamps=clip_timestamps,
       hallucination_silence_threshold=hallucination_silence_threshold,
       hotwords=hotwords,
     )
@@ -509,12 +499,7 @@ class WhisperModel:
     content_frames = features.shape[-1] - 1
     content_duration = float(content_frames * self.feature_extractor.time_per_frame)
 
-    if isinstance(options.clip_timestamps, str):
-      options.clip_timestamps = [
-        float(ts) for ts in (options.clip_timestamps.split(",") if options.clip_timestamps else [])
-      ]
-
-    seek_points: list[int] = [round(ts * self.frames_per_second) for ts in options.clip_timestamps]
+    seek_points: list[int] = []
     if len(seek_points) == 0:
       seek_points.append(0)
     if len(seek_points) % 2 == 1:
@@ -530,12 +515,9 @@ class WhisperModel:
     prompt_reset_since = 0
 
     if options.initial_prompt is not None:
-      if isinstance(options.initial_prompt, str):
-        initial_prompt = " " + options.initial_prompt.strip()
-        initial_prompt_tokens = tokenizer.encode(initial_prompt)
-        all_tokens.extend(initial_prompt_tokens)
-      else:
-        all_tokens.extend(options.initial_prompt)
+      initial_prompt = " " + options.initial_prompt.strip()
+      initial_prompt_tokens = tokenizer.encode(initial_prompt)
+      all_tokens.extend(initial_prompt_tokens)
 
     pbar = tqdm(total=content_duration, unit="seconds", disable=not log_progress)
     last_speech_timestamp = 0.0
