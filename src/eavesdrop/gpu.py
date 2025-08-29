@@ -75,7 +75,9 @@ def resolve_gpu_index(gpu_name: str | None) -> int:
       available_names=available_names,
     )
     logger.error(
-      "Run 'python -c \"import torch; [print(f'Device {i}: {torch.cuda.get_device_name(i)}') for i in range(torch.cuda.device_count())]\"' to see available GPUs"
+      "Run 'python -c \"import torch; [print(f'Device {i}: "
+      "{torch.cuda.get_device_name(i)}') for i in range(torch.cuda.device_count())]\"' to see "
+      "available GPUs"
     )
     sys.exit(1)
 

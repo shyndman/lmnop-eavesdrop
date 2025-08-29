@@ -100,8 +100,12 @@ class ServeClientFasterWhisper(ServeClientBase):
     self.language = "en" if self.model_size_or_path.endswith("en") else language
     self.task = task
     self.initial_prompt = initial_prompt
-    self.vad_parameters = VadOptions() if vad_parameters is None else (
-      vad_parameters if isinstance(vad_parameters, VadOptions) else VadOptions(**vad_parameters)
+    self.vad_parameters = (
+      VadOptions()
+      if vad_parameters is None
+      else (
+        vad_parameters if isinstance(vad_parameters, VadOptions) else VadOptions(**vad_parameters)
+      )
     )
 
     device = "cuda" if torch.cuda.is_available() else "cpu"

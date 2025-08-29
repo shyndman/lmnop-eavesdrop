@@ -58,7 +58,8 @@ def main():
     "-nsm",
     action="store_true",
     default=get_env_or_default("EAVESDROP_NO_SINGLE_MODEL", False, bool),
-    help="Set this if every connection should instantiate its own model. Only relevant for custom model, passed using -fw. (Env: EAVESDROP_NO_SINGLE_MODEL)",
+    help="Set this if every connection should instantiate its own model. Only relevant for "
+    "custom model, passed using -fw. (Env: EAVESDROP_NO_SINGLE_MODEL)",
   )
   parser.add_argument(
     "--max_clients",
@@ -83,7 +84,8 @@ def main():
     "--debug_audio_path",
     type=str,
     default=None,
-    help="Path prefix for debug audio files. When set, audio received from clients will be saved as .wav files for debugging.",
+    help="Path prefix for debug audio files. When set, audio received from clients will be "
+    "saved as .wav files for debugging.",
   )
   parser.add_argument(
     "--json_logs",
@@ -102,7 +104,9 @@ def main():
     "-g",
     type=str,
     default=get_env_or_default("EAVESDROP_GPU_NAME", None),
-    help="GPU device name to use for inference. Run 'python -c \"import torch; [print(f'Device {i}: {torch.cuda.get_device_name(i)}') for i in range(torch.cuda.device_count())]\"' to see available GPUs. (Env: EAVESDROP_GPU_NAME)",
+    help="GPU device name to use for inference. Run 'python -c \"import torch; "
+    "[print(f'Device {i}: {torch.cuda.get_device_name(i)}') for i in "
+    "range(torch.cuda.device_count())]\"' to see available GPUs. (Env: EAVESDROP_GPU_NAME)",
   )
   args = parser.parse_args()
 

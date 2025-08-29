@@ -4,6 +4,7 @@ import socket
 import time
 from collections.abc import Callable
 from enum import Enum
+from typing import Self
 
 import numpy as np
 import psutil
@@ -34,7 +35,7 @@ class RobustWebSocketServer:
     self.failed_connections = 0
     self.logger = get_logger("websocket_server")
 
-  def __enter__(self):
+  def __enter__(self) -> Self:
     def error_handling_wrapper(websocket: ServerConnection, path=None):
       """Wrapper that catches and logs connection errors without crashing"""
       self.connection_count += 1
@@ -71,7 +72,17 @@ class RobustWebSocketServer:
       self.port,
       **self.kwargs,
     )
-    return self._server.__enter__()
+    self._server.__enter__()
+    return self  # Return self so we can access connection stats
+
+  @property
+  def socket(self):
+    """Access to the underlying server socket"""
+    return self._server.socket
+
+  def serve_forever(self):
+    """Delegate serve_forever to the actual server"""
+    return self._server.serve_forever()
 
   def __exit__(self, *args):
     self.logger.info(
@@ -592,7 +603,7 @@ class TranscriptionServer:
     # Check for processes using the port
     try:
       connections = psutil.net_connections()
-      port_users = [conn for conn in connections if conn.laddr.port == port] # type: ignore
+      port_users = [conn for conn in connections if conn.laddr.port == port]  # type: ignore
       if port_users:
         self.logger.warning(f"Port {port} is already in use by: {port_users}")
       else:
@@ -759,16 +770,14 @@ class TranscriptionServer:
           """Log server statistics periodically"""
           while True:
             time.sleep(30)  # Log stats every 30 seconds
-            if hasattr(server, "_server") and hasattr(server._server, "connection_count"):
-              total = server._server.connection_count
-              failed = server._server.failed_connections
-              successful = total - failed
-              self.logger.info(
-                f"Server stats: {total} connections ({successful} successful, {failed} failed "
-                "handshakes)"
-              )
-            else:
-              self.logger.debug("Server stats not available")
+            # Access stats directly from RobustWebSocketServer
+            total = server.connection_count
+            failed = server.failed_connections
+            successful = total - failed
+            self.logger.info(
+              f"Server stats: {total} connections ({successful} successful, {failed} failed "
+              "handshakes)"
+            )
 
         # Start connection test and stats monitoring in background
         test_thread = threading.Thread(target=connection_test, daemon=True)
@@ -784,7 +793,6 @@ class TranscriptionServer:
 
         # Enhanced connection monitoring
         original_serve_forever = server.serve_forever
-        connection_count = [0]  # Use list for closure modification
 
         def monitored_serve_forever():
           self.logger.info("run: WebSocket server now accepting connections")

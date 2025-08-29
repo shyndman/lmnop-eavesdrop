@@ -89,7 +89,8 @@ class VoiceActivityDetection:
 
     if x.shape[-1] != num_samples:
       raise ValueError(
-        f"Provided number of samples is {x.shape[-1]} (Supported values: 256 for 8000 sample rate, 512 for 16000)"
+        f"Provided number of samples is {x.shape[-1]} (Supported values: 256 for 8000 sample "
+        f"rate, 512 for 16000)"
       )
 
     batch_size = x.shape[0]
@@ -179,7 +180,8 @@ class VoiceActivityDetector:
     Initializes the VoiceActivityDetector with a voice activity detection model and a threshold.
 
     Args:
-        threshold (float, optional): The probability threshold for detecting voice activity. Defaults to 0.5.
+        threshold (float, optional): The probability threshold for detecting voice activity.
+            Defaults to 0.5.
     """
     self.logger = get_logger("voice_activity_detector")
     self.logger.debug(
@@ -197,16 +199,16 @@ class VoiceActivityDetector:
 
   def __call__(self, audio_frame):
     """
-    Determines if the given audio frame contains speech by comparing the detected speech probability against
-    the threshold.
+    Determines if the given audio frame contains speech by comparing the detected speech
+    probability against the threshold.
 
     Args:
-        audio_frame (np.ndarray): The audio frame to be analyzed for voice activity. It is expected to be a
-                                  NumPy array of audio samples.
+        audio_frame (np.ndarray): The audio frame to be analyzed for voice activity. It is
+            expected to be a NumPy array of audio samples.
 
     Returns:
-        bool: True if the speech probability exceeds the threshold, indicating the presence of voice activity;
-              False otherwise.
+        bool: True if the speech probability exceeds the threshold, indicating the presence of
+            voice activity; False otherwise.
     """
     self.logger.debug(
       "VoiceActivityDetector processing frame", shape=audio_frame.shape, dtype=audio_frame.dtype

@@ -69,9 +69,10 @@ class ServeClientBase(object):
     This method continuously receives audio frames, performs real-time transcription, and sends
     transcribed segments to the client via a WebSocket connection.
 
-    If the client's language is not detected, it waits for 30 seconds of audio input to make a language prediction.
-    It utilizes the Whisper ASR model to transcribe the audio, continuously processing and streaming results. Segments
-    are sent to the client in real-time, and a history of segments is maintained to provide context.
+    If the client's language is not detected, it waits for 30 seconds of audio input to make a
+    language prediction. It utilizes the Whisper ASR model to transcribe the audio, continuously
+    processing and streaming results. Segments are sent to the client in real-time, and a history
+    of segments is maintained to provide context.
 
     Raises:
         Exception: If there is an issue with audio processing or WebSocket communication.
@@ -137,13 +138,14 @@ class ServeClientBase(object):
     """
     Add audio frames to the ongoing audio stream buffer.
 
-    This method is responsible for maintaining the audio stream buffer, allowing the continuous addition
-    of audio frames as they are received. It also ensures that the buffer does not exceed a specified size
-    to prevent excessive memory usage.
+    This method is responsible for maintaining the audio stream buffer, allowing the continuous
+    addition of audio frames as they are received. It also ensures that the buffer does not exceed
+    a specified size to prevent excessive memory usage.
 
-    If the buffer size exceeds a threshold (45 seconds of audio data), it discards the oldest 30 seconds
-    of audio data to maintain a reasonable buffer size. If the buffer is empty, it initializes it with the provided
-    audio frame. The audio stream buffer is used for real-time processing of audio data for transcription.
+    If the buffer size exceeds a threshold (45 seconds of audio data), it discards the oldest 30
+    seconds of audio data to maintain a reasonable buffer size. If the buffer is empty, it
+    initializes it with the provided audio frame. The audio stream buffer is used for real-time
+    processing of audio data for transcription.
 
     Args:
         frame_np (numpy.ndarray): The audio frame data as a NumPy array.
@@ -273,9 +275,9 @@ class ServeClientBase(object):
     """
     Perform cleanup tasks before exiting the transcription service.
 
-    This method performs necessary cleanup tasks, including stopping the transcription thread, marking
-    the exit flag to indicate the transcription thread should exit gracefully, and destroying resources
-    associated with the transcription process.
+    This method performs necessary cleanup tasks, including stopping the transcription thread,
+    marking the exit flag to indicate the transcription thread should exit gracefully, and
+    destroying resources associated with the transcription process.
 
     """
     self.logger.info("Cleaning up")
@@ -344,8 +346,9 @@ class ServeClientBase(object):
     if self.current_out.strip() == self.prev_out.strip() and self.current_out != "":
       self.same_output_count += 1
 
-      # if we remove the audio because of same output on the nth reptition we might remove the
-      # audio thats not yet transcribed so, capturing the time when it was repeated for the first time
+      # if we remove the audio because of same output on the nth reptition we might remove
+      # the audio thats not yet transcribed so, capturing the time when it was repeated for
+      # the first time
       if self.end_time_for_same_output is None:
         self.end_time_for_same_output = self.get_segment_end(segments[-1])
       time.sleep(0.1)  # wait briefly for any new voice activity

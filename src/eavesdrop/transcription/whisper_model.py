@@ -157,7 +157,9 @@ class WhisperModel:
     """The languages supported by the model."""
     return list(_LANGUAGE_CODES) if self.model.is_multilingual else ["en"]
 
-  def _get_feature_kwargs(self, model_path: str, preprocessor_bytes: bytes | None = None) -> FeatureExtractorConfig:
+  def _get_feature_kwargs(
+    self, model_path: str, preprocessor_bytes: bytes | None = None
+  ) -> FeatureExtractorConfig:
     config = {}
     try:
       config_path = os.path.join(model_path, "preprocessor_config.json")
@@ -339,7 +341,9 @@ class WhisperModel:
           compression_ratio_threshold=compression_ratio_threshold,
           condition_on_previous_text=condition_on_previous_text,
           prompt_reset_on_temperature=prompt_reset_on_temperature,
-          temperatures=list(temperature) if isinstance(temperature, (list, tuple)) else [temperature],
+          temperatures=list(temperature)
+          if isinstance(temperature, (list, tuple))
+          else [temperature],
           initial_prompt=initial_prompt,
           prefix=prefix,
           suppress_blank=suppress_blank,
@@ -491,12 +495,14 @@ class WhisperModel:
         start_time = time_offset + start_timestamp_position * self.time_precision
         end_time = time_offset + end_timestamp_position * self.time_precision
 
-        current_segments.append({
-          "seek": seek,
-          "start": start_time,
-          "end": end_time,
-          "tokens": sliced_tokens,
-        })
+        current_segments.append(
+          {
+            "seek": seek,
+            "start": start_time,
+            "end": end_time,
+            "tokens": sliced_tokens,
+          }
+        )
         last_slice = current_slice
 
       if single_timestamp_ending:
@@ -514,12 +520,14 @@ class WhisperModel:
         last_timestamp_position = timestamps[-1] - tokenizer.timestamp_begin
         duration = last_timestamp_position * self.time_precision
 
-      current_segments.append({
-        "seek": seek,
-        "start": time_offset,
-        "end": time_offset + duration,
-        "tokens": tokens,
-      })
+      current_segments.append(
+        {
+          "seek": seek,
+          "start": time_offset,
+          "end": time_offset + duration,
+          "tokens": tokens,
+        }
+      )
 
       seek += segment_size
 
@@ -699,7 +707,7 @@ class WhisperModel:
           if first_segment is not None and is_segment_anomaly(first_segment):
             gap = first_segment["start"] - time_offset
             if gap > threshold:
-              seek = previous_seek + round( gap * self.frames_per_second)
+              seek = previous_seek + round(gap * self.frames_per_second)
               continue
 
           # skip silence before any possible hallucination that is surrounded
@@ -763,7 +771,9 @@ class WhisperModel:
             compression_ratio=compression_ratio,
             no_speech_prob=result.no_speech_prob,
             words=(
-              [Word(**word) for word in segment.get("words", [])] if options.word_timestamps else None
+              [Word(**word) for word in segment.get("words", [])]
+              if options.word_timestamps
+              else None
             ),
           )
         )
@@ -984,9 +994,9 @@ class WhisperModel:
       text_tokens_per_segment.append(segment_tokens)
 
     # Flatten all tokens for alignment (same as original behavior)
-    text_tokens = list(itertools.chain.from_iterable(
-      itertools.chain.from_iterable(text_tokens_per_segment)
-    ))
+    text_tokens = list(
+      itertools.chain.from_iterable(itertools.chain.from_iterable(text_tokens_per_segment))
+    )
 
     alignments = self.find_alignment(tokenizer, text_tokens, encoder_output, num_frames)
     median_max_durations: list[tuple[float, float]] = []
@@ -1027,12 +1037,14 @@ class WhisperModel:
           timing = alignments[segment_idx][word_index]
 
           if timing["word"]:
-            words.append({
-              "word": timing["word"],
-              "start": round(time_offset + timing["start"], 2),
-              "end": round(time_offset + timing["end"], 2),
-              "probability": timing["probability"],
-            })
+            words.append(
+              {
+                "word": timing["word"],
+                "start": round(time_offset + timing["start"], 2),
+                "end": round(time_offset + timing["end"], 2),
+                "probability": timing["probability"],
+              }
+            )
 
           saved_tokens += len(timing["tokens"])
           word_index += 1
@@ -1120,15 +1132,18 @@ class WhisperModel:
       ]
 
       return_list.append(
-        [{
-          "word": word,
-          "tokens": tokens,
-          "start": start,
-          "end": end,
-          "probability": probability,
-        } for word, tokens, start, end, probability in zip(
-          words, word_tokens, start_times, end_times, word_probabilities
-        )]
+        [
+          {
+            "word": word,
+            "tokens": tokens,
+            "start": start,
+            "end": end,
+            "probability": probability,
+          }
+          for word, tokens, start, end, probability in zip(
+            words, word_tokens, start_times, end_times, word_probabilities
+          )
+        ]
       )
     return return_list
 
@@ -1142,7 +1157,8 @@ class WhisperModel:
     language_detection_threshold: float = 0.5,
   ) -> tuple[str, float, list[tuple[str, float]]]:
     self.logger.debug(
-      f"Detecting language: vad_filter={vad_filter}, segments={language_detection_segments}, threshold={language_detection_threshold}"
+      f"Detecting language: vad_filter={vad_filter}, segments={language_detection_segments}, "
+      f"threshold={language_detection_threshold}"
     )
     """
         Use Whisper to detect the language of the input audio or features.
