@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import threading
@@ -107,7 +108,10 @@ class ServeClientFasterWhisper(ServeClientBase):
         vad_parameters if isinstance(vad_parameters, VadOptions) else VadOptions(**vad_parameters)
       )
     )
+    self.use_vad = use_vad
+    self.single_model = single_model
 
+  async def initialize(self):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     self.logger.debug("Selected device", device=device)
     if device == "cuda":
@@ -123,21 +127,10 @@ class ServeClientFasterWhisper(ServeClientBase):
     self.logger.info("Using Device with precision", device=device, precision=self.compute_type)
 
     try:
-      if single_model:
-        self.logger.debug("Using single model mode", client_uid=client_uid)
-        if ServeClientFasterWhisper.SINGLE_MODEL is None:
-          self.logger.debug("Creating new single model instance")
-          self.create_model(device)
-          ServeClientFasterWhisper.SINGLE_MODEL = self.transcriber
-        else:
-          self.logger.debug("Reusing existing single model instance")
-          self.transcriber = ServeClientFasterWhisper.SINGLE_MODEL
-      else:
-        self.logger.debug("Creating dedicated model", client_uid=client_uid)
-        self.create_model(device)
+      await asyncio.to_thread(self.create_model, device)
     except Exception:
       self.logger.exception("Failed to load model")
-      self.websocket.send(
+      await self.websocket.send(
         json.dumps(
           {
             "uid": self.client_uid,
@@ -146,15 +139,10 @@ class ServeClientFasterWhisper(ServeClientBase):
           }
         )
       )
-      self.websocket.close()
+      await self.websocket.close()
       return
 
-    self.use_vad = use_vad
-
-    # threading
-    self.trans_thread = threading.Thread(target=self.speech_to_text)
-    self.trans_thread.start()
-    self.websocket.send(
+    await self.websocket.send(
       json.dumps(
         {
           "uid": self.client_uid,
@@ -172,6 +160,20 @@ class ServeClientFasterWhisper(ServeClientBase):
     self.logger.debug("Creating model", model_reference=self.model_size_or_path)
     model_ref = self.model_size_or_path
 
+    if self.single_model:
+      self.logger.debug("Using single model mode", client_uid=self.client_uid)
+      if ServeClientFasterWhisper.SINGLE_MODEL is None:
+        self.logger.debug("Creating new single model instance")
+        self._create_model_instance(device, model_ref)
+        ServeClientFasterWhisper.SINGLE_MODEL = self.transcriber
+      else:
+        self.logger.debug("Reusing existing single model instance")
+        self.transcriber = ServeClientFasterWhisper.SINGLE_MODEL
+    else:
+      self.logger.debug("Creating dedicated model", client_uid=self.client_uid)
+      self._create_model_instance(device, model_ref)
+
+  def _create_model_instance(self, device, model_ref):
     if model_ref in self.model_sizes:
       self.logger.debug("Model found in standard model sizes", model=model_ref)
       model_to_load = model_ref
@@ -239,15 +241,15 @@ class ServeClientFasterWhisper(ServeClientBase):
     )
     self.logger.debug("Model loaded successfully")
 
-  def set_language(self, info):
+  async def set_language(self, info):
     """
     Updates the language attribute based on the detected language information.
 
     Args:
-        info (object): An object containing the detected language and its probability. This object
-                    must have at least two attributes: `language`, a string indicating the detected
-                    language, and `language_probability`, a float representing the confidence level
-                    of the language detection.
+      info (object): An object containing the detected language and its probability. This object
+        must have at least two attributes: `language`, a string indicating the detected
+        language, and `language_probability`, a float representing the confidence level
+        of the language detection.
     """
     self.logger.debug(
       "Language detection info",
@@ -266,7 +268,7 @@ class ServeClientFasterWhisper(ServeClientBase):
         language=self.language,
         probability=info.language_probability,
       )
-      self.websocket.send(
+      await self.websocket.send(
         json.dumps(
           {
             "uid": self.client_uid,
@@ -289,18 +291,18 @@ class ServeClientFasterWhisper(ServeClientBase):
     information.
 
     Args:
-        input_sample (np.array): The audio chunk to be transcribed. This should be a NumPy
-                                array representing the audio data.
+      input_sample (np.array): The audio chunk to be transcribed. This should be a NumPy
+        array representing the audio data.
 
     Returns:
-        The transcription result from the transcriber. The exact format of this result
-        depends on the implementation of the `transcriber.transcribe` method but typically
-        includes the transcribed text.
+      The transcription result from the transcriber. The exact format of this result
+      depends on the implementation of the `transcriber.transcribe` method but typically
+      includes the transcribed text.
     """
     shape = input_sample.shape if hasattr(input_sample, "shape") else "unknown"
     self.logger.debug("Transcribing audio sample", shape=shape)
 
-    if ServeClientFasterWhisper.SINGLE_MODEL:
+    if self.single_model:
       self.logger.debug("Acquiring single model lock")
       ServeClientFasterWhisper.SINGLE_MODEL_LOCK.acquire()
 
@@ -319,23 +321,21 @@ class ServeClientFasterWhisper(ServeClientBase):
       vad_parameters=self.vad_parameters,
     )
 
-    if ServeClientFasterWhisper.SINGLE_MODEL:
+    if self.single_model:
       self.logger.debug("Releasing single model lock")
       ServeClientFasterWhisper.SINGLE_MODEL_LOCK.release()
 
     result_count = len(list(result)) if result else 0
     self.logger.debug("Transcription completed", segments=result_count)
-    if self.language is None and info is not None:
-      self.set_language(info)
-    return result
+    return result, info
 
-  def handle_transcription_output(self, result, duration):
+  async def handle_transcription_output(self, result, duration):
     """
     Handle the transcription output, updating the transcript and sending data to the client.
 
     Args:
-        result (str): The result from whisper inference i.e. the list of segments.
-        duration (float): Duration of the transcribed audio chunk.
+      result (str): The result from whisper inference i.e. the list of segments.
+      duration (float): Duration of the transcribed audio chunk.
     """
     result_count = len(result) if result else 0
     self.logger.debug(
@@ -353,6 +353,6 @@ class ServeClientFasterWhisper(ServeClientBase):
 
     if len(segments):
       self.logger.debug("Sending segments to client", segment_count=len(segments))
-      self.send_transcription_to_client(segments)
+      await self.send_transcription_to_client(segments)
     else:
       self.logger.debug("No segments to send to client")

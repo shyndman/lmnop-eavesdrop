@@ -248,7 +248,7 @@ def setup_logging(
   )
 
   # Configure standard library logging
-  log_level = getattr(logging, level.upper(), logging.INFO)
+  log_level = getattr(logging, level.upper(), logging.WARN)
   logging.basicConfig(
     format="%(message)s",
     level=log_level,

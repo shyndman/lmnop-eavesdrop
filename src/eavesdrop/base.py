@@ -1,10 +1,11 @@
+import asyncio
 import json
 import queue
 import threading
 import time
 
 import numpy as np
-from websockets.sync.server import ServerConnection
+from websockets.asyncio.server import ServerConnection
 
 from .logs import get_logger
 
@@ -62,7 +63,7 @@ class ServeClientBase(object):
     # threading
     self.lock = threading.Lock()
 
-  def speech_to_text(self):
+  async def speech_to_text(self):
     """
     Process an audio stream in an infinite loop, continuously transcribing the speech.
 
@@ -84,6 +85,7 @@ class ServeClientBase(object):
         break
 
       if self.frames_np is None:
+        await asyncio.sleep(0.1)
         continue
 
       if self.clip_audio:
@@ -91,26 +93,34 @@ class ServeClientBase(object):
 
       input_bytes, duration = self.get_audio_chunk_for_processing()
       if duration < 1.0:
-        time.sleep(0.1)  # wait for audio chunks to arrive
+        await asyncio.sleep(0.1)  # wait for audio chunks to arrive
         continue
       try:
         input_sample = input_bytes.copy()
-        result = self.transcribe_audio(input_sample)
+        result, info = await asyncio.to_thread(self.transcribe_audio, input_sample)
 
-        if result is None or self.language is None:
+        if self.language is None and info is not None:
+          await self.set_language(info)
+
+        if result is None:
           self.timestamp_offset += duration
-          time.sleep(0.25)  # wait for voice activity, result is None when no voice activity
+          await asyncio.sleep(
+            0.25
+          )  # wait for voice activity, result is None when no voice activity
           continue
-        self.handle_transcription_output(result, duration)
+        await self.handle_transcription_output(result, duration)
 
       except Exception:
         self.logger.exception("Failed to transcribe audio chunk")
-        time.sleep(0.01)
+        await asyncio.sleep(0.01)
 
   def transcribe_audio(self, input_sample: np.ndarray):
     raise NotImplementedError
 
-  def handle_transcription_output(self, result, duration):
+  async def set_language(self, info):
+    raise NotImplementedError
+
+  async def handle_transcription_output(self, result, duration):
     raise NotImplementedError
 
   def format_segment(self, start, end, text, completed=False):
@@ -239,7 +249,7 @@ class ServeClientBase(object):
     """
     return input_bytes.shape[0] / self.RATE
 
-  def send_transcription_to_client(self, segments):
+  async def send_transcription_to_client(self, segments):
     """
     Sends the specified transcription segments to the client over the websocket connection.
 
@@ -250,7 +260,7 @@ class ServeClientBase(object):
         segments (list): A list of transcription segments to be sent to the client.
     """
     try:
-      self.websocket.send(
+      await self.websocket.send(
         json.dumps(
           {
             "uid": self.client_uid,
@@ -261,7 +271,7 @@ class ServeClientBase(object):
     except Exception as e:
       self.logger.error("Sending data to client", error=str(e))
 
-  def disconnect(self):
+  async def disconnect(self):
     """
     Notify the client of disconnection and send a disconnect message.
 
@@ -269,7 +279,7 @@ class ServeClientBase(object):
     that the transcription service is disconnecting gracefully.
 
     """
-    self.websocket.send(json.dumps({"uid": self.client_uid, "message": self.DISCONNECT}))
+    await self.websocket.send(json.dumps({"uid": self.client_uid, "message": self.DISCONNECT}))
 
   def cleanup(self):
     """

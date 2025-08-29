@@ -1,0 +1,368 @@
+import asyncio
+
+import structlog
+
+from .logs import get_logger
+
+
+class RTSPClient:
+  """
+  A client for ingesting RTSP audio streams using FFmpeg subprocesses.
+
+  This class manages the lifecycle of an FFmpeg subprocess that connects to an RTSP stream,
+  extracts audio data, and feeds it into an asyncio.Queue for downstream processing.
+
+  The client handles automatic reconnection with a 30-second delay between attempts,
+  comprehensive error logging, and graceful shutdown capabilities.
+  """
+
+  def __init__(self, stream_name: str, rtsp_url: str, audio_queue: asyncio.Queue[bytes]):
+    """
+    Initialize the RTSP client.
+
+    Args:
+        stream_name: A human-readable name for this stream (e.g., "office", "kitchen")
+        rtsp_url: The RTSP URL to connect to
+        audio_queue: An asyncio.Queue to receive audio chunks
+    """
+    self.stream_name = stream_name
+    self.rtsp_url = rtsp_url
+    self.audio_queue = audio_queue
+
+    # Process tracking
+    self.process: asyncio.subprocess.Process | None = None
+    self.stopped = False
+
+    # Logging with stream context
+    self.logger = get_logger("rtsp_client").bind(stream=stream_name)
+
+    # Statistics tracking
+    self.chunks_read = 0
+    self.total_bytes = 0
+    self.reconnect_count = 0
+
+  async def _create_ffmpeg_process(self) -> asyncio.subprocess.Process:
+    """
+    Create and start the FFmpeg subprocess for RTSP stream ingestion.
+
+    Uses the exact command specified in the design document to capture audio
+    at 16kHz sample rate in PCM format suitable for Whisper transcription.
+
+    Returns:
+        The created subprocess.Process object
+
+    Raises:
+        Exception: If the process fails to start
+    """
+    cmd = [
+      "ffmpeg",
+      "-fflags",
+      "nobuffer",
+      "-flags",
+      "low_delay",
+      "-rtsp_transport",
+      "tcp",
+      "-i",
+      self.rtsp_url,
+      "-vn",  # No video
+      "-acodec",
+      "pcm_s16le",  # 16-bit PCM audio
+      "-ar",
+      "16000",  # 16kHz sample rate
+      "-ac",
+      "1",  # Mono audio
+      "-f",
+      "s16le",  # Raw 16-bit little-endian format
+      "-",  # Output to stdout
+    ]
+
+    self.logger.debug("Starting FFmpeg process", command=" ".join(cmd))
+
+    process = await asyncio.create_subprocess_exec(
+      *cmd,
+      stdout=asyncio.subprocess.PIPE,
+      stderr=asyncio.subprocess.PIPE,
+    )
+
+    self.process = process
+    self.logger.info("FFmpeg process started", pid=process.pid)
+    return process
+
+  async def _read_audio_stream(self) -> None:
+    """
+    Read audio data from the FFmpeg process stdout and feed it to the audio queue.
+
+    Continuously reads 4096-byte chunks from the process and places them on the
+    audio queue. Logs statistics periodically to avoid spam while providing
+    visibility into stream health.
+
+    Returns when the process terminates or when stopped.
+    """
+    if not self.process or not self.process.stdout:
+      self.logger.error("No process or stdout available for reading")
+      return
+
+    chunk_size = 4096
+    log_every_n_chunks = 100
+
+    self.logger.info("Starting audio stream reading")
+
+    try:
+      while not self.stopped:
+        chunk = await self.process.stdout.read(chunk_size)
+
+        if not chunk:  # EOF - process has terminated
+          self.logger.info("Audio stream ended (EOF)")
+          break
+
+        # Add chunk to queue for downstream processing
+        await self.audio_queue.put(chunk)
+
+        # Update statistics
+        self.chunks_read += 1
+        self.total_bytes += len(chunk)
+
+        # Log statistics periodically to avoid spam
+        if self.chunks_read % log_every_n_chunks == 0:
+          self.logger.debug(
+            "Audio streaming progress",
+            chunks_read=self.chunks_read,
+            total_mb=f"{self.total_bytes / (1024 * 1024):.1f}",
+            chunk_size=len(chunk),
+          )
+
+    except asyncio.CancelledError:
+      self.logger.debug("Audio reading cancelled")
+      raise
+    except Exception as e:
+      self.logger.error("Error reading audio stream", error=str(e))
+      raise
+    finally:
+      self.logger.info(
+        "Audio reading finished",
+        chunks_read=self.chunks_read,
+        total_mb=f"{self.total_bytes / (1024 * 1024):.1f}",
+      )
+
+  async def _monitor_process_errors(self) -> None:
+    """
+    Monitor FFmpeg stderr for error messages and log them appropriately.
+
+    Reads stderr output from the FFmpeg process and categorizes messages
+    by severity. Distinguishes between expected warnings and critical errors
+    that might indicate connection problems.
+
+    Returns when the process terminates or when stopped.
+    """
+    if not self.process or not self.process.stderr:
+      self.logger.error("No process or stderr available for monitoring")
+      return
+
+    self.logger.debug("Starting FFmpeg error monitoring")
+
+    try:
+      while not self.stopped:
+        line = await self.process.stderr.readline()
+
+        if not line:  # EOF - process has terminated
+          self.logger.debug("FFmpeg stderr ended (EOF)")
+          break
+
+        error_msg = line.decode("utf-8", errors="replace").strip()
+        if not error_msg:
+          continue
+
+        # Categorize FFmpeg messages by content
+        error_lower = error_msg.lower()
+
+        if any(
+          keyword in error_lower
+          for keyword in [
+            "connection refused",
+            "connection failed",
+            "network unreachable",
+            "timeout",
+            "host not found",
+            "no route to host",
+          ]
+        ):
+          self.logger.error("FFmpeg connection error", message=error_msg)
+        elif any(
+          keyword in error_lower
+          for keyword in ["unauthorized", "forbidden", "authentication failed", "401", "403"]
+        ):
+          self.logger.error("FFmpeg authentication error", message=error_msg)
+        elif any(
+          keyword in error_lower
+          for keyword in [
+            "invalid data",
+            "corrupt",
+            "decode error",
+            "unsupported",
+            "invalid format",
+          ]
+        ):
+          self.logger.warning("FFmpeg stream format issue", message=error_msg)
+        elif any(keyword in error_lower for keyword in ["deprecated", "option", "using"]):
+          # Common FFmpeg informational messages - log at debug level
+          self.logger.debug("FFmpeg info", message=error_msg)
+        elif "error" in error_lower or "fatal" in error_lower:
+          self.logger.error("FFmpeg error", message=error_msg)
+        else:
+          # Generic FFmpeg output - likely informational
+          self.logger.debug("FFmpeg output", message=error_msg)
+
+    except asyncio.CancelledError:
+      self.logger.debug("Error monitoring cancelled")
+      raise
+    except Exception as e:
+      self.logger.error("Error monitoring FFmpeg stderr", error=str(e))
+      raise
+
+  async def run(self) -> None:
+    """
+    Main entry point for the RTSP client lifecycle.
+
+    Implements an infinite retry loop that attempts to connect to the RTSP stream,
+    manages concurrent audio reading and error monitoring tasks, and handles
+    automatic reconnection with a 30-second delay between attempts.
+
+    This method will run until stop() is called or an unrecoverable error occurs.
+    """
+    # Use structured logging context to bind stream name to all log messages
+    with structlog.contextvars.bound_contextvars(stream=self.stream_name):
+      self.logger.info("Starting RTSP client", url=self.rtsp_url)
+
+      while not self.stopped:
+        try:
+          # Reset statistics for this connection attempt
+          self.chunks_read = 0
+          self.total_bytes = 0
+
+          if self.reconnect_count > 0:
+            self.logger.info("Reconnecting to RTSP stream", attempt=self.reconnect_count + 1)
+          else:
+            self.logger.info("Connecting to RTSP stream")
+
+          # Create and start the FFmpeg process
+          process = await self._create_ffmpeg_process()
+
+          # Start concurrent tasks for audio reading and error monitoring
+          audio_task = asyncio.create_task(self._read_audio_stream())
+          error_task = asyncio.create_task(self._monitor_process_errors())
+
+          self.logger.info("RTSP stream connected, processing audio")
+
+          # Wait for either task to complete (indicates process death or error)
+          done, pending = await asyncio.wait(
+            [audio_task, error_task], return_when=asyncio.FIRST_COMPLETED
+          )
+
+          # Cancel any remaining tasks
+          for task in pending:
+            task.cancel()
+            try:
+              await task
+            except asyncio.CancelledError:
+              pass
+
+          # Check if any task raised an exception
+          for task in done:
+            if task.exception():
+              self.logger.error("Task failed", task=task.get_name(), error=str(task.exception()))
+
+          # Wait for process to finish and check exit code
+          exit_code = await process.wait()
+          if exit_code != 0:
+            self.logger.warning("FFmpeg process exited with error", exit_code=exit_code)
+          else:
+            self.logger.info("FFmpeg process exited normally")
+
+          # Clean up process reference
+          self.process = None
+        except Exception as e:
+          self.logger.error("RTSP connection attempt failed", error=str(e))
+          self.process = None
+
+          # Only reconnect if we haven't been stopped
+          if not self.stopped:
+            self.reconnect_count += 1
+            self.logger.info("Reconnecting in 30 seconds", attempt=self.reconnect_count + 1)
+
+            try:
+              await asyncio.sleep(30)
+            except asyncio.CancelledError:
+              self.logger.info("Reconnection wait interrupted")
+              break
+
+    self.logger.info("RTSP client stopped")
+
+  async def stop(self) -> None:
+    """
+    Gracefully stop the RTSP client.
+
+    Sets the stopped flag, terminates any running FFmpeg process, and ensures
+    clean shutdown of all resources. This method can be called from external
+    signal handlers or shutdown sequences.
+
+    Safe to call multiple times.
+    """
+    if self.stopped:
+      self.logger.debug("Stop called but client already stopped")
+      return
+
+    self.logger.info("Stopping RTSP client")
+    self.stopped = True
+
+    # Clean up any running process
+    await self._cleanup_process()
+
+    self.logger.info("RTSP client shutdown complete")
+
+  async def _cleanup_process(self) -> None:
+    """
+    Clean up the FFmpeg process gracefully.
+
+    Attempts graceful termination first, then force kills if necessary.
+    Handles cases where the process is already dead or was never started.
+    """
+    if not self.process:
+      return
+
+    self.logger.debug("Cleaning up FFmpeg process", pid=self.process.pid)
+
+    try:
+      # Check if process is still running
+      if self.process.returncode is None:
+        # First try graceful termination
+        self.logger.debug("Terminating FFmpeg process gracefully")
+        self.process.terminate()
+
+        try:
+          # Wait up to 5 seconds for graceful shutdown
+          await asyncio.wait_for(self.process.wait(), timeout=5.0)
+          self.logger.debug("FFmpeg process terminated gracefully")
+        except asyncio.TimeoutError:
+          # Force kill if graceful termination fails
+          self.logger.warning("FFmpeg process did not terminate gracefully, force killing")
+          self.process.kill()
+          await self.process.wait()
+          self.logger.debug("FFmpeg process force killed")
+      else:
+        self.logger.debug("FFmpeg process already terminated", exit_code=self.process.returncode)
+
+    except ProcessLookupError:
+      # Process was already dead
+      self.logger.debug("FFmpeg process was already dead during cleanup")
+    except Exception as e:
+      self.logger.error("Error during process cleanup", error=str(e))
+    finally:
+      self.process = None
+
+  async def __aenter__(self):
+    """Async context manager entry."""
+    return self
+
+  async def __aexit__(self, exc_type, exc_val, exc_tb):
+    """Async context manager exit - ensures cleanup."""
+    await self.stop()

@@ -872,6 +872,21 @@ class WhisperModel:
     prefix: str | None = None,
     hotwords: str | None = None,
   ) -> list[int]:
+    """Constructs the prompt for the Whisper model.
+
+    The prompt provides context from previous transcriptions to improve the
+    accuracy of the next segment, especially across hard audio boundaries.
+
+    Args:
+        tokenizer: The Whisper tokenizer.
+        previous_tokens: A list of tokens from previously transcribed segments.
+        without_timestamps: Whether to exclude timestamp tokens from the prompt.
+        prefix: An optional prefix string to force the transcription to start with.
+        hotwords: Optional hotwords to provide as context.
+
+    Returns:
+        A list of tokens representing the constructed prompt.
+    """
     prompt = []
 
     if previous_tokens or (hotwords and not prefix):
@@ -884,7 +899,7 @@ class WhisperModel:
       if previous_tokens:
         prompt.extend(previous_tokens[-(self.max_length // 2 - 1) :])
 
-    prompt.extend(tokenizer.sot_sequence)
+    prompt.extend(tokenizer.sot_sequence)  # sot=start of text
 
     if without_timestamps:
       prompt.append(tokenizer.no_timestamps)

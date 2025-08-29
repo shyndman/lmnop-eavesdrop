@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 import os
 
 from .logs import get_logger, setup_logging
@@ -23,7 +24,7 @@ def get_env_or_default(env_var, default, var_type: type = str):
     return value
 
 
-def main():
+async def main():
   parser = argparse.ArgumentParser()
   parser.add_argument(
     "--port",
@@ -31,6 +32,12 @@ def main():
     type=int,
     default=get_env_or_default("EAVESDROP_PORT", 9090, int),
     help="Websocket port to run the server on. (Env: EAVESDROP_PORT)",
+  )
+  parser.add_argument(
+    "--config",
+    type=str,
+    default=get_env_or_default("EAVESDROP_CONFIG", None),
+    help="Path to the RTSP streams config file. (Env: EAVESDROP_CONFIG)",
   )
   parser.add_argument(
     "--backend",
@@ -129,7 +136,7 @@ def main():
   )
 
   server = TranscriptionServer()
-  server.run(
+  await server.run(
     "0.0.0.0",
     port=args.port,
     backend=args.backend,
@@ -144,4 +151,7 @@ def main():
 
 
 if __name__ == "__main__":
-  main()
+  try:
+    asyncio.run(main())
+  except KeyboardInterrupt:
+    pass
