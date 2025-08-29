@@ -10,7 +10,6 @@ dependencies = [
   # "transformers[torch]==4.54",
   # "faster-whisper==1.1.1",
   # "openai-whisper==20240930",
-
   # "ctranslate2 @ file:///~/dev/github.com/ctranslate2",
   # Server dependencies
   "netifaces>=0.11.0",
@@ -27,6 +26,7 @@ dependencies = [
   "jiwer",
   "evaluate",
   "websocket-client>=1.8.0",
+  "pyyaml>=6.0",
 ]
 license = {text = "MIT"}
 

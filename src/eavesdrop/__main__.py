@@ -147,6 +147,7 @@ async def main():
     cache_path=args.cache_path,
     debug_audio_path=args.debug_audio_path,
     gpu_name=args.gpu_name,
+    config=args.config,
   )
 
 

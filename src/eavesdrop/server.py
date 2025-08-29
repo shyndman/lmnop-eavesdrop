@@ -7,8 +7,11 @@ import numpy as np
 from websockets.exceptions import ConnectionClosed, InvalidMessage
 
 from .backend import ServeClientFasterWhisper
+from .config import RTSPConfig
 from .gpu import resolve_gpu_index
 from .logs import get_logger
+from .rtsp_manager import RTSPClientManager
+from .rtsp_models import RTSPModelManager
 from .websocket import ClientManager, WebSocketServer
 
 
@@ -36,6 +39,9 @@ class TranscriptionServer:
     self.use_vad = True
     self.single_model = False
     self.logger = get_logger("transcription_server")
+
+    # RTSP-related components
+    self.rtsp_client_manager: RTSPClientManager | None = None
 
   async def initialize_client(
     self,
@@ -293,6 +299,7 @@ class TranscriptionServer:
     cache_path="~/.cache/eavesdrop/",
     debug_audio_path=None,
     gpu_name: str | None = None,
+    config: str | None = None,
   ):
     """
     Run the transcription server.
@@ -320,6 +327,14 @@ class TranscriptionServer:
         f"{backend} is not a valid backend type. Choose backend from {BackendType.valid_types()}"
       )
 
+    # Load and initialize RTSP streams if config provided
+    if config:
+      rtsp_streams = await self._load_rtsp_config(config)
+      if rtsp_streams:
+        await self._initialize_rtsp_streams(
+          rtsp_streams, backend, faster_whisper_custom_model_path, single_model, cache_path
+        )
+
     async def connection_handler(websocket):
       await self.recv_audio(
         websocket,
@@ -328,7 +343,12 @@ class TranscriptionServer:
       )
 
     websocket_server = WebSocketServer(connection_handler, host, port)
-    await websocket_server.start()
+
+    # Run WebSocket server with or without RTSP streams
+    if self.rtsp_client_manager:
+      await self._run_with_rtsp_streams(websocket_server)
+    else:
+      await websocket_server.start()
 
   def cleanup(self, websocket):
     """
@@ -351,3 +371,121 @@ class TranscriptionServer:
         self.logger.info(f"Debug audio capture finished: {filename}")
       except Exception:
         self.logger.exception(f"Error closing debug audio file {filename}")
+
+  async def _load_rtsp_config(self, config_path: str) -> dict[str, str]:
+    """
+    Load and validate RTSP configuration from file.
+
+    Args:
+        config_path: Path to YAML configuration file
+
+    Returns:
+        Dictionary mapping stream names to RTSP URLs
+    """
+    try:
+      rtsp_config = RTSPConfig(config_path)
+      streams = rtsp_config.load_and_validate()
+
+      if streams:
+        self.logger.info(
+          "RTSP configuration loaded successfully",
+          config_path=config_path,
+          stream_count=len(streams),
+        )
+      else:
+        self.logger.info("No RTSP streams configured")
+
+      return streams
+
+    except Exception as e:
+      self.logger.error("Failed to load RTSP configuration", config_path=config_path, error=str(e))
+      # Return empty dict to continue without RTSP streams
+      return {}
+
+  async def _initialize_rtsp_streams(
+    self,
+    rtsp_streams: dict[str, str],
+    backend: str,
+    faster_whisper_custom_model_path: str | None,
+    single_model: bool,
+    cache_path: str,
+  ) -> None:
+    """
+    Initialize RTSP client manager and model manager.
+
+    Args:
+        rtsp_streams: Dictionary of stream names to RTSP URLs
+        backend: Backend type for transcription
+        faster_whisper_custom_model_path: Custom model path if provided
+        single_model: Whether to use single model mode
+        cache_path: Path for model caching
+    """
+    try:
+      self.logger.info("Initializing RTSP transcription system")
+
+      # Create backend parameters for model manager
+      backend_params = {
+        "backend": backend,
+        "faster_whisper_custom_model_path": faster_whisper_custom_model_path,
+        "single_model": single_model,
+        "cache_path": cache_path,
+        "device_index": self.device_index,
+        "task": "transcribe",
+        "language": None,  # Auto-detect
+        "model": faster_whisper_custom_model_path or "distil-small.en",
+        "initial_prompt": None,
+        "vad_parameters": None,
+        "use_vad": self.use_vad,
+        "no_speech_thresh": 0.45,
+        "clip_audio": False,
+        "same_output_threshold": 10,
+      }
+
+      # Create model manager
+      model_manager = RTSPModelManager(backend_params)
+
+      # Create RTSP client manager
+      self.rtsp_client_manager = RTSPClientManager(model_manager)
+
+      # Start all configured streams
+      await self.rtsp_client_manager.start_all_streams(rtsp_streams)
+
+      self.logger.info(
+        "RTSP transcription system initialized",
+        active_streams=self.rtsp_client_manager.get_stream_count(),
+      )
+
+    except Exception as e:
+      self.logger.error("Failed to initialize RTSP system", error=str(e))
+      # Clean up on failure
+      self.rtsp_client_manager = None
+
+  async def _run_with_rtsp_streams(self, websocket_server: WebSocketServer) -> None:
+    """
+    Run WebSocket server concurrently with RTSP streams.
+
+    Args:
+        websocket_server: WebSocket server instance to run
+    """
+    self.logger.info("Starting server with RTSP and WebSocket support")
+
+    try:
+      # Create WebSocket server task
+      websocket_task = asyncio.create_task(websocket_server.start())
+      websocket_task.set_name("websocket_server")
+
+      # The RTSP streams are already running via RTSPClientManager
+      # We just need to wait for the WebSocket server and handle shutdown
+
+      await websocket_task
+
+    except (KeyboardInterrupt, SystemExit):
+      self.logger.info("Shutdown signal received")
+    except Exception as e:
+      self.logger.error("Error in server execution", error=str(e))
+    finally:
+      # Clean up RTSP streams
+      if self.rtsp_client_manager:
+        self.logger.info("Shutting down RTSP streams")
+        await self.rtsp_client_manager.stop_all_streams()
+        self.rtsp_client_manager = None
