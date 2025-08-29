@@ -1,6 +1,7 @@
 import itertools
 import json
 import os
+import time
 from collections.abc import Iterable
 from inspect import signature
 from typing import cast
@@ -83,6 +84,7 @@ class WhisperModel:
         identifier for this model.
     """
     self.logger = get_logger()
+    self._last_vad_log_time = 0  # Track when we last logged VAD filtering
 
     tokenizer_bytes: bytes | None
     preprocessor_bytes: bytes | None
@@ -213,23 +215,42 @@ class WhisperModel:
     duration: float = audio.shape[0] / sampling_rate
     duration_after_vad: float = duration
 
-    self.logger.info("Processing audio with duration %s", format_timestamp(duration))
-
+    # Check if VAD will filter everything before deciding whether to log
+    will_be_complete_silence = False
     if vad_filter:
       speech_chunks = get_speech_timestamps(audio, vad_parameters)
       audio_chunks: list[np.ndarray]
       chunks_metadata: list[dict[str, int]]
       audio_chunks, chunks_metadata = collect_chunks(audio, speech_chunks)
-      audio = np.concatenate(audio_chunks, axis=0)
-      duration_after_vad = audio.shape[0] / sampling_rate
-
-      self.logger.info(
-        "VAD filter removed %s of audio",
-        format_timestamp(duration - duration_after_vad),
-      )
-
+      processed_audio = np.concatenate(audio_chunks, axis=0)
+      duration_after_vad = processed_audio.shape[0] / sampling_rate
+      will_be_complete_silence = duration_after_vad == 0
+      audio = processed_audio
     else:
       speech_chunks = None
+
+    # Only throttle logging during complete silence periods
+    if will_be_complete_silence:
+      current_time = time.time()
+      if current_time - self._last_vad_log_time >= 60:  # 60 seconds = 1 minute
+        self.logger.info(
+          "Processing audio with duration %s (complete silence detected)",
+          format_timestamp(duration),
+        )
+        self.logger.info(
+          "VAD filter removed %s of audio (complete silence)",
+          format_timestamp(duration - duration_after_vad),
+        )
+        self._last_vad_log_time = current_time
+    else:
+      # Normal logging during active speech periods
+      self.logger.info("Processing audio with duration %s", format_timestamp(duration))
+      if vad_filter and duration_after_vad != duration:
+        self.logger.info(
+          "VAD filter removed %s of audio",
+          format_timestamp(duration - duration_after_vad),
+        )
+
     if audio.shape[0] == 0:
       # Return empty segments and minimal transcription info for empty audio
       empty_info = TranscriptionInfo(
@@ -345,7 +366,7 @@ class WhisperModel:
       multilingual=multilingual,
       max_new_tokens=None,
       hallucination_silence_threshold=None,
-      hotwords=None,
+      hotwords="Scott Hilary Bang",
     )
 
     segments = self.generate_segments(features, tokenizer, options, False, encoder_output)
