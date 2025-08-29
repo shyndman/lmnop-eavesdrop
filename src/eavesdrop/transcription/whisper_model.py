@@ -3,12 +3,12 @@ import json
 import os
 from collections.abc import Iterable
 from inspect import signature
-from typing import BinaryIO, cast
+from typing import cast
 
 import ctranslate2
 import numpy as np
 import tokenizers
-from faster_whisper.audio import decode_audio, pad_or_trim
+from faster_whisper.audio import pad_or_trim
 from faster_whisper.feature_extractor import FeatureExtractor
 from faster_whisper.tokenizer import _LANGUAGE_CODES, Tokenizer
 from faster_whisper.utils import download_model, format_timestamp, get_end
@@ -20,7 +20,16 @@ from faster_whisper.vad import (
 from tqdm import tqdm
 
 from ..logs import get_logger
-from .models import Segment, TranscriptionInfo, TranscriptionOptions, Word
+from .models import (
+  FeatureExtractorConfig,
+  Segment,
+  SegmentDict,
+  TranscriptionInfo,
+  TranscriptionOptions,
+  Word,
+  WordDict,
+  WordTimingDict,
+)
 from .utils import (
   get_compression_ratio,
   get_ctranslate2_storage,
@@ -75,6 +84,8 @@ class WhisperModel:
     """
     self.logger = get_logger()
 
+    tokenizer_bytes: bytes | None
+    preprocessor_bytes: bytes | None
     tokenizer_bytes, preprocessor_bytes = None, None
     if files:
       model_path = model_size_or_path
@@ -146,7 +157,7 @@ class WhisperModel:
     """The languages supported by the model."""
     return list(_LANGUAGE_CODES) if self.model.is_multilingual else ["en"]
 
-  def _get_feature_kwargs(self, model_path, preprocessor_bytes=None) -> dict:
+  def _get_feature_kwargs(self, model_path: str, preprocessor_bytes: bytes | None = None) -> FeatureExtractorConfig:
     config = {}
     try:
       config_path = os.path.join(model_path, "preprocessor_config.json")
@@ -156,17 +167,17 @@ class WhisperModel:
         with open(config_path, "r", encoding="utf-8") as file:
           config = json.load(file)
       else:
-        return config
+        return cast(FeatureExtractorConfig, config)
       valid_keys = signature(FeatureExtractor.__init__).parameters.keys()
-      return {k: v for k, v in config.items() if k in valid_keys}
+      return cast(FeatureExtractorConfig, {k: v for k, v in config.items() if k in valid_keys})
     except json.JSONDecodeError as e:
       self.logger.warning("Could not load preprocessor config: %s", e)
 
-    return config
+    return cast(FeatureExtractorConfig, config)
 
   def transcribe(
     self,
-    audio: str | BinaryIO | np.ndarray,
+    audio: np.ndarray,
     language: str | None = None,
     task: str = "transcribe",
     log_progress: bool = False,
@@ -200,7 +211,7 @@ class WhisperModel:
     append_punctuations: str = '"\'.。,，!！?？:：")]}、',
     multilingual: bool = False,
     vad_filter: bool = False,
-    vad_parameters: dict | VadOptions | None = None,
+    vad_parameters: VadOptions = VadOptions(),
     max_new_tokens: int | None = None,
     chunk_length: int | None = None,
     hallucination_silence_threshold: float | None = None,
@@ -208,10 +219,10 @@ class WhisperModel:
     language_detection_threshold: float | None = 0.5,
     language_detection_segments: int = 1,
   ) -> tuple[Iterable[Segment], TranscriptionInfo]:
-    """Transcribes an input file.
+    """Transcribes audio data for live transcription.
 
     Arguments:
-      audio: Path to the input file (or a file-like object), or the audio waveform.
+      audio: Audio waveform as numpy array (16kHz sample rate).
       language: The language spoken in the audio. It should be a language code such
         as "en" or "fr". If not set, the language will be detected in the first 30 seconds
         of audio.
@@ -258,7 +269,7 @@ class WhisperModel:
       vad_filter: Enable the voice activity detection (VAD) to filter out parts of the audio
         without speech. This step is using the Silero VAD model
         https://github.com/snakers4/silero-vad.
-      vad_parameters: Dictionary of Silero VAD parameters or VadOptions class (see available
+      vad_parameters: VadOptions class instance (see available
         parameters and default values in the class `VadOptions`).
       max_new_tokens: Maximum number of new tokens to generate per-chunk. If not set,
         the maximum will be set by the default max_length.
@@ -278,7 +289,7 @@ class WhisperModel:
         - a generator over transcribed segments
         - an instance of TranscriptionInfo
     """
-    sampling_rate = self.feature_extractor.sampling_rate
+    sampling_rate: int = self.feature_extractor.sampling_rate
 
     if multilingual and not self.model.is_multilingual:
       self.logger.warning(
@@ -287,22 +298,16 @@ class WhisperModel:
       )
       multilingual = False
 
-    if not isinstance(audio, np.ndarray):
-      audio = decode_audio(audio, sampling_rate=sampling_rate)
-
-    audio = cast(np.ndarray, audio)
-    duration = audio.shape[0] / sampling_rate
-    duration_after_vad = duration
+    # Audio is guaranteed to be np.ndarray for live transcription
+    duration: float = audio.shape[0] / sampling_rate
+    duration_after_vad: float = duration
 
     self.logger.info("Processing audio with duration %s", format_timestamp(duration))
 
     if vad_filter:
-      if vad_parameters is None:
-        vad_parameters = VadOptions()
-      elif isinstance(vad_parameters, dict):
-        vad_parameters = VadOptions(**vad_parameters)
-
       speech_chunks = get_speech_timestamps(audio, vad_parameters)
+      audio_chunks: list[np.ndarray]
+      chunks_metadata: list[dict[str, int]]
       audio_chunks, chunks_metadata = collect_chunks(audio, speech_chunks)
       audio = np.concatenate(audio_chunks, axis=0)
       duration_after_vad = audio.shape[0] / sampling_rate
@@ -315,11 +320,47 @@ class WhisperModel:
     else:
       speech_chunks = None
     if audio.shape[0] == 0:
-      return None, None
+      # Return empty segments and minimal transcription info for empty audio
+      empty_info = TranscriptionInfo(
+        language="en",
+        language_probability=0.0,
+        duration=0.0,
+        duration_after_vad=0.0,
+        all_language_probs=None,
+        transcription_options=TranscriptionOptions(
+          beam_size=beam_size,
+          best_of=best_of,
+          patience=patience,
+          length_penalty=length_penalty,
+          repetition_penalty=repetition_penalty,
+          no_repeat_ngram_size=no_repeat_ngram_size,
+          log_prob_threshold=log_prob_threshold,
+          no_speech_threshold=no_speech_threshold,
+          compression_ratio_threshold=compression_ratio_threshold,
+          condition_on_previous_text=condition_on_previous_text,
+          prompt_reset_on_temperature=prompt_reset_on_temperature,
+          temperatures=list(temperature) if isinstance(temperature, (list, tuple)) else [temperature],
+          initial_prompt=initial_prompt,
+          prefix=prefix,
+          suppress_blank=suppress_blank,
+          suppress_tokens=suppress_tokens,
+          without_timestamps=without_timestamps,
+          max_initial_timestamp=max_initial_timestamp,
+          word_timestamps=word_timestamps,
+          prepend_punctuations=prepend_punctuations,
+          append_punctuations=append_punctuations,
+          multilingual=multilingual,
+          max_new_tokens=max_new_tokens,
+          hallucination_silence_threshold=hallucination_silence_threshold,
+          hotwords=hotwords,
+        ),
+        vad_options=vad_parameters,
+      )
+      return [], empty_info
     features = self.feature_extractor(audio, chunk_length=chunk_length)
 
-    encoder_output = None
-    all_language_probs = None
+    encoder_output: ctranslate2.StorageView | None = None
+    all_language_probs: list[tuple[str, float]] | None = None
 
     # detecting the language if not provided
     if language is None:
@@ -341,7 +382,7 @@ class WhisperModel:
         ) = self.detect_language(
           features=features[..., seek:],
           language_detection_segments=language_detection_segments,
-          language_detection_threshold=language_detection_threshold,
+          language_detection_threshold=language_detection_threshold or 0.5,
         )
 
         self.logger.info(
@@ -380,7 +421,7 @@ class WhisperModel:
       compression_ratio_threshold=compression_ratio_threshold,
       condition_on_previous_text=condition_on_previous_text,
       prompt_reset_on_temperature=prompt_reset_on_temperature,
-      temperatures=(temperature if isinstance(temperature, (list, tuple)) else [temperature]),
+      temperatures=list(temperature) if isinstance(temperature, (list, tuple)) else [temperature],
       initial_prompt=initial_prompt,
       prefix=prefix,
       suppress_blank=suppress_blank,
@@ -423,8 +464,8 @@ class WhisperModel:
     segment_size: int,
     segment_duration: float,
     seek: int,
-  ) -> list[list[int]]:
-    current_segments = []
+  ) -> tuple[list[SegmentDict], int, bool]:
+    current_segments: list[SegmentDict] = []
     single_timestamp_ending = (
       len(tokens) >= 2 and tokens[-2] < tokenizer.timestamp_begin <= tokens[-1]
     )
@@ -450,14 +491,12 @@ class WhisperModel:
         start_time = time_offset + start_timestamp_position * self.time_precision
         end_time = time_offset + end_timestamp_position * self.time_precision
 
-        current_segments.append(
-          dict(
-            seek=seek,
-            start=start_time,
-            end=end_time,
-            tokens=sliced_tokens,
-          )
-        )
+        current_segments.append({
+          "seek": seek,
+          "start": start_time,
+          "end": end_time,
+          "tokens": sliced_tokens,
+        })
         last_slice = current_slice
 
       if single_timestamp_ending:
@@ -475,14 +514,12 @@ class WhisperModel:
         last_timestamp_position = timestamps[-1] - tokenizer.timestamp_begin
         duration = last_timestamp_position * self.time_precision
 
-      current_segments.append(
-        dict(
-          seek=seek,
-          start=time_offset,
-          end=time_offset + duration,
-          tokens=tokens,
-        )
-      )
+      current_segments.append({
+        "seek": seek,
+        "start": time_offset,
+        "end": time_offset + duration,
+        "tokens": tokens,
+      })
 
       seek += segment_size
 
@@ -493,7 +530,7 @@ class WhisperModel:
     features: np.ndarray,
     tokenizer: Tokenizer,
     options: TranscriptionOptions,
-    log_progress,
+    log_progress: bool,
     encoder_output: ctranslate2.StorageView | None = None,
   ) -> Iterable[Segment]:
     content_frames = features.shape[-1] - 1
@@ -511,7 +548,7 @@ class WhisperModel:
     idx = 0
     clip_idx = 0
     seek = seek_clips[clip_idx][0]
-    all_tokens = []
+    all_tokens: list[int] = []
     prompt_reset_since = 0
 
     if options.initial_prompt is not None:
@@ -521,7 +558,7 @@ class WhisperModel:
 
     pbar = tqdm(total=content_duration, unit="seconds", disable=not log_progress)
     last_speech_timestamp = 0.0
-    all_segments = []
+    all_segments: list[Segment] = []
     # NOTE: This loop is obscurely flattened to make the diff readable.
     # A later commit should turn this into a simpler nested loop.
     # for seek_clip_start, seek_clip_end in seek_clips:
@@ -602,7 +639,7 @@ class WhisperModel:
       previous_seek = seek
 
       # anomalous words are very long/short/improbable
-      def word_anomaly_score(word: dict) -> float:
+      def word_anomaly_score(word: WordDict) -> float:
         probability = word.get("probability", 0.0)
         duration = word["end"] - word["start"]
         score = 0.0
@@ -614,16 +651,16 @@ class WhisperModel:
           score += duration - 2.0
         return score
 
-      def is_segment_anomaly(segment: dict | None) -> bool:
-        if segment is None or not segment["words"]:
+      def is_segment_anomaly(segment: SegmentDict | None) -> bool:
+        if segment is None or not segment.get("words"):
           return False
-        words = [w for w in segment["words"] if w["word"] not in punctuation]
+        words = [w for w in segment.get("words", []) if w["word"] not in punctuation]
         words = words[:8]
         score = sum(word_anomaly_score(w) for w in words)
         return score >= 3 or score + 0.01 >= len(words)
 
-      def next_words_segment(segments: list[dict]) -> dict | None:
-        return next((s for s in segments if s["words"]), None)
+      def next_words_segment(segments: list[SegmentDict]) -> SegmentDict | None:
+        return next((s for s in segments if s.get("words")), None)
 
       (
         current_segments,
@@ -649,7 +686,7 @@ class WhisperModel:
           last_speech_timestamp=last_speech_timestamp,
         )
         if not single_timestamp_ending:
-          last_word_end = get_end(current_segments)
+          last_word_end = get_end(cast(list[dict], current_segments))
           if last_word_end is not None and last_word_end > time_offset:
             seek = round(last_word_end * self.frames_per_second)
 
@@ -662,7 +699,7 @@ class WhisperModel:
           if first_segment is not None and is_segment_anomaly(first_segment):
             gap = first_segment["start"] - time_offset
             if gap > threshold:
-              seek = previous_seek + round(gap * self.frames_per_second)
+              seek = previous_seek + round( gap * self.frames_per_second)
               continue
 
           # skip silence before any possible hallucination that is surrounded
@@ -670,12 +707,16 @@ class WhisperModel:
           hal_last_end = last_speech_timestamp
           for si in range(len(current_segments)):
             segment = current_segments[si]
-            if not segment["words"]:
+            if not segment.get("words"):
               continue
             if is_segment_anomaly(segment):
               next_segment = next_words_segment(current_segments[si + 1 :])
               if next_segment is not None:
-                hal_next_start = next_segment["words"][0]["start"]
+                next_words = next_segment.get("words", [])
+                if next_words:
+                  hal_next_start = next_words[0]["start"]
+                else:
+                  hal_next_start = time_offset + segment_duration
               else:
                 hal_next_start = time_offset + segment_duration
               silence_before = (
@@ -696,7 +737,7 @@ class WhisperModel:
                 break
             hal_last_end = segment["end"]
 
-        last_word_end = get_end(current_segments)
+        last_word_end = get_end(cast(list[dict], current_segments))
         if last_word_end is not None:
           last_speech_timestamp = last_word_end
       for segment in current_segments:
@@ -722,7 +763,7 @@ class WhisperModel:
             compression_ratio=compression_ratio,
             no_speech_prob=result.no_speech_prob,
             words=(
-              [Word(**word) for word in segment["words"]] if options.word_timestamps else None
+              [Word(**word) for word in segment.get("words", [])] if options.word_timestamps else None
             ),
           )
         )
@@ -784,6 +825,7 @@ class WhisperModel:
         f"so that their combined length is less that {self.max_length}."
       )
 
+    temperature = 0.0  # Initialize to avoid unbound variable warning
     for temperature in options.temperatures:
       self.logger.debug(f"Trying temperature: {temperature}")
       if temperature > 0:
@@ -923,7 +965,7 @@ class WhisperModel:
 
   def add_word_timestamps(
     self,
-    segments: list[dict],
+    segments: list[list[SegmentDict]],
     tokenizer: Tokenizer,
     encoder_output: ctranslate2.StorageView,
     num_frames: int,
@@ -932,19 +974,22 @@ class WhisperModel:
     last_speech_timestamp: float,
   ) -> float:
     if len(segments) == 0:
-      return
+      return 0.0
 
-    text_tokens = []
-    text_tokens_per_segment = []
-    for segment in segments:
+    text_tokens_per_segment: list[list[list[int]]] = []
+    for segment_group in segments:
       segment_tokens = [
-        [token for token in subsegment["tokens"] if token < tokenizer.eot] for subsegment in segment
+        [token for token in segment["tokens"] if token < tokenizer.eot] for segment in segment_group
       ]
-      text_tokens.append(list(itertools.chain.from_iterable(segment_tokens)))
       text_tokens_per_segment.append(segment_tokens)
 
+    # Flatten all tokens for alignment (same as original behavior)
+    text_tokens = list(itertools.chain.from_iterable(
+      itertools.chain.from_iterable(text_tokens_per_segment)
+    ))
+
     alignments = self.find_alignment(tokenizer, text_tokens, encoder_output, num_frames)
-    median_max_durations = []
+    median_max_durations: list[tuple[float, float]] = []
     for alignment in alignments:
       word_durations = np.array([word["end"] - word["start"] for word in alignment])
       word_durations = word_durations[word_durations.nonzero()]
@@ -974,7 +1019,7 @@ class WhisperModel:
       median_duration, max_duration = median_max_durations[segment_idx]
       for subsegment_idx, subsegment in enumerate(segment):
         saved_tokens = 0
-        words = []
+        words: list[WordDict] = []
 
         while word_index < len(alignments[segment_idx]) and saved_tokens < len(
           text_tokens_per_segment[segment_idx][subsegment_idx]
@@ -982,14 +1027,12 @@ class WhisperModel:
           timing = alignments[segment_idx][word_index]
 
           if timing["word"]:
-            words.append(
-              dict(
-                word=timing["word"],
-                start=round(time_offset + timing["start"], 2),
-                end=round(time_offset + timing["end"], 2),
-                probability=timing["probability"],
-              )
-            )
+            words.append({
+              "word": timing["word"],
+              "start": round(time_offset + timing["start"], 2),
+              "end": round(time_offset + timing["end"], 2),
+              "probability": timing["probability"],
+            })
 
           saved_tokens += len(timing["tokens"])
           word_index += 1
@@ -1036,7 +1079,7 @@ class WhisperModel:
     encoder_output: ctranslate2.StorageView,
     num_frames: int,
     median_filter_width: int = 7,
-  ) -> list[dict]:
+  ) -> list[list[WordTimingDict]]:
     if len(text_tokens) == 0:
       return []
 
@@ -1047,14 +1090,14 @@ class WhisperModel:
       num_frames,
       median_filter_width=median_filter_width,
     )
-    return_list = []
+    return_list: list[list[WordTimingDict]] = []
     for result, text_token in zip(results, text_tokens):
       text_token_probs = result.text_token_probs
       alignments = result.alignments
       text_indices = np.array([pair[0] for pair in alignments])
       time_indices = np.array([pair[1] for pair in alignments])
 
-      words, word_tokens = tokenizer.split_to_word_tokens(text_token + [tokenizer.eot])
+      words, word_tokens = tokenizer.split_to_word_tokens([text_token] + [tokenizer.eot])
       if len(word_tokens) <= 1:
         # return on eot only
         # >>> np.pad([], (1, 0))
@@ -1077,18 +1120,15 @@ class WhisperModel:
       ]
 
       return_list.append(
-        [
-          dict(
-            word=word,
-            tokens=tokens,
-            start=start,
-            end=end,
-            probability=probability,
-          )
-          for word, tokens, start, end, probability in zip(
-            words, word_tokens, start_times, end_times, word_probabilities
-          )
-        ]
+        [{
+          "word": word,
+          "tokens": tokens,
+          "start": start,
+          "end": end,
+          "probability": probability,
+        } for word, tokens, start, end, probability in zip(
+          words, word_tokens, start_times, end_times, word_probabilities
+        )]
       )
     return return_list
 
@@ -1097,7 +1137,7 @@ class WhisperModel:
     audio: np.ndarray | None = None,
     features: np.ndarray | None = None,
     vad_filter: bool = False,
-    vad_parameters: dict | VadOptions | None = None,
+    vad_parameters: VadOptions = VadOptions(),
     language_detection_segments: int = 1,
     language_detection_threshold: float = 0.5,
   ) -> tuple[str, float, list[tuple[str, float]]]:
@@ -1114,7 +1154,7 @@ class WhisperModel:
                 Either `audio` or `features` must be provided.
             vad_filter: Enable the voice activity detection (VAD) to filter out parts of the audio
                 without speech. This step is using the Silero VAD model.
-            vad_parameters: Dictionary of Silero VAD parameters or VadOptions class (see available
+            vad_parameters: VadOptions class instance (see available
                 parameters and default values in the class `VadOptions`).
             language_detection_threshold: If the maximum probability of the language tokens is
                 higher than this value, the language is detected.
@@ -1138,9 +1178,11 @@ class WhisperModel:
       audio = audio[: language_detection_segments * self.feature_extractor.n_samples]
       features = self.feature_extractor(audio)
 
+    assert features is not None  # Should be guaranteed by logic above
     features = features[..., : language_detection_segments * self.feature_extractor.nb_max_frames]
 
     detected_language_info = {}
+    all_language_probs: list[tuple[str, float]] = []  # Initialize to avoid unbound variable
     for i in range(0, features.shape[-1], self.feature_extractor.nb_max_frames):
       self.logger.debug(
         f"Processing language detection segment {i // self.feature_extractor.nb_max_frames + 1}"

@@ -51,7 +51,8 @@ class RobustWebSocketServer:
           e
         ) or "connection closed while reading" in str(e):
           self.logger.debug(
-            f"Connection #{conn_id} from {client_addr[0]} failed handshake (likely port scan/health check)"
+            f"Connection #{conn_id} from {client_addr[0]} failed handshake "
+            "(likely port scan/health check)"
           )
         else:
           self.logger.warning(f"Connection #{conn_id} from {client_addr[0]} handshake error: {e}")
@@ -74,7 +75,8 @@ class RobustWebSocketServer:
 
   def __exit__(self, *args):
     self.logger.info(
-      f"Server stats: {self.connection_count} total connections, {self.failed_connections} failed handshakes"
+      f"Server stats: {self.connection_count} total connections, {self.failed_connections} "
+      "failed handshakes"
     )
     return self._server.__exit__(*args)
 
@@ -82,12 +84,11 @@ class RobustWebSocketServer:
 class ClientManager:
   def __init__(self, max_clients=4, max_connection_time=600):
     """
-    Initializes the ClientManager with specified limits on client connections and connection durations.
+    Initializes the ClientManager with specified limits on client connections and connection
+    durations.
 
-    Args:
-        max_clients (int, optional): The maximum number of simultaneous client connections allowed. Defaults to 4.
-        max_connection_time (int, optional): The maximum duration (in seconds) a client can stay connected. Defaults
-                                             to 600 seconds (10 minutes).
+    max_clients: The maximum number of simultaneous client connections allowed.
+    max_connection_time: The maximum duration (in seconds) a client can stay connected.
     """
     self.clients = {}
     self.start_times = {}
@@ -124,11 +125,10 @@ class ClientManager:
 
   def remove_client(self, websocket):
     """
-    Removes a client and their connection start time from the tracking dictionaries. Performs cleanup on the
-    client if necessary.
+    Removes a client and their connection start time from the tracking dictionaries. Performs
+    cleanup on the client if necessary.
 
-    Args:
-        websocket: The websocket associated with the client to be removed.
+    websocket: The websocket associated with the client to be removed.
     """
     client = self.clients.pop(websocket, None)
     if client:
@@ -141,10 +141,10 @@ class ClientManager:
 
   def get_wait_time(self):
     """
-    Calculates the estimated wait time for new clients based on the remaining connection times of current clients.
+    Calculates the estimated wait time for new clients based on the remaining connection times of
+    current clients.
 
-    Returns:
-        The estimated wait time in minutes for new clients to connect. Returns 0 if there are available slots.
+    Returns 0 if there are available slots.
     """
     wait_time = None
     for start_time in self.start_times.values():
@@ -155,7 +155,8 @@ class ClientManager:
 
   def is_server_full(self, websocket, options):
     """
-    Checks if the server is at its maximum client capacity and sends a wait message to the client if necessary.
+    Checks if the server is at its maximum client capacity and sends a wait message to the client if
+    necessary.
 
     Args:
         websocket: The websocket of the client attempting to connect.
@@ -168,7 +169,8 @@ class ClientManager:
     if len(self.clients) >= self.max_clients:
       wait_time = self.get_wait_time()
       self.logger.debug(
-        f"Server full, sending wait message to client {options['uid']}. Wait time: {wait_time:.1f} minutes"
+        f"Server full, sending wait message to client {options['uid']}. Wait time: {wait_time:.1f} "
+        "minutes"
       )
       response = {"uid": options["uid"], "status": "WAIT", "message": wait_time}
       websocket.send(json.dumps(response))
@@ -178,7 +180,8 @@ class ClientManager:
 
   def is_client_timeout(self, websocket):
     """
-    Checks if a client has exceeded the maximum allowed connection time and disconnects them if so, issuing a warning.
+    Checks if a client has exceeded the maximum allowed connection time and disconnects them if so,
+    issuing a warning.
 
     Args:
         websocket: The websocket associated with the client to check.
@@ -228,7 +231,8 @@ class TranscriptionServer:
     faster_whisper_custom_model_path,
   ):
     self.logger.debug(
-      f"initialize_client: Starting initialization for client {options['uid']} with backend: {self.backend.value}"
+      f"initialize_client: Starting initialization for client {options['uid']} with "
+      f"backend: {self.backend.value}"
     )
     client: ServeClientBase | None = None
 
@@ -588,7 +592,7 @@ class TranscriptionServer:
     # Check for processes using the port
     try:
       connections = psutil.net_connections()
-      port_users = [conn for conn in connections if conn.laddr.port == port]
+      port_users = [conn for conn in connections if conn.laddr.port == port] # type: ignore
       if port_users:
         self.logger.warning(f"Port {port} is already in use by: {port_users}")
       else:
@@ -760,7 +764,8 @@ class TranscriptionServer:
               failed = server._server.failed_connections
               successful = total - failed
               self.logger.info(
-                f"Server stats: {total} connections ({successful} successful, {failed} failed handshakes)"
+                f"Server stats: {total} connections ({successful} successful, {failed} failed "
+                "handshakes)"
               )
             else:
               self.logger.debug("Server stats not available")

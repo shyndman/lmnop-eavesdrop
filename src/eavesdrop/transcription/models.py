@@ -1,7 +1,39 @@
 from dataclasses import asdict, dataclass
+from typing import NotRequired, Required, TypedDict
 from warnings import warn
 
 from faster_whisper.vad import VadOptions
+
+
+class FeatureExtractorConfig(TypedDict):
+  feature_size: NotRequired[int]
+  sampling_rate: NotRequired[int]
+  hop_length: NotRequired[int]
+  chunk_length: NotRequired[int]
+  n_fft: NotRequired[int]
+
+
+class WordDict(TypedDict):
+  start: Required[float]
+  end: Required[float]
+  word: Required[str]
+  probability: NotRequired[float]
+
+
+class SegmentDict(TypedDict):
+  seek: Required[int]
+  start: Required[float]
+  end: Required[float]
+  tokens: Required[list[int]]
+  words: NotRequired[list[WordDict]]
+
+
+class WordTimingDict(TypedDict):
+  word: str
+  tokens: list[int]
+  start: float
+  end: float
+  probability: float
 
 
 @dataclass

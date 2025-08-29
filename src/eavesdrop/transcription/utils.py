@@ -6,12 +6,12 @@ import numpy as np
 from faster_whisper.tokenizer import Tokenizer
 from faster_whisper.vad import SpeechTimestampsMap
 
-from .models import Segment
+from .models import Segment, WordTimingDict
 
 
 def restore_speech_timestamps(
   segments: Iterable[Segment],
-  speech_chunks: list[dict],
+  speech_chunks: list[dict[str, int]],
   sampling_rate: int,
 ) -> Iterable[Segment]:
   ts_map = SpeechTimestampsMap(speech_chunks, sampling_rate)
@@ -71,7 +71,7 @@ def get_suppressed_tokens(
   return list(sorted(set(suppress_tokens)))
 
 
-def merge_punctuations(alignment: list[dict], prepended: str, appended: str) -> None:
+def merge_punctuations(alignment: list[WordTimingDict], prepended: str, appended: str) -> None:
   # merge prepended punctuations
   i = len(alignment) - 2
   j = len(alignment) - 1
