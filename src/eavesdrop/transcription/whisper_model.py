@@ -182,44 +182,9 @@ class WhisperModel:
     audio: np.ndarray,
     language: str | None = None,
     task: str = "transcribe",
-    log_progress: bool = False,
-    beam_size: int = 5,
-    best_of: int = 5,
-    patience: float = 1,
-    length_penalty: float = 1,
-    repetition_penalty: float = 1,
-    no_repeat_ngram_size: int = 0,
-    temperature: float | list[float] | tuple[float, ...] = [
-      0.0,
-      0.2,
-      0.4,
-      0.6,
-      0.8,
-      1.0,
-    ],
-    compression_ratio_threshold: float | None = 2.4,
-    log_prob_threshold: float | None = -1.0,
-    no_speech_threshold: float | None = 0.6,
-    condition_on_previous_text: bool = True,
-    prompt_reset_on_temperature: float = 0.5,
     initial_prompt: str | None = None,
-    prefix: str | None = None,
-    suppress_blank: bool = True,
-    suppress_tokens: list[int] | None = [-1],
-    without_timestamps: bool = False,
-    max_initial_timestamp: float = 1.0,
-    word_timestamps: bool = False,
-    prepend_punctuations: str = '"\'"¿([{-',
-    append_punctuations: str = '"\'.。,，!！?？:：")]}、',
-    multilingual: bool = False,
     vad_filter: bool = False,
     vad_parameters: VadOptions = VadOptions(),
-    max_new_tokens: int | None = None,
-    chunk_length: int | None = None,
-    hallucination_silence_threshold: float | None = None,
-    hotwords: str | None = None,
-    language_detection_threshold: float | None = 0.5,
-    language_detection_segments: int = 1,
   ) -> tuple[Iterable[Segment], TranscriptionInfo]:
     """Transcribes audio data for live transcription.
 
@@ -229,62 +194,11 @@ class WhisperModel:
         as "en" or "fr". If not set, the language will be detected in the first 30 seconds
         of audio.
       task: Task to execute (transcribe or translate).
-      log_progress: whether to show progress bar or not.
-      beam_size: Beam size to use for decoding.
-      best_of: Number of candidates when sampling with non-zero temperature.
-      patience: Beam search patience factor.
-      length_penalty: Exponential length penalty constant.
-      repetition_penalty: Penalty applied to the score of previously generated tokens
-        (set > 1 to penalize).
-      no_repeat_ngram_size: Prevent repetitions of ngrams with this size (set 0 to disable).
-      temperature: Temperature for sampling. It can be a tuple of temperatures,
-        which will be successively used upon failures according to either
-        `compression_ratio_threshold` or `log_prob_threshold`.
-      compression_ratio_threshold: If the gzip compression ratio is above this value,
-        treat as failed.
-      log_prob_threshold: If the average log probability over sampled tokens is
-        below this value, treat as failed.
-      no_speech_threshold: If the no_speech probability is higher than this value AND
-        the average log probability over sampled tokens is below `log_prob_threshold`,
-        consider the segment as silent.
-      condition_on_previous_text: If True, the previous output of the model is provided
-        as a prompt for the next window; disabling may make the text inconsistent across
-        windows, but the model becomes less prone to getting stuck in a failure loop,
-        such as repetition looping or timestamps going out of sync.
-      prompt_reset_on_temperature: Resets prompt if temperature is above this value.
-        Arg has effect only if condition_on_previous_text is True.
-      initial_prompt: Optional text string to provide as a
-        prompt for the first window.
-      prefix: Optional text to provide as a prefix for the first window.
-      suppress_blank: Suppress blank outputs at the beginning of the sampling.
-      suppress_tokens: list of token IDs to suppress. -1 will suppress a default set
-        of symbols as defined in `tokenizer.non_speech_tokens()`.
-      without_timestamps: Only sample text tokens.
-      max_initial_timestamp: The initial timestamp cannot be later than this.
-      word_timestamps: Extract word-level timestamps using the cross-attention pattern
-        and dynamic time warping, and include the timestamps for each word in each segment.
-      prepend_punctuations: If word_timestamps is True, merge these punctuation symbols
-        with the next word
-      append_punctuations: If word_timestamps is True, merge these punctuation symbols
-        with the previous word
-      multilingual: Perform language detection on every segment.
+      initial_prompt: Optional text string to provide as a prompt for the first window.
       vad_filter: Enable the voice activity detection (VAD) to filter out parts of the audio
         without speech. This step is using the Silero VAD model
         https://github.com/snakers4/silero-vad.
-      vad_parameters: VadOptions class instance (see available
-        parameters and default values in the class `VadOptions`).
-      max_new_tokens: Maximum number of new tokens to generate per-chunk. If not set,
-        the maximum will be set by the default max_length.
-      chunk_length: The length of audio segments. If it is not None, it will overwrite the
-        default chunk_length of the FeatureExtractor.
-      hallucination_silence_threshold:
-        When word_timestamps is True, skip silent periods longer than this threshold
-         (in seconds) when a possible hallucination is detected
-      hotwords:
-        Hotwords/hint phrases to provide the model with. Has no effect if prefix is not None.
-      language_detection_threshold: If the maximum probability of the language tokens is higher
-       than this value, the language is detected.
-      language_detection_segments: Number of segments to consider for the language detection.
+      vad_parameters: VAD configuration options (VadOptions instance).
     Returns:
       A tuple with:
 
@@ -293,12 +207,7 @@ class WhisperModel:
     """
     sampling_rate: int = self.feature_extractor.sampling_rate
 
-    if multilingual and not self.model.is_multilingual:
-      self.logger.warning(
-        "The current model is English-only but the multilingual parameter is set to"
-        "True; setting to False instead."
-      )
-      multilingual = False
+    multilingual = False
 
     # Audio is guaranteed to be np.ndarray for live transcription
     duration: float = audio.shape[0] / sampling_rate
@@ -330,38 +239,36 @@ class WhisperModel:
         duration_after_vad=0.0,
         all_language_probs=None,
         transcription_options=TranscriptionOptions(
-          beam_size=beam_size,
-          best_of=best_of,
-          patience=patience,
-          length_penalty=length_penalty,
-          repetition_penalty=repetition_penalty,
-          no_repeat_ngram_size=no_repeat_ngram_size,
-          log_prob_threshold=log_prob_threshold,
-          no_speech_threshold=no_speech_threshold,
-          compression_ratio_threshold=compression_ratio_threshold,
-          condition_on_previous_text=condition_on_previous_text,
-          prompt_reset_on_temperature=prompt_reset_on_temperature,
-          temperatures=list(temperature)
-          if isinstance(temperature, (list, tuple))
-          else [temperature],
+          beam_size=5,
+          best_of=5,
+          patience=1,
+          length_penalty=1,
+          repetition_penalty=1,
+          no_repeat_ngram_size=0,
+          log_prob_threshold=-1.0,
+          no_speech_threshold=0.6,
+          compression_ratio_threshold=2.4,
+          condition_on_previous_text=True,
+          prompt_reset_on_temperature=0.5,
+          temperatures=[0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
           initial_prompt=initial_prompt,
-          prefix=prefix,
-          suppress_blank=suppress_blank,
-          suppress_tokens=suppress_tokens,
-          without_timestamps=without_timestamps,
-          max_initial_timestamp=max_initial_timestamp,
-          word_timestamps=word_timestamps,
-          prepend_punctuations=prepend_punctuations,
-          append_punctuations=append_punctuations,
+          prefix=None,
+          suppress_blank=True,
+          suppress_tokens=[-1],
+          without_timestamps=False,
+          max_initial_timestamp=1.0,
+          word_timestamps=False,
+          prepend_punctuations='"\'"¿([{-',
+          append_punctuations='"\'.。,，!！?？:：")]}、',
           multilingual=multilingual,
-          max_new_tokens=max_new_tokens,
-          hallucination_silence_threshold=hallucination_silence_threshold,
-          hotwords=hotwords,
+          max_new_tokens=None,
+          hallucination_silence_threshold=None,
+          hotwords=None,
         ),
         vad_options=vad_parameters,
       )
       return [], empty_info
-    features = self.feature_extractor(audio, chunk_length=chunk_length)
+    features = self.feature_extractor(audio)
 
     encoder_output: ctranslate2.StorageView | None = None
     all_language_probs: list[tuple[str, float]] | None = None
@@ -385,8 +292,8 @@ class WhisperModel:
           all_language_probs,
         ) = self.detect_language(
           features=features[..., seek:],
-          language_detection_segments=language_detection_segments,
-          language_detection_threshold=language_detection_threshold or 0.5,
+          language_detection_segments=1,
+          language_detection_threshold=0.5,
         )
 
         self.logger.info(
@@ -414,36 +321,34 @@ class WhisperModel:
     from .utils import get_suppressed_tokens
 
     options = TranscriptionOptions(
-      beam_size=beam_size,
-      best_of=best_of,
-      patience=patience,
-      length_penalty=length_penalty,
-      repetition_penalty=repetition_penalty,
-      no_repeat_ngram_size=no_repeat_ngram_size,
-      log_prob_threshold=log_prob_threshold,
-      no_speech_threshold=no_speech_threshold,
-      compression_ratio_threshold=compression_ratio_threshold,
-      condition_on_previous_text=condition_on_previous_text,
-      prompt_reset_on_temperature=prompt_reset_on_temperature,
-      temperatures=list(temperature) if isinstance(temperature, (list, tuple)) else [temperature],
+      beam_size=5,
+      best_of=5,
+      patience=1,
+      length_penalty=1,
+      repetition_penalty=1,
+      no_repeat_ngram_size=0,
+      log_prob_threshold=-1.0,
+      no_speech_threshold=0.6,
+      compression_ratio_threshold=2.4,
+      condition_on_previous_text=True,
+      prompt_reset_on_temperature=0.5,
+      temperatures=[0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
       initial_prompt=initial_prompt,
-      prefix=prefix,
-      suppress_blank=suppress_blank,
-      suppress_tokens=(
-        get_suppressed_tokens(tokenizer, suppress_tokens) if suppress_tokens else suppress_tokens
-      ),
-      without_timestamps=without_timestamps,
-      max_initial_timestamp=max_initial_timestamp,
-      word_timestamps=word_timestamps,
-      prepend_punctuations=prepend_punctuations,
-      append_punctuations=append_punctuations,
+      prefix=None,
+      suppress_blank=True,
+      suppress_tokens=get_suppressed_tokens(tokenizer, [-1]),
+      without_timestamps=False,
+      max_initial_timestamp=1.0,
+      word_timestamps=False,
+      prepend_punctuations='"\'"¿([{-',
+      append_punctuations='"\'.。,，!！?？:：")]}、',
       multilingual=multilingual,
-      max_new_tokens=max_new_tokens,
-      hallucination_silence_threshold=hallucination_silence_threshold,
-      hotwords=hotwords,
+      max_new_tokens=None,
+      hallucination_silence_threshold=None,
+      hotwords=None,
     )
 
-    segments = self.generate_segments(features, tokenizer, options, log_progress, encoder_output)
+    segments = self.generate_segments(features, tokenizer, options, False, encoder_output)
 
     if speech_chunks:
       segments = restore_speech_timestamps(segments, speech_chunks, sampling_rate)
