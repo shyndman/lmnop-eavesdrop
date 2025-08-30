@@ -9,7 +9,7 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
-    
+
     steps:
       - uses: actions/checkout@v4
 
@@ -22,9 +22,6 @@ jobs:
         uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
-
-      - name: Install dependencies
-        run: uv sync --locked --all-extras --all-groups
 
       - name: Run Ruff
         uses: astral-sh/ruff-action@v1
