@@ -130,27 +130,29 @@ class ServeClientFasterWhisper(ServeClientBase):
       await asyncio.to_thread(self.create_model, device)
     except Exception:
       self.logger.exception("Failed to load model")
+      if self.websocket:
+        await self.websocket.send(
+          json.dumps(
+            {
+              "uid": self.client_uid,
+              "status": "ERROR",
+              "message": f"Failed to load model: {str(self.model_size_or_path)}",
+            }
+          )
+        )
+        await self.websocket.close()
+      return
+
+    if self.websocket:
       await self.websocket.send(
         json.dumps(
           {
             "uid": self.client_uid,
-            "status": "ERROR",
-            "message": f"Failed to load model: {str(self.model_size_or_path)}",
+            "message": self.SERVER_READY,
+            "backend": "faster_whisper",
           }
         )
       )
-      await self.websocket.close()
-      return
-
-    await self.websocket.send(
-      json.dumps(
-        {
-          "uid": self.client_uid,
-          "message": self.SERVER_READY,
-          "backend": "faster_whisper",
-        }
-      )
-    )
 
   def create_model(self, device):
     """
@@ -268,15 +270,16 @@ class ServeClientFasterWhisper(ServeClientBase):
         language=self.language,
         probability=info.language_probability,
       )
-      await self.websocket.send(
-        json.dumps(
-          {
-            "uid": self.client_uid,
-            "language": self.language,
-            "language_prob": info.language_probability,
-          }
+      if self.websocket:
+        await self.websocket.send(
+          json.dumps(
+            {
+              "uid": self.client_uid,
+              "language": self.language,
+              "language_prob": info.language_probability,
+            }
+          )
         )
-      )
     else:
       self.logger.debug(
         "Language probability <= 0.5, not setting language",

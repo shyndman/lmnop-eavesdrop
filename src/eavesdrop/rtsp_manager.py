@@ -70,9 +70,9 @@ class RTSPClientManager:
 
       return True
 
-    except Exception as e:
+    except Exception:
       self.failed_streams += 1
-      self.logger.error("Failed to add RTSP stream", stream=stream_name, error=str(e))
+      self.logger.exception("Failed to add RTSP stream", stream=stream_name)
 
       # Clean up partial state
       self.clients.pop(stream_name, None)
@@ -124,8 +124,8 @@ class RTSPClientManager:
 
       return True
 
-    except Exception as e:
-      self.logger.error("Failed to remove RTSP stream", stream=stream_name, error=str(e))
+    except Exception:
+      self.logger.exception("Failed to remove RTSP stream", stream=stream_name)
       return False
 
   async def start_all_streams(self, stream_config: dict[str, str]) -> None:
@@ -147,8 +147,8 @@ class RTSPClientManager:
           successful_streams.append(stream_name)
         else:
           failed_streams.append(stream_name)
-      except Exception as e:
-        self.logger.error("Exception adding stream", stream=stream_name, error=str(e))
+      except Exception:
+        self.logger.exception("Exception adding stream", stream=stream_name)
         failed_streams.append(stream_name)
 
     self.logger.info(

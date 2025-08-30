@@ -135,8 +135,8 @@ class RTSPClient:
     except asyncio.CancelledError:
       self.logger.debug("Audio reading cancelled")
       raise
-    except Exception as e:
-      self.logger.error("Error reading audio stream", error=str(e))
+    except Exception:
+      self.logger.exception("Error reading audio stream")
       raise
     finally:
       self.logger.info(
@@ -216,8 +216,8 @@ class RTSPClient:
     except asyncio.CancelledError:
       self.logger.debug("Error monitoring cancelled")
       raise
-    except Exception as e:
-      self.logger.error("Error monitoring FFmpeg stderr", error=str(e))
+    except Exception:
+      self.logger.exception("Error monitoring FFmpeg stderr")
       raise
 
   async def run(self) -> None:
@@ -281,8 +281,8 @@ class RTSPClient:
 
           # Clean up process reference
           self.process = None
-        except Exception as e:
-          self.logger.error("RTSP connection attempt failed", error=str(e))
+        except Exception:
+          self.logger.exception("RTSP connection attempt failed")
           self.process = None
 
           # Only reconnect if we haven't been stopped
@@ -355,8 +355,8 @@ class RTSPClient:
     except ProcessLookupError:
       # Process was already dead
       self.logger.debug("FFmpeg process was already dead during cleanup")
-    except Exception as e:
-      self.logger.error("Error during process cleanup", error=str(e))
+    except Exception:
+      self.logger.exception("Error during process cleanup")
     finally:
       self.process = None
 
@@ -580,8 +580,8 @@ class RTSPTranscriptionClient(RTSPClient):
           self.process = None
           self.transcription_task = None
 
-        except Exception as e:
-          self.logger.error("RTSP connection attempt failed", error=str(e))
+        except Exception:
+          self.logger.exception("RTSP connection attempt failed")
           self.process = None
           self.transcription_task = None
 
@@ -626,10 +626,10 @@ class RTSPTranscriptionClient(RTSPClient):
         except asyncio.CancelledError:
           self.logger.debug("Transcription worker cancelled")
           break
-        except Exception as e:
+        except Exception:
           self.transcription_errors += 1
-          self.logger.error(
-            "Error in transcription worker", error=str(e), error_count=self.transcription_errors
+          self.logger.exception(
+            "Error in transcription worker", error_count=self.transcription_errors
           )
           # Brief pause to avoid tight error loops
           await asyncio.sleep(0.1)
@@ -639,8 +639,8 @@ class RTSPTranscriptionClient(RTSPClient):
       if remaining_audio is not None:
         await self._transcribe_audio_chunk(remaining_audio)
 
-    except Exception as e:
-      self.logger.exception("Fatal error in transcription worker", error=str(e))
+    except Exception:
+      self.logger.exception("Fatal error in transcription worker")
     finally:
       self.logger.info(
         "Transcription worker stopped",
@@ -696,9 +696,9 @@ class RTSPTranscriptionClient(RTSPClient):
           errors=self.transcription_errors,
         )
 
-    except Exception as e:
+    except Exception:
       self.transcription_errors += 1
-      self.logger.error("Failed to transcribe audio chunk", error=str(e))
+      self.logger.exception("Failed to transcribe audio chunk")
 
   async def stop(self) -> None:
     """

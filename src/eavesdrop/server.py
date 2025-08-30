@@ -397,8 +397,8 @@ class TranscriptionServer:
 
       return streams
 
-    except Exception as e:
-      self.logger.error("Failed to load RTSP configuration", config_path=config_path, error=str(e))
+    except Exception:
+      self.logger.exception("Failed to load RTSP configuration", config_path=config_path)
       # Return empty dict to continue without RTSP streams
       return {}
 
@@ -441,11 +441,10 @@ class TranscriptionServer:
         "same_output_threshold": 10,
       }
 
-      # Create model manager
-      model_manager = RTSPModelManager(backend_params)
-
-      # Create RTSP client manager
-      self.rtsp_client_manager = RTSPClientManager(model_manager)
+      self.logger.debug(
+        "RTSP backend parameters", params=backend_params
+      )  # Create RTSP client manager
+      self.rtsp_client_manager = RTSPClientManager(RTSPModelManager(backend_params))
 
       # Start all configured streams
       await self.rtsp_client_manager.start_all_streams(rtsp_streams)
@@ -455,8 +454,8 @@ class TranscriptionServer:
         active_streams=self.rtsp_client_manager.get_stream_count(),
       )
 
-    except Exception as e:
-      self.logger.error("Failed to initialize RTSP system", error=str(e))
+    except Exception:
+      self.logger.exception("Failed to initialize RTSP system")
       # Clean up on failure
       self.rtsp_client_manager = None
 
@@ -481,8 +480,8 @@ class TranscriptionServer:
 
     except (KeyboardInterrupt, SystemExit):
       self.logger.info("Shutdown signal received")
-    except Exception as e:
-      self.logger.error("Error in server execution", error=str(e))
+    except Exception:
+      self.logger.exception("Error in server execution")
     finally:
       # Clean up RTSP streams
       if self.rtsp_client_manager:

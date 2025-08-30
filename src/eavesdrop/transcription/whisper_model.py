@@ -174,8 +174,9 @@ class WhisperModel:
         return cast(FeatureExtractorConfig, config)
       valid_keys = signature(FeatureExtractor.__init__).parameters.keys()
       return cast(FeatureExtractorConfig, {k: v for k, v in config.items() if k in valid_keys})
-    except json.JSONDecodeError as e:
-      self.logger.warning("Could not load preprocessor config: %s", e)
+    except json.JSONDecodeError:
+      self.logger.exception("Could not load preprocessor config")
+      raise
 
     return cast(FeatureExtractorConfig, config)
 

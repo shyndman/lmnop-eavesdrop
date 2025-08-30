@@ -97,9 +97,9 @@ class RTSPModelManager:
 
       return transcriber
 
-    except Exception as e:
-      self.logger.error("Failed to create transcriber", error=str(e))
-      raise Exception(f"Model creation failed: {e}")
+    except Exception:
+      self.logger.exception("Failed to create transcriber")
+      raise Exception("Model creation failed")
 
   async def cleanup(self) -> None:
     """

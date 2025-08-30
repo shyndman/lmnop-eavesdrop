@@ -56,9 +56,9 @@ class RTSPConfig:
         config_data = yaml.safe_load(file)
 
     except yaml.YAMLError as e:
-      raise ValueError(f"Invalid YAML in configuration file: {e}")
+      raise ValueError(f"Invalid YAML in configuration file: {e}") from e
     except Exception as e:
-      raise ValueError(f"Error reading configuration file: {e}")
+      raise ValueError(f"Error reading configuration file: {e}") from e
 
     # Validate configuration structure
     if config_data is None:

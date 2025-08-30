@@ -17,8 +17,8 @@ class ServeClientBase(object):
 
   client_uid: str
   """A unique identifier for the client."""
-  websocket: ServerConnection
-  """The WebSocket connection for the client."""
+  websocket: ServerConnection | None
+  """The WebSocket connection for the client. None for RTSP clients."""
   send_last_n_segments: int
   """Number of most recent segments to send to the client."""
   no_speech_thresh: float
@@ -260,16 +260,17 @@ class ServeClientBase(object):
         segments (list): A list of transcription segments to be sent to the client.
     """
     try:
-      await self.websocket.send(
-        json.dumps(
-          {
-            "uid": self.client_uid,
-            "segments": segments,
-          }
+      if self.websocket:
+        await self.websocket.send(
+          json.dumps(
+            {
+              "uid": self.client_uid,
+              "segments": segments,
+            }
+          )
         )
-      )
-    except Exception as e:
-      self.logger.error("Sending data to client", error=str(e))
+    except Exception:
+      self.logger.exception("Sending data to client")
 
   async def disconnect(self):
     """
@@ -279,7 +280,8 @@ class ServeClientBase(object):
     that the transcription service is disconnecting gracefully.
 
     """
-    await self.websocket.send(json.dumps({"uid": self.client_uid, "message": self.DISCONNECT}))
+    if self.websocket:
+      await self.websocket.send(json.dumps({"uid": self.client_uid, "message": self.DISCONNECT}))
 
   def cleanup(self):
     """
