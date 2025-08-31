@@ -1,4 +1,7 @@
 #!/bin/bash
+RUN_ID=$(python3 -c "import uuid; print(uuid.uuid4())")
+echo "ENTRYPOINT START - Run ID: $RUN_ID" >&2
+
 source /opt/conda/etc/profile.d/conda.sh
 
 echo "!!! !!! ENVIRONMENT PRE ACTIVATION !!! !!!"
