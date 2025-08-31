@@ -159,7 +159,7 @@ def setup_logging(
   """Configure structured logging for the application."""
 
   # Configure processors
-  processors: list[Processor] = [
+  shared_processors: list[Processor] = [
     structlog.stdlib.filter_by_level,
     structlog.stdlib.add_logger_name,
     structlog.stdlib.add_log_level,
@@ -173,12 +173,12 @@ def setup_logging(
 
   # Add correlation ID if provided
   if correlation_id:
-    processors.insert(0, structlog.contextvars.merge_contextvars)
+    shared_processors.insert(0, structlog.contextvars.merge_contextvars)
     structlog.contextvars.bind_contextvars(correlation_id=correlation_id)
 
   # Configure output format
   if json_output:
-    processors.append(structlog.processors.JSONRenderer())
+    log_renderer = structlog.processors.JSONRenderer()
   else:
     event_key: str = "event"
     timestamp_key: str = "timestamp"
@@ -191,68 +191,84 @@ def setup_logging(
       postfix="]",
     )
 
-    processors.append(
-      ConsoleRenderer(
-        colors=True,
-        columns=[
-          # Default formatter
-          Column(
-            "",
-            KeyValueColumnFormatter(
-              key_style=None,
-              value_style="",
-              reset_style=RESET_ALL,
-              value_repr=str,
-            ),
+    log_renderer = ConsoleRenderer(
+      colors=True,
+      columns=[
+        # Default formatter
+        Column(
+          "",
+          KeyValueColumnFormatter(
+            key_style=None,
+            value_style="",
+            reset_style=RESET_ALL,
+            value_repr=str,
           ),
-          Column(
-            timestamp_key,
-            KeyValueColumnFormatter(
-              key_style=None,
-              value_style=DIM,
-              reset_style=RESET_ALL,
-              value_repr=str,
-            ),
+        ),
+        Column(
+          timestamp_key,
+          KeyValueColumnFormatter(
+            key_style=None,
+            value_style=DIM,
+            reset_style=RESET_ALL,
+            value_repr=str,
           ),
-          Column(
-            "level",
-            KeyValueColumnFormatter(
-              key_style=None,
-              value_style="",
-              reset_style=RESET_ALL,
-              value_repr=str,
-            ),
+        ),
+        Column(
+          "level",
+          KeyValueColumnFormatter(
+            key_style=None,
+            value_style="",
+            reset_style=RESET_ALL,
+            value_repr=str,
           ),
-          Column(
-            event_key,
-            KeyValueColumnFormatter(
-              key_style=None,
-              value_style=BRIGHT,
-              reset_style=RESET_ALL,
-              value_repr=str,
-              width=30,
-            ),
+        ),
+        Column(
+          event_key,
+          KeyValueColumnFormatter(
+            key_style=None,
+            value_style=BRIGHT,
+            reset_style=RESET_ALL,
+            value_repr=str,
+            width=30,
           ),
-          Column("logger", logger_name_formatter),
-          Column("logger_name", logger_name_formatter),
-        ],
-      )
+        ),
+        Column("logger", logger_name_formatter),
+        Column("logger_name", logger_name_formatter),
+      ],
     )
 
   # Configure structlog
   structlog.configure(
-    processors=processors,
+    processors=shared_processors + [structlog.stdlib.ProcessorFormatter.wrap_for_formatter],
     wrapper_class=structlog.stdlib.BoundLogger,
     logger_factory=structlog.stdlib.LoggerFactory(),
     cache_logger_on_first_use=True,
   )
 
-  # Configure standard library logging
-  log_level = getattr(logging, level.upper(), logging.WARN)
-  logging.basicConfig(
-    format="%(message)s",
-    level=log_level,
+  formatter = structlog.stdlib.ProcessorFormatter(
+    foreign_pre_chain=shared_processors,
+    processors=[
+      structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+      log_renderer,
+    ],
   )
+
+  # setup logging
+  handler = logging.StreamHandler()
+  handler.setFormatter(formatter)
+  root_logger = logging.getLogger()
+  root_logger.addHandler(handler)
+  root_logger.setLevel(level)
+
+  # Propogate the logs of some libraries
+  for liblog in [logging.getLogger(_liblog) for _liblog in ["websockets"]]:
+    liblog.handlers.clear()
+    liblog.propagate = True
+
+  # And suppress the logs of others
+  # for liblog in [logging.getLogger(_liblog) for _liblog in ["websockets"]]:
+  #   liblog.handlers.clear()
+  #   liblog.propagate = False
 
 
 def get_logger(name: str | None = None) -> structlog.stdlib.BoundLogger:
