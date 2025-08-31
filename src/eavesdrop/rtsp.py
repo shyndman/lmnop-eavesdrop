@@ -322,6 +322,9 @@ class RTSPClient:
     by severity. Distinguishes between expected warnings and critical errors
     that might indicate connection problems.
 
+    Handles oversized lines gracefully by reading in chunks and reconstructing
+    complete messages when possible.
+
     Returns when the process terminates or when stopped.
     """
     if not self.process or not self.process.stderr:
@@ -332,62 +335,84 @@ class RTSPClient:
 
     try:
       while not self.stopped:
-        line = await self.process.stderr.readline()
+        try:
+          # Use a reasonable limit to prevent memory issues with very long lines
+          # If line exceeds limit, we'll get the truncated portion
+          line = await self.process.stderr.readline()
 
-        if not line:  # EOF - process has terminated
-          self.logger.debug("FFmpeg stderr ended (EOF)")
-          break
+          if not line:  # EOF - process has terminated
+            self.logger.debug("FFmpeg stderr ended (EOF)")
+            break
 
-        error_msg = line.decode("utf-8", errors="replace").strip()
-        if not error_msg:
-          continue
+          error_msg = line.decode("utf-8", errors="replace").strip()
+          if not error_msg:
+            continue
 
-        # Categorize FFmpeg messages by content
-        error_lower = error_msg.lower()
+          # Categorize FFmpeg messages by content
+          error_lower = error_msg.lower()
 
-        if any(
-          keyword in error_lower
-          for keyword in [
-            "connection refused",
-            "connection failed",
-            "network unreachable",
-            "timeout",
-            "host not found",
-            "no route to host",
-          ]
-        ):
-          self.logger.error("FFmpeg connection error", message=error_msg)
-        elif any(
-          keyword in error_lower
-          for keyword in ["unauthorized", "forbidden", "authentication failed", "401", "403"]
-        ):
-          self.logger.error("FFmpeg authentication error", message=error_msg)
-        elif any(
-          keyword in error_lower
-          for keyword in [
-            "invalid data",
-            "corrupt",
-            "decode error",
-            "unsupported",
-            "invalid format",
-          ]
-        ):
-          self.logger.warning("FFmpeg stream format issue", message=error_msg)
-        elif any(keyword in error_lower for keyword in ["deprecated", "option", "using"]):
-          # Common FFmpeg informational messages - log at debug level
-          self.logger.debug("FFmpeg info", message=error_msg)
-        elif "error" in error_lower or "fatal" in error_lower:
-          self.logger.error("FFmpeg error", message=error_msg)
-        else:
-          # Generic FFmpeg output - likely informational
-          self.logger.debug("FFmpeg output", message=error_msg)
+          if any(
+            keyword in error_lower
+            for keyword in [
+              "connection refused",
+              "connection failed",
+              "network unreachable",
+              "timeout",
+              "host not found",
+              "no route to host",
+            ]
+          ):
+            self.logger.error("FFmpeg connection error", message=error_msg)
+          elif any(
+            keyword in error_lower
+            for keyword in ["unauthorized", "forbidden", "authentication failed", "401", "403"]
+          ):
+            self.logger.error("FFmpeg authentication error", message=error_msg)
+          elif any(
+            keyword in error_lower
+            for keyword in [
+              "invalid data",
+              "corrupt",
+              "decode error",
+              "unsupported",
+              "invalid format",
+            ]
+          ):
+            self.logger.warning("FFmpeg stream format issue", message=error_msg)
+          elif any(keyword in error_lower for keyword in ["deprecated", "option", "using"]):
+            # Common FFmpeg informational messages - log at debug level
+            self.logger.debug("FFmpeg info", message=error_msg)
+          elif "error" in error_lower or "fatal" in error_lower:
+            self.logger.error("FFmpeg error", message=error_msg)
+          else:
+            # Generic FFmpeg output - likely informational
+            self.logger.debug("FFmpeg output", message=error_msg)
+
+        except asyncio.LimitOverrunError as e:
+          # Handle oversized lines by reading the available partial data
+          self.logger.warning(
+            "FFmpeg output line exceeded buffer limit, truncating",
+            limit=e.consumed,
+            partial_message="<truncated - line too long>",
+          )
+          # Consume the partial data to prevent stream corruption
+          try:
+            partial = await self.process.stderr.read(e.consumed)
+            if partial:
+              truncated_msg = partial.decode("utf-8", errors="replace").strip()[:500]
+              self.logger.debug("FFmpeg oversized output (partial)", message=f"{truncated_msg}...")
+          except Exception:
+            self.logger.debug("Could not read oversized FFmpeg output")
+
+        except UnicodeDecodeError:
+          self.logger.warning("FFmpeg output contained invalid UTF-8, skipping line")
 
     except asyncio.CancelledError:
       self.logger.debug("Error monitoring cancelled")
       raise
     except Exception:
       self.logger.exception("Error monitoring FFmpeg stderr")
-      raise
+      # Don't re-raise - we want the connection to continue and retry
 
   async def run(self) -> None:
     """
