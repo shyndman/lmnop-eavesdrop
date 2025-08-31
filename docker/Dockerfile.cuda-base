@@ -1,11 +1,22 @@
-FROM pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime
+FROM pytorch/pytorch:2.6.0-cuda12.4-cudnn9-devel
 
-RUN apt-get update \
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN --mount=type=cache,target=/var/cache/apt \
+    --mount=type=cache,target=/var/lib/apt \
+    apt-get update \
     && apt-get install -y --no-install-recommends \
-      git cmake build-essential ffmpeg libopenblas-dev vim \
-      wget portaudio19-dev \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+      ffmpeg portaudio19-dev \
+    && apt-get clean
+
+# Clean up apt lists in final image layer - separate RUN to preserve cache mounts
+# (cache mounts only exist during the specific RUN that declares them)
+RUN rm -rf /var/lib/apt/lists/*
+
+# Create py_3.12 environment to match ROCm setup (conda already installed in base image)
+RUN conda create -n py_3.12 python=3.12 -y
+
+SHELL ["conda", "run", "-n", "py_3.12", "/bin/bash", "-c"]
 
 # Torch audio for CUDA 12.4
 RUN pip install 'torchaudio==2.6.0' --index-url https://download.pytorch.org/whl/cu124
