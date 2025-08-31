@@ -9,3 +9,6 @@ CACHE_PATH = "/app/.cache/eavesdrop/"
 
 SINGLE_MODEL = True
 """Whether to use single shared model instance - hardcoded constant."""
+
+TASK = "transcribe"
+"""Transcription task type - hardcoded constant."""

@@ -15,7 +15,7 @@ from faster_whisper.vad import VadOptions
 from huggingface_hub import snapshot_download
 
 from ..config import TranscriptionConfig
-from ..constants import CACHE_PATH, SINGLE_MODEL
+from ..constants import CACHE_PATH, SINGLE_MODEL, TASK
 from ..logs import get_logger
 from ..transcription.models import Segment, TranscriptionInfo
 from ..transcription.whisper_model import WhisperModel
@@ -275,7 +275,6 @@ class StreamingTranscriptionProcessor:
       self.logger.debug(
         "Starting transcription",
         language=self.language,
-        task=self.config.task,
         vad=self.config.use_vad,
       )
 
@@ -283,7 +282,7 @@ class StreamingTranscriptionProcessor:
         input_sample,
         initial_prompt=self.config.initial_prompt,
         language=self.language,
-        task=self.config.task,
+        task=TASK,
         vad_filter=self.config.use_vad,
         vad_parameters=self.vad_parameters,
       )

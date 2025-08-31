@@ -81,7 +81,6 @@ class TranscriptionServer:
         use_vad=options.get("use_vad", self.transcription_config.use_vad),
         clip_audio=options.get("clip_audio", self.transcription_config.clip_audio),
         model=options.get("model", self.transcription_config.model),
-        task=options.get("task", self.transcription_config.task),
         language=options.get("language", self.transcription_config.language),
         initial_prompt=options.get("initial_prompt", self.transcription_config.initial_prompt),
         vad_parameters=options.get("vad_parameters", self.transcription_config.vad_parameters),

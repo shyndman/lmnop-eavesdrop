@@ -7,7 +7,7 @@ import torch
 import yaml
 from faster_whisper.vad import VadOptions
 
-from .constants import CACHE_PATH, SINGLE_MODEL
+from .constants import CACHE_PATH, SINGLE_MODEL, TASK
 from .logs import get_logger
 
 
@@ -34,9 +34,6 @@ class TranscriptionConfig:
   # Model configuration
   model: str
   """Whisper model size or path."""
-
-  task: str
-  """The task type, e.g., "transcribe"."""
 
   language: str | None
   """Language for transcription."""
@@ -165,11 +162,20 @@ class EavesdropConfig:
 
     # Extract GPU configuration
     gpu_name = transcription_data.get("gpu_name")
-    device_index = transcription_data.get("device_index", 0)
 
-    # Validate and compute device_index from gpu_name if provided
+    # Reject device_index in config - it should be computed from gpu_name
+    if "device_index" in transcription_data:
+      raise ValueError(
+        "device_index cannot be specified in config file. "
+        "Use 'gpu_name' instead to specify the GPU device, and device_index will be "
+        "computed automatically."
+      )
+
+    # Compute device_index from gpu_name if provided, otherwise use default
     if gpu_name:
       device_index = self._resolve_gpu_device_index(gpu_name)
+    else:
+      device_index = 0  # Default to first GPU
 
     # Validate range constraints
     send_last_n_segments = transcription_data.get("send_last_n_segments", 10)
@@ -195,12 +201,6 @@ class EavesdropConfig:
         "This controls how many repeated outputs are required before considering a segment valid."
       )
 
-    if device_index < 0:
-      raise ValueError(
-        f"device_index must be >= 0, got {device_index}. "
-        "Use 0 for the first GPU, 1 for the second, etc."
-      )
-
     # Create TranscriptionConfig with validated values
     return TranscriptionConfig(
       send_last_n_segments=send_last_n_segments,
@@ -209,7 +209,6 @@ class EavesdropConfig:
       use_vad=transcription_data.get("use_vad", True),
       clip_audio=transcription_data.get("clip_audio", False),
       model=final_model,
-      task=transcription_data.get("task", "transcribe"),
       language=transcription_data.get("language"),
       initial_prompt=transcription_data.get("initial_prompt"),
       vad_parameters=transcription_data.get("vad_parameters"),
@@ -296,7 +295,7 @@ class EavesdropConfig:
     # Transcription settings
     self.logger.info("TRANSCRIPTION SETTINGS:")
     self.logger.info(f"  Model: {transcription_config.model}")
-    self.logger.info(f"  Task: {transcription_config.task}")
+    self.logger.info(f"  Task: {TASK} (constant)")
     self.logger.info(f"  Language: {transcription_config.language or 'auto-detect'}")
     self.logger.info(f"  Use VAD: {transcription_config.use_vad}")
     self.logger.info(f"  Device Index: {transcription_config.device_index}")
