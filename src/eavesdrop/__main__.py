@@ -110,7 +110,6 @@ async def main():
   logger.info(
     "Starting Eavesdrop Server",
     port=args.port,
-    max_clients=args.max_clients,
     cache_path=args.cache_path,
     debug_audio_enabled=bool(args.debug_audio_path),
   )
