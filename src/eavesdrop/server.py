@@ -21,7 +21,7 @@ class TranscriptionServer:
   RATE = 16000
 
   def __init__(self):
-    self.client_manager = WebSocketClientManager(10, 60)
+    self.client_manager = WebSocketClientManager()
     self.no_voice_activity_chunks = 0
     self.use_vad = True
     self.single_model = False
@@ -170,10 +170,6 @@ class TranscriptionServer:
 
       self.use_vad = options.get("use_vad")
 
-      if await self.client_manager.is_server_full(websocket, options):
-        await websocket.close()
-        return None
-
       client = await self.initialize_client(
         websocket,
         options,
@@ -242,8 +238,6 @@ class TranscriptionServer:
     port=9090,
     faster_whisper_custom_model_path=None,
     single_model=False,
-    max_clients=4,
-    max_connection_time=600,
     cache_path="~/.cache/eavesdrop/",
     debug_audio_path=None,
     gpu_name: str | None = None,
@@ -257,7 +251,7 @@ class TranscriptionServer:
     self.debug_audio_path = debug_audio_path
     self.debug_audio_files = {}  # websocket -> (file_handle, filename)
 
-    self.client_manager = WebSocketClientManager(max_clients, max_connection_time)
+    self.client_manager = WebSocketClientManager()
     if faster_whisper_custom_model_path is not None and not os.path.exists(
       faster_whisper_custom_model_path
     ):

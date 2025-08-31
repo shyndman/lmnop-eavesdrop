@@ -62,18 +62,6 @@ async def main():
     "custom model, passed using -fw. (Env: EAVESDROP_NO_SINGLE_MODEL)",
   )
   parser.add_argument(
-    "--max_clients",
-    type=int,
-    default=get_env_or_default("EAVESDROP_MAX_CLIENTS", 4, int),
-    help="Maximum clients supported by the server. (Env: EAVESDROP_MAX_CLIENTS)",
-  )
-  parser.add_argument(
-    "--max_connection_time",
-    type=int,
-    default=get_env_or_default("EAVESDROP_MAX_CONNECTION_TIME", 300, int),
-    help="Maximum connection time in seconds. (Env: EAVESDROP_MAX_CONNECTION_TIME)",
-  )
-  parser.add_argument(
     "--cache_path",
     "-c",
     type=str,
@@ -133,8 +121,6 @@ async def main():
     port=args.port,
     faster_whisper_custom_model_path=args.faster_whisper_custom_model_path,
     single_model=not args.no_single_model,
-    max_clients=args.max_clients,
-    max_connection_time=args.max_connection_time,
     cache_path=args.cache_path,
     debug_audio_path=args.debug_audio_path,
     gpu_name=args.gpu_name,
