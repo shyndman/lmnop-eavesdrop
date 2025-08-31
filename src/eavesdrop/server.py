@@ -5,8 +5,7 @@ import os
 import numpy as np
 from websockets.exceptions import ConnectionClosed, InvalidMessage
 
-from .config import RTSPConfig
-from .gpu import resolve_gpu_index
+from .config import EavesdropConfig
 from .logs import get_logger
 from .rtsp_manager import RTSPClientManager
 from .streaming import (
@@ -23,57 +22,78 @@ class TranscriptionServer:
   def __init__(self):
     self.client_manager = WebSocketClientManager()
     self.no_voice_activity_chunks = 0
-    self.use_vad = True
-    self.single_model = False
     self.logger = get_logger("transcription_server")
 
     # RTSP-related components
     self.rtsp_client_manager: RTSPClientManager | None = None
 
-  async def initialize_client(
-    self,
-    websocket,
-    options,
-    faster_whisper_custom_model_path,
-  ):
+  async def initialize_client(self, websocket, options):
     self.logger.debug(f"initialize_client: Starting initialization for client {options['uid']}")
 
     try:
       self.logger.debug("initialize_client: Initializing faster_whisper client")
 
-      if faster_whisper_custom_model_path is not None:
-        self.logger.info(
-          f"initialize_client: Using custom model {faster_whisper_custom_model_path}"
+      # Validate that clients cannot override immutable settings
+      if "cache_path" in options:
+        error_msg = (
+          "WebSocket clients cannot override 'cache_path' - this is a server constant. "
+          "Remove this option from your connection request."
         )
-        options["model"] = faster_whisper_custom_model_path
+        self.logger.error(
+          "Client attempted to override immutable setting",
+          client_uid=options["uid"],
+          setting="cache_path",
+        )
+        await websocket.send(json.dumps({"error": error_msg}))
+        await websocket.close()
+        return None
 
-      self.logger.debug("initialize_client: Creating streaming client")
+      if "single_model" in options:
+        error_msg = (
+          "WebSocket clients cannot override 'single_model' - this is a server constant. "
+          "Remove this option from your connection request."
+        )
+        self.logger.error(
+          "Client attempted to override immutable setting",
+          client_uid=options["uid"],
+          setting="single_model",
+        )
+        await websocket.send(json.dumps({"error": error_msg}))
+        await websocket.close()
+        return None
 
+      # Use config transcription settings as defaults, allow most overrides
       # Create configurations for the streaming client
-      buffer_config = BufferConfig(clip_audio=options.get("clip_audio", False))
+      buffer_config = BufferConfig(
+        clip_audio=options.get("clip_audio", self.transcription_config.clip_audio)
+      )
 
       transcription_config = TranscriptionConfig(
-        send_last_n_segments=options.get("send_last_n_segments", 10),
-        no_speech_thresh=options.get("no_speech_thresh", 0.45),
-        same_output_threshold=options.get("same_output_threshold", 10),
-        use_vad=self.use_vad,
-        clip_audio=options.get("clip_audio", False),
-        model=options["model"],
-        task=options["task"],
-        language=options["language"],
-        initial_prompt=options.get("initial_prompt"),
-        vad_parameters=options.get("vad_parameters"),
-        single_model=self.single_model,
-        cache_path=self.cache_path,
-        device_index=self.device_index,
+        send_last_n_segments=options.get(
+          "send_last_n_segments", self.transcription_config.send_last_n_segments
+        ),
+        no_speech_thresh=options.get(
+          "no_speech_thresh", self.transcription_config.no_speech_thresh
+        ),
+        same_output_threshold=options.get(
+          "same_output_threshold", self.transcription_config.same_output_threshold
+        ),
+        use_vad=options.get("use_vad", self.transcription_config.use_vad),
+        clip_audio=options.get("clip_audio", self.transcription_config.clip_audio),
+        model=options.get("model", self.transcription_config.model),
+        task=options.get("task", self.transcription_config.task),
+        language=options.get("language", self.transcription_config.language),
+        initial_prompt=options.get("initial_prompt", self.transcription_config.initial_prompt),
+        vad_parameters=options.get("vad_parameters", self.transcription_config.vad_parameters),
+        device_index=self.transcription_config.device_index,
       )
 
       client = WebSocketStreamingClient(
         websocket=websocket,
         client_uid=options["uid"],
         get_audio_func=self.get_audio_from_websocket,
-        buffer_config=buffer_config,
         transcription_config=transcription_config,
+        buffer_config=buffer_config,
       )
 
       # Start the client and get the completion task
@@ -123,7 +143,6 @@ class TranscriptionServer:
     """
     Captures audio data to debug .wav files for analysis.
     """
-    import os
     import time
 
     import soundfile as sf
@@ -152,11 +171,7 @@ class TranscriptionServer:
     except Exception:
       self.logger.exception(f"Error writing debug audio to {filename}")
 
-  async def handle_new_connection(
-    self,
-    websocket,
-    faster_whisper_custom_model_path,
-  ):
+  async def handle_new_connection(self, websocket):
     try:
       self.logger.info("handle_new_connection: New client connected")
       options = await websocket.recv()
@@ -168,13 +183,7 @@ class TranscriptionServer:
         await websocket.close()
         return None
 
-      self.use_vad = options.get("use_vad")
-
-      client = await self.initialize_client(
-        websocket,
-        options,
-        faster_whisper_custom_model_path,
-      )
+      client = await self.initialize_client(websocket, options)
       return client
     except json.JSONDecodeError:
       self.logger.exception("handle_new_connection: Failed to decode JSON from client")
@@ -188,21 +197,14 @@ class TranscriptionServer:
       self.logger.exception("handle_new_connection: Error during new connection initialization")
       return None
 
-  async def recv_audio(
-    self,
-    websocket,
-    faster_whisper_custom_model_path=None,
-  ):
+  async def recv_audio(self, websocket):
     """
     Receive audio chunks from a client in an infinite loop.
     """
     self.logger.debug("recv_audio: Starting")
 
     self.logger.debug("recv_audio: About to handle new connection")
-    client = await self.handle_new_connection(
-      websocket,
-      faster_whisper_custom_model_path,
-    )
+    client = await self.handle_new_connection(websocket)
     if not client:
       self.logger.debug("recv_audio: handle_new_connection returned False, exiting")
       return
@@ -235,54 +237,40 @@ class TranscriptionServer:
   async def run(
     self,
     host,
+    config_path: str,
     port=9090,
-    faster_whisper_custom_model_path=None,
-    single_model=False,
-    cache_path="~/.cache/eavesdrop/",
     debug_audio_path=None,
-    gpu_name: str | None = None,
-    config: str | None = None,
   ):
     """
     Run the transcription server.
     """
-    self.device_index = resolve_gpu_index(gpu_name)
-    self.cache_path = cache_path
+    # Load and validate configuration file
+    try:
+      eavesdrop_config = EavesdropConfig(config_path)
+      rtsp_streams, self.transcription_config = eavesdrop_config.load_and_validate()
+    except ValueError as e:
+      self.logger.error("Configuration validation failed", error=str(e), config_path=config_path)
+      self.logger.error(
+        "Please check your configuration file format and values. "
+        "See documentation for valid configuration structure."
+      )
+      raise
+    except Exception as e:
+      self.logger.error("Failed to load configuration file", error=str(e), config_path=config_path)
+      self.logger.error("Ensure the configuration file exists and is readable.")
+      raise
+
     self.debug_audio_path = debug_audio_path
     self.debug_audio_files = {}  # websocket -> (file_handle, filename)
 
     self.client_manager = WebSocketClientManager()
-    if faster_whisper_custom_model_path is not None and not os.path.exists(
-      faster_whisper_custom_model_path
-    ):
-      raise ValueError(
-        f"Custom faster_whisper model '{faster_whisper_custom_model_path}' is not a valid path."
-      )
-    if single_model:
-      if faster_whisper_custom_model_path:
-        self.logger.info("Custom model option was provided. Switching to single model mode.")
-        self.single_model = True
-      else:
-        self.logger.info("Single model mode currently only works with custom models.")
 
-    # Load and initialize RTSP streams if config provided
-    if config:
-      rtsp_streams = await self._load_rtsp_config(config)
-      if rtsp_streams:
-        transcription_config = TranscriptionConfig(
-          model=faster_whisper_custom_model_path or "distil-small.en",
-          single_model=single_model,
-          cache_path=cache_path,
-          device_index=self.device_index,
-          use_vad=self.use_vad,
-        )
-        await self._initialize_rtsp_streams(rtsp_streams, transcription_config)
+    # Initialize RTSP streams if configured
+    if rtsp_streams:
+      await self._initialize_rtsp_streams(rtsp_streams, self.transcription_config)
 
     async def connection_handler(websocket):
-      await self.recv_audio(
-        websocket,
-        faster_whisper_custom_model_path=faster_whisper_custom_model_path,
-      )
+      await self.recv_audio(websocket)
 
     websocket_server = WebSocketServer(connection_handler, host, port)
 
@@ -316,36 +304,6 @@ class TranscriptionServer:
         self.logger.info(f"Debug audio capture finished: {filename}")
       except Exception:
         self.logger.exception(f"Error closing debug audio file {filename}")
-
-  async def _load_rtsp_config(self, config_path: str) -> dict[str, str]:
-    """
-    Load and validate RTSP configuration from file.
-
-    Args:
-        config_path: Path to YAML configuration file
-
-    Returns:
-        Dictionary mapping stream names to RTSP URLs
-    """
-    try:
-      rtsp_config = RTSPConfig(config_path)
-      streams = rtsp_config.load_and_validate()
-
-      if streams:
-        self.logger.info(
-          "RTSP configuration loaded successfully",
-          config_path=config_path,
-          stream_count=len(streams),
-        )
-      else:
-        self.logger.info("No RTSP streams configured")
-
-      return streams
-
-    except Exception:
-      self.logger.exception("Failed to load RTSP configuration", config_path=config_path)
-      # Return empty dict to continue without RTSP streams
-      return {}
 
   async def _initialize_rtsp_streams(
     self,

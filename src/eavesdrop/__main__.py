@@ -37,14 +37,7 @@ async def main():
     "--config",
     type=str,
     default=get_env_or_default("EAVESDROP_CONFIG", None),
-    help="Path to the RTSP streams config file. (Env: EAVESDROP_CONFIG)",
-  )
-  parser.add_argument(
-    "--faster_whisper_custom_model_path",
-    "-fw",
-    type=str,
-    default=get_env_or_default("EAVESDROP_FW_MODEL_PATH", None),
-    help="Custom Faster Whisper Model (Env: EAVESDROP_FW_MODEL_PATH)",
+    help="Path to the configuration file. (Env: EAVESDROP_CONFIG)",
   )
   parser.add_argument(
     "--omp_num_threads",
@@ -52,21 +45,6 @@ async def main():
     type=int,
     default=get_env_or_default("EAVESDROP_OMP_NUM_THREADS", 1, int),
     help="Number of threads to use for OpenMP (Env: EAVESDROP_OMP_NUM_THREADS)",
-  )
-  parser.add_argument(
-    "--no_single_model",
-    "-nsm",
-    action="store_true",
-    default=get_env_or_default("EAVESDROP_NO_SINGLE_MODEL", False, bool),
-    help="Set this if every connection should instantiate its own model. Only relevant for "
-    "custom model, passed using -fw. (Env: EAVESDROP_NO_SINGLE_MODEL)",
-  )
-  parser.add_argument(
-    "--cache_path",
-    "-c",
-    type=str,
-    default=get_env_or_default("EAVESDROP_CACHE_PATH", "/app/.cache/eavesdrop/"),
-    help="Path to cache the converted ctranslate2 models. (Env: EAVESDROP_CACHE_PATH)",
   )
   parser.add_argument(
     "--debug_audio_path",
@@ -87,16 +65,13 @@ async def main():
     default=get_env_or_default("CORRELATION_ID", None),
     help="Correlation ID for log tracing. (Env: CORRELATION_ID)",
   )
-  parser.add_argument(
-    "--gpu-name",
-    "-g",
-    type=str,
-    default=get_env_or_default("EAVESDROP_GPU_NAME", None),
-    help="GPU device name to use for inference. Run 'python -c \"import torch; "
-    "[print(f'Device {i}: {torch.cuda.get_device_name(i)}') for i in "
-    "range(torch.cuda.device_count())]\"' to see available GPUs. (Env: EAVESDROP_GPU_NAME)",
-  )
   args = parser.parse_args()
+
+  # Validate required config path
+  if not args.config:
+    parser.error(
+      "Configuration file path is required. Set --config or EAVESDROP_CONFIG environment variable."
+    )
 
   # Setup structured logging
   log_level = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -110,20 +85,16 @@ async def main():
   logger.info(
     "Starting Eavesdrop Server",
     port=args.port,
-    cache_path=args.cache_path,
+    config_path=args.config,
     debug_audio_enabled=bool(args.debug_audio_path),
   )
 
   server = TranscriptionServer()
   await server.run(
     "0.0.0.0",
+    args.config,
     port=args.port,
-    faster_whisper_custom_model_path=args.faster_whisper_custom_model_path,
-    single_model=not args.no_single_model,
-    cache_path=args.cache_path,
     debug_audio_path=args.debug_audio_path,
-    gpu_name=args.gpu_name,
-    config=args.config,
   )
 
 

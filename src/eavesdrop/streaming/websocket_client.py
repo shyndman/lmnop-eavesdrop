@@ -12,9 +12,10 @@ from collections.abc import Awaitable, Callable
 import numpy as np
 from websockets.asyncio.server import ServerConnection
 
+from ..config import TranscriptionConfig
 from ..logs import get_logger
 from .buffer import AudioStreamBuffer, BufferConfig
-from .processor import StreamingTranscriptionProcessor, TranscriptionConfig
+from .processor import StreamingTranscriptionProcessor
 from .websocket_adapters import WebSocketAudioSource, WebSocketTranscriptionSink
 
 
@@ -32,8 +33,8 @@ class WebSocketStreamingClient:
     websocket: ServerConnection,
     client_uid: str,
     get_audio_func: Callable[[ServerConnection], Awaitable[np.ndarray | bool]],
+    transcription_config: TranscriptionConfig,
     buffer_config: BufferConfig | None = None,
-    transcription_config: TranscriptionConfig | None = None,
     translation_queue: queue.Queue[dict] | None = None,
   ) -> None:
     """
@@ -44,7 +45,7 @@ class WebSocketStreamingClient:
         client_uid: Unique identifier for the client.
         get_audio_func: Function to get audio from websocket.
         buffer_config: Configuration for audio buffer behavior.
-        transcription_config: Configuration for transcription processing.
+        transcription_config: Configuration for transcription processing (required).
         translation_queue: Optional queue for translation pipeline.
     """
     self.websocket = websocket
@@ -59,7 +60,7 @@ class WebSocketStreamingClient:
     self.processor = StreamingTranscriptionProcessor(
       buffer=self.buffer,
       sink=self.transcription_sink,
-      config=transcription_config or TranscriptionConfig(),
+      config=transcription_config,
       client_uid=client_uid,
       translation_queue=translation_queue,
       logger_name=f"transcription_processor_{client_uid}",

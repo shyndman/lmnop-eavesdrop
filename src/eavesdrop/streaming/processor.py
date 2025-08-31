@@ -7,7 +7,6 @@ import os
 import queue
 import threading
 import time
-from dataclasses import dataclass
 
 import ctranslate2
 import numpy as np
@@ -15,57 +14,13 @@ import torch
 from faster_whisper.vad import VadOptions
 from huggingface_hub import snapshot_download
 
+from ..config import TranscriptionConfig
+from ..constants import CACHE_PATH, SINGLE_MODEL
 from ..logs import get_logger
 from ..transcription.models import Segment, TranscriptionInfo
 from ..transcription.whisper_model import WhisperModel
 from .buffer import AudioStreamBuffer
 from .interfaces import TranscriptionResult, TranscriptionSink
-
-
-@dataclass
-class TranscriptionConfig:
-  """Configuration for transcription processing behavior."""
-
-  # Transcription behavior
-  send_last_n_segments: int = 10
-  """Number of most recent segments to send to the client."""
-
-  no_speech_thresh: float = 0.45
-  """Segments with no speech probability above this threshold will be discarded."""
-
-  same_output_threshold: int = 10
-  """Number of repeated outputs before considering it as a valid segment."""
-
-  use_vad: bool = True
-  """Whether to use Voice Activity Detection."""
-
-  clip_audio: bool = False
-  """Whether to clip audio with no valid segments."""
-
-  # Model configuration
-  model: str = "distil-small.en"
-  """Whisper model size or path."""
-
-  task: str = "transcribe"
-  """The task type, e.g., "transcribe"."""
-
-  language: str | None = None
-  """Language for transcription."""
-
-  initial_prompt: str | None = None
-  """Initial prompt for whisper inference."""
-
-  vad_parameters: VadOptions | dict | None = None
-  """Voice Activity Detection parameters."""
-
-  single_model: bool = False
-  """Whether to use single shared model instance."""
-
-  cache_path: str = "~/.cache/eavesdrop/"
-  """Path for model caching."""
-
-  device_index: int = 0
-  """GPU device index to use."""
 
 
 class StreamingTranscriptionProcessor:
@@ -168,7 +123,7 @@ class StreamingTranscriptionProcessor:
     """Create and initialize the Whisper model."""
     self.logger.debug("Creating model", model_reference=self.config.model)
 
-    if self.config.single_model:
+    if SINGLE_MODEL:
       self.logger.debug("Using single model mode", client_uid=self.client_uid)
       with StreamingTranscriptionProcessor.SINGLE_MODEL_LOCK:
         if StreamingTranscriptionProcessor.SINGLE_MODEL is None:
@@ -201,9 +156,7 @@ class StreamingTranscriptionProcessor:
           self.logger.debug("Downloaded model is already in CTranslate2 format")
           model_to_load = local_snapshot
         else:
-          cache_root = os.path.expanduser(
-            os.path.join(self.config.cache_path, "whisper-ct2-models/")
-          )
+          cache_root = os.path.expanduser(os.path.join(CACHE_PATH, "whisper-ct2-models/"))
           os.makedirs(cache_root, exist_ok=True)
           safe_name = model_ref.replace("/", "--")
           ct2_dir = os.path.join(cache_root, safe_name)
@@ -231,7 +184,7 @@ class StreamingTranscriptionProcessor:
       device=device,
       device_index=self.config.device_index,
       compute_type=self.compute_type,
-      download_root=self.config.cache_path,
+      download_root=CACHE_PATH,
       local_files_only=False,
     )
     self.logger.debug("Model loaded successfully")
@@ -314,7 +267,7 @@ class StreamingTranscriptionProcessor:
     shape = input_sample.shape if hasattr(input_sample, "shape") else "unknown"
     self.logger.debug("Transcribing audio sample", shape=shape)
 
-    if self.config.single_model:
+    if SINGLE_MODEL:
       self.logger.debug("Acquiring single model lock")
       StreamingTranscriptionProcessor.SINGLE_MODEL_LOCK.acquire()
 
@@ -341,7 +294,7 @@ class StreamingTranscriptionProcessor:
       return result_list, info
 
     finally:
-      if self.config.single_model:
+      if SINGLE_MODEL:
         self.logger.debug("Releasing single model lock")
         StreamingTranscriptionProcessor.SINGLE_MODEL_LOCK.release()
 

@@ -1,8 +1,8 @@
 import asyncio
 
+from .config import TranscriptionConfig
 from .logs import get_logger
 from .rtsp import RTSPTranscriptionClient
-from .streaming import TranscriptionConfig
 
 
 class RTSPClientManager:
