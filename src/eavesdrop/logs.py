@@ -199,7 +199,7 @@ def setup_logging(
         Column(
           "",
           KeyValueColumnFormatter(
-            key_style=None,
+            key_style="",
             value_style="",
             reset_style=RESET_ALL,
             value_repr=str,

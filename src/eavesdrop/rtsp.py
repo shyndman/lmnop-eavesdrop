@@ -147,16 +147,42 @@ class RTSPTranscriptionSink(TranscriptionSink):
     """Log transcription results with structured data"""
     self.transcription_count += 1
 
+    # Separate completed and incomplete segments
+    completed_segments = []
+    incomplete_segments = []
+
     for segment in result.segments:
       if segment.get("text", "").strip():
-        self.logger.info(
-          "Transcription result",
-          text=segment["text"].strip(),
-          start=segment["start"],
-          end=segment["end"],
-          completed=segment.get("completed", False),
-          transcription_number=self.transcription_count,
-        )
+        if segment.get("completed", False):
+          completed_segments.append(segment)
+        else:
+          incomplete_segments.append(segment)
+
+    # Log concatenated completed segments as single entry
+    if completed_segments:
+      concatenated_text = " ".join(seg["text"].strip() for seg in completed_segments)
+      start_time = min(seg["start"] for seg in completed_segments)
+      end_time = max(seg["end"] for seg in completed_segments)
+
+      self.logger.info(
+        "Transcription result",
+        text=concatenated_text,
+        start=start_time,
+        end=end_time,
+        completed=True,
+        transcription_number=self.transcription_count,
+      )
+
+    # Log each incomplete segment separately
+    for segment in incomplete_segments:
+      self.logger.info(
+        "Transcription result",
+        text=segment["text"].strip(),
+        start=segment["start"],
+        end=segment["end"],
+        completed=False,
+        transcription_number=self.transcription_count,
+      )
 
   async def send_error(self, error: str) -> None:
     """Log transcription errors"""
