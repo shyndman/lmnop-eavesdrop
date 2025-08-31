@@ -608,12 +608,8 @@ class RTSPTranscriptionClient(RTSPClient):
       sample_rate=16000,
       max_buffer_duration=get_env_float("EAVESDROP_RTSP_BUFFER_DURATION", 45.0),
       cleanup_duration=get_env_float("EAVESDROP_RTSP_CLEANUP_DURATION", 30.0),
-      min_chunk_duration_after_silence=get_env_float(
-        "EAVESDROP_RTSP_MIN_CHUNK_DURATION_AFTER_SILENCE", 1.0
-      ),
-      min_chunk_duration_after_speech=get_env_float(
-        "EAVESDROP_RTSP_MIN_CHUNK_DURATION_AFTER_SPEECH", 2.0
-      ),
+      min_chunk_duration=get_env_float("EAVESDROP_RTSP_MIN_CHUNK_DURATION", 1.0),
+      transcription_interval=get_env_float("EAVESDROP_RTSP_TRANSCRIPTION_INTERVAL", 2.0),
       clip_audio=get_env_bool("EAVESDROP_RTSP_CLIP_AUDIO", False),
       max_stall_duration=get_env_float("EAVESDROP_RTSP_MAX_STALL_DURATION", 25.0),
     )

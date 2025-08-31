@@ -23,11 +23,11 @@ class BufferConfig:
   cleanup_duration: float = 30.0
   """Duration of oldest audio to remove during cleanup."""
 
-  min_chunk_duration_after_silence: float = 1.0
-  """Minimum chunk duration for processing after silence in seconds."""
+  min_chunk_duration: float = 1.0
+  """Minimum chunk duration for processing in seconds."""
 
-  min_chunk_duration_after_speech: float = 2.0
-  """Minimum chunk duration for processing after speech in seconds."""
+  transcription_interval: float = 2.0
+  """Interval between transcription attempts in seconds."""
 
   clip_audio: bool = False
   """Whether to clip audio with no valid segments."""
