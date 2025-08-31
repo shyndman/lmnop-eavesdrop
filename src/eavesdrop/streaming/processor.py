@@ -264,7 +264,7 @@ class StreamingTranscriptionProcessor:
         break
 
       if self.buffer.available_duration == 0:
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(self.buffer.config.min_chunk_duration)
         continue
 
       if self.config.clip_audio:
@@ -272,7 +272,7 @@ class StreamingTranscriptionProcessor:
 
       input_bytes, duration = self.buffer.get_chunk_for_processing()
       if duration < self.buffer.config.min_chunk_duration:
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(self.buffer.config.min_chunk_duration - duration)
         continue
 
       try:
