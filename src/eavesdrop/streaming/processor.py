@@ -1,8 +1,5 @@
 """
 Streaming transcription processor with integrated Faster Whisper transcriber.
-
-Combines the transcription loop and segment management logic from ServeClientBase
-with the model management and transcription functionality from ServeClientFasterWhisper.
 """
 
 import asyncio
@@ -77,7 +74,7 @@ class StreamingTranscriptionProcessor:
 
   This class combines audio buffering, transcription processing, and result
   delivery by combining an AudioStreamBuffer with integrated Faster Whisper
-  model management. It replaces both ServeClientBase and ServeClientFasterWhisper.
+  model management.
   """
 
   # Class variables for single model mode

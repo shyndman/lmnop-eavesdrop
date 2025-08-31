@@ -2,7 +2,7 @@ import asyncio
 
 from .logs import get_logger
 from .rtsp import RTSPTranscriptionClient
-from .rtsp_models import RTSPModelManager
+from .streaming import TranscriptionConfig
 
 
 class RTSPClientManager:
@@ -14,14 +14,14 @@ class RTSPClientManager:
   used by WebSocketClientManager for WebSocket clients.
   """
 
-  def __init__(self, model_manager: RTSPModelManager):
+  def __init__(self, transcription_config: TranscriptionConfig):
     """
     Initialize the RTSP client manager.
 
     Args:
-        model_manager: Shared model manager for all RTSP clients
+        transcription_config: Global transcription configuration
     """
-    self.model_manager = model_manager
+    self.transcription_config = transcription_config
     self.clients: dict[str, RTSPTranscriptionClient] = {}
     self.tasks: dict[str, asyncio.Task] = {}
     self.logger = get_logger("rtsp_client_manager")
@@ -49,11 +49,8 @@ class RTSPClientManager:
     try:
       self.logger.info("Adding RTSP stream", stream=stream_name, url=rtsp_url)
 
-      # Get shared transcriber from model manager
-      transcriber = await self.model_manager.get_transcriber()
-
       # Create RTSP client
-      client = RTSPTranscriptionClient(stream_name, rtsp_url, transcriber)
+      client = RTSPTranscriptionClient(stream_name, rtsp_url, self.transcription_config)
       self.clients[stream_name] = client
 
       # Create and start task for this client
@@ -200,9 +197,6 @@ class RTSPClientManager:
     self.tasks.clear()
     self.active_streams = 0
 
-    # Clean up model manager
-    await self.model_manager.cleanup()
-
     self.logger.info("All RTSP streams stopped successfully")
 
   def get_stream_status(self) -> dict[str, dict]:
@@ -217,7 +211,6 @@ class RTSPClientManager:
         "total_created": self.total_streams_created,
         "active_streams": self.active_streams,
         "failed_streams": self.failed_streams,
-        "model_info": self.model_manager.get_model_info(),
       },
       "streams": {},
     }
@@ -236,7 +229,7 @@ class RTSPClientManager:
         "buffer_duration": client.stream_buffer.total_duration,
         "processed_duration": client.stream_buffer.processed_duration,
         "available_duration": client.stream_buffer.available_duration,
-        "processor_active": not client.processor.stopped,
+        "processor_active": not client.processor.exit,
         "segments_processed": getattr(client.processor, "segments_processed", 0),
       }
 

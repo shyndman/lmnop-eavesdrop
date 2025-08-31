@@ -146,8 +146,6 @@ class WebSocketStreamingClient:
     """
     Add audio frames to the buffer for processing.
 
-    This method provides compatibility with the existing ServeClientBase interface.
-
     Args:
         frames: Audio frames as numpy array.
     """
@@ -183,8 +181,6 @@ class WebSocketStreamingClient:
   def cleanup(self) -> None:
     """
     Perform cleanup tasks.
-
-    Provides compatibility with the existing ServeClientBase interface.
     """
     self.logger.info("Cleaning up WebSocket streaming client", client_uid=self.client_uid)
     # The actual cleanup is handled in stop() method

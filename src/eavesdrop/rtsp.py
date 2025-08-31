@@ -3,7 +3,7 @@ import asyncio
 import numpy as np
 import structlog
 
-from .config import get_env_bool, get_env_float, get_env_int
+from .config import get_env_bool, get_env_float
 from .logs import get_logger
 from .streaming.buffer import AudioStreamBuffer, BufferConfig
 from .streaming.interfaces import (
@@ -539,12 +539,9 @@ class RTSPClient:
 
 
 class RTSPTranscriptionClient(RTSPClient):
-  def __init__(self, stream_name: str, rtsp_url: str, transcriber):
+  def __init__(self, stream_name: str, rtsp_url: str, transcription_config: TranscriptionConfig):
     # Initialize parent with internal queue
     super().__init__(stream_name, rtsp_url, asyncio.Queue(maxsize=100))
-
-    # Create new abstracted components
-    self.transcriber = transcriber
 
     # Configuration from environment variables with defaults
     buffer_config = BufferConfig(
@@ -556,23 +553,15 @@ class RTSPTranscriptionClient(RTSPClient):
       max_stall_duration=get_env_float("EAVESDROP_RTSP_MAX_STALL_DURATION", 25.0),
     )
 
-    transcription_config = TranscriptionConfig(
-      send_last_n_segments=10,  # Not used for RTSP
-      no_speech_thresh=get_env_float("EAVESDROP_RTSP_NO_SPEECH_THRESH", 0.45),
-      same_output_threshold=get_env_int("EAVESDROP_RTSP_SAME_OUTPUT_THRESH", 10),
-      use_vad=get_env_bool("EAVESDROP_RTSP_USE_VAD", True),
-      clip_audio=get_env_bool("EAVESDROP_RTSP_CLIP_AUDIO", False),
-    )
-
     # Create abstracted components
     self.audio_source = RTSPAudioSource(self.audio_queue)
     self.stream_buffer = AudioStreamBuffer(buffer_config)
     self.transcription_sink = RTSPTranscriptionSink(stream_name)
     self.processor = StreamingTranscriptionProcessor(
-      transcriber=transcriber,
       buffer=self.stream_buffer,
       sink=self.transcription_sink,
       config=transcription_config,
+      client_uid=stream_name,
       logger_name=f"rtsp_processor_{stream_name}",
     )
 
@@ -643,6 +632,7 @@ class RTSPTranscriptionClient(RTSPClient):
   async def _streaming_processor_task(self) -> None:
     """New task to run the streaming transcription processor"""
     try:
+      await self.processor.initialize()
       await self.processor.start_processing()
     except Exception:
       self.logger.exception("Streaming processor failed")

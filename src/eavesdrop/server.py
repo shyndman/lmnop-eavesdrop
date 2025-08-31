@@ -9,7 +9,6 @@ from .config import RTSPConfig
 from .gpu import resolve_gpu_index
 from .logs import get_logger
 from .rtsp_manager import RTSPClientManager
-from .rtsp_models import RTSPModelManager
 from .streaming import (
   BufferConfig,
   TranscriptionConfig,
@@ -276,9 +275,14 @@ class TranscriptionServer:
     if config:
       rtsp_streams = await self._load_rtsp_config(config)
       if rtsp_streams:
-        await self._initialize_rtsp_streams(
-          rtsp_streams, faster_whisper_custom_model_path, single_model, cache_path
+        transcription_config = TranscriptionConfig(
+          model=faster_whisper_custom_model_path or "distil-small.en",
+          single_model=single_model,
+          cache_path=cache_path,
+          device_index=self.device_index,
+          use_vad=self.use_vad,
         )
+        await self._initialize_rtsp_streams(rtsp_streams, transcription_config)
 
     async def connection_handler(websocket):
       await self.recv_audio(
@@ -352,43 +356,20 @@ class TranscriptionServer:
   async def _initialize_rtsp_streams(
     self,
     rtsp_streams: dict[str, str],
-    faster_whisper_custom_model_path: str | None,
-    single_model: bool,
-    cache_path: str,
+    transcription_config: TranscriptionConfig,
   ) -> None:
     """
-    Initialize RTSP client manager and model manager.
+    Initialize RTSP client manager.
 
     Args:
         rtsp_streams: Dictionary of stream names to RTSP URLs
-        faster_whisper_custom_model_path: Custom model path if provided
-        single_model: Whether to use single model mode
-        cache_path: Path for model caching
+        transcription_config: Global transcription configuration
     """
     try:
       self.logger.info("Initializing RTSP transcription system")
 
-      # Create backend parameters for model manager
-      backend_params = {
-        "faster_whisper_custom_model_path": faster_whisper_custom_model_path,
-        "single_model": single_model,
-        "cache_path": cache_path,
-        "device_index": self.device_index,
-        "task": "transcribe",
-        "language": None,  # Auto-detect
-        "model": faster_whisper_custom_model_path or "distil-small.en",
-        "initial_prompt": None,
-        "vad_parameters": None,
-        "use_vad": self.use_vad,
-        "no_speech_thresh": 0.45,
-        "clip_audio": False,
-        "same_output_threshold": 10,
-      }
-
-      self.logger.debug(
-        "RTSP backend parameters", params=backend_params
-      )  # Create RTSP client manager
-      self.rtsp_client_manager = RTSPClientManager(RTSPModelManager(backend_params))
+      # Create RTSP client manager
+      self.rtsp_client_manager = RTSPClientManager(transcription_config)
 
       # Start all configured streams
       await self.rtsp_client_manager.start_all_streams(rtsp_streams)
