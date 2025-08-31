@@ -27,11 +27,7 @@ ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$CTRANSLATE2_ROOT/lib
 
 # Torch audio
 WORKDIR /home
-RUN git clone --depth 1 --branch v2.6.0 https://github.com/pytorch/audio.git \
-    && cd audio \
-    && USE_ROCM=1   python3 setup.py install \
-    && cd ..  \
-    && rm -rf audio
+RUN pip install 'torchaudio==2.6.0'
 
 # CTranslate2
 RUN git clone https://github.com/arlo-phoenix/CTranslate2-rocm.git --recurse-submodules \
