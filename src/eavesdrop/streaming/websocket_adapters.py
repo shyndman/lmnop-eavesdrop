@@ -1,0 +1,199 @@
+"""
+WebSocket implementations of streaming transcription interfaces.
+
+Provides WebSocket-specific implementations of AudioSource and TranscriptionSink
+that integrate with the existing WebSocket server infrastructure.
+"""
+
+import json
+from collections.abc import Awaitable, Callable
+
+import numpy as np
+from websockets.asyncio.server import ServerConnection
+
+from ..logs import get_logger
+from .interfaces import AudioSource, TranscriptionResult, TranscriptionSink
+
+
+class WebSocketAudioSource(AudioSource):
+  """
+  WebSocket implementation of AudioSource protocol.
+
+  Reads audio data from a WebSocket connection, converting the raw bytes
+  to numpy arrays suitable for transcription processing.
+  """
+
+  def __init__(
+    self,
+    websocket: ServerConnection,
+    get_audio_func: Callable[[ServerConnection], Awaitable[np.ndarray | bool]],
+  ) -> None:
+    """
+    Initialize WebSocket audio source.
+
+    Args:
+        websocket: WebSocket connection to read from.
+        get_audio_func: Function to get audio from websocket (from TranscriptionServer).
+    """
+    self.websocket: ServerConnection = websocket
+    self.get_audio_func: Callable[[ServerConnection], Awaitable[np.ndarray | bool]] = get_audio_func
+    self.logger = get_logger("websocket_audio_source")
+    self._closed: bool = False
+
+  async def read_audio(self) -> np.ndarray | None:
+    """
+    Read audio data from the WebSocket connection.
+
+    Returns:
+        Audio data as numpy array, or None for end-of-stream.
+    """
+    if self._closed:
+      return None
+
+    try:
+      audio_data = await self.get_audio_func(self.websocket)
+
+      # Handle end-of-audio signal
+      if audio_data is False:
+        self.logger.debug("Received end-of-audio signal")
+        return None
+
+      # audio_data should be np.ndarray at this point
+      if isinstance(audio_data, np.ndarray):
+        return audio_data
+      else:
+        self.logger.error(f"Unexpected audio data type: {type(audio_data)}")
+        return None
+
+    except Exception:
+      self.logger.exception("Error reading audio from WebSocket")
+      return None
+
+  def close(self) -> None:
+    """Close the audio source and clean up resources."""
+    self._closed = True
+    self.logger.debug("WebSocket audio source closed")
+
+
+class WebSocketTranscriptionSink(TranscriptionSink):
+  """
+  WebSocket implementation of TranscriptionSink protocol.
+
+  Sends transcription results and control messages to a WebSocket client
+  using the established JSON message format.
+  """
+
+  def __init__(self, websocket: ServerConnection, client_uid: str) -> None:
+    """
+    Initialize WebSocket transcription sink.
+
+    Args:
+        websocket: WebSocket connection to send to.
+        client_uid: Unique identifier for the client.
+    """
+    self.websocket: ServerConnection = websocket
+    self.client_uid: str = client_uid
+    self.logger = get_logger("websocket_transcription_sink")
+    self._closed: bool = False
+
+  async def send_result(self, result: TranscriptionResult) -> None:
+    """
+    Send transcription result to the WebSocket client.
+
+    Args:
+        result: The transcription result to send.
+    """
+    if self._closed or not self.websocket:
+      return
+
+    try:
+      message = {
+        "uid": self.client_uid,
+        "segments": result.segments,
+      }
+      await self.websocket.send(json.dumps(message))
+
+    except Exception:
+      self.logger.exception("Error sending transcription result to client")
+
+  async def send_error(self, error: str) -> None:
+    """
+    Send error message to the WebSocket client.
+
+    Args:
+        error: Error message to send.
+    """
+    if self._closed or not self.websocket:
+      return
+
+    try:
+      message = {
+        "uid": self.client_uid,
+        "status": "ERROR",
+        "message": error,
+      }
+      await self.websocket.send(json.dumps(message))
+
+    except Exception:
+      self.logger.exception("Error sending error message to client")
+
+  async def send_language_detection(self, language: str, probability: float) -> None:
+    """
+    Send language detection result to the WebSocket client.
+
+    Args:
+        language: Detected language code.
+        probability: Confidence score for the detection.
+    """
+    if self._closed or not self.websocket:
+      return
+
+    try:
+      message = {
+        "uid": self.client_uid,
+        "language": language,
+        "language_prob": probability,
+      }
+      await self.websocket.send(json.dumps(message))
+
+    except Exception:
+      self.logger.exception("Error sending language detection to client")
+
+  async def send_server_ready(self, backend: str) -> None:
+    """
+    Send server ready notification to the WebSocket client.
+
+    Args:
+        backend: Name of the transcription backend being used.
+    """
+    if self._closed or not self.websocket:
+      return
+
+    try:
+      message = {
+        "uid": self.client_uid,
+        "message": "SERVER_READY",
+        "backend": backend,
+      }
+      await self.websocket.send(json.dumps(message))
+
+    except Exception:
+      self.logger.exception("Error sending server ready message to client")
+
+  async def disconnect(self) -> None:
+    """Send disconnect notification and clean up resources."""
+    if self._closed or not self.websocket:
+      return
+
+    try:
+      message = {
+        "uid": self.client_uid,
+        "message": "DISCONNECT",
+      }
+      await self.websocket.send(json.dumps(message))
+
+    except Exception:
+      self.logger.exception("Error sending disconnect message to client")
+    finally:
+      self._closed = True
+      self.logger.debug("WebSocket transcription sink disconnected")

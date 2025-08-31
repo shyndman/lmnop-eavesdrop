@@ -5,12 +5,16 @@ import os
 import numpy as np
 from websockets.exceptions import ConnectionClosed, InvalidMessage
 
-from .backend import ServeClientFasterWhisper
 from .config import RTSPConfig
 from .gpu import resolve_gpu_index
 from .logs import get_logger
 from .rtsp_manager import RTSPClientManager
 from .rtsp_models import RTSPModelManager
+from .streaming import (
+  BufferConfig,
+  TranscriptionConfig,
+  WebSocketStreamingClient,
+)
 from .websocket import ClientManager, WebSocketServer
 
 
@@ -44,25 +48,40 @@ class TranscriptionServer:
         )
         options["model"] = faster_whisper_custom_model_path
 
-      self.logger.debug("initialize_client: Creating faster_whisper client")
-      client = ServeClientFasterWhisper(
-        websocket,
-        language=options["language"],
-        task=options["task"],
-        client_uid=options["uid"],
-        model=options["model"],
-        initial_prompt=options.get("initial_prompt"),
-        vad_parameters=options.get("vad_parameters"),
-        use_vad=self.use_vad,
-        single_model=self.single_model,
+      self.logger.debug("initialize_client: Creating streaming client")
+
+      # Create configurations for the streaming client
+      buffer_config = BufferConfig(clip_audio=options.get("clip_audio", False))
+
+      transcription_config = TranscriptionConfig(
         send_last_n_segments=options.get("send_last_n_segments", 10),
         no_speech_thresh=options.get("no_speech_thresh", 0.45),
-        clip_audio=options.get("clip_audio", False),
         same_output_threshold=options.get("same_output_threshold", 10),
+        use_vad=self.use_vad,
+        clip_audio=options.get("clip_audio", False),
+        model=options["model"],
+        task=options["task"],
+        language=options["language"],
+        initial_prompt=options.get("initial_prompt"),
+        vad_parameters=options.get("vad_parameters"),
+        single_model=self.single_model,
         cache_path=self.cache_path,
         device_index=self.device_index,
       )
-      await client.initialize()
+
+      client = WebSocketStreamingClient(
+        websocket=websocket,
+        client_uid=options["uid"],
+        get_audio_func=self.get_audio_from_websocket,
+        buffer_config=buffer_config,
+        transcription_config=transcription_config,
+      )
+
+      # Start the client and get the completion task
+      completion_task = await client.start()
+
+      # Store the completion task with the client so we can await it later
+      client._completion_task = completion_task
       self.logger.info("initialize_client: Running faster_whisper.")
       self.logger.debug("initialize_client: faster_whisper client created successfully")
     except Exception:
@@ -174,41 +193,6 @@ class TranscriptionServer:
       self.logger.exception("handle_new_connection: Error during new connection initialization")
       return None
 
-  async def process_audio_frames(self, websocket):
-    self.logger.debug("process_audio_frames: Starting")
-
-    self.logger.debug("process_audio_frames: Getting audio from websocket")
-    frame_np = await self.get_audio_from_websocket(websocket)
-    self.logger.debug("process_audio_frames: Got audio from websocket")
-
-    self.logger.debug("process_audio_frames: Getting client from manager")
-    client = self.client_manager.get_client(websocket)
-    self.logger.debug(f"process_audio_frames: Got client: {client.client_uid if client else None}")
-
-    if frame_np is False:
-      client_uid = client.client_uid if client else "unknown"
-      self.logger.debug(f"process_audio_frames: End of audio received for client {client_uid}")
-      self.logger.debug("process_audio_frames: Returning False for end of audio")
-      return False
-
-    self.logger.debug(f"process_audio_frames: Processing {len(frame_np)} audio samples")
-
-    if client:
-      self.logger.debug(
-        f"process_audio_frames: Adding {len(frame_np)} audio samples to client {client.client_uid}"
-      )
-      client.add_frames(frame_np)
-      self.logger.debug(
-        f"process_audio_frames: Successfully added frames to client {client.client_uid}"
-      )
-    else:
-      self.logger.debug(
-        "process_audio_frames: No client found for websocket when processing audio frames"
-      )
-
-    self.logger.debug("process_audio_frames: Returning True")
-    return True
-
   async def recv_audio(
     self,
     websocket,
@@ -228,21 +212,14 @@ class TranscriptionServer:
       self.logger.debug("recv_audio: handle_new_connection returned False, exiting")
       return
 
-    asyncio.create_task(client.speech_to_text())
-    self.logger.debug("recv_audio: Entering main audio processing loop")
+    # The new WebSocketStreamingClient handles the audio processing internally
+    # We await its completion task which will finish when the client connection ends
+    self.logger.debug("recv_audio: Awaiting client completion")
     assert self.client_manager is not None
     try:
-      loop_count = 0
-      while not await self.client_manager.is_client_timeout(websocket):
-        loop_count += 1
-        if loop_count % 100 == 0:  # Log every 100 iterations to avoid spam
-          self.logger.debug(f"recv_audio: Main loop iteration {loop_count}")
-
-        self.logger.debug("recv_audio: About to process audio frames")
-        if not await self.process_audio_frames(websocket):
-          self.logger.debug("recv_audio: process_audio_frames returned False, breaking loop")
-          break
-        self.logger.debug("recv_audio: process_audio_frames completed successfully")
+      # Await the client's completion task - this will naturally end when
+      # the WebSocket closes, encounters an error, or times out
+      await client._completion_task
     except (ConnectionClosed, InvalidMessage):
       self.logger.info("recv_audio: Connection closed by client")
     except (KeyboardInterrupt, SystemExit):
@@ -325,6 +302,9 @@ class TranscriptionServer:
     client = self.client_manager.get_client(websocket)
     if client:
       self.logger.debug(f"cleanup: Starting cleanup for client {client.client_uid}")
+
+      # The WebSocketStreamingClient handles its own cleanup in the stop() method
+      # which is called from _wait_for_completion(), so we don't need to do much here
 
       self.logger.debug(f"cleanup: Removing client {client.client_uid} from client manager")
       self.client_manager.remove_client(websocket)
