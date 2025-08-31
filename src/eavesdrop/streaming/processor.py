@@ -258,21 +258,32 @@ class StreamingTranscriptionProcessor:
     This method continuously processes audio frames, performs real-time transcription,
     and sends transcribed segments to the client via the sink.
     """
+    last_result_was_silence = True  # Start assuming silence for fast first response
+
+    def get_required_chunk_duration() -> float:
+      return (
+        self.buffer.config.min_chunk_duration_after_silence
+        if last_result_was_silence
+        else self.buffer.config.min_chunk_duration_after_speech
+      )
+
     while True:
       if self.exit:
         self.logger.info("Exiting speech to text thread")
         break
 
+      required_duration = get_required_chunk_duration()
+
       if self.buffer.available_duration == 0:
-        await asyncio.sleep(self.buffer.config.min_chunk_duration)
+        await asyncio.sleep(required_duration)
         continue
 
       if self.config.clip_audio:
         self.buffer.clip_if_stalled()
 
       input_bytes, duration = self.buffer.get_chunk_for_processing()
-      if duration < self.buffer.config.min_chunk_duration:
-        await asyncio.sleep(self.buffer.config.min_chunk_duration - duration)
+      if duration < required_duration:
+        await asyncio.sleep(required_duration - duration)
         continue
 
       try:
@@ -282,9 +293,9 @@ class StreamingTranscriptionProcessor:
         if self.language is None and info is not None:
           await self._set_language(info)
 
-        if result is None:
+        if result is None or len(result) == 0:
           self.buffer.advance_processed_boundary(duration)
-          await asyncio.sleep(0.25)
+          last_result_was_silence = True
           continue
 
         await self._handle_transcription_output(result, duration)
