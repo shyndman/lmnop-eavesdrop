@@ -411,8 +411,8 @@ class RTSPClient:
           elif "error" in error_lower or "fatal" in error_lower:
             self.logger.error("FFmpeg error", message=error_msg)
           else:
-            # Generic FFmpeg output - likely informational
-            self.logger.debug("FFmpeg output", message=error_msg)
+            # Generic FFmpeg output - log at warn level to ensure we see diagnostics
+            self.logger.warning("FFmpeg output", message=error_msg)
 
         except asyncio.LimitOverrunError as e:
           # Handle oversized lines by reading the available partial data
@@ -428,7 +428,9 @@ class RTSPClient:
               truncated_msg = partial.decode("utf-8", errors="replace").strip()[
                 :1000
               ]  # Show more context
-              self.logger.info("FFmpeg oversized output (partial)", message=f"{truncated_msg}...")
+              self.logger.warning(
+                "FFmpeg oversized output (partial)", message=f"{truncated_msg}..."
+              )
           except Exception as read_error:
             self.logger.warning("Could not read oversized FFmpeg output", error=str(read_error))
 
