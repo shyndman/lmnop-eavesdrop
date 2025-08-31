@@ -160,12 +160,13 @@ def setup_logging(
 
   # Configure processors
   shared_processors: list[Processor] = [
-    structlog.stdlib.filter_by_level,
+    # structlog.stdlib.filter_by_level,
     structlog.stdlib.add_logger_name,
     structlog.stdlib.add_log_level,
     _debug_event_colorer,  # Run before level processing
     _compact_level_processor,
     structlog.stdlib.PositionalArgumentsFormatter(),
+    structlog.stdlib.ExtraAdder(),
     _relative_time_processor,
     structlog.processors.StackInfoRenderer(),
     structlog.processors.format_exc_info,
