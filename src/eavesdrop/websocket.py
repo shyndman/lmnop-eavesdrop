@@ -114,7 +114,7 @@ class ClientManager:
     self.logger.debug(f"Server has capacity, allowing client {options['uid']} to connect")
     return False
 
-  def is_client_timeout(self, websocket):
+  async def is_client_timeout(self, websocket):
     """
     Checks if a client has exceeded the maximum allowed connection time and disconnects them if so,
     issuing a warning.
@@ -130,7 +130,7 @@ class ClientManager:
 
     elapsed_time = time.time() - self.start_times[websocket]
     if elapsed_time >= self.max_connection_time:
-      self.clients[websocket].disconnect()
+      await self.clients[websocket].disconnect()
       self.logger.warning(
         f"Client with uid '{self.clients[websocket].client_uid}' disconnected due to overtime."
       )

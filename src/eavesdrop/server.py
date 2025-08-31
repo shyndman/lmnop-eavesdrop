@@ -260,7 +260,7 @@ class TranscriptionServer:
     assert self.client_manager is not None
     try:
       loop_count = 0
-      while not self.client_manager.is_client_timeout(websocket):
+      while not await self.client_manager.is_client_timeout(websocket):
         loop_count += 1
         if loop_count % 100 == 0:  # Log every 100 iterations to avoid spam
           self.logger.debug(f"recv_audio: Main loop iteration {loop_count}")
