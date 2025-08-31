@@ -421,14 +421,16 @@ class RTSPClient:
             limit=e.consumed,
             partial_message="<truncated - line too long>",
           )
-          # Consume the partial data to prevent stream corruption
+          # Consume the partial data to prevent stream corruption and show what we can
           try:
             partial = await self.process.stderr.read(e.consumed)
             if partial:
-              truncated_msg = partial.decode("utf-8", errors="replace").strip()[:500]
-              self.logger.debug("FFmpeg oversized output (partial)", message=f"{truncated_msg}...")
-          except Exception:
-            self.logger.debug("Could not read oversized FFmpeg output")
+              truncated_msg = partial.decode("utf-8", errors="replace").strip()[
+                :1000
+              ]  # Show more context
+              self.logger.info("FFmpeg oversized output (partial)", message=f"{truncated_msg}...")
+          except Exception as read_error:
+            self.logger.warning("Could not read oversized FFmpeg output", error=str(read_error))
 
         except UnicodeDecodeError:
           self.logger.warning("FFmpeg output contained invalid UTF-8, skipping line")
@@ -436,6 +438,11 @@ class RTSPClient:
     except asyncio.CancelledError:
       self.logger.debug("Error monitoring cancelled")
       raise
+    except (asyncio.LimitOverrunError, ValueError) as e:
+      self.logger.warning(
+        "FFmpeg stderr buffer overflow, continuing without stderr monitoring", error=str(e)
+      )
+      # Don't re-raise - continue without stderr monitoring to allow reconnection
     except Exception:
       self.logger.exception("Error monitoring FFmpeg stderr")
       # Don't re-raise - we want the connection to continue and retry
