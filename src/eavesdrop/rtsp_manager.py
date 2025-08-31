@@ -233,6 +233,11 @@ class RTSPClientManager:
         "transcription_errors": getattr(client, "transcription_errors", 0),
         "task_running": task is not None and not task.done(),
         "stopped": client.stopped,
+        "buffer_duration": client.stream_buffer.total_duration,
+        "processed_duration": client.stream_buffer.processed_duration,
+        "available_duration": client.stream_buffer.available_duration,
+        "processor_active": not client.processor.stopped,
+        "segments_processed": getattr(client.processor, "segments_processed", 0),
       }
 
     return status

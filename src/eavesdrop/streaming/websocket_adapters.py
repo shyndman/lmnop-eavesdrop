@@ -19,8 +19,27 @@ class WebSocketAudioSource(AudioSource):
   """
   WebSocket implementation of AudioSource protocol.
 
-  Reads audio data from a WebSocket connection, converting the raw bytes
-  to numpy arrays suitable for transcription processing.
+  A pass-through adapter that reads pre-processed audio data from WebSocket
+  connections. The WebSocket server (TranscriptionServer) handles the raw
+  audio conversion, so this source primarily validates and forwards numpy
+  arrays to the streaming transcription processor.
+
+  Audio Flow:
+    WebSocket client → TranscriptionServer → WebSocketAudioSource → StreamingProcessor
+
+  Data Format:
+    - Input: numpy.ndarray (float32, normalized [-1.0, 1.0]) from server callback
+    - Output: Same numpy array passed through, or None for end-of-stream
+    - Sample Rate: 16kHz (managed by server, not validated here)
+
+  Error Handling:
+    - Returns None on any errors, signaling end-of-stream to processor
+    - Logs exceptions but doesn't raise them (graceful degradation)
+    - Closed state prevents further audio reading
+
+  Threading:
+    - Safe for single-threaded async use within StreamingTranscriptionProcessor
+    - Not thread-safe for concurrent access from multiple tasks
   """
 
   def __init__(
@@ -79,8 +98,34 @@ class WebSocketTranscriptionSink(TranscriptionSink):
   """
   WebSocket implementation of TranscriptionSink protocol.
 
-  Sends transcription results and control messages to a WebSocket client
-  using the established JSON message format.
+  Sends transcription results and control messages to WebSocket clients using
+  the established JSON message format. Handles the bidirectional communication
+  between the streaming transcription processor and WebSocket clients.
+
+  Message Flow:
+    StreamingProcessor → WebSocketTranscriptionSink → WebSocket client
+
+  Message Types:
+    - Transcription results: segments with text, timestamps, completion status
+    - Error messages: transcription failures, model loading issues
+    - Language detection: detected language and confidence scores
+    - Server status: ready notifications, disconnect signals
+
+  JSON Message Format:
+    - All messages include 'uid' field for client identification
+    - Result messages: {"uid": str, "segments": [...]}
+    - Error messages: {"uid": str, "status": "ERROR", "message": str}
+    - Language detection: {"uid": str, "language": str, "language_prob": float}
+    - Server ready: {"uid": str, "message": "SERVER_READY", "backend": str}
+
+  Error Handling:
+    - Graceful failure on WebSocket send errors (logs but doesn't raise)
+    - Closed state prevents further message sending
+    - WebSocket connection failures are handled transparently
+
+  Threading:
+    - Safe for single-threaded async use within StreamingTranscriptionProcessor
+    - WebSocket send operations are properly awaited and serialized
   """
 
   def __init__(self, websocket: ServerConnection, client_uid: str) -> None:

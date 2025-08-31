@@ -3,7 +3,176 @@ import asyncio
 import numpy as np
 import structlog
 
+from .config import get_env_bool, get_env_float, get_env_int
 from .logs import get_logger
+from .streaming.buffer import AudioStreamBuffer, BufferConfig
+from .streaming.interfaces import (
+  AudioSource,
+  TranscriptionResult,
+  TranscriptionSink,
+)
+from .streaming.processor import (
+  StreamingTranscriptionProcessor,
+  TranscriptionConfig,
+)
+
+
+class RTSPAudioSource(AudioSource):
+  """
+  RTSP implementation of AudioSource protocol.
+
+  Converts raw FFmpeg audio bytes to numpy arrays suitable for Whisper transcription.
+  Handles the complex audio format conversion chain from RTSP streams through FFmpeg
+  to the streaming transcription processor.
+
+  Audio Processing Chain:
+    RTSP stream → FFmpeg (s16le PCM) → RTSPClient queue → RTSPAudioSource → StreamingProcessor
+
+  Data Conversion:
+    1. FFmpeg outputs 16-bit signed PCM little-endian (s16le) as bytes
+    2. np.frombuffer() converts bytes → int16 numpy array
+    3. Normalize int16 → float32 [-1.0, 1.0] for Whisper compatibility
+    4. Division by 32768.0 handles int16 → float32 normalization
+
+  Format Specifications:
+    - Input: Raw bytes from FFmpeg (16-bit PCM, little-endian, 16kHz)
+    - Output: numpy.ndarray (float32, normalized [-1.0, 1.0], 16kHz)
+    - Sample Rate: 16000 Hz (required by Whisper)
+    - Bit Depth: 16-bit signed → float32 conversion
+
+  Timeout Behavior:
+    - 1-second timeout on queue reads (prevents blocking on stream issues)
+    - Returns empty array on timeout (keeps processor alive vs ending stream)
+    - Different from WebSocket which returns None to end stream
+
+  Error Handling:
+    - Empty chunks or closed state → None (end stream)
+    - Queue timeout → empty array (maintain connection)
+    - No exception propagation (graceful degradation)
+
+  Threading:
+    - Safe for single-threaded async use within StreamingTranscriptionProcessor
+    - Queue operations are thread-safe but source instance is not
+  """
+
+  def __init__(self, audio_queue: asyncio.Queue[bytes]) -> None:
+    """
+    Initialize RTSP audio source with FFmpeg byte queue.
+
+    Args:
+        audio_queue: asyncio.Queue containing raw audio bytes from FFmpeg.
+                    Queue should contain 16-bit PCM little-endian data at 16kHz.
+    """
+    self.audio_queue: asyncio.Queue[bytes] = audio_queue
+    self.sample_rate: int = 16000
+    self.bytes_per_sample: int = 2  # 16-bit PCM
+    self.closed: bool = False
+
+  async def read_audio(self) -> np.ndarray | None:
+    """
+    Read from FFmpeg queue and convert to numpy array.
+    Returns None when stream ends.
+    """
+    try:
+      # Get audio chunk from FFmpeg (via RTSPClient)
+      chunk = await asyncio.wait_for(self.audio_queue.get(), timeout=1.0)
+
+      if not chunk or self.closed:
+        return None
+
+      # Convert FFmpeg bytes to numpy array (like WebSocket does)
+      # FFmpeg outputs 16-bit signed PCM little-endian (s16le)
+      audio_array = np.frombuffer(chunk, dtype=np.int16)
+
+      # Convert to float32 normalized to [-1.0, 1.0] for Whisper
+      audio_array = audio_array.astype(np.float32) / 32768.0
+
+      return audio_array
+
+    except asyncio.TimeoutError:
+      # No audio available - return empty array to keep processor alive
+      return np.array([], dtype=np.float32)
+
+  def close(self) -> None:
+    self.closed = True
+
+
+class RTSPTranscriptionSink(TranscriptionSink):
+  """
+  RTSP implementation of TranscriptionSink protocol.
+
+  Logs transcription results using structured logging instead of sending them
+  over a network connection. Designed for RTSP streaming scenarios where
+  transcription output is consumed via log aggregation systems.
+
+  Message Flow:
+    StreamingProcessor → RTSPTranscriptionSink → Structured logs
+
+  Logging Output:
+    - Transcription results: Structured log entries with text, timestamps, completion
+    - Error messages: Transcription failures logged at ERROR level
+    - Language detection: Detected language and confidence scores
+    - Server status: No-op (RTSP doesn't have connection handshakes)
+
+  Log Structure:
+    - All logs include stream name for multi-stream identification
+    - Transcription count provides sequence numbering
+    - Structured fields: text, start, end, completed, transcription_number
+    - Uses logger.exception() for proper error stack traces
+
+  Differences from WebSocket:
+    - Logs instead of sending JSON messages
+    - No client UID (uses stream name)
+    - Server ready/disconnect are no-ops (no connection state)
+    - Error level logging instead of error message sending
+
+  Threading:
+    - Safe for single-threaded async use within StreamingTranscriptionProcessor
+    - Logging operations are thread-safe
+  """
+
+  def __init__(self, stream_name: str, logger_name: str = "rtsp_transcription") -> None:
+    """
+    Initialize RTSP transcription sink with structured logging.
+
+    Args:
+        stream_name: Unique identifier for the RTSP stream (used in log context).
+        logger_name: Logger name for log routing and filtering.
+    """
+    self.stream_name: str = stream_name
+    self.logger = get_logger(logger_name).bind(stream=stream_name)
+    self.transcription_count: int = 0
+
+  async def send_result(self, result: TranscriptionResult) -> None:
+    """Log transcription results with structured data"""
+    self.transcription_count += 1
+
+    for segment in result.segments:
+      if segment.get("text", "").strip():
+        self.logger.info(
+          "Transcription result",
+          text=segment["text"].strip(),
+          start=segment["start"],
+          end=segment["end"],
+          completed=segment.get("completed", False),
+          transcription_number=self.transcription_count,
+        )
+
+  async def send_error(self, error: str) -> None:
+    """Log transcription errors"""
+    self.logger.error("Transcription error", error=error)
+
+  async def send_language_detection(self, language: str, probability: float) -> None:
+    """Log language detection results"""
+    self.logger.info("Language detected", language=language, probability=probability)
+
+  async def send_server_ready(self, backend: str) -> None:
+    """Server ready notification is not applicable for RTSP sink."""
+    pass
+
+  async def disconnect(self) -> None:
+    """Disconnect is not applicable for RTSP sink."""
+    pass
 
 
 class RTSPClient:
@@ -369,194 +538,74 @@ class RTSPClient:
     await self.stop()
 
 
-class AudioBuffer:
-  """
-  Manages audio chunks from RTSP streams and prepares them for transcription.
+class RTSPTranscriptionClient(RTSPClient):
+  def __init__(self, stream_name: str, rtsp_url: str, transcriber):
+    # Initialize parent with internal queue
+    super().__init__(stream_name, rtsp_url, asyncio.Queue(maxsize=100))
 
-  Accumulates raw audio bytes from FFmpeg until enough data is available for
-  transcription (target duration), then converts to numpy arrays suitable for
-  Whisper processing.
-  """
+    # Create new abstracted components
+    self.transcriber = transcriber
 
-  def __init__(self, sample_rate: int = 16000, target_duration: float = 1.0):
-    """
-    Initialize the audio buffer.
-
-    Args:
-        sample_rate: Audio sample rate in Hz (16kHz for Whisper)
-        target_duration: Target buffer duration in seconds before transcription
-    """
-    self.sample_rate = sample_rate
-    self.target_duration = target_duration
-    self.target_samples = int(sample_rate * target_duration)
-    self.bytes_per_sample = 2  # 16-bit PCM = 2 bytes per sample
-    self.target_bytes = self.target_samples * self.bytes_per_sample
-
-    # Internal buffer state
-    self.buffer = b""
-    self.total_chunks_added = 0
-    self.total_arrays_produced = 0
-
-    self.logger = get_logger("audio_buffer")
-
-  def add_chunk(self, chunk: bytes) -> np.ndarray | None:
-    """
-    Add an audio chunk to the buffer.
-
-    Args:
-        chunk: Raw audio bytes from FFmpeg (16-bit PCM, little-endian)
-
-    Returns:
-        numpy.ndarray if buffer has enough data for transcription, None otherwise
-    """
-    if not chunk:
-      return None
-
-    self.buffer += chunk
-    self.total_chunks_added += 1
-
-    # Check if we have enough data for transcription
-    if len(self.buffer) >= self.target_bytes:
-      # Extract target amount of data
-      audio_bytes = self.buffer[: self.target_bytes]
-      self.buffer = self.buffer[self.target_bytes :]  # Keep overflow
-
-      # Convert bytes to numpy array
-      # FFmpeg outputs 16-bit signed PCM little-endian (s16le)
-      audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
-
-      # Convert to float32 normalized to [-1.0, 1.0] for Whisper
-      audio_array = audio_array.astype(np.float32) / 32768.0
-
-      self.total_arrays_produced += 1
-
-      # Log statistics periodically
-      if self.total_arrays_produced % 10 == 0:
-        self.logger.debug(
-          "Audio buffer statistics",
-          chunks_added=self.total_chunks_added,
-          arrays_produced=self.total_arrays_produced,
-          buffer_bytes=len(self.buffer),
-          array_samples=len(audio_array),
-        )
-
-      return audio_array
-
-    return None
-
-  def get_remaining_audio(self) -> np.ndarray | None:
-    """
-    Get any remaining audio in the buffer as a numpy array.
-
-    Used during shutdown to process any partial buffer data.
-
-    Returns:
-        numpy.ndarray if buffer has any data, None if empty
-    """
-    if not self.buffer:
-      return None
-
-    # Convert remaining bytes to numpy array
-    audio_array = np.frombuffer(self.buffer, dtype=np.int16)
-    audio_array = audio_array.astype(np.float32) / 32768.0
-
-    # Clear buffer
-    self.buffer = b""
-
-    self.logger.debug(
-      "Extracted remaining audio",
-      samples=len(audio_array),
-      duration_seconds=len(audio_array) / self.sample_rate,
+    # Configuration from environment variables with defaults
+    buffer_config = BufferConfig(
+      sample_rate=16000,
+      max_buffer_duration=get_env_float("EAVESDROP_RTSP_BUFFER_DURATION", 45.0),
+      cleanup_duration=get_env_float("EAVESDROP_RTSP_CLEANUP_DURATION", 30.0),
+      min_chunk_duration=get_env_float("EAVESDROP_RTSP_MIN_CHUNK_DURATION", 1.0),
+      clip_audio=get_env_bool("EAVESDROP_RTSP_CLIP_AUDIO", False),
+      max_stall_duration=get_env_float("EAVESDROP_RTSP_MAX_STALL_DURATION", 25.0),
     )
 
-    return audio_array
+    transcription_config = TranscriptionConfig(
+      send_last_n_segments=10,  # Not used for RTSP
+      no_speech_thresh=get_env_float("EAVESDROP_RTSP_NO_SPEECH_THRESH", 0.45),
+      same_output_threshold=get_env_int("EAVESDROP_RTSP_SAME_OUTPUT_THRESH", 10),
+      use_vad=get_env_bool("EAVESDROP_RTSP_USE_VAD", True),
+      clip_audio=get_env_bool("EAVESDROP_RTSP_CLIP_AUDIO", False),
+    )
 
-  def reset(self):
-    """Reset the buffer state."""
-    self.buffer = b""
-    self.total_chunks_added = 0
-    self.total_arrays_produced = 0
-    self.logger.debug("Audio buffer reset")
+    # Create abstracted components
+    self.audio_source = RTSPAudioSource(self.audio_queue)
+    self.stream_buffer = AudioStreamBuffer(buffer_config)
+    self.transcription_sink = RTSPTranscriptionSink(stream_name)
+    self.processor = StreamingTranscriptionProcessor(
+      transcriber=transcriber,
+      buffer=self.stream_buffer,
+      sink=self.transcription_sink,
+      config=transcription_config,
+      logger_name=f"rtsp_processor_{stream_name}",
+    )
 
-
-class RTSPTranscriptionClient(RTSPClient):
-  """
-  RTSP client with integrated transcription capabilities.
-
-  Extends RTSPClient to add audio transcription functionality. Manages both
-  the FFmpeg subprocess for audio ingestion and a transcription worker that
-  processes audio chunks using a shared Whisper model.
-  """
-
-  def __init__(self, stream_name: str, rtsp_url: str, transcriber):
-    """
-    Initialize the RTSP transcription client.
-
-    Args:
-        stream_name: Human-readable name for this stream
-        rtsp_url: RTSP URL to connect to
-        transcriber: ServeClientFasterWhisper instance for transcription
-    """
-    # Create internal queue for audio data
-    self.audio_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=100)
-
-    # Initialize parent class with our internal queue
-    super().__init__(stream_name, rtsp_url, self.audio_queue)
-
-    # Transcription components
-    self.transcriber = transcriber
-    self.audio_buffer = AudioBuffer()
-
-    # Task management
-    self.transcription_task: asyncio.Task | None = None
-
-    # Statistics
+    # Statistics (preserved from current implementation)
     self.transcriptions_completed = 0
     self.transcription_errors = 0
 
   async def run(self) -> None:
-    """
-    Main entry point - runs both FFmpeg ingestion and transcription concurrently.
-
-    Overrides parent run() to start both the FFmpeg process and transcription
-    worker as concurrent tasks.
-    """
+    """Enhanced run method with new processing architecture"""
     with structlog.contextvars.bound_contextvars(stream=self.stream_name):
       self.logger.info("Starting RTSP transcription client", url=self.rtsp_url)
 
       while not self.stopped:
         try:
-          # Reset statistics for this connection attempt
-          self.chunks_read = 0
-          self.total_bytes = 0
-          self.transcriptions_completed = 0
-          self.transcription_errors = 0
-          self.audio_buffer.reset()
-
           if self.reconnect_count > 0:
             self.logger.info("Reconnecting to RTSP stream", attempt=self.reconnect_count + 1)
           else:
             self.logger.info("Connecting to RTSP stream")
 
-          # Create and start the FFmpeg process
           process = await self._create_ffmpeg_process()
 
-          # Start concurrent tasks for audio ingestion, error monitoring, and transcription
           audio_task = asyncio.create_task(self._read_audio_stream())
           error_task = asyncio.create_task(self._monitor_process_errors())
-          transcription_task = asyncio.create_task(self._transcription_worker())
-
-          # Store transcription task for cleanup
-          self.transcription_task = transcription_task
+          streaming_task = asyncio.create_task(self._streaming_processor_task())
+          audio_feeding_task = asyncio.create_task(self._feed_audio_to_buffer())
 
           self.logger.info("RTSP stream connected, processing audio and transcribing")
 
-          # Wait for any task to complete (indicates process death or error)
           done, pending = await asyncio.wait(
-            [audio_task, error_task, transcription_task], return_when=asyncio.FIRST_COMPLETED
+            [audio_task, error_task, streaming_task, audio_feeding_task],
+            return_when=asyncio.FIRST_COMPLETED,
           )
 
-          # Cancel any remaining tasks
           for task in pending:
             task.cancel()
             try:
@@ -564,165 +613,65 @@ class RTSPTranscriptionClient(RTSPClient):
             except asyncio.CancelledError:
               pass
 
-          # Check if any task raised an exception
           for task in done:
             if task.exception():
               self.logger.error("Task failed", task=task.get_name(), error=str(task.exception()))
 
-          # Wait for process to finish and check exit code
           exit_code = await process.wait()
           if exit_code != 0:
             self.logger.warning("FFmpeg process exited with error", exit_code=exit_code)
           else:
             self.logger.info("FFmpeg process exited normally")
 
-          # Clean up process reference
           self.process = None
-          self.transcription_task = None
 
         except Exception:
           self.logger.exception("RTSP connection attempt failed")
           self.process = None
-          self.transcription_task = None
 
-        # Only reconnect if we haven't been stopped
-        if not self.stopped:
-          self.reconnect_count += 1
-          self.logger.info("Reconnecting in 30 seconds", attempt=self.reconnect_count + 1)
+          if not self.stopped:
+            self.reconnect_count += 1
+            self.logger.info("Reconnecting in 30 seconds", attempt=self.reconnect_count + 1)
 
-          try:
-            await asyncio.sleep(30)
-          except asyncio.CancelledError:
-            self.logger.info("Reconnection wait interrupted")
-            break
-
+            try:
+              await asyncio.sleep(30)
+            except asyncio.CancelledError:
+              self.logger.info("Reconnection wait interrupted")
+              break
       self.logger.info("RTSP transcription client stopped")
 
-  async def _transcription_worker(self) -> None:
-    """
-    Worker task that processes audio from the queue and performs transcription.
+  async def _streaming_processor_task(self) -> None:
+    """New task to run the streaming transcription processor"""
+    try:
+      await self.processor.start_processing()
+    except Exception:
+      self.logger.exception("Streaming processor failed")
 
-    Continuously pulls audio chunks from the queue, accumulates them using
-    AudioBuffer, and performs transcription when enough audio is available.
-    """
-    self.logger.info("Starting transcription worker")
-
+  async def _feed_audio_to_buffer(self) -> None:
+    """New task to feed audio from source to buffer"""
     try:
       while not self.stopped:
-        try:
-          # Get audio chunk from queue with timeout
-          chunk = await asyncio.wait_for(self.audio_queue.get(), timeout=1.0)
+        audio_array = await self.audio_source.read_audio()
 
-          # Add to buffer and check if ready for transcription
-          audio_array = self.audio_buffer.add_chunk(chunk)
-
-          if audio_array is not None:
-            # We have enough audio data - transcribe it
-            await self._transcribe_audio_chunk(audio_array)
-
-        except asyncio.TimeoutError:
-          # No audio data available - continue loop
-          continue
-        except asyncio.CancelledError:
-          self.logger.debug("Transcription worker cancelled")
+        if audio_array is None:
           break
-        except Exception:
-          self.transcription_errors += 1
-          self.logger.exception(
-            "Error in transcription worker", error_count=self.transcription_errors
-          )
-          # Brief pause to avoid tight error loops
-          await asyncio.sleep(0.1)
 
-      # Process any remaining audio on shutdown
-      remaining_audio = self.audio_buffer.get_remaining_audio()
-      if remaining_audio is not None:
-        await self._transcribe_audio_chunk(remaining_audio)
+        if len(audio_array) > 0:
+          self.processor.add_audio_frames(audio_array)
 
     except Exception:
-      self.logger.exception("Fatal error in transcription worker")
-    finally:
-      self.logger.info(
-        "Transcription worker stopped",
-        transcriptions_completed=self.transcriptions_completed,
-        transcription_errors=self.transcription_errors,
-      )
-
-  async def _transcribe_audio_chunk(self, audio_array: np.ndarray) -> None:
-    """
-    Transcribe a single audio chunk using the shared model.
-
-    Args:
-        audio_array: Audio data as numpy array, normalized to [-1.0, 1.0]
-    """
-    try:
-      duration = len(audio_array) / 16000  # 16kHz sample rate
-      self.logger.debug("Transcribing audio chunk", duration_seconds=f"{duration:.2f}")
-
-      # Perform transcription in background thread to avoid blocking
-      result, info = await asyncio.to_thread(self.transcriber.transcribe_audio, audio_array)
-
-      # Handle transcription results
-      if result:
-        segments = list(result)  # Convert generator to list
-        if segments:
-          # Log transcription results (for now)
-          for segment in segments:
-            segment_text = getattr(segment, "text", "").strip()
-            if segment_text:
-              segment_start = getattr(segment, "start", 0)
-              segment_end = getattr(segment, "end", duration)
-
-              self.logger.info(
-                "Transcription result",
-                stream=self.stream_name,
-                text=segment_text,
-                start=f"{segment_start:.2f}s",
-                end=f"{segment_end:.2f}s",
-                duration=f"{duration:.2f}s",
-              )
-        else:
-          self.logger.debug("No transcription segments produced")
-      else:
-        self.logger.debug("Transcription returned no result")
-
-      self.transcriptions_completed += 1
-
-      # Log progress periodically
-      if self.transcriptions_completed % 10 == 0:
-        self.logger.debug(
-          "Transcription progress",
-          completed=self.transcriptions_completed,
-          errors=self.transcription_errors,
-        )
-
-    except Exception:
-      self.transcription_errors += 1
-      self.logger.exception("Failed to transcribe audio chunk")
+      self.logger.exception("Audio feeding task failed")
 
   async def stop(self) -> None:
-    """
-    Enhanced stop method that also cancels transcription task.
-
-    Extends parent stop() to properly clean up transcription worker.
-    """
+    """Enhanced stop with new component cleanup"""
     if self.stopped:
-      self.logger.debug("Stop called but client already stopped")
       return
 
     self.logger.info("Stopping RTSP transcription client")
     self.stopped = True
 
-    # Cancel transcription task if running
-    if self.transcription_task and not self.transcription_task.done():
-      self.logger.debug("Cancelling transcription task")
-      self.transcription_task.cancel()
-      try:
-        await self.transcription_task
-      except asyncio.CancelledError:
-        pass
+    await self.processor.stop_processing()
+    self.audio_source.close()
 
-    # Clean up FFmpeg process
     await self._cleanup_process()
-
     self.logger.info("RTSP transcription client shutdown complete")

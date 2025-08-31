@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import yaml
@@ -119,3 +120,18 @@ class RTSPConfig:
     )
 
     return validated_streams
+
+
+def get_env_float(key: str, default: float) -> float:
+  """Get a float from an environment variable."""
+  return float(os.getenv(key, str(default)))
+
+
+def get_env_int(key: str, default: int) -> int:
+  """Get an int from an environment variable."""
+  return int(os.getenv(key, str(default)))
+
+
+def get_env_bool(key: str, default: bool) -> bool:
+  """Get a bool from an environment variable."""
+  return os.getenv(key, str(default)).lower() == "true"
