@@ -323,28 +323,46 @@ class StreamingTranscriptionProcessor:
       segments=result_count,
     )
 
-    segments: list[dict] = []
     if len(result):
       self.logger.debug("Processing transcription segments")
-      last_segment = self._update_segments(result, duration)
-      segments = self._prepare_segments(last_segment)
-      self.logger.debug("Prepared segments for client", segment_count=len(segments))
+      # Update internal transcript (for translation queue, etc.)
+      self._update_segments(result, duration)
 
-    if len(segments):
-      self.logger.debug("Sending segments to client", segment_count=len(segments))
+      # Mark segments as completed/incomplete based on position
+      # Typically all segments except the last are completed
+      segments_for_client = []
+      for i, segment in enumerate(result):
+        # Create a copy and set the completed field
+        segment_copy = Segment(
+          id=segment.id,
+          seek=segment.seek,
+          start=segment.start,
+          end=segment.end,
+          text=segment.text,
+          tokens=segment.tokens,
+          avg_logprob=segment.avg_logprob,
+          compression_ratio=segment.compression_ratio,
+          no_speech_prob=segment.no_speech_prob,
+          words=segment.words,
+          temperature=segment.temperature,
+          completed=i < len(result) - 1,  # All but last segment are completed
+        )
+        segments_for_client.append(segment_copy)
+
+      # Send rich Segment objects to client
       transcription_result = TranscriptionResult(
-        segments=segments,
+        segments=segments_for_client,
         language=self.language,
       )
+      self.logger.debug("Sending segments to client", segment_count=len(segments_for_client))
       await self.sink.send_result(transcription_result)
     else:
       self.logger.debug("No segments to send to client")
 
-  def _update_segments(self, segments: list[Segment], duration: float) -> dict | None:
+  def _update_segments(self, segments: list[Segment], duration: float) -> None:
     """Process segments and update transcript."""
     offset: float | None = None
     self.current_out = ""
-    last_segment: dict | None = None
 
     # Process complete segments
     if len(segments) > 1 and segments[-1].no_speech_prob <= self.config.no_speech_thresh:
@@ -371,12 +389,6 @@ class StreamingTranscriptionProcessor:
     # Process last segment
     if segments[-1].no_speech_prob <= self.config.no_speech_thresh:
       self.current_out += segments[-1].text
-      last_segment = self._format_segment(
-        self.buffer.timestamp_offset + segments[-1].start,
-        self.buffer.timestamp_offset + min(duration, segments[-1].end),
-        self.current_out,
-        completed=False,
-      )
 
     # Handle repeated output
     if self.current_out.strip() == self.prev_out.strip() and self.current_out != "":
@@ -409,15 +421,12 @@ class StreamingTranscriptionProcessor:
       self.current_out = ""
       offset = min(duration, self.end_time_for_same_output)  # type: ignore
       self.same_output_count = 0
-      last_segment = None
       self.end_time_for_same_output = None
     else:
       self.prev_out = self.current_out
 
     if offset is not None:
       self.buffer.advance_processed_boundary(offset)
-
-    return last_segment
 
   def _prepare_segments(self, last_segment: dict | None = None) -> list[dict]:
     """Prepare segments for client."""

@@ -152,17 +152,17 @@ class RTSPTranscriptionSink(TranscriptionSink):
     incomplete_segments = []
 
     for segment in result.segments:
-      if segment.get("text", "").strip():
-        if segment.get("completed", False):
+      if segment.text.strip():
+        if segment.completed:
           completed_segments.append(segment)
         else:
           incomplete_segments.append(segment)
 
     # Log concatenated completed segments as single entry
     if completed_segments:
-      concatenated_text = " ".join(seg["text"].strip() for seg in completed_segments)
-      start_time = min(seg["start"] for seg in completed_segments)
-      end_time = max(seg["end"] for seg in completed_segments)
+      concatenated_text = " ".join(seg.text.strip() for seg in completed_segments)
+      start_time = min(seg.start for seg in completed_segments)
+      end_time = max(seg.end for seg in completed_segments)
 
       self.logger.info(
         "Transcription result",
@@ -177,9 +177,9 @@ class RTSPTranscriptionSink(TranscriptionSink):
     for segment in incomplete_segments:
       self.logger.info(
         "Transcription result",
-        text=segment["text"].strip(),
-        start=segment["start"],
-        end=segment["end"],
+        text=segment.text.strip(),
+        start=segment.start,
+        end=segment.end,
         completed=False,
         transcription_number=self.transcription_count,
       )

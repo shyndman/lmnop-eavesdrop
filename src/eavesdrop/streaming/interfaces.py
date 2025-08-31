@@ -10,12 +10,14 @@ from typing import Protocol
 
 import numpy as np
 
+from eavesdrop.transcription.models import Segment
+
 
 @dataclass
 class TranscriptionResult:
   """Structured transcription result containing segments and metadata."""
 
-  segments: list[dict]
+  segments: list[Segment]
   """List of transcription segments with timing and text information."""
 
   language: str | None = None

@@ -56,6 +56,7 @@ class Segment:
   no_speech_prob: float
   words: list[Word] | None
   temperature: float | None
+  completed: bool = False
 
 
 @dataclass
