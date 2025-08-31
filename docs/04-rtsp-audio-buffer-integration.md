@@ -366,6 +366,207 @@ test_rtsp_performance.py           # Latency and accuracy comparison
 3. **Enhanced monitoring**: New metrics for buffer and processor health
 4. **Clean architecture**: No legacy fallback mechanisms, simplified codebase
 
+## Critical Implementation Notes
+
+### RTSP Implementation Requirements from WebSocket Integration
+
+#### 1. Use High-Level Client Facade Pattern
+**What to do**: Create RTSPTranscriptionClient as a single facade that coordinates all components internally.
+
+```python
+# RTSPClientManager.add_stream() pattern:
+client = RTSPTranscriptionClient(stream_name, rtsp_url, transcriber)
+completion_task = await client.start()  
+await self.set_client(stream_name, client, completion_task)
+```
+
+#### 2. Replace All Polling with Task Coordination
+**What to do**: Use `asyncio.wait(tasks, return_when=FIRST_COMPLETED)` instead of `await asyncio.sleep()` loops.
+
+```python
+# Required pattern for RTSP:
+tasks = [ffmpeg_task, audio_task, transcription_task]
+done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+for task in pending:
+    task.cancel()
+```
+
+#### 3. Implement Protocols with Structural Typing
+**What to do**: RTSPAudioSource and RTSPTranscriptionSink must implement existing Protocol interfaces.
+
+```python
+class RTSPAudioSource:  # Implicitly implements AudioSource Protocol
+    async def read_audio(self) -> np.ndarray | None:
+        # Convert FFmpeg bytes to numpy float32
+        
+class RTSPTranscriptionSink:  # Implicitly implements TranscriptionSink Protocol  
+    async def send_result(self, result: TranscriptionResult) -> None:
+        # Log structured transcription results
+```
+
+#### 4. Use StreamingTranscriptionProcessor Directly
+**What to do**: Don't create separate transcriber abstractions. Use the existing processor with RTSP-specific source/sink.
+
+```python
+# RTSPTranscriptionClient.__init__():
+self.processor = StreamingTranscriptionProcessor(
+    transcriber=transcriber,
+    buffer=AudioStreamBuffer(buffer_config),
+    sink=RTSPTranscriptionSink(stream_name),
+    config=transcription_config
+)
+```
+
+### Key Lessons from WebSocket Integration
+
+#### 1. Type Safety Requirements
+```python
+# CRITICAL: Whisper transcriber returns Iterable[Segment], not list
+# Must convert immediately to avoid type errors
+def _transcribe_audio(self, input_sample: np.ndarray) -> tuple[list[Segment] | None, TranscriptionInfo | None]:
+    result, info = self.transcriber.transcribe(...)
+    # MUST convert Iterable to list immediately
+    result_list = list(result) if result else None
+    return result_list, info
+```
+
+**RTSP Implication**: The RTSPTranscriptionClient will need identical type handling. Do NOT assume transcriber returns list directly.
+
+#### 2. Integrated Transcriber Architecture
+The original plan suggested a separate transcriber abstraction, but we found it cleaner to integrate the Faster Whisper functionality directly into `StreamingTranscriptionProcessor`. 
+
+**RTSP Recommendation**: Follow the same pattern - integrate model management directly into the processor rather than creating another abstraction layer.
+
+#### 3. Audio Format Conversion Chain
+```python
+# WebSocket: Float32 normalized [-1.0, 1.0] from client
+# RTSP FFmpeg: 16-bit signed PCM little-endian (s16le)
+# Whisper: Expects float32 normalized [-1.0, 1.0]
+
+# CRITICAL conversion in RTSPAudioSource:
+audio_array = np.frombuffer(chunk, dtype=np.int16)  # FFmpeg bytes
+audio_array = audio_array.astype(np.float32) / 32768.0  # Normalize for Whisper
+```
+
+**RTSP Requirement**: Must ensure proper 16-bit PCM → float32 conversion. Test with multiple FFmpeg output formats.
+
+#### 4. Lifecycle Management Complexity
+The WebSocket integration revealed that lifecycle management is more complex than anticipated:
+
+```python
+# WebSocketStreamingClient lifecycle:
+async def start(self):
+    await self.processor.initialize()  # Model loading
+    self._processing_task = asyncio.create_task(self.processor.start_processing())
+    self._audio_task = asyncio.create_task(self._audio_ingestion_loop())
+
+async def stop(self):
+    self._exit = True
+    await self.processor.stop_processing()
+    # Must cancel and await all tasks
+    if self._processing_task and not self._processing_task.done():
+        self._processing_task.cancel()
+        await self._processing_task
+```
+
+**RTSP Critical**: The RTSPTranscriptionClient must handle:
+- Model initialization before starting FFmpeg
+- Graceful shutdown of both FFmpeg AND transcription tasks
+- Task cancellation without leaving orphaned processes
+
+#### 5. Use Same Configuration Classes
+**What to do**: Use identical BufferConfig and TranscriptionConfig with RTSP-specific defaults.
+
+- Buffer: 0.25s minimum chunks (not 1.0s), 45s/30s cleanup
+- Use RTSP-specific environment variables for different defaults
+
+#### 6. Use Completion Task Pattern
+**What to do**: Eliminate FFmpeg process management from RTSPClientManager. Clients manage their own processes.
+
+```python
+# RTSPClientManager pattern:
+completion_task = self.get_completion_task(stream_name)
+if completion_task and completion_task.done():
+    # Client finished - clean up
+```
+
+#### 7. Handle Model Loading Failures
+**What to do**: Model initialization failure must stop client creation entirely.
+
+```python
+try:
+    await self.processor.initialize()
+except Exception:
+    self.logger.exception("Failed to initialize processor")
+    raise  # Stop client creation
+```
+
+#### 8. Follow Python Type and Error Handling Patterns
+**What to do**: Use these specific Python patterns from the WebSocket implementation:
+
+```python
+# ALWAYS type everything, NEVER use Any
+class RTSPAudioSource:
+    def __init__(self, audio_queue: asyncio.Queue[bytes]) -> None:
+        self.audio_queue: asyncio.Queue[bytes] = audio_queue
+        self.closed: bool = False
+    
+    async def read_audio(self) -> np.ndarray | None:  # Use A | B union syntax
+        # Type guards for None checks
+        if audio_data is not None:
+            return audio_data
+        return None
+
+# Protocol inheritance must be explicit
+class RTSPTranscriptionSink(TranscriptionSink, Protocol):
+    async def send_result(self, result: TranscriptionResult) -> None:
+        try:
+            # transcription work
+        except Exception:
+            self.logger.exception("Transcription failed")  # Use .exception(), not .error()
+```
+
+#### 9. Test Threading Interactions
+**What to do**: Single model mode creates shared locks between WebSocket and RTSP processors.
+
+- Test mixed WebSocket/RTSP workloads carefully
+- Consider disabling single model mode for RTSP initially
+- WebSocket and RTSP processors share `SINGLE_MODEL_LOCK`
+
+### Testing Strategy Updates
+
+Based on WebSocket implementation challenges:
+
+#### 1. Type Safety Testing
+```python
+def test_transcription_result_types():
+    # Verify Iterable[Segment] → list[Segment] conversion
+    # Test with empty results, single segment, multiple segments
+    
+def test_audio_format_conversion():
+    # Test 16-bit PCM → float32 conversion accuracy
+    # Verify no clipping, proper normalization
+```
+
+#### 2. Lifecycle Testing
+```python
+async def test_initialization_failure():
+    # Test model loading failure handling
+    # Verify client stops gracefully on init failure
+    
+async def test_shutdown_sequence():
+    # Test that all tasks are properly cancelled
+    # Verify no orphaned FFmpeg processes
+```
+
+#### 3. Long-Running Integration Tests
+```python
+async def test_24_hour_stream():
+    # Monitor memory usage over time
+    # Verify buffer cleanup behavior
+    # Test with various stream qualities
+```
+
 ## Expected Benefits
 
 ### Performance Improvements
