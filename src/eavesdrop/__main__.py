@@ -40,13 +40,6 @@ async def main():
     help="Path to the RTSP streams config file. (Env: EAVESDROP_CONFIG)",
   )
   parser.add_argument(
-    "--backend",
-    "-b",
-    type=str,
-    default=get_env_or_default("EAVESDROP_BACKEND", "faster_whisper"),
-    help='Backend: "faster_whisper" (Env: EAVESDROP_BACKEND)',
-  )
-  parser.add_argument(
     "--faster_whisper_custom_model_path",
     "-fw",
     type=str,
@@ -129,7 +122,6 @@ async def main():
   logger.info(
     "Starting Eavesdrop Server",
     port=args.port,
-    backend=args.backend,
     max_clients=args.max_clients,
     cache_path=args.cache_path,
     debug_audio_enabled=bool(args.debug_audio_path),
@@ -139,7 +131,6 @@ async def main():
   await server.run(
     "0.0.0.0",
     port=args.port,
-    backend=args.backend,
     faster_whisper_custom_model_path=args.faster_whisper_custom_model_path,
     single_model=not args.no_single_model,
     max_clients=args.max_clients,

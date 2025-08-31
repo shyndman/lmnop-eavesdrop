@@ -1,7 +1,6 @@
 import asyncio
 import json
 import os
-from enum import Enum
 
 import numpy as np
 from websockets.exceptions import ConnectionClosed, InvalidMessage
@@ -13,21 +12,6 @@ from .logs import get_logger
 from .rtsp_manager import RTSPClientManager
 from .rtsp_models import RTSPModelManager
 from .websocket import ClientManager, WebSocketServer
-
-
-class BackendType(Enum):
-  FASTER_WHISPER = "faster_whisper"
-
-  @staticmethod
-  def valid_types() -> list[str]:
-    return [backend_type.value for backend_type in BackendType]
-
-  @staticmethod
-  def is_valid(backend: str) -> bool:
-    return backend in BackendType.valid_types()
-
-  def is_faster_whisper(self) -> bool:
-    return self == BackendType.FASTER_WHISPER
 
 
 class TranscriptionServer:
@@ -49,50 +33,41 @@ class TranscriptionServer:
     options,
     faster_whisper_custom_model_path,
   ):
-    self.logger.debug(
-      f"initialize_client: Starting initialization for client {options['uid']} with "
-      f"backend: {self.backend.value}"
-    )
-    client = None
+    self.logger.debug(f"initialize_client: Starting initialization for client {options['uid']}")
 
     try:
-      if self.backend.is_faster_whisper():
-        self.logger.debug("initialize_client: Initializing faster_whisper backend")
+      self.logger.debug("initialize_client: Initializing faster_whisper client")
 
-        if faster_whisper_custom_model_path is not None:
-          self.logger.info(
-            f"initialize_client: Using custom model {faster_whisper_custom_model_path}"
-          )
-          options["model"] = faster_whisper_custom_model_path
-
-        self.logger.debug("initialize_client: Creating faster_whisper client")
-        client = ServeClientFasterWhisper(
-          websocket,
-          language=options["language"],
-          task=options["task"],
-          client_uid=options["uid"],
-          model=options["model"],
-          initial_prompt=options.get("initial_prompt"),
-          vad_parameters=options.get("vad_parameters"),
-          use_vad=self.use_vad,
-          single_model=self.single_model,
-          send_last_n_segments=options.get("send_last_n_segments", 10),
-          no_speech_thresh=options.get("no_speech_thresh", 0.45),
-          clip_audio=options.get("clip_audio", False),
-          same_output_threshold=options.get("same_output_threshold", 10),
-          cache_path=self.cache_path,
-          device_index=self.device_index,
+      if faster_whisper_custom_model_path is not None:
+        self.logger.info(
+          f"initialize_client: Using custom model {faster_whisper_custom_model_path}"
         )
-        await client.initialize()
-        self.logger.info("initialize_client: Running faster_whisper backend.")
-        self.logger.debug("initialize_client: faster_whisper client created successfully")
+        options["model"] = faster_whisper_custom_model_path
+
+      self.logger.debug("initialize_client: Creating faster_whisper client")
+      client = ServeClientFasterWhisper(
+        websocket,
+        language=options["language"],
+        task=options["task"],
+        client_uid=options["uid"],
+        model=options["model"],
+        initial_prompt=options.get("initial_prompt"),
+        vad_parameters=options.get("vad_parameters"),
+        use_vad=self.use_vad,
+        single_model=self.single_model,
+        send_last_n_segments=options.get("send_last_n_segments", 10),
+        no_speech_thresh=options.get("no_speech_thresh", 0.45),
+        clip_audio=options.get("clip_audio", False),
+        same_output_threshold=options.get("same_output_threshold", 10),
+        cache_path=self.cache_path,
+        device_index=self.device_index,
+      )
+      await client.initialize()
+      self.logger.info("initialize_client: Running faster_whisper.")
+      self.logger.debug("initialize_client: faster_whisper client created successfully")
     except Exception:
       self.logger.exception("initialize_client: Error creating faster_whisper client")
       return None
-
-    if client is None:
-      self.logger.error(f"initialize_client: Client is None for backend {self.backend.value}")
-      raise ValueError(f"Backend type {self.backend.value} not recognised or not handled.")
 
     self.logger.debug("initialize_client: Client created successfully")
 
@@ -237,14 +212,12 @@ class TranscriptionServer:
   async def recv_audio(
     self,
     websocket,
-    backend: BackendType = BackendType.FASTER_WHISPER,
     faster_whisper_custom_model_path=None,
   ):
     """
     Receive audio chunks from a client in an infinite loop.
     """
-    self.logger.debug(f"recv_audio: Starting for backend {backend.value}")
-    self.backend = backend
+    self.logger.debug("recv_audio: Starting")
 
     self.logger.debug("recv_audio: About to handle new connection")
     client = await self.handle_new_connection(
@@ -291,7 +264,6 @@ class TranscriptionServer:
     self,
     host,
     port=9090,
-    backend="faster_whisper",
     faster_whisper_custom_model_path=None,
     single_model=False,
     max_clients=4,
@@ -322,23 +294,18 @@ class TranscriptionServer:
         self.single_model = True
       else:
         self.logger.info("Single model mode currently only works with custom models.")
-    if not BackendType.is_valid(backend):
-      raise ValueError(
-        f"{backend} is not a valid backend type. Choose backend from {BackendType.valid_types()}"
-      )
 
     # Load and initialize RTSP streams if config provided
     if config:
       rtsp_streams = await self._load_rtsp_config(config)
       if rtsp_streams:
         await self._initialize_rtsp_streams(
-          rtsp_streams, backend, faster_whisper_custom_model_path, single_model, cache_path
+          rtsp_streams, faster_whisper_custom_model_path, single_model, cache_path
         )
 
     async def connection_handler(websocket):
       await self.recv_audio(
         websocket,
-        backend=BackendType(backend),
         faster_whisper_custom_model_path=faster_whisper_custom_model_path,
       )
 
@@ -405,7 +372,6 @@ class TranscriptionServer:
   async def _initialize_rtsp_streams(
     self,
     rtsp_streams: dict[str, str],
-    backend: str,
     faster_whisper_custom_model_path: str | None,
     single_model: bool,
     cache_path: str,
@@ -415,7 +381,6 @@ class TranscriptionServer:
 
     Args:
         rtsp_streams: Dictionary of stream names to RTSP URLs
-        backend: Backend type for transcription
         faster_whisper_custom_model_path: Custom model path if provided
         single_model: Whether to use single model mode
         cache_path: Path for model caching
@@ -425,7 +390,6 @@ class TranscriptionServer:
 
       # Create backend parameters for model manager
       backend_params = {
-        "backend": backend,
         "faster_whisper_custom_model_path": faster_whisper_custom_model_path,
         "single_model": single_model,
         "cache_path": cache_path,
