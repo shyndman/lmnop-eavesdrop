@@ -61,8 +61,6 @@ The main orchestrator that coordinates all components and manages the server lif
 - Resource cleanup and graceful shutdown
 
 **Key Features:**
-- Max client limit enforcement (default: 4 clients)
-- Connection timeout management (default: 300s)
 - Debug audio capture capability
 - Single model mode support for resource efficiency
 
@@ -358,8 +356,6 @@ All command-line arguments have environment variable equivalents:
 
 - `EAVESDROP_PORT` (default: 9090)
 - `EAVESDROP_BACKEND` (default: faster_whisper)  
-- `EAVESDROP_MAX_CLIENTS` (default: 4)
-- `EAVESDROP_MAX_CONNECTION_TIME` (default: 300)
 - `EAVESDROP_CACHE_PATH` (default: /app/.cache/eavesdrop/)
 - `JSON_LOGS` - Enable structured JSON logging
 - `LOG_LEVEL` (default: INFO)
