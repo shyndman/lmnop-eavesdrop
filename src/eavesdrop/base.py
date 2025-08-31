@@ -1,4 +1,3 @@
-import asyncio
 import json
 import queue
 import threading
@@ -62,57 +61,6 @@ class ServeClientBase(object):
 
     # threading
     self.lock = threading.Lock()
-
-  async def speech_to_text(self):
-    """
-    Process an audio stream in an infinite loop, continuously transcribing the speech.
-
-    This method continuously receives audio frames, performs real-time transcription, and sends
-    transcribed segments to the client via a WebSocket connection.
-
-    If the client's language is not detected, it waits for 30 seconds of audio input to make a
-    language prediction. It utilizes the Whisper ASR model to transcribe the audio, continuously
-    processing and streaming results. Segments are sent to the client in real-time, and a history
-    of segments is maintained to provide context.
-
-    Raises:
-        Exception: If there is an issue with audio processing or WebSocket communication.
-
-    """
-    while True:
-      if self.exit:
-        self.logger.info("Exiting speech to text thread")
-        break
-
-      if self.frames_np is None:
-        await asyncio.sleep(0.1)
-        continue
-
-      if self.clip_audio:
-        self.clip_audio_if_no_valid_segment()
-
-      input_bytes, duration = self.get_audio_chunk_for_processing()
-      if duration < 1.0:
-        await asyncio.sleep(0.1)  # wait for audio chunks to arrive
-        continue
-      try:
-        input_sample = input_bytes.copy()
-        result, info = await asyncio.to_thread(self.transcribe_audio, input_sample)
-
-        if self.language is None and info is not None:
-          await self.set_language(info)
-
-        if result is None:
-          self.timestamp_offset += duration
-          await asyncio.sleep(
-            0.25
-          )  # wait for voice activity, result is None when no voice activity
-          continue
-        await self.handle_transcription_output(result, duration)
-
-      except Exception:
-        self.logger.exception("Failed to transcribe audio chunk")
-        await asyncio.sleep(0.01)
 
   def transcribe_audio(self, input_sample: np.ndarray):
     raise NotImplementedError

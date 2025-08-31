@@ -15,14 +15,14 @@ from .streaming import (
   TranscriptionConfig,
   WebSocketStreamingClient,
 )
-from .websocket import ClientManager, WebSocketServer
+from .websocket import WebSocketClientManager, WebSocketServer
 
 
 class TranscriptionServer:
   RATE = 16000
 
   def __init__(self):
-    self.client_manager = ClientManager(10, 60)
+    self.client_manager = WebSocketClientManager(10, 60)
     self.no_voice_activity_chunks = 0
     self.use_vad = True
     self.single_model = False
@@ -258,7 +258,7 @@ class TranscriptionServer:
     self.debug_audio_path = debug_audio_path
     self.debug_audio_files = {}  # websocket -> (file_handle, filename)
 
-    self.client_manager = ClientManager(max_clients, max_connection_time)
+    self.client_manager = WebSocketClientManager(max_clients, max_connection_time)
     if faster_whisper_custom_model_path is not None and not os.path.exists(
       faster_whisper_custom_model_path
     ):

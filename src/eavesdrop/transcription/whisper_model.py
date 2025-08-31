@@ -367,7 +367,7 @@ class WhisperModel:
       multilingual=multilingual,
       max_new_tokens=None,
       hallucination_silence_threshold=None,
-      hotwords="Scott Hilary Bang",
+      hotwords="Bang",
     )
 
     segments = self.generate_segments(features, tokenizer, options, False, encoder_output)

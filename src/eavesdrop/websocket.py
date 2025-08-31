@@ -9,11 +9,11 @@ from websockets.exceptions import ConnectionClosed, InvalidMessage
 from .logs import get_logger
 
 
-class ClientManager:
+class WebSocketClientManager:
   def __init__(self, max_clients=4, max_connection_time=600):
     """
-    Initializes the ClientManager with specified limits on client connections and connection
-    durations.
+    Initializes the WebSocketClientManager with specified limits on client connections and
+    connection durations.
 
     max_clients: The maximum number of simultaneous client connections allowed. Set to 0 or None for
       no limit.
@@ -24,7 +24,7 @@ class ClientManager:
     self.start_times = {}
     self.max_clients = max_clients
     self.max_connection_time = max_connection_time
-    self.logger = get_logger("client_manager")
+    self.logger = get_logger("websocket_client_manager")
 
   def add_client(self, websocket, client):
     """

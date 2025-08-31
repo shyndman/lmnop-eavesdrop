@@ -11,7 +11,7 @@ class RTSPClientManager:
 
   Provides centralized management of multiple RTSP streams, handling their
   lifecycle, health monitoring, and graceful shutdown. Mirrors the pattern
-  used by ClientManager for WebSocket clients.
+  used by WebSocketClientManager for WebSocket clients.
   """
 
   def __init__(self, model_manager: RTSPModelManager):

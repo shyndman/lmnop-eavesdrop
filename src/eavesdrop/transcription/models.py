@@ -1,6 +1,5 @@
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import NotRequired, Required, TypedDict
-from warnings import warn
 
 from faster_whisper.vad import VadOptions
 
@@ -43,14 +42,6 @@ class Word:
   word: str
   probability: float
 
-  def _asdict(self):
-    warn(
-      "Word._asdict() method is deprecated, use dataclasses.asdict(Word) instead",
-      DeprecationWarning,
-      2,
-    )
-    return asdict(self)
-
 
 @dataclass
 class Segment:
@@ -65,14 +56,6 @@ class Segment:
   no_speech_prob: float
   words: list[Word] | None
   temperature: float | None
-
-  def _asdict(self):
-    warn(
-      "Segment._asdict() method is deprecated, use dataclasses.asdict(Segment) instead",
-      DeprecationWarning,
-      2,
-    )
-    return asdict(self)
 
 
 @dataclass
