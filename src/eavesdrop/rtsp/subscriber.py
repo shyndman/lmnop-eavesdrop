@@ -5,10 +5,15 @@ Handles WebSocket clients that subscribe to transcription results from named RTS
 rather than sending audio for transcription.
 """
 
+from typing import TYPE_CHECKING
+
 from websockets.asyncio.server import ServerConnection
 
-from .logs import get_logger
-from .messages import ErrorMessage, OutboundMessage, StreamStatusMessage, TranscriptionMessage
+from ..logs import get_logger
+from ..messages import ErrorMessage, OutboundMessage, StreamStatusMessage, TranscriptionMessage
+
+if TYPE_CHECKING:
+  from .cache import RTSPTranscriptionCache
 
 
 class RTSPSubscriberManager:
@@ -19,14 +24,18 @@ class RTSPSubscriberManager:
   WebSocket subscriber at a time.
   """
 
-  def __init__(self, available_streams: set[str]) -> None:
+  def __init__(
+    self, available_streams: set[str], transcription_cache: RTSPTranscriptionCache
+  ) -> None:
     """
     Initialize the RTSP subscriber manager.
 
     Args:
         available_streams: Set of available RTSP stream names
+        transcription_cache: Cache for storing and retrieving transcription history
     """
     self.available_streams = available_streams
+    self.transcription_cache = transcription_cache
     self.stream_subscribers: dict[str, ServerConnection] = {}
     self.subscriber_streams: dict[ServerConnection, set[str]] = {}
     self.logger = get_logger("rtsp_subscriber_manager")
@@ -104,11 +113,16 @@ class RTSPSubscriberManager:
     for stream_name in valid_streams:
       self.stream_subscribers[stream_name] = websocket
 
+    # Update cache and send history
+    await self._update_cache_listener_presence(valid_streams, True)
+    history_count = await self._send_buffered_history(websocket, valid_streams)
+
     self.logger.info(
       "Client subscribed successfully",
       client=id(websocket),
       streams=valid_streams,
       disconnected_previous=len(disconnected_clients),
+      history_messages_sent=history_count,
     )
 
     return True, None
@@ -128,6 +142,9 @@ class RTSPSubscriberManager:
     self.logger.info(
       "Unsubscribing client from RTSP streams", client=id(websocket), streams=list(stream_names)
     )
+
+    # Update cache listener presence for unsubscribed streams
+    await self._update_cache_listener_presence(list(stream_names), False)
 
     # Remove from stream mappings
     for stream_name in stream_names:
@@ -253,3 +270,53 @@ class RTSPSubscriberManager:
         id(websocket): list(streams) for websocket, streams in self.subscriber_streams.items()
       },
     }
+
+  async def _update_cache_listener_presence(
+    self, stream_names: list[str], has_listeners: bool
+  ) -> None:
+    """Update listener presence in cache for the specified streams."""
+    for stream_name in stream_names:
+      try:
+        await self.transcription_cache.update_listener_presence(stream_name, has_listeners)
+      except Exception as e:
+        self.logger.warning(
+          "Failed to update cache listener presence",
+          stream=stream_name,
+          has_listeners=has_listeners,
+          error=str(e),
+        )
+
+  async def _send_buffered_history(
+    self, websocket: ServerConnection, stream_names: list[str]
+  ) -> int:
+    """Send buffered transcription history to a subscriber. Returns count of messages sent."""
+    total_sent = 0
+
+    for stream_name in stream_names:
+      try:
+        recent_messages = await self.transcription_cache.get_recent_messages(stream_name)
+
+        for message in recent_messages:
+          try:
+            message_json = message.model_dump_json()
+            await websocket.send(message_json)
+            total_sent += 1
+          except Exception as e:
+            self.logger.warning(
+              "Failed to send history message to subscriber",
+              stream=stream_name,
+              client=id(websocket),
+              error=str(e),
+            )
+            # Return early if websocket is broken
+            return total_sent
+
+      except Exception as e:
+        self.logger.warning(
+          "Failed to retrieve history for stream",
+          stream=stream_name,
+          client=id(websocket),
+          error=str(e),
+        )
+
+    return total_sent

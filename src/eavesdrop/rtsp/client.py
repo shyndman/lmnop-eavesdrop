@@ -4,18 +4,19 @@ from typing import TYPE_CHECKING
 import numpy as np
 import structlog
 
-from .config import get_env_bool, get_env_float
-from .logs import get_logger
+from ..config import get_env_bool, get_env_float
+from ..logs import get_logger
 
 if TYPE_CHECKING:
+  from .cache import RTSPTranscriptionCache
   from .subscriber import RTSPSubscriberManager
-from .streaming.buffer import AudioStreamBuffer, BufferConfig
-from .streaming.interfaces import (
+from ..streaming.buffer import AudioStreamBuffer, BufferConfig
+from ..streaming.interfaces import (
   AudioSource,
   TranscriptionResult,
   TranscriptionSink,
 )
-from .streaming.processor import (
+from ..streaming.processor import (
   StreamingTranscriptionProcessor,
   TranscriptionConfig,
 )
@@ -139,21 +140,24 @@ class RTSPTranscriptionSink(TranscriptionSink):
     self,
     stream_name: str,
     subscriber_manager: "RTSPSubscriberManager",
+    transcription_cache: RTSPTranscriptionCache,
     logger_name: str = "rtsp_transcription",
   ) -> None:
     """
-    Initialize RTSP transcription sink with structured logging.
+    Initialize RTSP transcription sink with structured logging and caching.
 
     Args:
         stream_name: Unique identifier for the RTSP stream (used in log context).
         subscriber_manager: Manager for WebSocket subscribers that will receive
                            transcription results.
+        transcription_cache: Cache manager for storing transcription history.
         logger_name: Logger name for log routing and filtering.
     """
     self.stream_name: str = stream_name
     self.logger = get_logger(logger_name).bind(stream=stream_name)
     self.transcription_count: int = 0
     self.subscriber_manager = subscriber_manager
+    self.transcription_cache = transcription_cache
 
   async def send_result(self, result: TranscriptionResult) -> None:
     """Log transcription results and send to WebSocket subscribers if available."""
@@ -193,6 +197,25 @@ class RTSPTranscriptionSink(TranscriptionSink):
         start=segment.start,
         end=segment.end,
         completed=False,
+        transcription_number=self.transcription_count,
+      )
+
+    # Store transcription in cache for later retrieval by new subscribers
+    try:
+      await self.transcription_cache.add_transcription(
+        self.stream_name, result.segments, result.language
+      )
+
+      self.logger.debug(
+        "Stored transcription in cache",
+        transcription_number=self.transcription_count,
+        segments=len(result.segments),
+      )
+
+    except Exception as e:
+      self.logger.error(
+        "Failed to store transcription in cache",
+        error=str(e),
         transcription_number=self.transcription_count,
       )
 
@@ -664,6 +687,7 @@ class RTSPTranscriptionClient(RTSPClient):
     rtsp_url: str,
     transcription_config: TranscriptionConfig,
     subscriber_manager: "RTSPSubscriberManager",
+    transcription_cache: "RTSPTranscriptionCache",
   ):
     # Initialize parent with internal queue
     super().__init__(stream_name, rtsp_url, asyncio.Queue(maxsize=100))
@@ -682,7 +706,9 @@ class RTSPTranscriptionClient(RTSPClient):
     # Create abstracted components
     self.audio_source = RTSPAudioSource(self.audio_queue)
     self.stream_buffer = AudioStreamBuffer(buffer_config)
-    self.transcription_sink = RTSPTranscriptionSink(stream_name, subscriber_manager)
+    self.transcription_sink = RTSPTranscriptionSink(
+      stream_name, subscriber_manager, transcription_cache
+    )
     self.processor = StreamingTranscriptionProcessor(
       buffer=self.stream_buffer,
       sink=self.transcription_sink,

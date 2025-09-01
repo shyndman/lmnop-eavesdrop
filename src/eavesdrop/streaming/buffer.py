@@ -86,7 +86,7 @@ class AudioStreamBuffer:
     """
 
     # Thread synchronization
-    self.lock: threading.Lock = threading.Lock()
+    self.lock = threading.Lock()
     """Protects buffer state from concurrent access."""
 
   def add_frames(self, frame_np: np.ndarray) -> None:

@@ -10,13 +10,14 @@ from websockets.exceptions import ConnectionClosed, InvalidMessage
 from .config import EavesdropConfig, RTSPCacheConfig
 from .logs import get_logger
 from .messages import ClientType, ErrorMessage, WebSocketHeaders
-from .rtsp_manager import RTSPClientManager
+from .rtsp.cache import RTSPTranscriptionCache
+from .rtsp.manager import RTSPClientManager
+from .rtsp.subscriber import RTSPSubscriberManager
 from .streaming import (
   BufferConfig,
   TranscriptionConfig,
   WebSocketStreamingClient,
 )
-from .subscriber import RTSPSubscriberManager
 from .websocket import WebSocketClientManager, WebSocketServer
 
 
@@ -456,12 +457,17 @@ class TranscriptionServer:
     try:
       self.logger.info("Initializing RTSP transcription system")
 
-      # Create RTSP subscriber manager first
-      available_streams = set(rtsp_streams.keys())
-      self.subscriber_manager = RTSPSubscriberManager(available_streams)
+      # Create transcription cache
+      transcription_cache = RTSPTranscriptionCache(rtsp_cache_config)
 
-      # Create RTSP client manager with subscriber manager
-      self.rtsp_client_manager = RTSPClientManager(transcription_config, self.subscriber_manager)
+      # Create RTSP subscriber manager with cache
+      available_streams = set(rtsp_streams.keys())
+      self.subscriber_manager = RTSPSubscriberManager(available_streams, transcription_cache)
+
+      # Create RTSP client manager with subscriber manager and cache
+      self.rtsp_client_manager = RTSPClientManager(
+        transcription_config, self.subscriber_manager, transcription_cache
+      )
 
       self.logger.info("RTSP subscriber manager created", available_streams=list(available_streams))
 
