@@ -7,7 +7,7 @@ import numpy as np
 from websockets.asyncio.server import ServerConnection
 from websockets.exceptions import ConnectionClosed, InvalidMessage
 
-from .config import EavesdropConfig, RTSPCacheConfig
+from .config import EavesdropConfig, RTSPConfig
 from .logs import get_logger
 from .messages import ClientType, ErrorMessage, WebSocketHeaders
 from .rtsp.cache import RTSPTranscriptionCache
@@ -378,9 +378,8 @@ class TranscriptionServer:
     # Load and validate configuration file
     try:
       eavesdrop_config = EavesdropConfig(config_path)
-      rtsp_streams, self.transcription_config, rtsp_cache_config = (
-        eavesdrop_config.load_and_validate()
-      )
+      rtsp_config, self.transcription_config = eavesdrop_config.load_and_validate()
+
     except ValueError as e:
       self.logger.error("Configuration validation failed", error=str(e), config_path=config_path)
       self.logger.error(
@@ -399,9 +398,10 @@ class TranscriptionServer:
     self.client_manager = WebSocketClientManager()
 
     # Initialize RTSP streams if configured
-    if rtsp_streams:
+    if rtsp_config.streams:
       await self._initialize_rtsp_streams(
-        rtsp_streams, self.transcription_config, rtsp_cache_config
+        rtsp_config,
+        self.transcription_config,
       )
 
     async def connection_handler(websocket: ServerConnection) -> None:
@@ -442,26 +442,24 @@ class TranscriptionServer:
 
   async def _initialize_rtsp_streams(
     self,
-    rtsp_streams: dict[str, str],
+    rtsp_config: RTSPConfig,
     transcription_config: TranscriptionConfig,
-    rtsp_cache_config: RTSPCacheConfig,
   ) -> None:
     """
     Initialize RTSP client manager and subscriber manager.
 
     Args:
-        rtsp_streams: Dictionary of stream names to RTSP URLs
+        rtsp_config: RTSP configuration object
         transcription_config: Global transcription configuration
-        rtsp_cache_config: RTSP cache configuration
     """
     try:
       self.logger.info("Initializing RTSP transcription system")
 
       # Create transcription cache
-      transcription_cache = RTSPTranscriptionCache(rtsp_cache_config)
+      transcription_cache = RTSPTranscriptionCache(rtsp_config.cache)
 
       # Create RTSP subscriber manager with cache
-      available_streams = set(rtsp_streams.keys())
+      available_streams = set(rtsp_config.streams.keys())
       self.subscriber_manager = RTSPSubscriberManager(available_streams, transcription_cache)
 
       # Create RTSP client manager with subscriber manager and cache
@@ -472,7 +470,7 @@ class TranscriptionServer:
       self.logger.info("RTSP subscriber manager created", available_streams=list(available_streams))
 
       # Start all configured streams
-      await self.rtsp_client_manager.start_all_streams(rtsp_streams)
+      await self.rtsp_client_manager.start_all_streams(rtsp_config.streams)
 
       self.logger.info(
         "RTSP transcription system initialized",
