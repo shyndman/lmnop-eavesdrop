@@ -25,7 +25,7 @@ class RTSPSubscriberManager:
   """
 
   def __init__(
-    self, available_streams: set[str], transcription_cache: RTSPTranscriptionCache
+    self, available_streams: set[str], transcription_cache: "RTSPTranscriptionCache"
   ) -> None:
     """
     Initialize the RTSP subscriber manager.

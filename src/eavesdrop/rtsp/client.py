@@ -140,7 +140,7 @@ class RTSPTranscriptionSink(TranscriptionSink):
     self,
     stream_name: str,
     subscriber_manager: "RTSPSubscriberManager",
-    transcription_cache: RTSPTranscriptionCache,
+    transcription_cache: "RTSPTranscriptionCache",
     logger_name: str = "rtsp_transcription",
   ) -> None:
     """
