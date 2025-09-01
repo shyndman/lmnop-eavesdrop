@@ -284,9 +284,9 @@ class StreamingTranscriptionProcessor:
     shape = input_sample.shape if hasattr(input_sample, "shape") else "unknown"
     self.logger.debug("Transcribing audio sample", shape=shape)
 
-    if SINGLE_MODEL:
-      self.logger.debug("Acquiring single model lock")
-      StreamingTranscriptionProcessor.SINGLE_MODEL_LOCK.acquire()
+    # if SINGLE_MODEL:
+    #   self.logger.debug("Acquiring single model lock")
+    #   StreamingTranscriptionProcessor.SINGLE_MODEL_LOCK.acquire()
 
     try:
       self.logger.debug(
@@ -310,9 +310,10 @@ class StreamingTranscriptionProcessor:
       return result_list, info
 
     finally:
-      if SINGLE_MODEL:
-        self.logger.debug("Releasing single model lock")
-        StreamingTranscriptionProcessor.SINGLE_MODEL_LOCK.release()
+      pass
+      # if SINGLE_MODEL:
+      #   self.logger.debug("Releasing single model lock")
+      #   StreamingTranscriptionProcessor.SINGLE_MODEL_LOCK.release()
 
   async def _set_language(self, info: TranscriptionInfo) -> None:
     """Update language based on detection info."""
