@@ -1,7 +1,7 @@
-from dataclasses import dataclass
 from typing import NotRequired, Required, TypedDict
 
 from faster_whisper.vad import VadOptions
+from pydantic.dataclasses import dataclass
 
 
 class FeatureExtractorConfig(TypedDict):
