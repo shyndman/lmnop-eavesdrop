@@ -216,10 +216,6 @@ class StreamingTranscriptionProcessor:
         self.logger.info("Exiting speech to text thread")
         break
 
-      if self.buffer.available_duration == 0:
-        await asyncio.sleep(self.buffer.config.transcription_interval)
-        continue
-
       if self.config.clip_audio:
         self.buffer.clip_if_stalled()
 
@@ -229,13 +225,12 @@ class StreamingTranscriptionProcessor:
       available_duration = self.buffer.available_duration
       total_duration = self.buffer.total_duration
       processed_duration = self.buffer.processed_duration
-      catchup_ratio = processed_duration / total_duration if total_duration > 0 else 0
 
       self.logger.debug(
         "Buffer status before transcription",
-        available_duration=f"{available_duration:.2f}s",
-        processing_duration=f"{duration:.2f}s",
-        catchup_ratio=f"{catchup_ratio:.2f}",
+        available_for_processing=f"{available_duration:.2f}s",
+        total_buffered=f"{total_duration:.2f}s",
+        already_processed=f"{processed_duration:.2f}s",
         is_caught_up=available_duration < 0.5,
       )
 
@@ -256,7 +251,7 @@ class StreamingTranscriptionProcessor:
           "Transcription performance",
           audio_duration=f"{duration:.2f}s",
           transcription_time=f"{transcription_time:.2f}s",
-          realtime_factor=f"{transcription_time / duration:.2f}x",
+          speed_vs_realtime=f"{duration / transcription_time:.1f}x faster",
         )
 
         if self.language is None and info is not None:
@@ -391,8 +386,8 @@ class StreamingTranscriptionProcessor:
       for s in segments[:-1]:
         text_: str = s.text
         self.text.append(text_)
-        start = self.buffer.timestamp_offset + s.start
-        end = self.buffer.timestamp_offset + min(duration, s.end)
+        start = self.buffer.processed_up_to_time + s.start
+        end = self.buffer.processed_up_to_time + min(duration, s.end)
 
         if start >= end or s.no_speech_prob > self.config.no_speech_thresh:
           continue
@@ -427,8 +422,8 @@ class StreamingTranscriptionProcessor:
       if not self.text or self.text[-1].strip().lower() != self.current_out.strip().lower():
         self.text.append(self.current_out)
         completed_segment = self._format_segment(
-          self.buffer.timestamp_offset,
-          self.buffer.timestamp_offset + min(duration, self.end_time_for_same_output),  # type: ignore
+          self.buffer.processed_up_to_time,
+          self.buffer.processed_up_to_time + min(duration, self.end_time_for_same_output),  # type: ignore
           self.current_out,
           completed=True,
         )

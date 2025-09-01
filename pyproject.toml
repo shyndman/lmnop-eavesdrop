@@ -58,7 +58,7 @@ pythonPlatform = "Linux"
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 indent-width = 2
 
 [tool.ruff.lint]
