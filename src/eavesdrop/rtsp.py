@@ -1,10 +1,14 @@
 import asyncio
+from typing import TYPE_CHECKING
 
 import numpy as np
 import structlog
 
 from .config import get_env_bool, get_env_float
 from .logs import get_logger
+
+if TYPE_CHECKING:
+  from .subscriber import RTSPSubscriberManager
 from .streaming.buffer import AudioStreamBuffer, BufferConfig
 from .streaming.interfaces import (
   AudioSource,
@@ -131,20 +135,28 @@ class RTSPTranscriptionSink(TranscriptionSink):
     - Logging operations are thread-safe
   """
 
-  def __init__(self, stream_name: str, logger_name: str = "rtsp_transcription") -> None:
+  def __init__(
+    self,
+    stream_name: str,
+    subscriber_manager: "RTSPSubscriberManager",
+    logger_name: str = "rtsp_transcription",
+  ) -> None:
     """
     Initialize RTSP transcription sink with structured logging.
 
     Args:
         stream_name: Unique identifier for the RTSP stream (used in log context).
+        subscriber_manager: Manager for WebSocket subscribers that will receive
+                           transcription results.
         logger_name: Logger name for log routing and filtering.
     """
     self.stream_name: str = stream_name
     self.logger = get_logger(logger_name).bind(stream=stream_name)
     self.transcription_count: int = 0
+    self.subscriber_manager = subscriber_manager
 
   async def send_result(self, result: TranscriptionResult) -> None:
-    """Log transcription results with structured data"""
+    """Log transcription results and send to WebSocket subscribers if available."""
     self.transcription_count += 1
 
     # Separate completed and incomplete segments
@@ -184,21 +196,68 @@ class RTSPTranscriptionSink(TranscriptionSink):
         transcription_number=self.transcription_count,
       )
 
+    # Send to WebSocket subscribers
+    try:
+      await self.subscriber_manager.send_transcription(
+        self.stream_name, result.segments, result.language
+      )
+
+      self.logger.debug(
+        "Sent transcription result to subscribers",
+        transcription_number=self.transcription_count,
+        segments=len(result.segments),
+      )
+
+    except Exception as e:
+      self.logger.error(
+        "Failed to send transcription result to subscribers",
+        error=str(e),
+        transcription_number=self.transcription_count,
+      )
+
   async def send_error(self, error: str) -> None:
-    """Log transcription errors"""
+    """Log transcription errors and notify subscribers."""
     self.logger.error("Transcription error", error=error)
 
+    # Notify subscribers of stream error
+    try:
+      await self.subscriber_manager.send_stream_status(
+        self.stream_name, "error", f"Transcription error: {error}"
+      )
+    except Exception as e:
+      self.logger.error(
+        "Failed to notify subscribers of transcription error",
+        original_error=error,
+        notification_error=str(e),
+      )
+
   async def send_language_detection(self, language: str, probability: float) -> None:
-    """Log language detection results"""
+    """Log language detection results (no subscriber notification needed)."""
     self.logger.info("Language detected", language=language, probability=probability)
 
   async def send_server_ready(self, backend: str) -> None:
-    """Server ready notification is not applicable for RTSP sink."""
-    pass
+    """Log server ready status and notify subscribers stream is online."""
+    self.logger.info("Server ready", backend=backend)
+
+    # Notify subscribers that stream is online
+    try:
+      await self.subscriber_manager.send_stream_status(
+        self.stream_name, "online", f"Stream started with {backend} backend"
+      )
+    except Exception as e:
+      self.logger.error("Failed to notify subscribers of stream online status", error=str(e))
 
   async def disconnect(self) -> None:
-    """Disconnect is not applicable for RTSP sink."""
-    pass
+    """Log disconnection and notify subscribers stream is offline."""
+    self.logger.info("Stream disconnected", total_transcriptions=self.transcription_count)
+
+    # Notify subscribers that stream is offline
+    try:
+      await self.subscriber_manager.send_stream_status(
+        self.stream_name, "offline", "Stream disconnected"
+      )
+    except Exception as e:
+      self.logger.error("Failed to notify subscribers of stream offline status", error=str(e))
 
 
 class RTSPClient:
@@ -599,7 +658,13 @@ class RTSPClient:
 
 
 class RTSPTranscriptionClient(RTSPClient):
-  def __init__(self, stream_name: str, rtsp_url: str, transcription_config: TranscriptionConfig):
+  def __init__(
+    self,
+    stream_name: str,
+    rtsp_url: str,
+    transcription_config: TranscriptionConfig,
+    subscriber_manager: "RTSPSubscriberManager",
+  ):
     # Initialize parent with internal queue
     super().__init__(stream_name, rtsp_url, asyncio.Queue(maxsize=100))
 
@@ -617,7 +682,7 @@ class RTSPTranscriptionClient(RTSPClient):
     # Create abstracted components
     self.audio_source = RTSPAudioSource(self.audio_queue)
     self.stream_buffer = AudioStreamBuffer(buffer_config)
-    self.transcription_sink = RTSPTranscriptionSink(stream_name)
+    self.transcription_sink = RTSPTranscriptionSink(stream_name, subscriber_manager)
     self.processor = StreamingTranscriptionProcessor(
       buffer=self.stream_buffer,
       sink=self.transcription_sink,

@@ -1,8 +1,12 @@
 import asyncio
+from typing import TYPE_CHECKING
 
 from .config import TranscriptionConfig
 from .logs import get_logger
 from .rtsp import RTSPTranscriptionClient
+
+if TYPE_CHECKING:
+  from .subscriber import RTSPSubscriberManager
 
 
 class RTSPClientManager:
@@ -14,14 +18,18 @@ class RTSPClientManager:
   used by WebSocketClientManager for WebSocket clients.
   """
 
-  def __init__(self, transcription_config: TranscriptionConfig):
+  def __init__(
+    self, transcription_config: TranscriptionConfig, subscriber_manager: "RTSPSubscriberManager"
+  ):
     """
     Initialize the RTSP client manager.
 
     Args:
         transcription_config: Global transcription configuration
+        subscriber_manager: Manager for WebSocket subscribers
     """
     self.transcription_config = transcription_config
+    self.subscriber_manager = subscriber_manager
     self.clients: dict[str, RTSPTranscriptionClient] = {}
     self.tasks: dict[str, asyncio.Task] = {}
     self.logger = get_logger("rtsp_client_manager")
@@ -49,8 +57,10 @@ class RTSPClientManager:
     try:
       self.logger.info("Adding RTSP stream", stream=stream_name, url=rtsp_url)
 
-      # Create RTSP client
-      client = RTSPTranscriptionClient(stream_name, rtsp_url, self.transcription_config)
+      # Create RTSP client with subscriber manager
+      client = RTSPTranscriptionClient(
+        stream_name, rtsp_url, self.transcription_config, self.subscriber_manager
+      )
       self.clients[stream_name] = client
 
       # Create and start task for this client

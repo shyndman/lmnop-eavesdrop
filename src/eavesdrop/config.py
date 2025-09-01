@@ -6,9 +6,24 @@ from typing import Any
 import torch
 import yaml
 from faster_whisper.vad import VadOptions
+from pydantic import BaseModel, Field
 
 from .constants import CACHE_PATH, SINGLE_MODEL, TASK
 from .logs import get_logger
+
+
+class RTSPCacheConfig(BaseModel):
+  """Configuration for RTSP stream caching behavior based on listener presence."""
+
+  waiting_for_listener_duration: float = Field(
+    default=10800.0, gt=0.0, description="Cache duration in seconds when streams have no listeners"
+  )
+
+  has_listener_cache_duration: float = Field(
+    default=600.0,
+    gt=0.0,
+    description="Cache duration in seconds when streams have active listeners",
+  )
 
 
 @dataclass
@@ -70,12 +85,12 @@ class EavesdropConfig:
     self.streams: dict[str, str] = {}
     self.logger = get_logger("eavesdrop_config")
 
-  def load_and_validate(self) -> tuple[dict[str, str], TranscriptionConfig]:
+  def load_and_validate(self) -> tuple[dict[str, str], TranscriptionConfig, RTSPCacheConfig]:
     """
     Load and validate the Eavesdrop configuration file.
 
     Returns:
-        Tuple of (rtsp_streams, transcription_config)
+        Tuple of (rtsp_streams, transcription_config, rtsp_cache_config)
 
     Raises:
         ValueError: If the configuration is invalid or cannot be loaded
@@ -119,10 +134,13 @@ class EavesdropConfig:
     if "streams" in config_data:
       rtsp_streams = self._validate_streams_config(config_data["streams"])
 
-    # Pretty print the entire config at INFO level
-    self._pretty_print_config(config_data, rtsp_streams, transcription_config)
+    # Validate rtsp.cache section (optional)
+    rtsp_cache_config = self._validate_rtsp_cache_config(config_data.get("rtsp", {}))
 
-    return rtsp_streams, transcription_config
+    # Pretty print the entire config at INFO level
+    self._pretty_print_config(config_data, rtsp_streams, transcription_config, rtsp_cache_config)
+
+    return rtsp_streams, transcription_config, rtsp_cache_config
 
   def _validate_transcription_config(
     self, transcription_data: dict[str, Any]
@@ -265,6 +283,27 @@ class EavesdropConfig:
 
     return validated_streams
 
+  def _validate_rtsp_cache_config(self, rtsp_data: dict[str, Any]) -> RTSPCacheConfig:
+    """Validate RTSP cache configuration section."""
+    cache_data = rtsp_data.get("cache", {})
+
+    if cache_data and not isinstance(cache_data, dict):
+      raise ValueError("rtsp.cache must be a dictionary")
+
+    try:
+      # Use Pydantic model validation
+      rtsp_cache_config = RTSPCacheConfig.model_validate(cache_data)
+
+      self.logger.debug(
+        "RTSP cache configuration validated",
+        waiting_for_listener_duration=rtsp_cache_config.waiting_for_listener_duration,
+        has_listener_cache_duration=rtsp_cache_config.has_listener_cache_duration,
+      )
+
+      return rtsp_cache_config
+    except Exception as e:
+      raise ValueError(f"Invalid RTSP cache configuration: {e}") from e
+
   def _resolve_gpu_device_index(self, gpu_name: str) -> int:
     """Resolve GPU device index from GPU name."""
     if not torch.cuda.is_available():
@@ -286,6 +325,7 @@ class EavesdropConfig:
     config_data: dict[str, Any],
     rtsp_streams: dict[str, str],
     transcription_config: TranscriptionConfig,
+    rtsp_cache_config: RTSPCacheConfig,
   ) -> None:
     """Pretty print the entire configuration at INFO level."""
     self.logger.info("=" * 60)
@@ -316,6 +356,15 @@ class EavesdropConfig:
         self.logger.info(f"  {name}: {url}")
     else:
       self.logger.info("RTSP STREAMS: None (WebSocket-only mode)")
+
+    # RTSP cache settings
+    self.logger.info("RTSP CACHE SETTINGS:")
+    self.logger.info(
+      f"  Waiting for listener duration: {rtsp_cache_config.waiting_for_listener_duration:.1f}s"
+    )
+    self.logger.info(
+      f"  Has listener cache duration: {rtsp_cache_config.has_listener_cache_duration:.1f}s"
+    )
 
     self.logger.info("=" * 60)
 
