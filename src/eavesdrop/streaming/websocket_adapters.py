@@ -5,13 +5,19 @@ Provides WebSocket-specific implementations of AudioSource and TranscriptionSink
 that integrate with the existing WebSocket server infrastructure.
 """
 
-import json
 from collections.abc import Awaitable, Callable
 
 import numpy as np
 from websockets.asyncio.server import ServerConnection
 
 from ..logs import get_logger
+from ..messages import (
+  DisconnectMessage,
+  ErrorMessage,
+  LanguageDetectionMessage,
+  ServerReadyMessage,
+  TranscriptionMessage,
+)
 from .interfaces import AudioSource, TranscriptionResult, TranscriptionSink
 
 
@@ -152,11 +158,12 @@ class WebSocketTranscriptionSink(TranscriptionSink):
       return
 
     try:
-      message = {
-        "uid": self.client_uid,
-        "segments": result.segments,
-      }
-      await self.websocket.send(json.dumps(message))
+      # Use the Pydantic TranscriptionMessage for proper serialization
+      transcription_message = TranscriptionMessage(
+        stream=self.client_uid, segments=result.segments, language=result.language
+      )
+
+      await self.websocket.send(transcription_message.model_dump_json())
 
     except Exception:
       self.logger.exception("Error sending transcription result to client")
@@ -172,12 +179,8 @@ class WebSocketTranscriptionSink(TranscriptionSink):
       return
 
     try:
-      message = {
-        "uid": self.client_uid,
-        "status": "ERROR",
-        "message": error,
-      }
-      await self.websocket.send(json.dumps(message))
+      error_message = ErrorMessage(stream=self.client_uid, message=error)
+      await self.websocket.send(error_message.model_dump_json())
 
     except Exception:
       self.logger.exception("Error sending error message to client")
@@ -194,12 +197,10 @@ class WebSocketTranscriptionSink(TranscriptionSink):
       return
 
     try:
-      message = {
-        "uid": self.client_uid,
-        "language": language,
-        "language_prob": probability,
-      }
-      await self.websocket.send(json.dumps(message))
+      language_message = LanguageDetectionMessage(
+        stream=self.client_uid, language=language, language_prob=probability
+      )
+      await self.websocket.send(language_message.model_dump_json())
 
     except Exception:
       self.logger.exception("Error sending language detection to client")
@@ -215,12 +216,8 @@ class WebSocketTranscriptionSink(TranscriptionSink):
       return
 
     try:
-      message = {
-        "uid": self.client_uid,
-        "message": "SERVER_READY",
-        "backend": backend,
-      }
-      await self.websocket.send(json.dumps(message))
+      server_ready_message = ServerReadyMessage(stream=self.client_uid, backend=backend)
+      await self.websocket.send(server_ready_message.model_dump_json())
 
     except Exception:
       self.logger.exception("Error sending server ready message to client")
@@ -231,11 +228,8 @@ class WebSocketTranscriptionSink(TranscriptionSink):
       return
 
     try:
-      message = {
-        "uid": self.client_uid,
-        "message": "DISCONNECT",
-      }
-      await self.websocket.send(json.dumps(message))
+      disconnect_message = DisconnectMessage(stream=self.client_uid)
+      await self.websocket.send(disconnect_message.model_dump_json())
 
     except Exception:
       self.logger.exception("Error sending disconnect message to client")

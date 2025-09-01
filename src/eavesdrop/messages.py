@@ -65,7 +65,38 @@ class ErrorMessage(BaseMessage):
   message: str = Field(description="Error message description")
 
 
+class LanguageDetectionMessage(BaseMessage):
+  """Message containing language detection results."""
+
+  type: Literal["language_detection"] = "language_detection"
+  stream: str = Field(description="Stream name or client identifier")
+  language: str = Field(description="Detected language code")
+  language_prob: float = Field(description="Confidence score for the detection", ge=0.0, le=1.0)
+
+
+class ServerReadyMessage(BaseMessage):
+  """Message indicating server is ready for transcription."""
+
+  type: Literal["server_ready"] = "server_ready"
+  stream: str = Field(description="Stream name or client identifier")
+  backend: str = Field(description="Name of the transcription backend being used")
+
+
+class DisconnectMessage(BaseMessage):
+  """Message indicating client disconnection."""
+
+  type: Literal["disconnect"] = "disconnect"
+  stream: str = Field(description="Stream name or client identifier")
+  message: str | None = Field(default=None, description="Optional disconnect reason")
+
+
 # Discriminated union for all outbound message types
 OutboundMessage = Annotated[
-  TranscriptionMessage | StreamStatusMessage | ErrorMessage, Field(discriminator="type")
+  TranscriptionMessage
+  | StreamStatusMessage
+  | ErrorMessage
+  | LanguageDetectionMessage
+  | ServerReadyMessage
+  | DisconnectMessage,
+  Field(discriminator="type"),
 ]
