@@ -17,32 +17,33 @@ graph TD
 
     subgraph SERVER ["🖥️ Server Layer"]
         WS_SERVER[WebSocketServer]
-        RTSP_MANAGER[RTSPClientManager]  
+        RTSP_MANAGER[RTSPClientManager]
         CLIENT_MGR[WebSocketClientManager]
+        CONFIG_MGR[EavesdropConfig]
     end
 
     subgraph PROCESSING ["⚙️ Processing Layer"]
         WS_STREAMING_CLIENT[WebSocketStreamingClient]
-        RTSP_TRANSCRIPTION_CLIENT[RTSPTranscriptionClient]
+        RTSP_CLIENT[RTSPClient]
         AUDIO_BUFFER[AudioStreamBuffer]
-        TRANSCRIPTION_PROC[StreamingTranscriptionProcessor]
+        AUDIO_SOURCE[WebSocketAudioSource]
     end
 
     subgraph MODEL ["🤖 Model Layer"]
-        WHISPER_BACKEND[ServeClientFasterWhisper]
         WHISPER_MODEL[WhisperModel]
-        RTSP_MODEL_MGR[RTSPModelManager]
+        SHARED_PROCESSOR[StreamingTranscriptionProcessor]
+        MODEL_CACHE[Model Cache]
     end
 
     subgraph OUTPUT ["📤 Output Layer"]
         WS_SINK[WebSocketTranscriptionSink]
-        RTSP_SINK[RTSPAudioSource]
-        TRANSLATION_QUEUE[Translation Queue]
+        RTSP_CACHE[RTSPTranscriptionCache]
+        SUBSCRIBER_MGR[RTSPSubscriberManager]
     end
 
     %% %% Layer-to-layer connections (vertical flow)
     CLIENT --> SERVER
-    SERVER --> PROCESSING  
+    SERVER --> PROCESSING
     PROCESSING --> MODEL
     MODEL --> OUTPUT
 ```
@@ -68,7 +69,7 @@ The main orchestrator that coordinates all components and manages the server lif
 
 #### WebSocketStreamingClient (`src/eavesdrop/streaming/websocket_client.py`)
 
-High-level facade that combines all streaming components for WebSocket clients.
+High-level facade that combines all streaming components for WebSocket clients using protocol-based architecture.
 
 ```mermaid
 graph LR
@@ -78,7 +79,7 @@ graph LR
         TRANSCRIPTION_PROC[StreamingTranscriptionProcessor]
         WS_SINK[WebSocketTranscriptionSink]
     end
-    
+
     WEBSOCKET[WebSocket] --> AUDIO_SOURCE
     AUDIO_SOURCE --> AUDIO_BUFFER
     AUDIO_BUFFER --> TRANSCRIPTION_PROC
@@ -86,25 +87,36 @@ graph LR
     WS_SINK --> WEBSOCKET
 ```
 
+**Key Features:**
+- Protocol-based design using AudioSource and TranscriptionSink interfaces
+- Configurable buffer management with automatic cleanup
+- Integration with shared model resources in single model mode
+
 #### AudioStreamBuffer (`src/eavesdrop/streaming/buffer.py`)
 
 Manages audio frame buffering with intelligent cleanup and processing coordination.
 
 **Key Features:**
-- Automatic buffer cleanup (removes old audio after 45s, keeps 30s)
-- Thread-safe audio frame addition
-- Configurable stall detection and clipping
+- Configurable automatic buffer cleanup (default: removes old audio after 45s, keeps 30s)
+- Thread-safe audio frame addition with numpy array management
+- Configurable stall detection and optional audio clipping
 - Precise timestamp management for seamless transcription
+- Configurable transcription intervals (default: 2.0s) for latency vs performance tuning
+- Memory-efficient buffering with duration-based management
 
 #### StreamingTranscriptionProcessor (`src/eavesdrop/streaming/processor.py`)
 
 The core transcription engine that integrates Faster Whisper model management with streaming processing.
 
 **Responsibilities:**
-- Model loading and initialization (with CTranslate2 conversion)
-- Continuous transcription loop with VAD integration
-- Segment processing and completion detection
-- Single model mode support with thread-safe access
+- Model loading and initialization (with automatic CTranslate2 conversion)
+- Continuous transcription loop with configurable VAD integration
+- Segment processing and completion detection with configurable thresholds
+- Single model mode support with thread-safe access via shared locks
+- Hotwords integration for improved recognition accuracy
+- Language detection and initial prompt support
+- Multi-worker processing coordination (when configured)
+- Integration with BufferConfig for intelligent audio processing
 
 ### 3. Protocol-Based Architecture
 
@@ -117,23 +129,23 @@ classDiagram
         +read_audio() -> ndarray | None
         +close() -> None
     }
-    
+
     class TranscriptionSink {
         <<protocol>>
         +send_result(result: TranscriptionResult) -> None
-        +send_error(error: str) -> None  
+        +send_error(error: str) -> None
         +send_language_detection(lang: str, prob: float) -> None
         +send_server_ready(backend: str) -> None
         +disconnect() -> None
     }
-    
+
     class WebSocketAudioSource {
         +websocket: ServerConnection
         +get_audio_func: Callable
         +read_audio() -> ndarray | None
         +close() -> None
     }
-    
+
     class WebSocketTranscriptionSink {
         +websocket: ServerConnection
         +client_uid: str
@@ -141,36 +153,78 @@ classDiagram
         +send_error(error: str) -> None
         +disconnect() -> None
     }
-    
+
     AudioSource <|.. WebSocketAudioSource
     TranscriptionSink <|.. WebSocketTranscriptionSink
 ```
 
 ### 4. RTSP Support System
 
-#### RTSPClientManager (`src/eavesdrop/rtsp_manager.py`)
+#### RTSPClientManager (`src/eavesdrop/rtsp/manager.py`)
 
 Manages multiple RTSP streams with centralized model sharing and health monitoring.
 
 **Features:**
-- Concurrent RTSP stream processing
-- Stream failure detection and restart capability
+- Concurrent RTSP stream processing with named stream support
+- Stream failure detection and automatic restart capability
 - Centralized statistics and monitoring
 - Graceful shutdown coordination
+- Integration with RTSPTranscriptionCache for result persistence
+- Shared model resource management across all RTSP streams
 
-#### RTSPModelManager (`src/eavesdrop/rtsp_models.py`)
+#### RTSPTranscriptionCache (`src/eavesdrop/rtsp/cache.py`)
 
-Provides shared Whisper model instances for RTSP streams to optimize resource usage.
+Intelligent caching system for RTSP transcription results with listener-aware retention policies.
 
-### 5. Model Management and Backend
+**Features:**
+- Dual cache duration modes: longer retention when no listeners, shorter when active
+- Thread-safe cache operations with automatic cleanup
+- Integration with subscriber notifications
+- Configurable cache durations via YAML config
+- Memory-efficient storage with timestamp-based expiration
 
-#### Faster Whisper Backend (`src/eavesdrop/backend.py`)
+#### RTSPSubscriberManager (`src/eavesdrop/rtsp/subscriber.py`)
 
-Legacy backend implementation, being superseded by the streaming processor architecture.
+Manages WebSocket subscribers that receive transcription results from named RTSP streams.
+
+**Features:**
+- Single subscriber per RTSP stream policy enforcement
+- Stream status notifications and error propagation
+- Automatic delivery of cached transcriptions on connection
+- Integration with RTSPTranscriptionCache for history delivery
+- WebSocket client lifecycle management for subscribers
+
+### 5. Configuration Management System
+
+#### EavesdropConfig (`src/eavesdrop/config.py`)
+
+Pydantic-based configuration system providing comprehensive validation and type safety.
+
+**Configuration Classes:**
+- `BufferConfig` - Audio buffer management parameters with validation
+- `TranscriptionConfig` - Whisper model and processing configuration
+- `RTSPConfig` - RTSP stream and caching configuration
+- `RTSPCacheConfig` - Cache duration and behavior settings
+- `EavesdropConfig` - Root configuration combining all subsystems
+
+**Key Features:**
+- YAML file loading with comprehensive validation
+- Environment variable integration
+- Default value management with type conversion
+- Validation relationships (e.g., cleanup_duration < max_buffer_duration)
+- Hotwords and VAD parameter configuration
+
+### 6. Model Management and Backend
 
 #### WhisperModel (`src/eavesdrop/transcription/whisper_model.py`)
 
 Wrapper around Faster Whisper with CTranslate2 optimization and GPU selection.
+
+**Features:**
+- Automatic model download and CTranslate2 conversion
+- GPU device selection and precision optimization
+- Model caching in standardized directory structure
+- Integration with hotwords and language configuration
 
 ## Data Flow Patterns
 
@@ -193,7 +247,7 @@ sequenceDiagram
     StreamClient->>Processor: Initialize model
     Processor->>Model: Load Whisper model
     Processor->>Sink: Send SERVER_READY
-    
+
     loop Audio Streaming
         Client->>WSServer: Audio frames
         WSServer->>Buffer: Add frames
@@ -203,40 +257,46 @@ sequenceDiagram
         Processor->>Sink: Transcription result
         Sink->>Client: JSON segments
     end
-    
+
     Client->>WSServer: END_OF_AUDIO | Disconnect
     StreamClient->>Processor: Stop processing
     StreamClient->>Sink: Disconnect
     ClientMgr->>StreamClient: Cleanup
 ```
 
-### RTSP Stream Flow
+### RTSP Stream Flow with Subscriber System
 
 ```mermaid
 sequenceDiagram
-    participant Config as RTSP Config
+    participant Config as YAML Config
     participant Manager as RTSP Manager
     participant Client as RTSP Client
-    participant ModelMgr as Model Manager
     participant Processor as Stream Processor
-    participant Buffer as Audio Buffer
+    participant Cache as Transcription Cache
+    participant SubMgr as Subscriber Manager
+    participant WSClient as WebSocket Subscriber
 
-    Config->>Manager: Load stream configuration
-    Manager->>ModelMgr: Get shared transcriber
-    Manager->>Client: Create RTSP client
-    Client->>Client: Connect to RTSP stream
-    
+    Config->>Manager: Load named stream configuration
+    Manager->>Client: Create RTSP clients for each stream
+    Client->>Client: Connect to RTSP streams
+    Manager->>Cache: Initialize transcription cache
+    Manager->>SubMgr: Initialize subscriber manager
+
     loop Stream Processing
-        Client->>Buffer: Audio from RTSP
-        Buffer->>Processor: Audio chunks  
-        Processor->>ModelMgr: Transcribe (shared model)
-        Processor->>Client: Transcription results
-        Client->>Client: Process/store results
+        Client->>Processor: Audio from RTSP stream
+        Processor->>Processor: Transcribe (shared model)
+        Processor->>Cache: Store transcription result
+        Cache->>SubMgr: Notify of new transcription
+        SubMgr->>WSClient: Send result to subscriber (if any)
     end
-    
-    Manager->>Client: Stop stream
-    Client->>Client: Cleanup connection
-    ModelMgr->>ModelMgr: Cleanup shared resources
+
+    WSClient->>SubMgr: Subscribe to named stream
+    SubMgr->>Cache: Request cached history
+    Cache->>WSClient: Deliver recent transcriptions
+    SubMgr->>WSClient: Real-time transcription updates
+
+    WSClient->>SubMgr: Disconnect
+    Cache->>Cache: Switch to longer retention mode
 ```
 
 ### Model Resource Management
@@ -250,21 +310,21 @@ graph TD
         CLIENT2[Client 2]
         CLIENT3[Client 3]
     end
-    
+
     subgraph "Per-Client Mode"
         MODEL1[Whisper Model 1]
         MODEL2[Whisper Model 2]
         MODEL3[Whisper Model 3]
         PC_CLIENT1[Client 1]
-        PC_CLIENT2[Client 2] 
+        PC_CLIENT2[Client 2]
         PC_CLIENT3[Client 3]
     end
-    
+
     CLIENT1 --> SM_LOCK
     CLIENT2 --> SM_LOCK
     CLIENT3 --> SM_LOCK
     SM_LOCK --> SHARED_MODEL
-    
+
     PC_CLIENT1 --> MODEL1
     PC_CLIENT2 --> MODEL2
     PC_CLIENT3 --> MODEL3
@@ -277,25 +337,40 @@ graph TD
 ```python
 @dataclass
 class BufferConfig:
-    sample_rate: int = 16000
-    max_buffer_duration: float = 45.0
-    cleanup_duration: float = 30.0
-    min_chunk_duration: float = 1.0
+    sample_rate: int = Field(default=16000, gt=0)
+    max_buffer_duration: float = Field(default=45.0, gt=0.0)
+    cleanup_duration: float = Field(default=30.0, gt=0.0)
+    min_chunk_duration: float = Field(default=1.0, gt=0.0)
+    transcription_interval: float = Field(default=2.0, gt=0.0)
     clip_audio: bool = False
-    max_stall_duration: float = 25.0
+    max_stall_duration: float = Field(default=25.0, gt=0.0)
 
-@dataclass  
-class TranscriptionConfig:
-    send_last_n_segments: int = 10
-    no_speech_thresh: float = 0.45
-    same_output_threshold: int = 10
+class TranscriptionConfig(BaseModel):
+    model: str = "distil-medium.en"
+    custom_model: str | None = None
+    language: str = "en"
+    initial_prompt: str | None = None
+    hotwords: list[str] = Field(default_factory=list)
     use_vad: bool = True
-    model: str = "distil-small.en"
-    task: str = "transcribe"
-    language: str | None = None
-    single_model: bool = False
-    cache_path: str = "~/.cache/eavesdrop/"
-    device_index: int = 0
+    num_workers: int = Field(default=1, ge=1)
+    send_last_n_segments: int = Field(default=10, ge=1)
+    no_speech_thresh: float = Field(default=0.45, ge=0.0, le=1.0)
+    same_output_threshold: int = Field(default=10, ge=1)
+    gpu_name: str | None = None
+    vad_parameters: VadOptions = Field(default_factory=VadOptions)
+    buffer: BufferConfig = Field(default_factory=BufferConfig)
+
+class RTSPCacheConfig(BaseModel):
+    waiting_for_listener_duration: float = Field(default=10800.0, ge=0.0)
+    has_listener_cache_duration: float = Field(default=600.0, ge=0.0)
+
+class RTSPConfig(BaseModel):
+    streams: dict[str, str] = Field(default_factory=dict)
+    cache: RTSPCacheConfig = Field(default_factory=RTSPCacheConfig)
+
+class EavesdropConfig(BaseModel):
+    transcription: TranscriptionConfig = Field(default_factory=TranscriptionConfig)
+    rtsp: RTSPConfig = Field(default_factory=RTSPConfig)
 ```
 
 ### Core Data Types
@@ -303,25 +378,36 @@ class TranscriptionConfig:
 ```python
 @dataclass
 class TranscriptionResult:
-    segments: list[dict]
+    """Structured transcription result containing segments and metadata."""
+    segments: list[Segment]
     language: str | None = None
-    language_probability: float | None = None
+    language_probability: float | None = Field(default=None, ge=0.0, le=1.0)
 
-@dataclass
-class Segment:
+class Segment(TypedDict):
+    """Individual transcription segment with timing and confidence data."""
     id: int
+    seek: int
     start: float
-    end: float  
+    end: float
     text: str
+    tokens: list[int]
+    temperature: float
+    avg_logprob: float
+    compression_ratio: float
     no_speech_prob: float
-    # Additional transcription metadata...
+    words: NotRequired[list[dict[str, Any]]]
 
-@dataclass
-class TranscriptionInfo:
-    language: str
-    language_probability: float
-    duration: float
-    # Model and processing metadata...
+# Protocol interfaces for extensibility
+class AudioSource(Protocol):
+    async def read_audio(self) -> np.ndarray | None: ...
+    def close(self) -> None: ...
+
+class TranscriptionSink(Protocol):
+    async def send_result(self, result: TranscriptionResult) -> None: ...
+    async def send_error(self, error: str) -> None: ...
+    async def send_language_detection(self, language: str, probability: float) -> None: ...
+    async def send_server_ready(self, backend: str) -> None: ...
+    async def disconnect(self) -> None: ...
 ```
 
 ## Resource Management
@@ -352,13 +438,15 @@ The system automatically detects and optimizes for available hardware:
 
 ### Environment Variables
 
-All command-line arguments have environment variable equivalents:
+Command-line arguments and environment variables:
 
-- `EAVESDROP_PORT` (default: 9090)
-- `EAVESDROP_BACKEND` (default: faster_whisper)  
-- `EAVESDROP_CACHE_PATH` (default: /app/.cache/eavesdrop/)
-- `JSON_LOGS` - Enable structured JSON logging
-- `LOG_LEVEL` (default: INFO)
+- `EAVESDROP_PORT` (default: 9090) - WebSocket server port
+- `EAVESDROP_CONFIG` - **REQUIRED** path to YAML configuration file
+- `JSON_LOGS` (default: false) - Enable structured JSON logging
+- `LOG_LEVEL` (default: INFO) - Logging verbosity
+- `CORRELATION_ID` - Request correlation ID for distributed tracing
+
+**Note**: Most configuration is now handled via the YAML configuration file rather than environment variables.
 
 ### Docker Architecture
 
@@ -369,19 +457,19 @@ graph LR
             ROCM[ROCm 6.4.2]
             PYTORCH[PyTorch with ROCm]
         end
-        
-        subgraph "Python Environment"  
+
+        subgraph "Python Environment"
             WHISPER[Faster Whisper]
             CTRANSLATE2[CTranslate2]
             SERVER[Eavesdrop Server]
         end
-        
+
         subgraph "GPU Access"
             KFD[/dev/kfd]
             DRI[/dev/dri]
         end
     end
-    
+
     ROCM --> PYTORCH
     PYTORCH --> WHISPER
     WHISPER --> CTRANSLATE2
@@ -392,10 +480,18 @@ graph LR
 
 ### Model Caching Strategy
 
-- **Local Cache**: Models cached in `~/.cache/eavesdrop/whisper-ct2-models/`
+- **Local Cache**: Models cached in `/app/.cache/eavesdrop/whisper-ct2-models/` (see constants.py)
 - **Auto-conversion**: HuggingFace models automatically converted to CTranslate2
 - **Version Management**: Safe model name transformation for filesystem storage
 - **Quantization**: Automatic precision selection based on device capability
+- **Shared Resources**: Single model mode enables sharing across WebSocket clients and RTSP streams
+
+### RTSP Transcription Caching
+
+- **Listener-Aware Retention**: Different cache durations based on subscriber presence
+- **Default Durations**: 3 hours when waiting for listeners, 10 minutes with active subscribers
+- **Memory Management**: Automatic cleanup with configurable thresholds
+- **Thread-Safe Operations**: Concurrent access from multiple RTSP streams and subscribers
 
 ## Performance Characteristics
 
@@ -427,19 +523,27 @@ graph LR
 The protocol-based architecture enables easy extension:
 
 - **AudioSource**: Custom audio input sources (file, network, etc.)
+  - Current implementations: WebSocketAudioSource, RTSPAudioSource
 - **TranscriptionSink**: Custom output destinations (files, databases, etc.)
-- **Backend Interfaces**: Support for different transcription engines
+  - Current implementations: WebSocketTranscriptionSink
+- **Configuration System**: Pydantic-based validation with YAML support
+  - Extensible configuration classes for new components
 
 ### Configuration System
 
-- **Modular Config**: Separate configuration classes for different components
-- **Environment Integration**: Comprehensive environment variable support
-- **YAML Configuration**: File-based configuration for RTSP streams
+- **Pydantic-Based**: Type-safe configuration with validation
+- **YAML Configuration**: Comprehensive file-based configuration system
+- **Hierarchical Structure**: Nested configuration for transcription, RTSP, and buffer settings
+- **Default Management**: Sensible defaults with environment variable integration
+- **Validation**: Field validation and relationship constraints
 
 ### Processing Pipeline
 
-- **Translation Integration**: Built-in translation queue support
-- **Custom Processing**: Pluggable segment processing
+- **Buffer Management**: Configurable audio buffering with automatic cleanup
+- **Custom Processing**: Pluggable segment processing via processor configuration
 - **Output Filtering**: Configurable segment filtering and validation
+- **Hotwords Integration**: Custom vocabulary enhancement for domain-specific terms
+- **VAD Integration**: Configurable voice activity detection parameters
+- **Caching System**: Intelligent transcription result caching for RTSP streams
 
 This architecture provides a robust, scalable foundation for real-time audio transcription with clear separation of concerns, efficient resource management, and extensive configurability.
