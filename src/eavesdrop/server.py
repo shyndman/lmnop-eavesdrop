@@ -101,6 +101,7 @@ class TranscriptionServer:
         model=options.get("model", self.transcription_config.model),
         language=options.get("language", self.transcription_config.language),
         initial_prompt=options.get("initial_prompt", self.transcription_config.initial_prompt),
+        hotwords=options.get("hotwords", self.transcription_config.hotwords),
         vad_parameters=options.get("vad_parameters", self.transcription_config.vad_parameters),
         num_workers=self.transcription_config.num_workers,
         device_index=self.transcription_config.device_index,

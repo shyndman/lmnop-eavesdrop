@@ -85,7 +85,7 @@ class TestTranscriptionConfig:
 
     # Create fake files for custom_model testing
     fake_filesystem.create_file("/path/to/model")
-    config2 = TranscriptionConfig(model=None, custom_model="/path/to/model")
+    config2 = TranscriptionConfig(model=None, custom_model=Path("/path/to/model"))
     assert config2.model is None
     assert str(config2.custom_model) == "/path/to/model"
 
@@ -107,7 +107,7 @@ class TestTranscriptionConfig:
 
     # Custom model takes precedence
     fake_filesystem.create_file("/custom/path")
-    config2 = TranscriptionConfig(model=None, custom_model="/custom/path")
+    config2 = TranscriptionConfig(model=None, custom_model=Path("/custom/path"))
     assert config2.model_path == "/custom/path"
 
     # Neither specified gets default
@@ -173,6 +173,22 @@ rtsp:
     assert len(config.rtsp.streams) == 2
     assert "office" in config.rtsp.streams
     assert "lobby" in config.rtsp.streams
+
+  def test_hotwords_configuration(self, fake_filesystem):
+    """Test that hotwords can be configured from YAML."""
+    config_data = """
+transcription:
+  hotwords: ["hello", "world", "test"]
+"""
+    fake_filesystem.create_file("/test/config.yaml", contents=config_data)
+    config = load_config_from_file(Path("/test/config.yaml"))
+
+    assert config.transcription.hotwords == ["hello", "world", "test"]
+
+  def test_hotwords_empty_default(self):
+    """Test that hotwords defaults to empty list."""
+    config = TranscriptionConfig()
+    assert config.hotwords == []
 
   def test_load_empty_config_file(self, fake_filesystem):
     """Test error handling for empty config file."""

@@ -103,6 +103,9 @@ class TranscriptionConfig(BaseModel):
   initial_prompt: str | None = None
   """Initial prompt for whisper inference."""
 
+  hotwords: list[str] = Field(default_factory=list)
+  """Hotwords for whisper inference to improve recognition of specific terms."""
+
   vad_parameters: VadOptions = Field(default_factory=VadOptions)
   """Voice Activity Detection parameters."""
 

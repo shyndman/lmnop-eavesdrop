@@ -188,6 +188,7 @@ class WhisperModel:
     initial_prompt: str | None = None,
     vad_filter: bool = False,
     vad_parameters: VadOptions = VadOptions(),
+    hotwords: str | None = None,
   ) -> tuple[Iterable[Segment], TranscriptionInfo]:
     """Transcribes audio data for live transcription.
 
@@ -202,6 +203,7 @@ class WhisperModel:
         without speech. This step is using the Silero VAD model
         https://github.com/snakers4/silero-vad.
       vad_parameters: VAD configuration options (VadOptions instance).
+      hotwords: Optional hotwords to provide as context to improve recognition of specific terms.
     Returns:
       A tuple with:
 
@@ -322,6 +324,7 @@ class WhisperModel:
     options = TranscriptionOptions(
       multilingual=multilingual,
       initial_prompt=initial_prompt,
+      hotwords=hotwords,
     )
     # Set dynamic defaults
     if options.suppress_tokens is None:

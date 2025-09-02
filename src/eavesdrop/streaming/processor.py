@@ -303,6 +303,7 @@ class StreamingTranscriptionProcessor:
         task=TASK,
         vad_filter=self.config.use_vad,
         vad_parameters=self.vad_parameters,
+        hotwords=" ".join(self.config.hotwords) if self.config.hotwords else None,
       )
 
       result_list = list(result) if result else None
