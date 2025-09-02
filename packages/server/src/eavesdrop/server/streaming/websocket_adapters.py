@@ -10,15 +10,19 @@ from collections.abc import Awaitable, Callable
 import numpy as np
 from websockets.asyncio.server import ServerConnection
 
-from ..logs import get_logger
-from ..messages import (
+from eavesdrop.server.logs import get_logger
+from eavesdrop.server.messages import (
   DisconnectMessage,
   ErrorMessage,
   LanguageDetectionMessage,
   ServerReadyMessage,
   TranscriptionMessage,
 )
-from .interfaces import AudioSource, TranscriptionResult, TranscriptionSink
+from eavesdrop.server.streaming.interfaces import (
+  AudioSource,
+  TranscriptionResult,
+  TranscriptionSink,
+)
 
 
 class WebSocketAudioSource(AudioSource):

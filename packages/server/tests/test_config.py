@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from eavesdrop.config import (
+from eavesdrop.server.config import (
   BufferConfig,
   EavesdropConfig,
   TranscriptionConfig,

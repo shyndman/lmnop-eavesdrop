@@ -7,8 +7,8 @@ from pydantic import BaseModel, Field, model_validator, validate_call
 from pydantic.dataclasses import dataclass
 from pydantic.types import FilePath
 
-from .constants import CACHE_PATH, SINGLE_MODEL, TASK
-from .logs import get_logger
+from eavesdrop.server.constants import CACHE_PATH, SINGLE_MODEL, TASK
+from eavesdrop.server.logs import get_logger
 
 logger = get_logger("config")
 

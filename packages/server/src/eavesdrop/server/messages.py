@@ -11,7 +11,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
-from .transcription.models import Segment
+from eavesdrop.server.transcription.models import Segment
 
 
 class ClientType(StrEnum):

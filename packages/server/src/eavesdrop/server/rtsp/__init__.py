@@ -1,7 +1,12 @@
 """RTSP-related modules for stream handling and caching."""
 
-from .cache import RTSPTranscriptionCache
-from .client import RTSPAudioSource, RTSPClient, RTSPTranscriptionClient, RTSPTranscriptionSink
+from eavesdrop.server.rtsp.cache import RTSPTranscriptionCache
+from eavesdrop.server.rtsp.client import (
+  RTSPAudioSource,
+  RTSPClient,
+  RTSPTranscriptionClient,
+  RTSPTranscriptionSink,
+)
 
 __all__ = [
   "RTSPTranscriptionCache",

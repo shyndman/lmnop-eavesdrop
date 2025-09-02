@@ -9,11 +9,16 @@ from typing import TYPE_CHECKING
 
 from websockets.asyncio.server import ServerConnection
 
-from ..logs import get_logger
-from ..messages import ErrorMessage, OutboundMessage, StreamStatusMessage, TranscriptionMessage
+from eavesdrop.server.logs import get_logger
+from eavesdrop.server.messages import (
+  ErrorMessage,
+  OutboundMessage,
+  StreamStatusMessage,
+  TranscriptionMessage,
+)
 
 if TYPE_CHECKING:
-  from .cache import RTSPTranscriptionCache
+  from eavesdrop.server.rtsp.cache import RTSPTranscriptionCache
 
 
 class RTSPSubscriberManager:

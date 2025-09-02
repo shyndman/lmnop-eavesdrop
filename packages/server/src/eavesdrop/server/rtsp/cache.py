@@ -13,10 +13,10 @@ from typing import TypedDict
 
 from pydantic.dataclasses import dataclass
 
-from ..config import RTSPCacheConfig
-from ..logs import get_logger
-from ..messages import TranscriptionMessage
-from ..transcription.models import Segment
+from eavesdrop.server.config import RTSPCacheConfig
+from eavesdrop.server.logs import get_logger
+from eavesdrop.server.messages import TranscriptionMessage
+from eavesdrop.server.transcription.models import Segment
 
 
 class CacheStats(TypedDict):

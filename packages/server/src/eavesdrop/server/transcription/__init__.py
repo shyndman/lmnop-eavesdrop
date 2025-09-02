@@ -1,13 +1,18 @@
 # Re-exports for backward compatibility
-from .models import Segment, TranscriptionInfo, TranscriptionOptions, Word
-from .utils import (
+from eavesdrop.server.transcription.models import (
+  Segment,
+  TranscriptionInfo,
+  TranscriptionOptions,
+  Word,
+)
+from eavesdrop.server.transcription.utils import (
   get_compression_ratio,
   get_ctranslate2_storage,
   get_suppressed_tokens,
   merge_punctuations,
   restore_speech_timestamps,
 )
-from .whisper_model import WhisperModel
+from eavesdrop.server.transcription.whisper_model import WhisperModel
 
 __all__ = [
   "Word",

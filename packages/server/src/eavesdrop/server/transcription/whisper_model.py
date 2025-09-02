@@ -20,8 +20,8 @@ from faster_whisper.vad import (
 )
 from tqdm import tqdm
 
-from eavesdrop.logs import get_logger
-from eavesdrop.transcription.models import (
+from eavesdrop.server.logs import get_logger
+from eavesdrop.server.transcription.models import (
   FeatureExtractorConfig,
   Segment,
   SegmentDict,
@@ -31,9 +31,10 @@ from eavesdrop.transcription.models import (
   WordDict,
   WordTimingDict,
 )
-from eavesdrop.transcription.utils import (
+from eavesdrop.server.transcription.utils import (
   get_compression_ratio,
   get_ctranslate2_storage,
+  get_suppressed_tokens,
   merge_punctuations,
   restore_speech_timestamps,
 )
@@ -318,8 +319,6 @@ class WhisperModel:
       task=task,
       language=language,
     )
-
-    from .utils import get_suppressed_tokens
 
     options = TranscriptionOptions(
       multilingual=multilingual,

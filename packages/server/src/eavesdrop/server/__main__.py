@@ -2,8 +2,8 @@ import argparse
 import asyncio
 import os
 
-from .logs import get_logger, setup_logging
-from .server import TranscriptionServer
+from eavesdrop.server.logs import get_logger, setup_logging
+from eavesdrop.server.server import TranscriptionServer
 
 
 def get_env_or_default(env_var, default, var_type: type = str):

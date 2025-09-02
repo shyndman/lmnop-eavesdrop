@@ -8,18 +8,18 @@ import numpy as np
 from websockets.asyncio.server import ServerConnection
 from websockets.exceptions import ConnectionClosed, InvalidMessage
 
-from eavesdrop.config import RTSPConfig, load_config_from_file
-from eavesdrop.constants import SAMPLE_RATE
-from eavesdrop.logs import get_logger
-from eavesdrop.messages import ClientType, ErrorMessage, WebSocketHeaders
-from eavesdrop.rtsp.cache import RTSPTranscriptionCache
-from eavesdrop.rtsp.manager import RTSPClientManager
-from eavesdrop.rtsp.subscriber import RTSPSubscriberManager
-from eavesdrop.streaming import (
+from eavesdrop.server.config import RTSPConfig, load_config_from_file
+from eavesdrop.server.constants import SAMPLE_RATE
+from eavesdrop.server.logs import get_logger
+from eavesdrop.server.messages import ClientType, ErrorMessage, WebSocketHeaders
+from eavesdrop.server.rtsp.cache import RTSPTranscriptionCache
+from eavesdrop.server.rtsp.manager import RTSPClientManager
+from eavesdrop.server.rtsp.subscriber import RTSPSubscriberManager
+from eavesdrop.server.streaming import (
   TranscriptionConfig,
   WebSocketStreamingClient,
 )
-from eavesdrop.websocket import WebSocketClientManager, WebSocketServer
+from eavesdrop.server.websocket import WebSocketClientManager, WebSocketServer
 
 
 @dataclass

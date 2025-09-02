@@ -1,13 +1,13 @@
 import asyncio
 from typing import TYPE_CHECKING
 
-from ..config import TranscriptionConfig
-from ..logs import get_logger
-from . import RTSPTranscriptionClient
+from eavesdrop.server.config import TranscriptionConfig
+from eavesdrop.server.logs import get_logger
+from eavesdrop.server.rtsp.client import RTSPTranscriptionClient
 
 if TYPE_CHECKING:
-  from .cache import RTSPTranscriptionCache
-  from .subscriber import RTSPSubscriberManager
+  from eavesdrop.server.rtsp.cache import RTSPTranscriptionCache
+  from eavesdrop.server.rtsp.subscriber import RTSPSubscriberManager
 
 
 class RTSPClientManager:

@@ -4,20 +4,19 @@ from typing import TYPE_CHECKING
 import numpy as np
 import structlog
 
-from eavesdrop.constants import SAMPLE_RATE
-
-from ..logs import get_logger
+from eavesdrop.server.constants import SAMPLE_RATE
+from eavesdrop.server.logs import get_logger
 
 if TYPE_CHECKING:
-  from .cache import RTSPTranscriptionCache
-  from .subscriber import RTSPSubscriberManager
-from ..streaming.buffer import AudioStreamBuffer
-from ..streaming.interfaces import (
+  from eavesdrop.server.rtsp.cache import RTSPTranscriptionCache
+  from eavesdrop.server.rtsp.subscriber import RTSPSubscriberManager
+from eavesdrop.server.streaming.buffer import AudioStreamBuffer
+from eavesdrop.server.streaming.interfaces import (
   AudioSource,
   TranscriptionResult,
   TranscriptionSink,
 )
-from ..streaming.processor import (
+from eavesdrop.server.streaming.processor import (
   StreamingTranscriptionProcessor,
   TranscriptionConfig,
 )
