@@ -91,7 +91,6 @@ class TranscriptionServer:
         "no_speech_thresh",
         "same_output_threshold",
         "use_vad",
-        "clip_audio",
         "model",
         "language",
         "initial_prompt",

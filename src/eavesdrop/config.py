@@ -31,7 +31,7 @@ class BufferConfig:
   """Interval between transcription attempts in seconds."""
 
   clip_audio: bool = False
-  """Whether to clip audio with no valid segments."""
+  """Whether to clip audio when transcription stalls for too long."""
 
   max_stall_duration: float = Field(default=25.0, gt=0.0)
   """Maximum duration without progress before clipping audio."""
@@ -86,9 +86,6 @@ class TranscriptionConfig(BaseModel):
 
   use_vad: bool = True
   """Whether to use Voice Activity Detection."""
-
-  clip_audio: bool = False
-  """Whether to clip audio with no valid segments."""
 
   # Model configuration - these fields will be validated by model validators
   model: str | None = "distil-medium.en"
@@ -212,7 +209,6 @@ class EavesdropConfig(BaseModel):
     logger.info(f"  Send Last N Segments: {self.transcription.send_last_n_segments}")
     logger.info(f"  No Speech Threshold: {self.transcription.no_speech_thresh}")
     logger.info(f"  Same Output Threshold: {self.transcription.same_output_threshold}")
-    logger.info(f"  Clip Audio: {self.transcription.clip_audio}")
 
     # Hardware constants
     logger.info("HARDWARE SETTINGS:")

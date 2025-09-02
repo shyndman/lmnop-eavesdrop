@@ -9,6 +9,7 @@ import threading
 import numpy as np
 
 from ..config import BufferConfig
+from ..logs import get_logger
 
 
 class AudioStreamBuffer:
@@ -42,6 +43,7 @@ class AudioStreamBuffer:
                 cleanup policies, and processing thresholds.
     """
     self.config: BufferConfig = config
+    self.logger = get_logger("buffer")
 
     # Audio buffer state
     self.frames_np: np.ndarray | None = None
@@ -173,6 +175,17 @@ class AudioStreamBuffer:
 
       if unprocessed_samples > self.config.max_stall_duration * self.config.sample_rate:
         duration = self.frames_np.shape[0] / self.config.sample_rate
+        unprocessed_duration = unprocessed_samples / self.config.sample_rate
+        clipped_duration = unprocessed_duration - 5.0
+
+        self.logger.warning(
+          "Transcription stalled, clipping audio",
+          unprocessed_duration=f"{unprocessed_duration:.2f}s",
+          max_stall_duration=f"{self.config.max_stall_duration:.2f}s",
+          clipped_duration=f"{clipped_duration:.2f}s",
+          keeping_last=5.0,
+        )
+
         self.processed_up_to_time = self.buffer_start_time + duration - 5.0
 
   def reset(self) -> None:

@@ -217,8 +217,7 @@ class StreamingTranscriptionProcessor:
         self.logger.info("Exiting speech to text thread")
         break
 
-      if self.config.clip_audio:
-        self.buffer.clip_if_stalled()
+      self.buffer.clip_if_stalled()
 
       input_bytes, duration = self.buffer.get_chunk_for_processing()
 

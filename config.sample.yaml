@@ -45,10 +45,6 @@ transcription:
   # Helps stabilize transcription output by waiting for consistency.
   same_output_threshold: 10
   
-  # Whether to automatically remove audio segments that don't contain valid transcriptions.
-  # Helps prevent memory buildup from silent or noisy audio.
-  clip_audio: false
-  
   # Specific GPU device name to target for transcription processing.
   # Leave commented to use automatic GPU selection. Useful for multi-GPU systems.
   # gpu_name: "NVIDIA GeForce RTX 3080"
@@ -86,8 +82,8 @@ transcription:
     # Lower values provide faster response but use more processing power.
     transcription_interval: 2.0
     
-    # Whether to automatically remove audio segments without valid transcriptions.
-    # Can help with memory management but may discard useful context.
+    # Whether to automatically skip audio when transcription stalls for too long.
+    # Prevents the system from getting stuck on problematic audio sections.
     clip_audio: false
     
     # Maximum time without transcription progress before clipping stalled audio.
