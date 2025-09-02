@@ -11,7 +11,7 @@ import numpy as np
 from pydantic import Field
 from pydantic.dataclasses import dataclass
 
-from eavesdrop.server.transcription.models import Segment
+from eavesdrop.wire import Segment
 
 
 @dataclass

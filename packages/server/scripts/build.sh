@@ -2,6 +2,10 @@
 
 set -e
 
+# Get script directory and change to server package root
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$(dirname "$SCRIPT_DIR")"
+
 BACKEND=${1:-rocm}
 GFX_ARCH=${GFX_ARCH:-'gfx1030;gfx1100'}
 HSA_OVERRIDE_GFX_VERSION=${HSA_OVERRIDE_GFX_VERSION:-11.0.0}

@@ -1,9 +1,7 @@
 # Re-exports for backward compatibility
 from eavesdrop.server.transcription.models import (
-  Segment,
   TranscriptionInfo,
   TranscriptionOptions,
-  Word,
 )
 from eavesdrop.server.transcription.utils import (
   get_compression_ratio,
@@ -13,6 +11,7 @@ from eavesdrop.server.transcription.utils import (
   restore_speech_timestamps,
 )
 from eavesdrop.server.transcription.whisper_model import WhisperModel
+from eavesdrop.wire import Segment, Word
 
 __all__ = [
   "Word",

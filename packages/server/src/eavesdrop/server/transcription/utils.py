@@ -6,7 +6,8 @@ import numpy as np
 from faster_whisper.tokenizer import Tokenizer
 from faster_whisper.vad import SpeechTimestampsMap
 
-from eavesdrop.server.transcription.models import Segment, WordTimingDict
+from eavesdrop.server.transcription.models import WordTimingDict
+from eavesdrop.wire import Segment
 
 
 def restore_speech_timestamps(

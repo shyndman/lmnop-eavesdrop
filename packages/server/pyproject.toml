@@ -1,7 +1,7 @@
 [project]
-name = "eavesdrop"
+name = "eavesdrop-server"
 version = "0.0.0"
-description = "…"
+description = "Real-time audio transcription server with WebSocket-based speech-to-text services"
 authors = [{name = "shyndman", email = "scotty.hyndman@gmail.com"}]
 requires-python = ">=3.12"
 dependencies = [
@@ -27,7 +27,8 @@ dependencies = [
   "evaluate",
   "websocket-client>=1.8.0",
   "pyyaml>=6.0",
-  "pydantic>=2.11.7",
+  "pydantic>=2",
+  "eavesdrop-wire",
 ]
 license = {text = "MIT"}
 
@@ -46,10 +47,7 @@ build-backend = "hatchling.build"
 packages = ["src/eavesdrop"]
 
 [dependency-groups]
-dev = [
-    "pyfakefs>=5.9.3",
-    "pytest>=8.3.5",
-]
+dev = ["pyfakefs>=5.9.3", "pytest>=8.3.5"]
 
 [tool.pyright]
 include = ["src", "tests"]
@@ -80,3 +78,6 @@ known-first-party = ["eavesdrop"]
 quote-style = "double"
 indent-style = "space"
 line-ending = "auto"
+
+[tool.uv.sources]
+eavesdrop-wire = { path = "../wire", editable = true }

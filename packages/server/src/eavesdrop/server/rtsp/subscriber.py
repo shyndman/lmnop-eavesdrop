@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 from websockets.asyncio.server import ServerConnection
 
 from eavesdrop.server.logs import get_logger
-from eavesdrop.server.messages import (
+from eavesdrop.wire import (
   ErrorMessage,
   OutboundMessage,
   StreamStatusMessage,

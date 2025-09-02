@@ -23,11 +23,9 @@ from tqdm import tqdm
 from eavesdrop.server.logs import get_logger
 from eavesdrop.server.transcription.models import (
   FeatureExtractorConfig,
-  Segment,
   SegmentDict,
   TranscriptionInfo,
   TranscriptionOptions,
-  Word,
   WordDict,
   WordTimingDict,
 )
@@ -38,6 +36,7 @@ from eavesdrop.server.transcription.utils import (
   merge_punctuations,
   restore_speech_timestamps,
 )
+from eavesdrop.wire import Segment, Word
 
 
 class WhisperModel:

@@ -11,7 +11,6 @@ from websockets.exceptions import ConnectionClosed, InvalidMessage
 from eavesdrop.server.config import RTSPConfig, load_config_from_file
 from eavesdrop.server.constants import SAMPLE_RATE
 from eavesdrop.server.logs import get_logger
-from eavesdrop.server.messages import ClientType, ErrorMessage, WebSocketHeaders
 from eavesdrop.server.rtsp.cache import RTSPTranscriptionCache
 from eavesdrop.server.rtsp.manager import RTSPClientManager
 from eavesdrop.server.rtsp.subscriber import RTSPSubscriberManager
@@ -20,6 +19,7 @@ from eavesdrop.server.streaming import (
   WebSocketStreamingClient,
 )
 from eavesdrop.server.websocket import WebSocketClientManager, WebSocketServer
+from eavesdrop.wire import ClientType, ErrorMessage, WebSocketHeaders
 
 
 @dataclass

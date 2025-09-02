@@ -19,8 +19,9 @@ from eavesdrop.server.constants import CACHE_PATH, SINGLE_MODEL, TASK
 from eavesdrop.server.logs import get_logger
 from eavesdrop.server.streaming.buffer import AudioStreamBuffer
 from eavesdrop.server.streaming.interfaces import TranscriptionResult, TranscriptionSink
-from eavesdrop.server.transcription.models import Segment, TranscriptionInfo
+from eavesdrop.server.transcription.models import TranscriptionInfo
 from eavesdrop.server.transcription.whisper_model import WhisperModel
+from eavesdrop.wire import Segment
 
 
 class StreamingTranscriptionProcessor:

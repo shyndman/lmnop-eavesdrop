@@ -244,10 +244,11 @@ wheels = [
 ]
 
 [[package]]
-name = "eavesdrop"
+name = "eavesdrop-server"
 version = "0.0.0"
 source = { editable = "." }
 dependencies = [
+    { name = "eavesdrop-wire" },
     { name = "evaluate" },
     { name = "jiwer" },
     { name = "kaldialign" },
@@ -273,6 +274,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "eavesdrop-wire", editable = "../wire" },
     { name = "evaluate" },
     { name = "jiwer" },
     { name = "kaldialign" },
@@ -281,7 +283,7 @@ requires-dist = [
     { name = "numpy", specifier = "<2" },
     { name = "onnxruntime", specifier = "==1.17.0" },
     { name = "psutil" },
-    { name = "pydantic", specifier = ">=2.11.7" },
+    { name = "pydantic", specifier = ">=2" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "sentencepiece" },
     { name = "soundfile" },
@@ -295,6 +297,17 @@ dev = [
     { name = "pyfakefs", specifier = ">=5.9.3" },
     { name = "pytest", specifier = ">=8.3.5" },
 ]
+
+[[package]]
+name = "eavesdrop-wire"
+version = "0.0.0"
+source = { editable = "../wire" }
+dependencies = [
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pydantic", specifier = ">=2" }]
 
 [[package]]
 name = "evaluate"

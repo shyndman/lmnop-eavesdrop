@@ -37,30 +37,6 @@ class WordTimingDict(TypedDict):
 
 
 @dataclass
-class Word:
-  start: float
-  end: float
-  word: str
-  probability: float
-
-
-@dataclass
-class Segment:
-  id: int
-  seek: int
-  start: float
-  end: float
-  text: str
-  tokens: list[int]
-  avg_logprob: float
-  compression_ratio: float
-  no_speech_prob: float
-  words: list[Word] | None
-  temperature: float | None
-  completed: bool = False
-
-
-@dataclass
 class TranscriptionOptions:
   """Options for the transcription process."""
 

@@ -15,8 +15,7 @@ from pydantic.dataclasses import dataclass
 
 from eavesdrop.server.config import RTSPCacheConfig
 from eavesdrop.server.logs import get_logger
-from eavesdrop.server.messages import TranscriptionMessage
-from eavesdrop.server.transcription.models import Segment
+from eavesdrop.wire import Segment, TranscriptionMessage
 
 
 class CacheStats(TypedDict):

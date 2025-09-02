@@ -11,17 +11,17 @@ import numpy as np
 from websockets.asyncio.server import ServerConnection
 
 from eavesdrop.server.logs import get_logger
-from eavesdrop.server.messages import (
+from eavesdrop.server.streaming.interfaces import (
+  AudioSource,
+  TranscriptionResult,
+  TranscriptionSink,
+)
+from eavesdrop.wire import (
   DisconnectMessage,
   ErrorMessage,
   LanguageDetectionMessage,
   ServerReadyMessage,
   TranscriptionMessage,
-)
-from eavesdrop.server.streaming.interfaces import (
-  AudioSource,
-  TranscriptionResult,
-  TranscriptionSink,
 )
 
 

@@ -11,7 +11,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
-from eavesdrop.server.transcription.models import Segment
+from .transcription import Segment, UserTranscriptionOptions
 
 
 class ClientType(StrEnum):
@@ -90,6 +90,13 @@ class DisconnectMessage(BaseMessage):
   message: str | None = Field(default=None, description="Optional disconnect reason")
 
 
+class TranscriptionConfigMessage(BaseMessage):
+  """Message containing user transcription configuration."""
+
+  type: Literal["config"] = "config"
+  options: UserTranscriptionOptions = Field(description="User-specified transcription options")
+
+
 # Discriminated union for all outbound message types
 OutboundMessage = Annotated[
   TranscriptionMessage
@@ -98,5 +105,11 @@ OutboundMessage = Annotated[
   | LanguageDetectionMessage
   | ServerReadyMessage
   | DisconnectMessage,
+  Field(discriminator="type"),
+]
+
+# Discriminated union for all inbound message types
+InboundMessage = Annotated[
+  TranscriptionConfigMessage,
   Field(discriminator="type"),
 ]
