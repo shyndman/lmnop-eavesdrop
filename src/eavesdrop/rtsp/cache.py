@@ -9,13 +9,32 @@ history. When listeners are present, cache duration is reduced for memory effici
 import asyncio
 import time
 from collections import deque
-from dataclasses import dataclass
-from typing import Any
+from typing import TypedDict
+
+from pydantic.dataclasses import dataclass
 
 from ..config import RTSPCacheConfig
 from ..logs import get_logger
 from ..messages import TranscriptionMessage
 from ..transcription.models import Segment
+
+
+class CacheStats(TypedDict):
+  """Statistics for a single stream cache."""
+
+  stream_name: str
+  entry_count: int
+  oldest_entry_age: float | None
+  newest_entry_age: float | None
+  cache_duration: float
+  has_listeners: bool
+
+
+class AllCacheStats(TypedDict):
+  """Statistics for all stream caches."""
+
+  total_streams: int
+  stream_stats: dict[str, CacheStats]
 
 
 @dataclass
@@ -150,7 +169,7 @@ class StreamCache:
 
     self.logger.info("Cache cleared", cleared_entries=entry_count)
 
-  async def get_cache_stats(self) -> dict[str, Any]:
+  async def get_cache_stats(self) -> CacheStats:
     """Get cache statistics for debugging and monitoring."""
     async with self._lock:
       await self._cleanup_expired()
@@ -292,9 +311,9 @@ class RTSPTranscriptionCache:
 
     self.logger.info("Cleared all stream caches", stream_count=len(self._stream_caches))
 
-  async def get_all_cache_stats(self) -> dict[str, Any]:
+  async def get_all_cache_stats(self) -> AllCacheStats:
     """Get statistics for all stream caches."""
-    stats = {"total_streams": len(self._stream_caches), "stream_stats": {}}
+    stats: AllCacheStats = {"total_streams": len(self._stream_caches), "stream_stats": {}}
 
     async with self._lock:
       for stream_name, cache in self._stream_caches.items():

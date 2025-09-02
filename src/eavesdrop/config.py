@@ -1,15 +1,50 @@
 import os
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any
 
 import torch
 import yaml
 from faster_whisper.vad import VadOptions
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator, validate_call
+from pydantic.dataclasses import dataclass
+from pydantic.types import FilePath
 
 from .constants import CACHE_PATH, SINGLE_MODEL, TASK
 from .logs import get_logger
+
+
+@dataclass
+class BufferConfig:
+  """Configuration for audio stream buffer behavior."""
+
+  sample_rate: int = Field(default=16000, gt=0)
+  """Audio sample rate in Hz."""
+
+  max_buffer_duration: float = Field(default=45.0, gt=0.0)
+  """Maximum buffer duration in seconds before cleanup."""
+
+  cleanup_duration: float = Field(default=30.0, gt=0.0)
+  """Duration of oldest audio to remove during cleanup."""
+
+  min_chunk_duration: float = Field(default=1.0, gt=0.0)
+  """Minimum chunk duration for processing in seconds."""
+
+  transcription_interval: float = Field(default=2.0, gt=0.0)
+  """Interval between transcription attempts in seconds."""
+
+  clip_audio: bool = False
+  """Whether to clip audio with no valid segments."""
+
+  max_stall_duration: float = Field(default=25.0, gt=0.0)
+  """Maximum duration without progress before clipping audio."""
+
+  @model_validator(mode="after")
+  def validate_duration_relationships(self) -> "BufferConfig":
+    """Validate that cleanup_duration is less than max_buffer_duration."""
+    if self.cleanup_duration >= self.max_buffer_duration:
+      raise ValueError(
+        f"cleanup_duration ({self.cleanup_duration}s) must be less than "
+        f"max_buffer_duration ({self.max_buffer_duration}s)"
+      )
+    return self
 
 
 class RTSPCacheConfig(BaseModel):
@@ -36,128 +71,61 @@ class RTSPConfig(BaseModel):
   )
 
 
-@dataclass
-class TranscriptionConfig:
+class TranscriptionConfig(BaseModel):
   """Configuration for transcription processing behavior."""
 
   # Transcription behavior
-  send_last_n_segments: int
+  send_last_n_segments: int = Field(default=10, gt=0)
   """Number of most recent segments to send to the client."""
 
-  no_speech_thresh: float
+  no_speech_thresh: float = Field(default=0.45, ge=0.0, le=1.0)
   """Segments with no speech probability above this threshold will be discarded."""
 
-  same_output_threshold: int
+  same_output_threshold: int = Field(default=10, gt=0)
   """Number of repeated outputs before considering it as a valid segment."""
 
-  use_vad: bool
+  use_vad: bool = True
   """Whether to use Voice Activity Detection."""
 
-  clip_audio: bool
+  clip_audio: bool = False
   """Whether to clip audio with no valid segments."""
 
-  # Model configuration
-  model: str
-  """Whisper model size or path."""
+  # Model configuration - these fields will be validated by model validators
+  model: str | None = "distil-medium.en"
+  """Whisper model size or path (mutually exclusive with custom_model)."""
 
-  language: str | None
+  custom_model: FilePath | None = None
+  """Path to custom Whisper model file (mutually exclusive with model)."""
+
+  language: str = "en"
   """Language for transcription."""
 
-  initial_prompt: str | None
+  initial_prompt: str | None = None
   """Initial prompt for whisper inference."""
 
-  vad_parameters: VadOptions | dict | None
+  vad_parameters: VadOptions = Field(default_factory=VadOptions)
   """Voice Activity Detection parameters."""
 
-  device_index: int
-  """GPU device index to use."""
+  gpu_name: str | None = None
+  """GPU device name to use (device_index computed from this)."""
 
+  device_index: int = Field(default=0, ge=0, exclude=True)
+  """GPU device index to use (computed from gpu_name)."""
 
-class EavesdropConfig:
-  """
-  Configuration loader and validator for Eavesdrop server.
+  buffer: BufferConfig = Field(default_factory=BufferConfig)
+  """Audio buffer configuration for streaming transcription."""
 
-  Handles loading, parsing, and validating YAML configuration files that define
-  transcription settings and RTSP streams for the eavesdrop server.
-  Provides strict validation with detailed error reporting.
-  """
+  @model_validator(mode="before")
+  @classmethod
+  def validate_model_configuration(cls, values: dict) -> dict:
+    """Validate model/custom_model mutual exclusion and reject device_index input."""
+    if not isinstance(values, dict):
+      return values
 
-  def __init__(self, config_path: str):
-    """
-    Initialize the Eavesdrop configuration loader.
+    model = values.get("model")
+    custom_model = values.get("custom_model")
 
-    Args:
-        config_path: Path to the YAML configuration file (required)
-    """
-    if not config_path:
-      raise ValueError("Configuration path is required")
-    self.config_path = config_path
-    self.streams: dict[str, str] = {}
-    self.logger = get_logger("eavesdrop_config")
-
-  def load_and_validate(self) -> tuple[RTSPConfig, TranscriptionConfig]:
-    """
-    Load and validate the Eavesdrop configuration file.
-
-    Returns:
-        Tuple of (rtsp_streams, transcription_config, rtsp_config)
-
-    Raises:
-        ValueError: If the configuration is invalid or cannot be loaded
-    """
-    config_file = Path(self.config_path)
-
-    # Check file existence
-    if not config_file.exists():
-      raise ValueError(f"Configuration file not found: {self.config_path}")
-
-    if not config_file.is_file():
-      raise ValueError(f"Configuration path is not a file: {self.config_path}")
-
-    self.logger.info("Loading Eavesdrop configuration", path=self.config_path)
-
-    try:
-      # Load YAML content
-      with open(config_file, "r", encoding="utf-8") as file:
-        config_data = yaml.safe_load(file)
-
-    except yaml.YAMLError as e:
-      raise ValueError(f"Invalid YAML in configuration file: {e}") from e
-    except Exception as e:
-      raise ValueError(f"Error reading configuration file: {e}") from e
-
-    # Validate configuration structure
-    if config_data is None:
-      raise ValueError("Configuration file is empty")
-
-    if not isinstance(config_data, dict):
-      raise ValueError("Configuration file must contain a YAML dictionary")
-
-    # Validate transcription section
-    if "transcription" not in config_data:
-      raise ValueError("Configuration file must contain a top-level 'transcription' key")
-
-    transcription_config = self._validate_transcription_config(config_data["transcription"])
-
-    # Validate rtsp.cache section (optional)
-    rtsp_config = RTSPConfig.model_validate(config_data.get("rtsp", {}))
-
-    # Pretty print the entire config at INFO level
-    self._pretty_print_config(config_data, rtsp_config, transcription_config)
-
-    return rtsp_config, transcription_config
-
-  def _validate_transcription_config(
-    self, transcription_data: dict[str, Any]
-  ) -> TranscriptionConfig:
-    """Validate transcription configuration section."""
-    if not isinstance(transcription_data, dict):
-      raise ValueError("'transcription' must be a dictionary")
-
-    # Extract and validate model configuration
-    model = transcription_data.get("model")
-    custom_model = transcription_data.get("custom_model")
-
+    # Check mutual exclusion
     if model and custom_model:
       raise ValueError(
         "Cannot specify both 'model' and 'custom_model' in the same configuration. "
@@ -165,191 +133,135 @@ class EavesdropConfig:
         "'custom_model' for a path to a local model file."
       )
 
+    # If neither specified, use default model
     if not model and not custom_model:
-      raise ValueError(
-        "Must specify either 'model' or 'custom_model' in the transcription section. "
-        "Use 'model' for standard Whisper models (e.g. 'distil-medium.en') or "
-        "'custom_model' for a path to a local model file."
-      )
+      values["model"] = "distil-medium.en"
 
-    # Use the specified model (either standard or custom)
-    final_model = custom_model or model
-    assert final_model is not None  # We already validated above that one must exist
-
-    # Validate custom model path if provided
-    if custom_model and not Path(custom_model).exists():
-      raise ValueError(
-        f"Custom model path does not exist: {custom_model}\n"
-        "Please ensure the model file exists and the path is correct."
-      )
-
-    # Extract GPU configuration
-    gpu_name = transcription_data.get("gpu_name")
-
-    # Reject device_index in config - it should be computed from gpu_name
-    if "device_index" in transcription_data:
+    # Reject device_index in input - it should be computed from gpu_name
+    if "device_index" in values:
       raise ValueError(
         "device_index cannot be specified in config file. "
         "Use 'gpu_name' instead to specify the GPU device, and device_index will be "
         "computed automatically."
       )
 
-    # Compute device_index from gpu_name if provided, otherwise use default
-    if gpu_name:
-      device_index = self._resolve_gpu_device_index(gpu_name)
-    else:
-      device_index = 0  # Default to first GPU
+    return values
 
-    # Validate range constraints
-    send_last_n_segments = transcription_data.get("send_last_n_segments", 10)
-    no_speech_thresh = transcription_data.get("no_speech_thresh", 0.45)
-    same_output_threshold = transcription_data.get("same_output_threshold", 10)
-
-    if send_last_n_segments <= 0:
-      raise ValueError(
-        f"send_last_n_segments must be greater than 0, got {send_last_n_segments}. "
-        "This controls how many recent transcription segments are sent to clients."
-      )
-
-    if not (0.0 <= no_speech_thresh <= 1.0):
-      raise ValueError(
-        f"no_speech_thresh must be between 0.0 and 1.0, got {no_speech_thresh}. "
-        "This is the probability threshold above which segments are considered to contain "
-        "no speech."
-      )
-
-    if same_output_threshold <= 0:
-      raise ValueError(
-        f"same_output_threshold must be greater than 0, got {same_output_threshold}. "
-        "This controls how many repeated outputs are required before considering a segment valid."
-      )
-
-    # Create TranscriptionConfig with validated values
-    return TranscriptionConfig(
-      send_last_n_segments=send_last_n_segments,
-      no_speech_thresh=no_speech_thresh,
-      same_output_threshold=same_output_threshold,
-      use_vad=transcription_data.get("use_vad", True),
-      clip_audio=transcription_data.get("clip_audio", False),
-      model=final_model,
-      language=transcription_data.get("language"),
-      initial_prompt=transcription_data.get("initial_prompt"),
-      vad_parameters=transcription_data.get("vad_parameters"),
-      device_index=device_index,
-    )
-
-  def _validate_streams_config(self, streams_data: dict[str, Any]) -> dict[str, str]:
-    """Validate streams configuration section."""
-    if not isinstance(streams_data, dict):
-      raise ValueError("'streams' must be a dictionary mapping stream names to RTSP URLs")
-
-    if not streams_data:
-      self.logger.warning("No RTSP streams configured in file")
-      return {}
-
-    # Validate each stream configuration
-    validated_streams = {}
-    for stream_name, rtsp_url in streams_data.items():
-      # Validate stream name
-      if not isinstance(stream_name, str):
-        raise ValueError(
-          f"Stream name must be a string, got {type(stream_name).__name__}: {stream_name}"
-        )
-
-      if not stream_name.strip():
-        raise ValueError("Stream name cannot be empty or whitespace")
-
-      # Validate RTSP URL
-      if not isinstance(rtsp_url, str):
-        raise ValueError(
-          f"RTSP URL for stream '{stream_name}' must be a string, got {type(rtsp_url).__name__}: "
-          f"{rtsp_url}"
-        )
-
-      if not rtsp_url.strip():
-        raise ValueError(f"RTSP URL for stream '{stream_name}' cannot be empty or whitespace")
-
-      # Basic URL format validation
-      rtsp_url = rtsp_url.strip()
-      if not rtsp_url.startswith(("rtsp://", "rtmp://", "http://", "https://")):
-        self.logger.warning(
-          "RTSP URL does not start with expected protocol", stream=stream_name, url=rtsp_url
-        )
-
-      validated_streams[stream_name.strip()] = rtsp_url
-      self.logger.debug("Validated stream", stream=stream_name, url=rtsp_url)
-
-    self.streams = validated_streams
-    self.logger.info(
-      "RTSP streams validated successfully",
-      stream_count=len(validated_streams),
-      streams=list(validated_streams.keys()),
-    )
-
-    return validated_streams
+  @model_validator(mode="after")
+  def resolve_gpu_device_index(self) -> "TranscriptionConfig":
+    """Compute device_index from gpu_name if provided."""
+    if self.gpu_name:
+      self.device_index = self._resolve_gpu_device_index(self.gpu_name)
+    return self
 
   def _resolve_gpu_device_index(self, gpu_name: str) -> int:
     """Resolve GPU device index from GPU name."""
     if not torch.cuda.is_available():
-      self.logger.warning("CUDA not available, ignoring gpu_name setting")
       return 0
 
     device_count = torch.cuda.device_count()
     for i in range(device_count):
       device_name = torch.cuda.get_device_name(i)
       if gpu_name in device_name:
-        self.logger.info(f"Found GPU '{gpu_name}' at device index {i}")
         return i
 
     available_gpus = [torch.cuda.get_device_name(i) for i in range(device_count)]
     raise ValueError(f"GPU '{gpu_name}' not found. Available GPUs: {available_gpus}")
 
-  def _pretty_print_config(
-    self,
-    config_data: dict[str, Any],
-    rtsp_config: RTSPConfig,
-    transcription_config: TranscriptionConfig,
-  ) -> None:
+  @property
+  def model_path(self) -> str:
+    """Get the final model path to use (custom_model takes precedence over model)."""
+    if self.custom_model is not None:
+      return str(self.custom_model)
+    if self.model is not None:
+      return self.model
+    # This should never happen due to validators, but provide a fallback
+    return "distil-medium.en"
+
+
+class EavesdropConfig(BaseModel):
+  """Top-level Eavesdrop configuration with transcription and RTSP settings."""
+
+  transcription: TranscriptionConfig = Field(default_factory=TranscriptionConfig)
+  """Transcription processing configuration."""
+
+  rtsp: RTSPConfig = Field(default_factory=RTSPConfig)
+  """RTSP stream configuration."""
+
+  def pretty_print(self) -> None:
     """Pretty print the entire configuration at INFO level."""
-    self.logger.info("=" * 60)
-    self.logger.info("EAVESDROP CONFIGURATION")
-    self.logger.info("=" * 60)
+    logger = get_logger("eavesdrop_config")
+    logger.info("=" * 60)
+    logger.info("EAVESDROP CONFIGURATION")
+    logger.info("=" * 60)
 
     # Transcription settings
-    self.logger.info("TRANSCRIPTION SETTINGS:")
-    self.logger.info(f"  Model: {transcription_config.model}")
-    self.logger.info(f"  Task: {TASK} (constant)")
-    self.logger.info(f"  Language: {transcription_config.language or 'auto-detect'}")
-    self.logger.info(f"  Use VAD: {transcription_config.use_vad}")
-    self.logger.info(f"  Device Index: {transcription_config.device_index}")
-    self.logger.info(f"  Send Last N Segments: {transcription_config.send_last_n_segments}")
-    self.logger.info(f"  No Speech Threshold: {transcription_config.no_speech_thresh}")
-    self.logger.info(f"  Same Output Threshold: {transcription_config.same_output_threshold}")
-    self.logger.info(f"  Clip Audio: {transcription_config.clip_audio}")
+    logger.info("TRANSCRIPTION SETTINGS:")
+    logger.info(f"  Model: {self.transcription.model}")
+    logger.info(f"  Task: {TASK} (constant)")
+    logger.info(f"  Language: {self.transcription.language}")
+    logger.info(f"  Use VAD: {self.transcription.use_vad}")
+    logger.info(f"  Device Index: {self.transcription.device_index}")
+    logger.info(f"  Send Last N Segments: {self.transcription.send_last_n_segments}")
+    logger.info(f"  No Speech Threshold: {self.transcription.no_speech_thresh}")
+    logger.info(f"  Same Output Threshold: {self.transcription.same_output_threshold}")
+    logger.info(f"  Clip Audio: {self.transcription.clip_audio}")
 
     # Hardware constants
-    self.logger.info("HARDWARE SETTINGS:")
-    self.logger.info(f"  Cache Path: {CACHE_PATH} (constant)")
-    self.logger.info(f"  Single Model: {SINGLE_MODEL} (constant)")
+    logger.info("HARDWARE SETTINGS:")
+    logger.info(f"  Cache Path: {CACHE_PATH} (constant)")
+    logger.info(f"  Single Model: {SINGLE_MODEL} (constant)")
 
     # RTSP streams
-    if rtsp_config.streams:
-      self.logger.info(f"RTSP STREAMS ({len(rtsp_config.streams)}):")
-      for name, url in rtsp_config.streams.items():
-        self.logger.info(f"  {name}: {url}")
+    if self.rtsp.streams:
+      logger.info(f"RTSP STREAMS ({len(self.rtsp.streams)}):")
+      for name, url in self.rtsp.streams.items():
+        logger.info(f"  {name}: {url}")
     else:
-      self.logger.info("RTSP STREAMS: None (WebSocket-only mode)")
+      logger.info("RTSP STREAMS: None (WebSocket-only mode)")
 
     # RTSP cache settings
-    self.logger.info("RTSP CACHE SETTINGS:")
-    self.logger.info(
-      f"  Waiting for listener duration: {rtsp_config.cache.waiting_for_listener_duration:.1f}s"
+    logger.info("RTSP CACHE SETTINGS:")
+    logger.info(
+      f"  Waiting for listener duration: {self.rtsp.cache.waiting_for_listener_duration:.1f}s"
     )
-    self.logger.info(
-      f"  Has listener cache duration: {rtsp_config.cache.has_listener_cache_duration:.1f}s"
+    logger.info(
+      f"  Has listener cache duration: {self.rtsp.cache.has_listener_cache_duration:.1f}s"
     )
 
-    self.logger.info("=" * 60)
+    logger.info("=" * 60)
+
+
+@validate_call
+def load_config_from_file(config_path: FilePath) -> EavesdropConfig:
+  """Load and validate Eavesdrop configuration from YAML file."""
+  logger = get_logger("eavesdrop_config")
+  logger.info("Loading Eavesdrop configuration", path=str(config_path))
+
+  try:
+    # Load YAML content
+    with open(config_path, "r", encoding="utf-8") as file:
+      config_data = yaml.safe_load(file)
+
+  except yaml.YAMLError as e:
+    raise ValueError(f"Invalid YAML in configuration file: {e}") from e
+  except Exception as e:
+    raise ValueError(f"Error reading configuration file: {e}") from e
+
+  # Validate configuration structure
+  if config_data is None:
+    raise ValueError("Configuration file is empty")
+
+  if not isinstance(config_data, dict):
+    raise ValueError("Configuration file must contain a YAML dictionary")
+
+  # Validate and create config using Pydantic
+  config = EavesdropConfig.model_validate(config_data)
+
+  # Pretty print the config
+  config.pretty_print()
+
+  return config
 
 
 def get_env_float(key: str, default: float) -> float:

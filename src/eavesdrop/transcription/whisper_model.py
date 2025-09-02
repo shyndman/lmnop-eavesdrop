@@ -20,8 +20,8 @@ from faster_whisper.vad import (
 )
 from tqdm import tqdm
 
-from ..logs import get_logger
-from .models import (
+from eavesdrop.logs import get_logger
+from eavesdrop.transcription.models import (
   FeatureExtractorConfig,
   Segment,
   SegmentDict,
@@ -31,7 +31,7 @@ from .models import (
   WordDict,
   WordTimingDict,
 )
-from .utils import (
+from eavesdrop.transcription.utils import (
   get_compression_ratio,
   get_ctranslate2_storage,
   merge_punctuations,
@@ -261,31 +261,8 @@ class WhisperModel:
         duration_after_vad=0.0,
         all_language_probs=None,
         transcription_options=TranscriptionOptions(
-          beam_size=5,
-          best_of=5,
-          patience=1,
-          length_penalty=1,
-          repetition_penalty=1,
-          no_repeat_ngram_size=0,
-          log_prob_threshold=-1.0,
-          no_speech_threshold=0.6,
-          compression_ratio_threshold=2.4,
-          condition_on_previous_text=True,
-          prompt_reset_on_temperature=0.5,
-          temperatures=[0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
-          initial_prompt=initial_prompt,
-          prefix=None,
-          suppress_blank=True,
-          suppress_tokens=[-1],
-          without_timestamps=False,
-          max_initial_timestamp=1.0,
-          word_timestamps=False,
-          prepend_punctuations='"\'"¿([{-',
-          append_punctuations='"\'.。,，!！?？:：")]}、',
           multilingual=multilingual,
-          max_new_tokens=None,
-          hallucination_silence_threshold=None,
-          hotwords=None,
+          initial_prompt=initial_prompt,
         ),
         vad_options=vad_parameters,
       )
@@ -343,32 +320,12 @@ class WhisperModel:
     from .utils import get_suppressed_tokens
 
     options = TranscriptionOptions(
-      beam_size=5,
-      best_of=5,
-      patience=1,
-      length_penalty=1,
-      repetition_penalty=1,
-      no_repeat_ngram_size=0,
-      log_prob_threshold=-1.0,
-      no_speech_threshold=0.6,
-      compression_ratio_threshold=2.4,
-      condition_on_previous_text=True,
-      prompt_reset_on_temperature=0.5,
-      temperatures=[0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
-      initial_prompt=initial_prompt,
-      prefix=None,
-      suppress_blank=True,
-      suppress_tokens=get_suppressed_tokens(tokenizer, [-1]),
-      without_timestamps=False,
-      max_initial_timestamp=1.0,
-      word_timestamps=False,
-      prepend_punctuations='"\'"¿([{-',
-      append_punctuations='"\'.。,，!！?？:：")]}、',
       multilingual=multilingual,
-      max_new_tokens=None,
-      hallucination_silence_threshold=None,
-      hotwords="Bang",
+      initial_prompt=initial_prompt,
     )
+    # Set dynamic defaults
+    if options.suppress_tokens is None:
+      options.suppress_tokens = get_suppressed_tokens(tokenizer, [-1])
 
     segments = self.generate_segments(features, tokenizer, options, False, encoder_output)
 
@@ -470,14 +427,8 @@ class WhisperModel:
   ) -> Iterable[Segment]:
     content_frames = features.shape[-1] - 1
     content_duration = float(content_frames * self.feature_extractor.time_per_frame)
-
-    seek_points: list[int] = []
-    if len(seek_points) == 0:
-      seek_points.append(0)
-    if len(seek_points) % 2 == 1:
-      seek_points.append(content_frames)
-    seek_clips: list[tuple[int, int]] = list(zip(seek_points[::2], seek_points[1::2]))
-
+    # In this implementation, we process the entire audio as a single clip.
+    seek_clips: list[tuple[int, int]] = [(0, content_frames)]
     punctuation = '"\'"¿([{-"\'.。,，!！?？:：")]}、'
 
     idx = 0
@@ -500,10 +451,8 @@ class WhisperModel:
     #     while seek < seek_clip_end
     while clip_idx < len(seek_clips):
       seek_clip_start, seek_clip_end = seek_clips[clip_idx]
-      if seek_clip_end > content_frames:
-        seek_clip_end = content_frames
-      if seek < seek_clip_start:
-        seek = seek_clip_start
+      seek_clip_end = min(seek_clip_end, content_frames)
+      seek = max(seek, seek_clip_start)
       if seek >= seek_clip_end:
         clip_idx += 1
         if clip_idx < len(seek_clips):
@@ -888,29 +837,41 @@ class WhisperModel:
     Returns:
         A list of tokens representing the constructed prompt.
     """
-    prompt = []
+    prompt: list[int] = []
+    max_context_len = self.max_length // 2 - 1
 
+    # Add previous context (tokens from prior segments and/or hotwords)
     if previous_tokens or (hotwords and not prefix):
       prompt.append(tokenizer.sot_prev)
+
       if hotwords and not prefix:
         hotwords_tokens = tokenizer.encode(" " + hotwords.strip())
-        if len(hotwords_tokens) >= self.max_length // 2:
-          hotwords_tokens = hotwords_tokens[: self.max_length // 2 - 1]
+        # Truncate if longer than max allowed context
+        if len(hotwords_tokens) > max_context_len:
+          hotwords_tokens = hotwords_tokens[:max_context_len]
         prompt.extend(hotwords_tokens)
+
       if previous_tokens:
-        prompt.extend(previous_tokens[-(self.max_length // 2 - 1) :])
+        # Use the last N tokens as context
+        prompt.extend(previous_tokens[-max_context_len:])
 
-    prompt.extend(tokenizer.sot_sequence)  # sot=start of text
+    # Add the core start-of-transcription sequence
+    prompt.extend(tokenizer.sot_sequence)
 
+    # Add timestamp-related tokens
     if without_timestamps:
       prompt.append(tokenizer.no_timestamps)
 
+    # Add prefix if provided
     if prefix:
       prefix_tokens = tokenizer.encode(" " + prefix.strip())
-      if len(prefix_tokens) >= self.max_length // 2:
-        prefix_tokens = prefix_tokens[: self.max_length // 2 - 1]
+      # Truncate if longer than max allowed context
+      if len(prefix_tokens) > max_context_len:
+        prefix_tokens = prefix_tokens[:max_context_len]
+
       if not without_timestamps:
         prompt.append(tokenizer.timestamp_begin)
+
       prompt.extend(prefix_tokens)
 
     return prompt

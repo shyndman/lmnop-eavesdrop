@@ -128,14 +128,14 @@ class StreamingTranscriptionProcessor:
       with StreamingTranscriptionProcessor.SINGLE_MODEL_LOCK:
         if StreamingTranscriptionProcessor.SINGLE_MODEL is None:
           self.logger.debug("Creating new single model instance")
-          self._create_model_instance(device, self.config.model)
+          self._create_model_instance(device, self.config.model_path)
           StreamingTranscriptionProcessor.SINGLE_MODEL = self.transcriber
         else:
           self.logger.debug("Reusing existing single model instance")
           self.transcriber = StreamingTranscriptionProcessor.SINGLE_MODEL
     else:
       self.logger.debug("Creating dedicated model", client_uid=self.client_uid)
-      self._create_model_instance(device, self.config.model)
+      self._create_model_instance(device, self.config.model_path)
 
   def _create_model_instance(self, device: str, model_ref: str) -> None:
     """Create a single model instance."""

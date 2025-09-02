@@ -5,35 +5,10 @@ Handles buffering of audio frames with configurable cleanup and processing param
 """
 
 import threading
-from dataclasses import dataclass
 
 import numpy as np
 
-
-@dataclass
-class BufferConfig:
-  """Configuration for audio stream buffer behavior."""
-
-  sample_rate: int = 16000
-  """Audio sample rate in Hz."""
-
-  max_buffer_duration: float = 45.0
-  """Maximum buffer duration in seconds before cleanup."""
-
-  cleanup_duration: float = 30.0
-  """Duration of oldest audio to remove during cleanup."""
-
-  min_chunk_duration: float = 1.0
-  """Minimum chunk duration for processing in seconds."""
-
-  transcription_interval: float = 2.0
-  """Interval between transcription attempts in seconds."""
-
-  clip_audio: bool = False
-  """Whether to clip audio with no valid segments."""
-
-  max_stall_duration: float = 25.0
-  """Maximum duration without progress before clipping audio."""
+from ..config import BufferConfig
 
 
 class AudioStreamBuffer:

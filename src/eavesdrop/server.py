@@ -2,23 +2,24 @@ import asyncio
 import json
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 from websockets.asyncio.server import ServerConnection
 from websockets.exceptions import ConnectionClosed, InvalidMessage
 
-from .config import EavesdropConfig, RTSPConfig
-from .logs import get_logger
-from .messages import ClientType, ErrorMessage, WebSocketHeaders
-from .rtsp.cache import RTSPTranscriptionCache
-from .rtsp.manager import RTSPClientManager
-from .rtsp.subscriber import RTSPSubscriberManager
-from .streaming import (
-  BufferConfig,
+from eavesdrop.config import RTSPConfig, load_config_from_file
+from eavesdrop.constants import SAMPLE_RATE
+from eavesdrop.logs import get_logger
+from eavesdrop.messages import ClientType, ErrorMessage, WebSocketHeaders
+from eavesdrop.rtsp.cache import RTSPTranscriptionCache
+from eavesdrop.rtsp.manager import RTSPClientManager
+from eavesdrop.rtsp.subscriber import RTSPSubscriberManager
+from eavesdrop.streaming import (
   TranscriptionConfig,
   WebSocketStreamingClient,
 )
-from .websocket import WebSocketClientManager, WebSocketServer
+from eavesdrop.websocket import WebSocketClientManager, WebSocketServer
 
 
 @dataclass
@@ -84,11 +85,7 @@ class TranscriptionServer:
         return None
 
       # Use config transcription settings as defaults, allow most overrides
-      # Create configurations for the streaming client
-      buffer_config = BufferConfig(
-        clip_audio=options.get("clip_audio", self.transcription_config.clip_audio)
-      )
-
+      # Create configuration for the streaming client
       transcription_config = TranscriptionConfig(
         send_last_n_segments=options.get(
           "send_last_n_segments", self.transcription_config.send_last_n_segments
@@ -106,6 +103,8 @@ class TranscriptionServer:
         initial_prompt=options.get("initial_prompt", self.transcription_config.initial_prompt),
         vad_parameters=options.get("vad_parameters", self.transcription_config.vad_parameters),
         device_index=self.transcription_config.device_index,
+        # Buffer configuration is now nested under transcription config
+        buffer=self.transcription_config.buffer,
       )
 
       client = WebSocketStreamingClient(
@@ -113,7 +112,6 @@ class TranscriptionServer:
         client_uid=options["uid"],
         get_audio_func=self.get_audio_from_websocket,
         transcription_config=transcription_config,
-        buffer_config=buffer_config,
       )
 
       # Start the client and get the completion task
@@ -182,7 +180,9 @@ class TranscriptionServer:
         exist_ok=True,
       )
 
-      file_handle = sf.SoundFile(filename, mode="w", samplerate=self.RATE, channels=1, format="WAV")
+      file_handle = sf.SoundFile(
+        filename, mode="w", samplerate=SAMPLE_RATE, channels=1, format="WAV"
+      )
       self.debug_audio_files[websocket] = (file_handle, filename)
 
       self.logger.info(f"Debug audio capture started: {filename}")
@@ -377,8 +377,9 @@ class TranscriptionServer:
     """
     # Load and validate configuration file
     try:
-      eavesdrop_config = EavesdropConfig(config_path)
-      rtsp_config, self.transcription_config = eavesdrop_config.load_and_validate()
+      eavesdrop_config = load_config_from_file(Path(config_path))
+      rtsp_config = eavesdrop_config.rtsp
+      self.transcription_config = eavesdrop_config.transcription
 
     except ValueError as e:
       self.logger.error("Configuration validation failed", error=str(e), config_path=config_path)

@@ -5,10 +5,11 @@ Defines the contracts for audio input sources and transcription output sinks
 using Python's Protocol system for structural typing.
 """
 
-from dataclasses import dataclass
 from typing import Protocol
 
 import numpy as np
+from pydantic import Field
+from pydantic.dataclasses import dataclass
 
 from eavesdrop.transcription.models import Segment
 
@@ -23,7 +24,7 @@ class TranscriptionResult:
   language: str | None = None
   """Detected or specified language code."""
 
-  language_probability: float | None = None
+  language_probability: float | None = Field(default=None, ge=0.0, le=1.0)
   """Confidence score for language detection."""
 
 

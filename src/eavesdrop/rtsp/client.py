@@ -4,13 +4,14 @@ from typing import TYPE_CHECKING
 import numpy as np
 import structlog
 
-from ..config import get_env_bool, get_env_float
+from eavesdrop.constants import SAMPLE_RATE
+
 from ..logs import get_logger
 
 if TYPE_CHECKING:
   from .cache import RTSPTranscriptionCache
   from .subscriber import RTSPSubscriberManager
-from ..streaming.buffer import AudioStreamBuffer, BufferConfig
+from ..streaming.buffer import AudioStreamBuffer
 from ..streaming.interfaces import (
   AudioSource,
   TranscriptionResult,
@@ -69,7 +70,7 @@ class RTSPAudioSource(AudioSource):
                     Queue should contain 16-bit PCM little-endian data at 16kHz.
     """
     self.audio_queue: asyncio.Queue[bytes] = audio_queue
-    self.sample_rate: int = 16000
+    self.sample_rate: int = SAMPLE_RATE
     self.bytes_per_sample: int = 2  # 16-bit PCM
     self.closed: bool = False
 
@@ -692,20 +693,9 @@ class RTSPTranscriptionClient(RTSPClient):
     # Initialize parent with internal queue
     super().__init__(stream_name, rtsp_url, asyncio.Queue(maxsize=100))
 
-    # Configuration from environment variables with defaults
-    buffer_config = BufferConfig(
-      sample_rate=16000,
-      max_buffer_duration=get_env_float("EAVESDROP_RTSP_BUFFER_DURATION", 45.0),
-      cleanup_duration=get_env_float("EAVESDROP_RTSP_CLEANUP_DURATION", 30.0),
-      min_chunk_duration=get_env_float("EAVESDROP_RTSP_MIN_CHUNK_DURATION", 1.0),
-      transcription_interval=get_env_float("EAVESDROP_RTSP_TRANSCRIPTION_INTERVAL", 2.0),
-      clip_audio=get_env_bool("EAVESDROP_RTSP_CLIP_AUDIO", False),
-      max_stall_duration=get_env_float("EAVESDROP_RTSP_MAX_STALL_DURATION", 25.0),
-    )
-
     # Create abstracted components
     self.audio_source = RTSPAudioSource(self.audio_queue)
-    self.stream_buffer = AudioStreamBuffer(buffer_config)
+    self.stream_buffer = AudioStreamBuffer(transcription_config.buffer)
     self.transcription_sink = RTSPTranscriptionSink(
       stream_name, subscriber_manager, transcription_cache
     )

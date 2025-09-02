@@ -46,7 +46,10 @@ build-backend = "hatchling.build"
 packages = ["src/eavesdrop"]
 
 [dependency-groups]
-dev = ["pytest>=8.3.5"]
+dev = [
+    "pyfakefs>=5.9.3",
+    "pytest>=8.3.5",
+]
 
 [tool.pyright]
 include = ["src", "tests"]
@@ -61,6 +64,10 @@ pythonPlatform = "Linux"
 line-length = 100
 target-version = "py312"
 indent-width = 2
+
+[tool.ruff.lint.flake8-tidy-imports]
+# Disallow all relative imports.
+ban-relative-imports = "all"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]
