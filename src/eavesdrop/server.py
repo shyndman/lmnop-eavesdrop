@@ -85,29 +85,27 @@ class TranscriptionServer:
         return None
 
       # Use config transcription settings as defaults, allow most overrides
-      # Create configuration for the streaming client
-      transcription_config = TranscriptionConfig(
-        send_last_n_segments=options.get(
-          "send_last_n_segments", self.transcription_config.send_last_n_segments
-        ),
-        no_speech_thresh=options.get(
-          "no_speech_thresh", self.transcription_config.no_speech_thresh
-        ),
-        same_output_threshold=options.get(
-          "same_output_threshold", self.transcription_config.same_output_threshold
-        ),
-        use_vad=options.get("use_vad", self.transcription_config.use_vad),
-        clip_audio=options.get("clip_audio", self.transcription_config.clip_audio),
-        model=options.get("model", self.transcription_config.model),
-        language=options.get("language", self.transcription_config.language),
-        initial_prompt=options.get("initial_prompt", self.transcription_config.initial_prompt),
-        hotwords=options.get("hotwords", self.transcription_config.hotwords),
-        vad_parameters=options.get("vad_parameters", self.transcription_config.vad_parameters),
-        num_workers=self.transcription_config.num_workers,
-        device_index=self.transcription_config.device_index,
-        # Buffer configuration is now nested under transcription config
-        buffer=self.transcription_config.buffer,
-      )
+      # Define which fields WebSocket clients can override
+      WEBSOCKET_CONFIGURABLE_FIELDS = {
+        "send_last_n_segments",
+        "no_speech_thresh",
+        "same_output_threshold",
+        "use_vad",
+        "clip_audio",
+        "model",
+        "language",
+        "initial_prompt",
+        "hotwords",
+        "vad_parameters",
+      }
+
+      # Filter client options to only allowed fields
+      client_overrides = {
+        key: value for key, value in options.items() if key in WEBSOCKET_CONFIGURABLE_FIELDS
+      }
+
+      # Create configuration for the streaming client with client overrides
+      transcription_config = self.transcription_config.model_copy(update=client_overrides)
 
       client = WebSocketStreamingClient(
         websocket=websocket,
