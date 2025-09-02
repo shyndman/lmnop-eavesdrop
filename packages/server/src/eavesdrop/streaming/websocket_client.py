@@ -61,7 +61,7 @@ class WebSocketStreamingClient:
       config=transcription_config,
       client_uid=client_uid,
       translation_queue=translation_queue,
-      logger_name=f"transcription_processor_{client_uid}",
+      logger_name=f"ws/proc.{client_uid[0:4]}",
     )
 
     # State tracking

@@ -704,7 +704,7 @@ class RTSPTranscriptionClient(RTSPClient):
       sink=self.transcription_sink,
       config=transcription_config,
       client_uid=stream_name,
-      logger_name=f"rtsp_processor_{stream_name}",
+      logger_name=f"rtsp/proc.{stream_name}",
     )
 
     # Statistics (preserved from current implementation)
