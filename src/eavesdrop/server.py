@@ -102,6 +102,7 @@ class TranscriptionServer:
         language=options.get("language", self.transcription_config.language),
         initial_prompt=options.get("initial_prompt", self.transcription_config.initial_prompt),
         vad_parameters=options.get("vad_parameters", self.transcription_config.vad_parameters),
+        num_workers=self.transcription_config.num_workers,
         device_index=self.transcription_config.device_index,
         # Buffer configuration is now nested under transcription config
         buffer=self.transcription_config.buffer,

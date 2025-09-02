@@ -184,6 +184,7 @@ class StreamingTranscriptionProcessor:
       device=device,
       device_index=self.config.device_index,
       compute_type=self.compute_type,
+      num_workers=self.config.num_workers,
       download_root=CACHE_PATH,
       local_files_only=False,
     )

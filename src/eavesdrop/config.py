@@ -109,6 +109,9 @@ class TranscriptionConfig(BaseModel):
   gpu_name: str | None = None
   """GPU device name to use (device_index computed from this)."""
 
+  num_workers: int = Field(default=1, gt=0)
+  """Number of workers for parallel transcription processing."""
+
   device_index: int = Field(default=0, ge=0, exclude=True)
   """GPU device index to use (computed from gpu_name)."""
 
@@ -202,6 +205,7 @@ class EavesdropConfig(BaseModel):
     logger.info(f"  Language: {self.transcription.language}")
     logger.info(f"  Use VAD: {self.transcription.use_vad}")
     logger.info(f"  Device Index: {self.transcription.device_index}")
+    logger.info(f"  Num Workers: {self.transcription.num_workers}")
     logger.info(f"  Send Last N Segments: {self.transcription.send_last_n_segments}")
     logger.info(f"  No Speech Threshold: {self.transcription.no_speech_thresh}")
     logger.info(f"  Same Output Threshold: {self.transcription.same_output_threshold}")
