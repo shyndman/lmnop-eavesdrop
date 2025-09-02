@@ -1,0 +1,117 @@
+# Sample Eavesdrop Configuration File
+# Copy this file to your desired location and modify as needed
+# Usage: eavesdrop --config /path/to/your/config.yaml
+
+transcription:
+  # Whisper model to use for transcription. Use standard model names like 'tiny', 'base', 'small', 
+  # 'medium', 'large-v2', 'large-v3', or distil variants like 'distil-medium.en'.
+  # Cannot be used together with custom_model.
+  model: "distil-medium.en"
+  
+  # Path to a custom Whisper model file. Use this for local or fine-tuned models.
+  # Cannot be used together with model. Uncomment to use.
+  # custom_model: "/path/to/your/model"
+  
+  # Primary language for transcription. Use language codes like 'en', 'es', 'fr', etc.
+  # Affects transcription accuracy and performance.
+  language: "en"
+  
+  # Optional text prompt to guide the model's transcription behavior.
+  # Can help improve accuracy for specific domains or contexts.
+  initial_prompt: null
+  
+  # List of hotwords to improve recognition of specific terms.
+  # These words will be given higher priority during transcription.
+  hotwords: []
+    # Example: ["OpenAI", "ChatGPT", "artificial intelligence"]
+  
+  # Enable Voice Activity Detection to filter out silence and background noise.
+  # Improves transcription quality by focusing on speech segments.
+  use_vad: true
+  
+  # Number of parallel workers for transcription processing.
+  # Higher values can improve throughput but use more memory and CPU/GPU resources.
+  num_workers: 1
+  
+  # Number of most recent transcription segments to send to each client.
+  # Affects how much recent context clients receive.
+  send_last_n_segments: 10
+  
+  # Threshold for discarding segments with low speech probability (0.0-1.0).
+  # Higher values are more aggressive at filtering out non-speech.
+  no_speech_thresh: 0.45
+  
+  # Number of consecutive identical outputs before marking a segment as completed.
+  # Helps stabilize transcription output by waiting for consistency.
+  same_output_threshold: 10
+  
+  # Whether to automatically remove audio segments that don't contain valid transcriptions.
+  # Helps prevent memory buildup from silent or noisy audio.
+  clip_audio: false
+  
+  # Specific GPU device name to target for transcription processing.
+  # Leave commented to use automatic GPU selection. Useful for multi-GPU systems.
+  # gpu_name: "NVIDIA GeForce RTX 3080"
+  
+  # Advanced Voice Activity Detection parameters for fine-tuning speech detection.
+  # Most users should leave these at defaults unless experiencing specific issues.
+  vad_parameters:
+    onset: 0.5
+    offset: 0.35
+    min_speech_duration_ms: 0
+    max_speech_duration_s: .inf
+    min_silence_duration_ms: 2000
+    speech_pad_ms: 400
+  
+  # Audio buffer management settings that control how audio is processed and stored.
+  # These settings affect memory usage and real-time performance.
+  buffer:
+    # Audio sample rate in Hz. Must be 16000 for Whisper compatibility.
+    # Do not change unless you know what you're doing.
+    sample_rate: 16000
+    
+    # Maximum duration of audio to keep in buffer before triggering cleanup.
+    # Prevents unbounded memory growth during long sessions.
+    max_buffer_duration: 45.0
+    
+    # Amount of oldest audio to remove during cleanup operations.
+    # Must be less than max_buffer_duration to avoid removing too much.
+    cleanup_duration: 30.0
+    
+    # Minimum duration of audio required before attempting transcription.
+    # Prevents processing very short, likely meaningless audio chunks.
+    min_chunk_duration: 1.0
+    
+    # How frequently to attempt transcription on buffered audio.
+    # Lower values provide faster response but use more processing power.
+    transcription_interval: 2.0
+    
+    # Whether to automatically remove audio segments without valid transcriptions.
+    # Can help with memory management but may discard useful context.
+    clip_audio: false
+    
+    # Maximum time without transcription progress before clipping stalled audio.
+    # Prevents buildup of problematic audio that can't be transcribed.
+    max_stall_duration: 25.0
+
+# RTSP stream configuration for processing IP camera and network audio streams.
+# Leave streams empty ({}) to run in WebSocket-only mode.
+rtsp:
+  # Named RTSP stream URLs to process. Each stream runs independently.
+  # Supports various RTSP URL formats including authentication.
+  streams: {}
+    # Example configurations (uncomment and modify as needed):
+    # office: "rtsp://username:password@camera-ip:554/stream1"
+    # lobby: "rtsp://camera-ip:554/main_stream"
+    # kitchen: "rtsp://192.168.1.100:554/cam/realmonitor?channel=1&subtype=0"
+  
+  # Caching behavior for transcription results based on whether clients are listening.
+  # Longer cache times when no listeners preserve history for new connections.
+  cache:
+    # How long to cache transcriptions when no clients are listening (seconds).
+    # Longer duration provides more history when clients reconnect.
+    waiting_for_listener_duration: 10800.0
+    
+    # How long to cache transcriptions when clients are actively listening (seconds).
+    # Shorter duration saves memory when clients are receiving real-time updates.
+    has_listener_cache_duration: 600.0
