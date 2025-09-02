@@ -10,6 +10,8 @@ from pydantic.types import FilePath
 from .constants import CACHE_PATH, SINGLE_MODEL, TASK
 from .logs import get_logger
 
+logger = get_logger("config")
+
 
 @dataclass
 class BufferConfig:
@@ -192,45 +194,68 @@ class EavesdropConfig(BaseModel):
   """RTSP stream configuration."""
 
   def pretty_print(self) -> None:
-    """Pretty print the entire configuration at INFO level."""
-    logger = get_logger("eavesdrop_config")
+    """
+    Pretty print the complete configuration at INFO level.
+
+    This method logs every single configuration property to provide full visibility
+    into the active configuration, including defaults. This is essential for
+    debugging configuration issues and verifying that settings are applied correctly.
+    """
     logger.info("=" * 60)
     logger.info("EAVESDROP CONFIGURATION")
     logger.info("=" * 60)
 
-    # Transcription settings
+    # Transcription settings - all properties
     logger.info("TRANSCRIPTION SETTINGS:")
     logger.info(f"  Model: {self.transcription.model}")
-    logger.info(f"  Task: {TASK} (constant)")
+    logger.info(f"  Custom Model: {self.transcription.custom_model}")
+    logger.info(f"  GPU Name: {self.transcription.gpu_name}")
     logger.info(f"  Language: {self.transcription.language}")
-    logger.info(f"  Use VAD: {self.transcription.use_vad}")
-    logger.info(f"  Device Index: {self.transcription.device_index}")
-    logger.info(f"  Num Workers: {self.transcription.num_workers}")
+    logger.info(f"  Initial Prompt: {self.transcription.initial_prompt}")
+    logger.info(f"  Hotwords: {self.transcription.hotwords}")
     logger.info(f"  Send Last N Segments: {self.transcription.send_last_n_segments}")
     logger.info(f"  No Speech Threshold: {self.transcription.no_speech_thresh}")
     logger.info(f"  Same Output Threshold: {self.transcription.same_output_threshold}")
+    logger.info(f"  Num Workers: {self.transcription.num_workers}")
+    logger.info(f"  Use VAD: {self.transcription.use_vad}")
 
-    # Hardware constants
-    logger.info("HARDWARE SETTINGS:")
-    logger.info(f"  Cache Path: {CACHE_PATH} (constant)")
-    logger.info(f"  Single Model: {SINGLE_MODEL} (constant)")
+    # VAD parameters - all properties
+    logger.info("  VAD PARAMETERS:")
+    vad = self.transcription.vad_parameters
+    logger.info(f"    Onset: {vad.onset}")
+    logger.info(f"    Offset: {vad.offset}")
+    logger.info(f"    Min Speech Duration: {vad.min_speech_duration_ms}ms")
+    logger.info(f"    Max Speech Duration: {vad.max_speech_duration_s}s")
+    logger.info(f"    Min Silence Duration: {vad.min_silence_duration_ms}ms")
+    logger.info(f"    Speech Pad: {vad.speech_pad_ms}ms")
 
-    # RTSP streams
+    # Buffer settings - all properties
+    logger.info("BUFFER SETTINGS:")
+    logger.info(f"  Sample Rate: {self.transcription.buffer.sample_rate}")
+    logger.info(f"  Max Buffer Duration: {self.transcription.buffer.max_buffer_duration}s")
+    logger.info(f"  Cleanup Duration: {self.transcription.buffer.cleanup_duration}s")
+    logger.info(f"  Min Chunk Duration: {self.transcription.buffer.min_chunk_duration}s")
+    logger.info(f"  Transcription Interval: {self.transcription.buffer.transcription_interval}s")
+    logger.info(f"  Clip Audio: {self.transcription.buffer.clip_audio}")
+    logger.info(f"  Max Stall Duration: {self.transcription.buffer.max_stall_duration}s")
+
+    # RTSP settings - all properties
+    logger.info("RTSP SETTINGS:")
     if self.rtsp.streams:
-      logger.info(f"RTSP STREAMS ({len(self.rtsp.streams)}):")
+      logger.info(f"  Streams ({len(self.rtsp.streams)}):")
       for name, url in self.rtsp.streams.items():
-        logger.info(f"  {name}: {url}")
+        logger.info(f"    {name}: {url}")
     else:
-      logger.info("RTSP STREAMS: None (WebSocket-only mode)")
+      logger.info("  Streams: None (WebSocket-only mode)")
 
-    # RTSP cache settings
-    logger.info("RTSP CACHE SETTINGS:")
-    logger.info(
-      f"  Waiting for listener duration: {self.rtsp.cache.waiting_for_listener_duration:.1f}s"
-    )
-    logger.info(
-      f"  Has listener cache duration: {self.rtsp.cache.has_listener_cache_duration:.1f}s"
-    )
+    logger.info(f"  Cache Waiting Duration: {self.rtsp.cache.waiting_for_listener_duration:.1f}s")
+    logger.info(f"  Cache Listener Duration: {self.rtsp.cache.has_listener_cache_duration:.1f}s")
+
+    # System constants
+    logger.info("SYSTEM CONSTANTS:")
+    logger.info(f"  Task: {TASK}")
+    logger.info(f"  Cache Path: {CACHE_PATH}")
+    logger.info(f"  Single Model: {SINGLE_MODEL}")
 
     logger.info("=" * 60)
 
@@ -238,7 +263,7 @@ class EavesdropConfig(BaseModel):
 @validate_call
 def load_config_from_file(config_path: FilePath) -> EavesdropConfig:
   """Load and validate Eavesdrop configuration from YAML file."""
-  logger = get_logger("eavesdrop_config")
+
   logger.info("Loading Eavesdrop configuration", path=str(config_path))
 
   try:

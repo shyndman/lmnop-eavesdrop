@@ -69,7 +69,7 @@ async def main():
   # Setup structured logging
   log_level = os.getenv("LOG_LEVEL", "INFO").upper()
   setup_logging(level=log_level, json_output=args.json_logs, correlation_id=args.correlation_id)
-  logger = get_logger("run_server")
+  logger = get_logger("main")
 
   logger.info(
     "Starting Eavesdrop Server",

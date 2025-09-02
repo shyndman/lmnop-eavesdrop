@@ -2,7 +2,11 @@
 
 import logging
 import os
+import re
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
+from io import StringIO
 
 import structlog
 from structlog.dev import (
@@ -19,6 +23,7 @@ from structlog.dev import (
   Column,
   ConsoleRenderer,
   KeyValueColumnFormatter,
+  _pad,
 )
 from structlog.typing import EventDict, Processor
 
@@ -32,6 +37,86 @@ def hex_to_ansi_fg(hex_color: int) -> str:
   g = (hex_color >> 8) & 0xFF
   b = hex_color & 0xFF
   return f"\x1b[38;2;{r};{g};{b}m"
+
+
+@dataclass
+class RegexValueColumnFormatter:
+  """
+  Format a key-value pair with regex-based value styling.
+
+  Like KeyValueColumnFormatter, but allows mapping values to styles based on
+  regular expression patterns.
+
+  Args:
+      key_style: The style to apply to the key. If None, the key is omitted.
+
+      value_style_map: A list of (regex_pattern, style) tuples. The first
+          pattern that matches the value will determine its style.
+
+      default_value_style: The style to use if no regex patterns match.
+
+      reset_style: The style to apply whenever a style is no longer needed.
+
+      value_repr:
+          A callable that returns the string representation of the value.
+
+      width: The width to pad the value to. If 0, no padding is done.
+
+      prefix:
+          A string to prepend to the formatted key-value pair. May contain
+          styles.
+
+      postfix:
+          A string to append to the formatted key-value pair. May contain
+          styles.
+  """
+
+  key_style: str | None
+  value_style_map: list[tuple[str, str]]
+  default_value_style: str
+  reset_style: str
+  value_repr: Callable[[object], str]
+  width: int = 0
+  prefix: str = ""
+  postfix: str = ""
+
+  def __post_init__(self) -> None:
+    """Compile regex patterns for efficiency."""
+    self._compiled_patterns = [
+      (re.compile(pattern), style) for pattern, style in self.value_style_map
+    ]
+
+  def __call__(self, key: str, value: object) -> str:
+    sio = StringIO()
+
+    if self.prefix:
+      sio.write(self.prefix)
+      sio.write(self.reset_style)
+
+    if self.key_style is not None:
+      sio.write(self.key_style)
+      sio.write(key)
+      sio.write(self.reset_style)
+      sio.write("=")
+
+    # Determine value style based on regex matching
+    value_str = self.value_repr(value)
+    value_style = self.default_value_style
+
+    for pattern, style in self._compiled_patterns:
+      if pattern.search(value_str):
+        value_style = style
+        break
+
+    sio.write(value_style)
+    sio.write(_pad(value_str, self.width))
+    sio.write(self.reset_style)
+
+    if self.postfix:
+      sio.write(self.postfix)
+      sio.write(self.reset_style)
+
+    return sio.getvalue()
 
 
 class NerdStyles:
@@ -184,7 +269,7 @@ def setup_logging(
     event_key: str = "event"
     timestamp_key: str = "timestamp"
     logger_name_formatter = KeyValueColumnFormatter(
-      key_style=hex_to_ansi_fg(0xAD8A89),
+      key_style=None,
       value_style=hex_to_ansi_fg(0x7D6B95),
       reset_style=RESET_ALL,
       value_repr=str,
@@ -198,9 +283,21 @@ def setup_logging(
         # Default formatter
         Column(
           "",
-          KeyValueColumnFormatter(
-            key_style="",
-            value_style="",
+          RegexValueColumnFormatter(
+            key_style=hex_to_ansi_fg(0x6E6A86),
+            value_style_map=[
+              (
+                # Integers (including negative) get green styling
+                r"^-?\d+$",
+                hex_to_ansi_fg(0x31748F),
+              ),
+              (
+                # Floats (including negative) get cyan styling
+                r"^-?\d*\.\d+$",
+                hex_to_ansi_fg(0xC4A7E7),
+              ),
+            ],
+            default_value_style="",
             reset_style=RESET_ALL,
             value_repr=str,
           ),
@@ -223,6 +320,8 @@ def setup_logging(
             value_repr=str,
           ),
         ),
+        Column("logger_name", logger_name_formatter),
+        Column("logger", logger_name_formatter),
         Column(
           event_key,
           KeyValueColumnFormatter(
@@ -233,8 +332,6 @@ def setup_logging(
             width=30,
           ),
         ),
-        Column("logger", logger_name_formatter),
-        Column("logger_name", logger_name_formatter),
       ],
     )
 
@@ -264,6 +361,7 @@ def setup_logging(
   # Propogate the logs of some libraries
   for liblog in [logging.getLogger(_liblog) for _liblog in ["websockets"]]:
     liblog.handlers.clear()
+    liblog.setLevel(logging.WARNING)
     liblog.propagate = True
 
   # And suppress the logs of others

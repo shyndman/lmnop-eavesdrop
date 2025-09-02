@@ -142,7 +142,7 @@ class RTSPTranscriptionSink(TranscriptionSink):
     stream_name: str,
     subscriber_manager: "RTSPSubscriberManager",
     transcription_cache: "RTSPTranscriptionCache",
-    logger_name: str = "rtsp_transcription",
+    logger_name: str = "rtsp/sink",
   ) -> None:
     """
     Initialize RTSP transcription sink with structured logging and caching.
@@ -313,7 +313,7 @@ class RTSPClient:
     self.stopped = False
 
     # Logging with stream context
-    self.logger = get_logger("rtsp_client").bind(stream=stream_name)
+    self.logger = get_logger("rtsp/client").bind(stream=stream_name)
 
     # Statistics tracking
     self.chunks_read = 0

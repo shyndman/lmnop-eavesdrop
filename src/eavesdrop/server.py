@@ -41,7 +41,7 @@ class TranscriptionServer:
   def __init__(self):
     self.client_manager = WebSocketClientManager()
     self.no_voice_activity_chunks = 0
-    self.logger = get_logger("transcription_server")
+    self.logger = get_logger("server")
 
     # RTSP-related components
     self.rtsp_client_manager: RTSPClientManager | None = None

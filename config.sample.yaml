@@ -52,11 +52,25 @@ transcription:
   # Advanced Voice Activity Detection parameters for fine-tuning speech detection.
   # Most users should leave these at defaults unless experiencing specific issues.
   vad_parameters:
+    # Speech threshold. Probabilities ABOVE this value are considered as SPEECH.
+    # Better to tune for each dataset separately, but 0.5 is good for most datasets.
     onset: 0.5
+    
+    # Silence threshold for determining end of speech. Values lower than offset are
+    # always silence. Values higher are speech only if previous sample was speech.
     offset: 0.35
+    
+    # Final speech chunks shorter than this duration are discarded.
     min_speech_duration_ms: 0
+    
+    # Maximum duration of speech chunks. Longer chunks are split at silence points
+    # or aggressively split just before this limit to prevent cutting speech.
     max_speech_duration_s: .inf
+    
+    # Wait for this much silence before separating speech chunks.
     min_silence_duration_ms: 2000
+    
+    # Final speech chunks are padded by this amount on each side.
     speech_pad_ms: 400
   
   # Audio buffer management settings that control how audio is processed and stored.

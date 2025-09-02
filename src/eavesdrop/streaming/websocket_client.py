@@ -49,7 +49,7 @@ class WebSocketStreamingClient:
     self.websocket = websocket
     self.client_uid = client_uid
     self.translation_queue = translation_queue
-    self.logger = get_logger("websocket_streaming_client")
+    self.logger = get_logger("ws/client")
 
     # Initialize components
     self.buffer = AudioStreamBuffer(transcription_config.buffer)

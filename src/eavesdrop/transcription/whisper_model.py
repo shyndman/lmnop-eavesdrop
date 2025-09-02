@@ -83,7 +83,7 @@ class WhisperModel:
         to file contents as file-like or bytes objects. If this is set, model_path acts as an
         identifier for this model.
     """
-    self.logger = get_logger()
+    self.logger = get_logger("whispr")
     self._last_vad_log_time = 0  # Track when we last logged VAD filtering
 
     tokenizer_bytes: bytes | None

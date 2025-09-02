@@ -62,7 +62,7 @@ class WebSocketAudioSource(AudioSource):
     """
     self.websocket: ServerConnection = websocket
     self.get_audio_func: Callable[[ServerConnection], Awaitable[np.ndarray | bool]] = get_audio_func
-    self.logger = get_logger("websocket_audio_source")
+    self.logger = get_logger("ws/audiosrc")
     self._closed: bool = False
 
   async def read_audio(self) -> np.ndarray | None:
@@ -144,7 +144,7 @@ class WebSocketTranscriptionSink(TranscriptionSink):
     """
     self.websocket: ServerConnection = websocket
     self.client_uid: str = client_uid
-    self.logger = get_logger("websocket_transcription_sink")
+    self.logger = get_logger("ws/sink")
     self._closed: bool = False
 
   async def send_result(self, result: TranscriptionResult) -> None:
