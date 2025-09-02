@@ -40,13 +40,6 @@ async def main():
     help="Path to the configuration file. (Env: EAVESDROP_CONFIG)",
   )
   parser.add_argument(
-    "--omp_num_threads",
-    "-omp",
-    type=int,
-    default=get_env_or_default("EAVESDROP_OMP_NUM_THREADS", 1, int),
-    help="Number of threads to use for OpenMP (Env: EAVESDROP_OMP_NUM_THREADS)",
-  )
-  parser.add_argument(
     "--debug_audio_path",
     type=str,
     default=None,
@@ -77,10 +70,6 @@ async def main():
   log_level = os.getenv("LOG_LEVEL", "INFO").upper()
   setup_logging(level=log_level, json_output=args.json_logs, correlation_id=args.correlation_id)
   logger = get_logger("run_server")
-
-  if "OMP_NUM_THREADS" not in os.environ:
-    os.environ["OMP_NUM_THREADS"] = str(args.omp_num_threads)
-    logger.info("Set OMP_NUM_THREADS", threads=args.omp_num_threads)
 
   logger.info(
     "Starting Eavesdrop Server",
