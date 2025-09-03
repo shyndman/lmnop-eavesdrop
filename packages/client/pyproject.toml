@@ -7,12 +7,14 @@ authors = [{name = "shyndman", email = "scotty.hyndman@gmail.com"}]
 requires-python = ">=3.12"
 dependencies = [
     "eavesdrop-wire",
- "pydantic>=2",
- "websocket-client>=1.8.0",
+    "numpy<2",
+    "pydantic>=2",
+    "sounddevice>=0.5.2",
+    "websockets>=13.0",
 ]
 
 [project.scripts]
-eavesdrop-client = "eavesdrop.client:main"
+eavesdrop = "eavesdrop.client.__main__:main"
 
 [project.urls]
 repository = "https://github.com/shyndman/eavesdrop"
@@ -26,7 +28,7 @@ build-backend = "hatchling.build"
 packages = ["src/eavesdrop"]
 
 [tool.uv.sources]
-eavesdrop-wire = { path = "../wire", editable = true }
+eavesdrop-wire = {path = "../wire", editable = true}
 
 [tool.pyright]
 include = ["src"]
