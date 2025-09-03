@@ -1,7 +1,6 @@
 import asyncio
-import json
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -22,11 +21,12 @@ from eavesdrop.server.websocket import WebSocketClientManager, WebSocketServer
 from eavesdrop.wire import (
   ClientType,
   ErrorMessage,
-  MessageCodec,
-  OutboundMessage,
   TranscriptionSetupMessage,
   WebSocketHeaders,
+  deserialize_message,
+  serialize_message,
 )
+from eavesdrop.wire.codec import Message
 from eavesdrop.wire.messages import HealthCheckRequest
 
 
@@ -145,8 +145,8 @@ class TranscriptionServer:
         result = await self._handle_subscriber_connection(websocket, dict(headers))
         return SubscriberConnection() if result else None
 
-      raw_msg = json.loads(await websocket.recv())
-      message = MessageCodec.model_validate({"message": raw_msg}).message
+      raw_msg = await websocket.recv()
+      message = deserialize_message(raw_msg)
 
       match (client_type, message):
         case (ClientType.TRANSCRIBER, TranscriptionSetupMessage()):
@@ -211,10 +211,10 @@ class TranscriptionServer:
     await self._send_and_close(websocket, ErrorMessage(message=error_message))
     self.logger.warning("Sent error and closed connection", error=error_message)
 
-  async def _send_and_close(self, websocket: ServerConnection, message: OutboundMessage) -> None:
+  async def _send_and_close(self, websocket: ServerConnection, message: Message) -> None:
     """Send error message and close WebSocket connection."""
     try:
-      await websocket.send(json.dumps(asdict(message)))
+      await websocket.send(serialize_message(message))
       await websocket.close()
     except Exception:
       self.logger.exception("Error sending error message and closing connection")

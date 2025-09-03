@@ -5,15 +5,13 @@ Contains shared message types and data structures used for communication
 between eavesdrop clients and servers.
 """
 
+from .codec import deserialize_message, serialize_message
 from .messages import (
   BaseMessage,
   ClientType,
   DisconnectMessage,
   ErrorMessage,
-  InboundMessage,
   LanguageDetectionMessage,
-  MessageCodec,
-  OutboundMessage,
   ServerReadyMessage,
   StreamStatusMessage,
   TranscriptionMessage,
@@ -27,10 +25,7 @@ __all__ = [
   "ClientType",
   "DisconnectMessage",
   "ErrorMessage",
-  "InboundMessage",
   "LanguageDetectionMessage",
-  "MessageCodec",
-  "OutboundMessage",
   "Segment",
   "ServerReadyMessage",
   "StreamStatusMessage",
@@ -39,4 +34,6 @@ __all__ = [
   "UserTranscriptionOptions",
   "WebSocketHeaders",
   "Word",
+  "deserialize_message",
+  "serialize_message",
 ]

@@ -5,9 +5,7 @@ Provides WebSocket-specific implementations of AudioSource and TranscriptionSink
 that integrate with the existing WebSocket server infrastructure.
 """
 
-import json
 from collections.abc import Awaitable, Callable
-from dataclasses import asdict
 
 import numpy as np
 from websockets.asyncio.server import ServerConnection
@@ -22,10 +20,11 @@ from eavesdrop.wire import (
   DisconnectMessage,
   ErrorMessage,
   LanguageDetectionMessage,
-  OutboundMessage,
   ServerReadyMessage,
   TranscriptionMessage,
+  serialize_message,
 )
+from eavesdrop.wire.codec import Message
 
 
 class WebSocketAudioSource(AudioSource):
@@ -197,13 +196,13 @@ class WebSocketTranscriptionSink(TranscriptionSink):
       self._closed = True
       self.logger.info("WebSocket transcription sink disconnected")
 
-  async def send_message(self, message: OutboundMessage) -> None:
+  async def send_message(self, message: Message) -> None:
     """Send a message to the WebSocket client."""
     if self._closed or not self.websocket:
       return
 
     try:
-      await self.websocket.send(json.dumps(asdict(message)))
+      await self.websocket.send(serialize_message(message))
 
     except Exception:
       self.logger.exception("Error sending message to client")

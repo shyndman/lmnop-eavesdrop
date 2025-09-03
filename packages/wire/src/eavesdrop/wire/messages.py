@@ -9,7 +9,7 @@ import time
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import Field
 from pydantic.dataclasses import dataclass
 
 from .transcription import Segment, UserTranscriptionOptions
@@ -113,33 +113,3 @@ class TranscriptionSetupMessage(BaseMessage):
   type: Literal["setup"] = "setup"
   stream: str = Field(description="Stream name or client identifier")
   options: UserTranscriptionOptions = Field(description="User-specified transcription options")
-
-
-class MessageCodec(BaseModel):
-  """Message wrapper type for deserializing the discriminated union of message types."""
-
-  message: (
-    TranscriptionMessage
-    | StreamStatusMessage
-    | ErrorMessage
-    | LanguageDetectionMessage
-    | ServerReadyMessage
-    | DisconnectMessage
-    | HealthCheckRequest
-    | TranscriptionSetupMessage
-  ) = Field(discriminator="type")
-
-
-# Union for all outbound message types
-type OutboundMessage = (
-  TranscriptionMessage
-  | StreamStatusMessage
-  | ErrorMessage
-  | LanguageDetectionMessage
-  | ServerReadyMessage
-  | DisconnectMessage
-)
-
-
-# Union for all inbound message types
-type InboundMessage = TranscriptionSetupMessage

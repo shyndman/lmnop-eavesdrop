@@ -7,7 +7,6 @@ Use spacebar to toggle recording sessions.
 
 import argparse
 import asyncio
-import json
 import queue
 import select
 import sys
@@ -16,7 +15,6 @@ import threading
 import time
 import tty
 import uuid
-from dataclasses import asdict
 
 import numpy as np
 import sounddevice as sd
@@ -26,12 +24,13 @@ from websockets.asyncio.client import ClientConnection
 from eavesdrop.wire import (
   ClientType,
   ErrorMessage,
-  MessageCodec,
   ServerReadyMessage,
   TranscriptionMessage,
   TranscriptionSetupMessage,
   UserTranscriptionOptions,
   WebSocketHeaders,
+  deserialize_message,
+  serialize_message,
 )
 
 # Audio configuration constants (WhisperLive compatible)
@@ -91,8 +90,7 @@ class MicrophoneClient:
   async def on_message(self, message_json: str):
     """Handle WebSocket messages from server."""
     try:
-      raw_message = json.loads(message_json)
-      message = MessageCodec.model_validate({"message": raw_message}).message
+      message = deserialize_message(message_json)
 
       match message:
         case ServerReadyMessage() as ready_msg:
@@ -169,7 +167,7 @@ class MicrophoneClient:
       self.safe_print("Connecting to Eavesdrop server...")
       socket_url = f"ws://{self.host}:{self.port}"
 
-      headers = {WebSocketHeaders.CLIENT_TYPE: ClientType.TRANSCRIBER}
+      headers = {WebSocketHeaders.CLIENT_TYPE.value: ClientType.TRANSCRIBER.value}
 
       async with websockets.connect(socket_url, additional_headers=headers) as websocket:
         self.ws = websocket
@@ -186,7 +184,7 @@ class MicrophoneClient:
           ),
         )
 
-        await websocket.send(json.dumps(asdict(config_message)))
+        await websocket.send(serialize_message(config_message))
         self.safe_print("[INFO]: Configuration sent, waiting for server ready...")
 
         # Start message handling task
@@ -230,7 +228,9 @@ class MicrophoneClient:
     """Handle incoming WebSocket messages."""
     try:
       async for message in websocket:
-        await self.on_message(message)
+        # Convert bytes to string if necessary
+        message_str = message if isinstance(message, str) else message.decode("utf-8")
+        await self.on_message(message_str)
     except Exception as e:
       self.safe_print(f"Message handling error: {e}")
 

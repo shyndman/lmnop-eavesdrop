@@ -6,6 +6,7 @@ import structlog
 
 from eavesdrop.server.constants import SAMPLE_RATE
 from eavesdrop.server.logs import get_logger
+from eavesdrop.wire import Segment
 
 if TYPE_CHECKING:
   from eavesdrop.server.rtsp.cache import RTSPTranscriptionCache
@@ -163,15 +164,14 @@ class RTSPTranscriptionSink(TranscriptionSink):
     self.transcription_count += 1
 
     # Separate completed and incomplete segments
-    completed_segments = []
-    incomplete_segments = []
+    completed_segments: list[Segment] = []
+    incomplete_segments: list[Segment] = []
 
-    for segment in result.segments:
-      if segment.text.strip():
-        if segment.completed:
-          completed_segments.append(segment)
-        else:
-          incomplete_segments.append(segment)
+    for segment in filter(lambda s: s.text.strip(), result.segments):
+      if segment.completed:
+        completed_segments.append(segment)
+      else:
+        incomplete_segments.append(segment)
 
     # Log concatenated completed segments as single entry
     if completed_segments:
@@ -180,8 +180,7 @@ class RTSPTranscriptionSink(TranscriptionSink):
       end_time = max(seg.end for seg in completed_segments)
 
       self.logger.info(
-        "Transcription result",
-        text=concatenated_text,
+        f"Transcription: {concatenated_text}",
         start=start_time,
         end=end_time,
         completed=True,
@@ -191,12 +190,14 @@ class RTSPTranscriptionSink(TranscriptionSink):
     # Log each incomplete segment separately
     for segment in incomplete_segments:
       self.logger.info(
-        "Transcription result",
-        text=segment.text.strip(),
+        f"Transcription: {segment.text.strip()}",
         start=segment.start,
         end=segment.end,
         completed=False,
-        transcription_number=self.transcription_count,
+        temp=segment.temperature,
+        compression=segment.compression_ratio,
+        avg_logprob=segment.avg_logprob,
+        no_speech_prob=segment.no_speech_prob,
       )
 
     # Store transcription in cache for later retrieval by new subscribers
