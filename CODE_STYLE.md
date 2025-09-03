@@ -9,7 +9,7 @@ ruff format
 
 ### Linting
 ```bash
-ruff check 
+ruff check
 ruff check --fix  # for autofixes
 ```
 
@@ -31,7 +31,7 @@ class RTSPAudioSource:
     def __init__(self, audio_queue: asyncio.Queue[bytes]) -> None:
         self.audio_queue: asyncio.Queue[bytes] = audio_queue
         self.closed: bool = False
-    
+
     async def read_audio(self) -> np.ndarray | None:
         # Type guards for None checks
         if audio_data is not None:
@@ -43,7 +43,7 @@ class RTSPAudioSource:
     def __init__(self, audio_queue):  # Missing types
         self.audio_queue = audio_queue  # Missing type annotation
         self.closed = False  # Missing type annotation
-    
+
     async def read_audio(self):  # Missing return type
         return audio_data  # No type safety
 ```
@@ -89,7 +89,7 @@ except Exception:
     self.logger.exception("Failed to initialize processor")
     raise  # Stop client creation
 
-# Bad  
+# Bad
 except Exception as e:
     self.logger.error(f"Failed to initialize: {e}")  # Missing stack trace
 ```
@@ -105,7 +105,7 @@ try:
 except Exception:
     self.logger.exception("Failed to initialize processor")
     raise  # Stop client creation
-    
+
 # Bad
 except Exception:
     self.logger.exception("Failed to initialize processor")
@@ -123,7 +123,7 @@ except Exception:
 async def stop(self):
     self._exit = True
     await self.processor.stop_processing()
-    
+
     # Must cancel and await all tasks
     if self._processing_task and not self._processing_task.done():
         self._processing_task.cancel()
@@ -166,13 +166,13 @@ def __init__(
     buffer: AudioStreamBuffer,
     sink: TranscriptionSink,
     config: TranscriptionConfig,
-    client_uid: str,
+    stream_name: str,
     translation_queue: queue.Queue[dict] | None = None,
     logger_name: str = "transcription_processor",
 ) -> None:
 
 # Bad
-def __init__(self, buffer, sink, config, client_uid, **kwargs):  # Missing types
+def __init__(self, buffer, sink, config, stream_name, **kwargs):  # Missing types
 ```
 
 ### Method Return Types
@@ -208,7 +208,7 @@ def get_status():  # Missing return type
 class AsyncModelManager:
     def __init__(self):
         self.model_lock = asyncio.Lock()
-    
+
     async def get_model(self):
         async with self.model_lock:
             # async operations
@@ -227,7 +227,7 @@ class MixedManager:
 # Good
 async with self.model_lock:
     # protected operations
-    
+
 try:
     # work
 except Exception:
