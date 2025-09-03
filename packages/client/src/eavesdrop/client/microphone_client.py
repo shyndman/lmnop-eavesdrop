@@ -7,7 +7,6 @@ Use spacebar to toggle recording sessions.
 
 import argparse
 import asyncio
-import queue
 import select
 import sys
 import termios
@@ -50,7 +49,7 @@ class MicrophoneClient:
     self.stream_name = str(uuid.uuid4())
 
     # Audio streaming
-    self.audio_queue: queue.Queue[bytes] = queue.Queue()
+    self.audio_queue: asyncio.Queue[bytes] = asyncio.Queue()
     self.audio_stream: sd.InputStream | None = None
     self.recording = False
 
@@ -126,7 +125,7 @@ class MicrophoneClient:
       audio_data = indata.copy().astype(DTYPE)
       try:
         self.audio_queue.put_nowait(audio_data.tobytes())
-      except queue.Full:
+      except asyncio.QueueFull:
         pass  # Drop frame if queue is full
 
   def start_session(self):
@@ -282,8 +281,8 @@ class MicrophoneClient:
     try:
       while self.recording and self.session_active:
         try:
-          # Get audio data
-          audio_data = self.audio_queue.get(timeout=0.1)
+          # Get audio data with timeout
+          audio_data = await asyncio.wait_for(self.audio_queue.get(), timeout=0.1)
 
           if not self.audio_sending_started:
             self.audio_sending_started = True
@@ -293,7 +292,7 @@ class MicrophoneClient:
           # Send binary audio data
           await websocket.send(audio_data)
 
-        except queue.Empty:
+        except asyncio.TimeoutError:
           continue
         except Exception as e:
           self.safe_print(f"Error streaming audio: {e}")

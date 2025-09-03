@@ -10,6 +10,7 @@ dependencies = [
     "numpy<2",
     "pydantic>=2",
     "sounddevice>=0.5.2",
+    "structlog>=25.4.0",
     "websockets>=13.0",
 ]
 
