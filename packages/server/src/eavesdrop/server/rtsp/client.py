@@ -356,9 +356,7 @@ class RTSPClient:
     self.logger.debug("Starting FFmpeg process", command=" ".join(cmd))
 
     process = await asyncio.create_subprocess_exec(
-      *cmd,
-      stdout=asyncio.subprocess.PIPE,
-      stderr=asyncio.subprocess.PIPE,
+      *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, limit=1024 * 1024
     )
 
     self.process = process
