@@ -2,55 +2,112 @@
 
 ## Overview
 
-Eavesdrop is a real-time audio transcription server built on a modern, streaming-first architecture. It provides WebSocket-based speech-to-text services using Whisper models, designed for high performance in AMD ROCm GPU environments with support for both containerized and native deployments.
+Eavesdrop is a real-time audio transcription system built on a modern, streaming-first, multi-package architecture. It provides WebSocket-based speech-to-text services using Whisper models, designed for high performance in AMD ROCm GPU environments with support for both containerized and native deployments.
 
-The architecture emphasizes modularity, scalability, and resource efficiency through a protocol-based design that cleanly separates concerns between audio input, processing, and output delivery.
+The system consists of three main packages that work together:
+- **eavesdrop-server**: The core transcription server
+- **eavesdrop-client**: Client library and microphone client
+- **eavesdrop-wire**: Shared protocol definitions and message types
+
+The architecture emphasizes modularity, scalability, and resource efficiency through a protocol-based design that cleanly separates concerns between audio input, processing, output delivery, and client-server communication.
 
 ## High-Level Architecture
 
 ```mermaid
 graph TD
-    subgraph CLIENT ["🌐 Client Layer"]
-        WS_CLIENT[WebSocket Clients]
+    subgraph PACKAGES ["📦 Package Architecture"]
+        subgraph CLIENT_PKG ["eavesdrop-client"]
+            MIC_CLIENT[MicrophoneClient]
+            WS_CLIENT[WebSocket Clients]
+        end
+        
+        subgraph WIRE_PKG ["eavesdrop-wire"]
+            MESSAGES[Message Types]
+            TRANSCRIPTION[Transcription Models]
+            CODEC[MessageCodec]
+        end
+        
+        subgraph SERVER_PKG ["eavesdrop-server"]
+            subgraph SERVER ["🖥️ Server Layer"]
+                WS_SERVER[WebSocketServer]
+                RTSP_MANAGER[RTSPClientManager]
+                CLIENT_MGR[WebSocketClientManager]
+                CONFIG_MGR[EavesdropConfig]
+            end
+            
+            subgraph PROCESSING ["⚙️ Processing Layer"]
+                WS_STREAMING_CLIENT[WebSocketStreamingClient]
+                RTSP_CLIENT[RTSPClient]
+                AUDIO_BUFFER[AudioStreamBuffer]
+                AUDIO_SOURCE[WebSocketAudioSource]
+            end
+            
+            subgraph MODEL ["🤖 Model Layer"]
+                WHISPER_MODEL[WhisperModel]
+                SHARED_PROCESSOR[StreamingTranscriptionProcessor]
+                MODEL_CACHE[Model Cache]
+            end
+            
+            subgraph OUTPUT ["📤 Output Layer"]
+                WS_SINK[WebSocketTranscriptionSink]
+                RTSP_CACHE[RTSPTranscriptionCache]
+                SUBSCRIBER_MGR[RTSPSubscriberManager]
+            end
+        end
+    end
+    
+    subgraph EXTERNAL ["🌐 External"]
         RTSP_STREAM[RTSP Streams]
     end
 
-    subgraph SERVER ["🖥️ Server Layer"]
-        WS_SERVER[WebSocketServer]
-        RTSP_MANAGER[RTSPClientManager]
-        CLIENT_MGR[WebSocketClientManager]
-        CONFIG_MGR[EavesdropConfig]
-    end
-
-    subgraph PROCESSING ["⚙️ Processing Layer"]
-        WS_STREAMING_CLIENT[WebSocketStreamingClient]
-        RTSP_CLIENT[RTSPClient]
-        AUDIO_BUFFER[AudioStreamBuffer]
-        AUDIO_SOURCE[WebSocketAudioSource]
-    end
-
-    subgraph MODEL ["🤖 Model Layer"]
-        WHISPER_MODEL[WhisperModel]
-        SHARED_PROCESSOR[StreamingTranscriptionProcessor]
-        MODEL_CACHE[Model Cache]
-    end
-
-    subgraph OUTPUT ["📤 Output Layer"]
-        WS_SINK[WebSocketTranscriptionSink]
-        RTSP_CACHE[RTSPTranscriptionCache]
-        SUBSCRIBER_MGR[RTSPSubscriberManager]
-    end
-
-    %% %% Layer-to-layer connections (vertical flow)
-    CLIENT --> SERVER
+    %% Package interactions
+    CLIENT_PKG -.-> WIRE_PKG
+    SERVER_PKG -.-> WIRE_PKG
+    
+    %% Client connections
+    CLIENT_PKG --> SERVER
+    RTSP_STREAM --> SERVER
+    
+    %% Layer-to-layer connections (vertical flow)
     SERVER --> PROCESSING
     PROCESSING --> MODEL
     MODEL --> OUTPUT
 ```
 
+## Package Architecture
+
+The Eavesdrop system is organized as a multi-package namespace project with three core packages:
+
+### eavesdrop-server (`packages/server/`)
+The core transcription server containing all audio processing, model management, and WebSocket server functionality.
+
+**Key Modules:**
+- `server/` - Main server implementation and WebSocket handling
+- `streaming/` - Audio streaming, buffering, and transcription processing
+- `rtsp/` - RTSP stream management and caching
+- `transcription/` - Whisper model integration and utilities
+- `config.py` - Configuration management system
+
+### eavesdrop-client (`packages/client/`)
+Client library and applications for connecting to the Eavesdrop transcription server.
+
+**Key Components:**
+- `MicrophoneClient` - Full-featured microphone recording client with WebSocket integration
+- Command-line interface for real-time transcription
+- Integration with the wire protocol for type-safe communication
+
+### eavesdrop-wire (`packages/wire/`)
+Shared protocol definitions and message types used for communication between server and clients.
+
+**Key Components:**
+- `messages.py` - Pydantic-based message types for WebSocket communication
+- `transcription.py` - Transcription data structures (Segment, Word, etc.)
+- `MessageCodec` - Serialization/deserialization utilities
+- Client type definitions and WebSocket headers
+
 ## Core Components
 
-### 1. TranscriptionServer (`src/eavesdrop/server.py`)
+### 1. TranscriptionServer (`packages/server/src/eavesdrop/server/server.py`)
 
 The main orchestrator that coordinates all components and manages the server lifecycle.
 
@@ -67,7 +124,7 @@ The main orchestrator that coordinates all components and manages the server lif
 
 ### 2. Streaming Transcription System
 
-#### WebSocketStreamingClient (`src/eavesdrop/streaming/websocket_client.py`)
+#### WebSocketStreamingClient (`packages/server/src/eavesdrop/server/streaming/websocket_client.py`)
 
 High-level facade that combines all streaming components for WebSocket clients using protocol-based architecture.
 
@@ -92,7 +149,7 @@ graph LR
 - Configurable buffer management with automatic cleanup
 - Integration with shared model resources in single model mode
 
-#### AudioStreamBuffer (`src/eavesdrop/streaming/buffer.py`)
+#### AudioStreamBuffer (`packages/server/src/eavesdrop/server/streaming/buffer.py`)
 
 Manages audio frame buffering with intelligent cleanup and processing coordination.
 
@@ -104,7 +161,7 @@ Manages audio frame buffering with intelligent cleanup and processing coordinati
 - Configurable transcription intervals (default: 2.0s) for latency vs performance tuning
 - Memory-efficient buffering with duration-based management
 
-#### StreamingTranscriptionProcessor (`src/eavesdrop/streaming/processor.py`)
+#### StreamingTranscriptionProcessor (`packages/server/src/eavesdrop/server/streaming/processor.py`)
 
 The core transcription engine that integrates Faster Whisper model management with streaming processing.
 
@@ -148,7 +205,7 @@ classDiagram
 
     class WebSocketTranscriptionSink {
         +websocket: ServerConnection
-        +client_uid: str
+        +stream_name: str
         +send_result(result: TranscriptionResult) -> None
         +send_error(error: str) -> None
         +disconnect() -> None
@@ -158,9 +215,97 @@ classDiagram
     TranscriptionSink <|.. WebSocketTranscriptionSink
 ```
 
-### 4. RTSP Support System
+### Wire Protocol System
 
-#### RTSPClientManager (`src/eavesdrop/rtsp/manager.py`)
+The `eavesdrop-wire` package provides a comprehensive, type-safe communication protocol between clients and the server using Pydantic models.
+
+#### Message Types (`packages/wire/src/eavesdrop/wire/messages.py`)
+
+Structured message types for all WebSocket communication:
+
+```python
+class ClientType(StrEnum):
+    TRANSCRIBER = "transcriber"
+    RTSP_SUBSCRIBER = "rtsp_subscriber"
+    HEALTH_CHECK = "health_check"
+
+@dataclass
+class TranscriptionMessage(BaseMessage):
+    type: Literal["transcription"] = "transcription"
+    stream: str
+    segments: list[Segment]
+    language: str | None = None
+
+@dataclass
+class ErrorMessage(BaseMessage):
+    type: Literal["error"] = "error"
+    message: str
+
+@dataclass
+class ServerReadyMessage(BaseMessage):
+    type: Literal["server_ready"] = "server_ready"
+    backend: str
+```
+
+#### Transcription Models (`packages/wire/src/eavesdrop/wire/transcription.py`)
+
+Core data structures for transcription results:
+
+```python
+@dataclass
+class Segment:
+    id: int
+    seek: int
+    start: float
+    end: float
+    text: str
+    tokens: list[int]
+    avg_logprob: float
+    compression_ratio: float
+    no_speech_prob: float
+    words: list[Word] | None
+    temperature: float | None
+    completed: bool = False
+
+class UserTranscriptionOptions(BaseModel):
+    initial_prompt: str | None = None
+    hotwords: str | None = None
+    beam_size: int = 5
+    word_timestamps: bool = False
+```
+
+#### MessageCodec
+
+Type-safe serialization and deserialization utilities for WebSocket communication, ensuring consistent message formats across the entire system.
+
+### 4. Client Library System
+
+#### MicrophoneClient (`packages/client/src/eavesdrop/client/microphone_client.py`)
+
+Full-featured client application for real-time microphone transcription.
+
+**Features:**
+- Real-time audio capture using sounddevice
+- WebSocket connection management with automatic reconnection
+- Type-safe communication using the wire protocol
+- Interactive session control (spacebar to toggle recording)
+- Integration with server-side transcription configuration
+- Support for user transcription options (hotwords, initial prompt, etc.)
+
+**Key Components:**
+```python
+class MicrophoneClient:
+    def __init__(self, host: str = "home-brainbox", port: int = 9090)
+    async def connect(self) -> None
+    async def start_transcription_session(self, options: UserTranscriptionOptions) -> None
+    async def send_audio_data(self, audio: np.ndarray) -> None
+    def start_recording(self) -> None
+    def stop_recording(self) -> None
+```
+
+### 5. RTSP Support System
+
+#### RTSPClientManager (`packages/server/src/eavesdrop/server/rtsp/manager.py`)
 
 Manages multiple RTSP streams with centralized model sharing and health monitoring.
 
@@ -172,7 +317,7 @@ Manages multiple RTSP streams with centralized model sharing and health monitori
 - Integration with RTSPTranscriptionCache for result persistence
 - Shared model resource management across all RTSP streams
 
-#### RTSPTranscriptionCache (`src/eavesdrop/rtsp/cache.py`)
+#### RTSPTranscriptionCache (`packages/server/src/eavesdrop/server/rtsp/cache.py`)
 
 Intelligent caching system for RTSP transcription results with listener-aware retention policies.
 
@@ -183,7 +328,7 @@ Intelligent caching system for RTSP transcription results with listener-aware re
 - Configurable cache durations via YAML config
 - Memory-efficient storage with timestamp-based expiration
 
-#### RTSPSubscriberManager (`src/eavesdrop/rtsp/subscriber.py`)
+#### RTSPSubscriberManager (`packages/server/src/eavesdrop/server/rtsp/subscriber.py`)
 
 Manages WebSocket subscribers that receive transcription results from named RTSP streams.
 
@@ -194,9 +339,9 @@ Manages WebSocket subscribers that receive transcription results from named RTSP
 - Integration with RTSPTranscriptionCache for history delivery
 - WebSocket client lifecycle management for subscribers
 
-### 5. Configuration Management System
+### 6. Configuration Management System
 
-#### EavesdropConfig (`src/eavesdrop/config.py`)
+#### EavesdropConfig (`packages/server/src/eavesdrop/server/config.py`)
 
 Pydantic-based configuration system providing comprehensive validation and type safety.
 
@@ -214,9 +359,9 @@ Pydantic-based configuration system providing comprehensive validation and type 
 - Validation relationships (e.g., cleanup_duration < max_buffer_duration)
 - Hotwords and VAD parameter configuration
 
-### 6. Model Management and Backend
+### 7. Model Management and Backend
 
-#### WhisperModel (`src/eavesdrop/transcription/whisper_model.py`)
+#### WhisperModel (`packages/server/src/eavesdrop/server/transcription/whisper_model.py`)
 
 Wrapper around Faster Whisper with CTranslate2 optimization and GPU selection.
 
@@ -332,6 +477,47 @@ graph TD
 
 ## Critical Types and Data Structures
 
+### Wire Protocol Types
+
+The `eavesdrop-wire` package defines the core communication types:
+
+```python
+# Message types for WebSocket communication
+class ClientType(StrEnum):
+    TRANSCRIBER = "transcriber"
+    RTSP_SUBSCRIBER = "rtsp_subscriber"
+    HEALTH_CHECK = "health_check"
+
+@dataclass
+class TranscriptionMessage(BaseMessage):
+    type: Literal["transcription"] = "transcription"
+    stream: str
+    segments: list[Segment]
+    language: str | None = None
+
+# Transcription data structures
+@dataclass
+class Segment:
+    id: int
+    seek: int
+    start: float
+    end: float
+    text: str
+    tokens: list[int]
+    avg_logprob: float
+    compression_ratio: float
+    no_speech_prob: float
+    words: list[Word] | None
+    temperature: float | None
+    completed: bool = False
+
+class UserTranscriptionOptions(BaseModel):
+    initial_prompt: str | None = None
+    hotwords: str | None = None
+    beam_size: int = 5
+    word_timestamps: bool = False
+```
+
 ### Configuration Types
 
 ```python
@@ -375,7 +561,10 @@ class EavesdropConfig(BaseModel):
 
 ### Core Data Types
 
+Core data types are now defined in the `eavesdrop-wire` package for type-safe communication:
+
 ```python
+# From packages/wire/src/eavesdrop/wire/transcription.py
 @dataclass
 class TranscriptionResult:
     """Structured transcription result containing segments and metadata."""
@@ -383,21 +572,7 @@ class TranscriptionResult:
     language: str | None = None
     language_probability: float | None = Field(default=None, ge=0.0, le=1.0)
 
-class Segment(TypedDict):
-    """Individual transcription segment with timing and confidence data."""
-    id: int
-    seek: int
-    start: float
-    end: float
-    text: str
-    tokens: list[int]
-    temperature: float
-    avg_logprob: float
-    compression_ratio: float
-    no_speech_prob: float
-    words: NotRequired[list[dict[str, Any]]]
-
-# Protocol interfaces for extensibility
+# From packages/server/src/eavesdrop/server/streaming/interfaces.py
 class AudioSource(Protocol):
     async def read_audio(self) -> np.ndarray | None: ...
     def close(self) -> None: ...
@@ -480,7 +655,7 @@ graph LR
 
 ### Model Caching Strategy
 
-- **Local Cache**: Models cached in `/app/.cache/eavesdrop/whisper-ct2-models/` (see constants.py)
+- **Local Cache**: Models cached in `/app/.cache/eavesdrop/whisper-ct2-models/` (see `packages/server/src/eavesdrop/server/constants.py`)
 - **Auto-conversion**: HuggingFace models automatically converted to CTranslate2
 - **Version Management**: Safe model name transformation for filesystem storage
 - **Quantization**: Automatic precision selection based on device capability
@@ -545,5 +720,7 @@ The protocol-based architecture enables easy extension:
 - **Hotwords Integration**: Custom vocabulary enhancement for domain-specific terms
 - **VAD Integration**: Configurable voice activity detection parameters
 - **Caching System**: Intelligent transcription result caching for RTSP streams
+- **Wire Protocol**: Type-safe message serialization through the `eavesdrop-wire` package
+- **Client Integration**: Seamless client-server communication via the `eavesdrop-client` package
 
 This architecture provides a robust, scalable foundation for real-time audio transcription with clear separation of concerns, efficient resource management, and extensive configurability.
