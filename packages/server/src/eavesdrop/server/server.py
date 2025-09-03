@@ -1,7 +1,7 @@
 import asyncio
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import numpy as np
@@ -19,7 +19,15 @@ from eavesdrop.server.streaming import (
   WebSocketStreamingClient,
 )
 from eavesdrop.server.websocket import WebSocketClientManager, WebSocketServer
-from eavesdrop.wire import ClientType, ErrorMessage, WebSocketHeaders
+from eavesdrop.wire import (
+  ClientType,
+  ErrorMessage,
+  MessageCodec,
+  OutboundMessage,
+  TranscriptionSetupMessage,
+  WebSocketHeaders,
+)
+from eavesdrop.wire.messages import HealthCheckRequest
 
 
 @dataclass
@@ -35,9 +43,8 @@ class SubscriberConnection:
 ConnectionResult = TranscriberConnection | SubscriberConnection | None
 
 
+# TODO: Introduce a common pathway for message deserialization
 class TranscriptionServer:
-  RATE = 16000
-
   def __init__(self):
     self.client_manager = WebSocketClientManager()
     self.no_voice_activity_chunks = 0
@@ -48,110 +55,46 @@ class TranscriptionServer:
     self.subscriber_manager: RTSPSubscriberManager | None = None
 
   async def initialize_client(
-    self, websocket: ServerConnection, options: dict
-  ) -> WebSocketStreamingClient | None:
-    self.logger.debug(f"initialize_client: Starting initialization for client {options['uid']}")
+    self, websocket: ServerConnection, msg: TranscriptionSetupMessage
+  ) -> WebSocketStreamingClient:
+    self.logger.debug(f"initialize_client: Starting initialization for client {msg.stream}")
 
-    try:
-      self.logger.debug("initialize_client: Initializing faster_whisper client")
+    # Use config transcription settings as defaults, allow client overrides
+    # Parse and validate client options using wire protocol data structure
+    user_options = msg.options
+    client_overrides = dict(user_options)
 
-      # Validate that clients cannot override immutable settings
-      if "cache_path" in options:
-        error_msg = (
-          "WebSocket clients cannot override 'cache_path' - this is a server constant. "
-          "Remove this option from your connection request."
-        )
-        self.logger.error(
-          "Client attempted to override immutable setting",
-          client_uid=options["uid"],
-          setting="cache_path",
-        )
-        await websocket.send(json.dumps({"error": error_msg}))
-        await websocket.close()
-        return None
+    # Create configuration for the streaming client with client overrides
+    transcription_config = self.transcription_config.model_copy(update=client_overrides)
+    client = WebSocketStreamingClient(
+      websocket=websocket,
+      stream_name=msg.stream,
+      get_audio_func=self.get_audio_from_websocket,
+      transcription_config=transcription_config,
+    )
 
-      if "single_model" in options:
-        error_msg = (
-          "WebSocket clients cannot override 'single_model' - this is a server constant. "
-          "Remove this option from your connection request."
-        )
-        self.logger.error(
-          "Client attempted to override immutable setting",
-          client_uid=options["uid"],
-          setting="single_model",
-        )
-        await websocket.send(json.dumps({"error": error_msg}))
-        await websocket.close()
-        return None
-
-      # Use config transcription settings as defaults, allow most overrides
-      # Define which fields WebSocket clients can override
-      WEBSOCKET_CONFIGURABLE_FIELDS = {
-        "send_last_n_segments",
-        "no_speech_thresh",
-        "same_output_threshold",
-        "use_vad",
-        "model",
-        "language",
-        "initial_prompt",
-        "hotwords",
-        "vad_parameters",
-      }
-
-      # Filter client options to only allowed fields
-      client_overrides = {
-        key: value for key, value in options.items() if key in WEBSOCKET_CONFIGURABLE_FIELDS
-      }
-
-      # Create configuration for the streaming client with client overrides
-      transcription_config = self.transcription_config.model_copy(update=client_overrides)
-
-      client = WebSocketStreamingClient(
-        websocket=websocket,
-        client_uid=options["uid"],
-        get_audio_func=self.get_audio_from_websocket,
-        transcription_config=transcription_config,
-      )
-
-      # Start the client and get the completion task
-      completion_task = await client.start()
-
-      # Store the completion task with the client so we can await it later
-      client._completion_task = completion_task
-      self.logger.info("initialize_client: Running faster_whisper.")
-      self.logger.debug("initialize_client: faster_whisper client created successfully")
-    except Exception:
-      self.logger.exception("initialize_client: Error creating faster_whisper client")
-      return None
-
-    self.logger.debug("initialize_client: Client created successfully")
-
-    self.logger.debug("initialize_client: Adding client to client manager")
+    # Start the client and get the completion task
+    completion_task = await client.start()
+    client._completion_task = completion_task
     self.client_manager.add_client(websocket, client)
-    self.logger.debug("initialize_client: Client initialization completed")
+
     return client
 
   async def get_audio_from_websocket(self, websocket: ServerConnection) -> np.ndarray | bool:
     """
     Receives audio buffer from websocket and creates a numpy array out of it.
     """
-    self.logger.debug("get_audio_from_websocket: About to receive data")
     frame_data = await websocket.recv()
     byte_count = len(frame_data) if frame_data != b"END_OF_AUDIO" else 0
-    self.logger.debug(f"get_audio_from_websocket: Received {byte_count} bytes")
+    self.logger.debug("Received audio", bytes_received=byte_count)
 
     if frame_data == b"END_OF_AUDIO":
-      self.logger.debug("get_audio_from_websocket: Received END_OF_AUDIO signal")
       return False
 
-    self.logger.debug("get_audio_from_websocket: Converting to numpy array")
     # Ensure frame_data is bytes for numpy processing
     if isinstance(frame_data, str):
       frame_data = frame_data.encode()
     audio_array = np.frombuffer(frame_data, dtype=np.float32)
-    self.logger.debug(
-      f"get_audio_from_websocket: Created numpy array with {len(audio_array)} samples"
-    )
 
     # Debug audio capture
     if self.debug_audio_path and audio_array is not False:
@@ -169,10 +112,10 @@ class TranscriptionServer:
 
     if websocket not in self.debug_audio_files:
       client = self.client_manager.get_client(websocket) if self.client_manager else None
-      client_uid = client.client_uid if client else "unknown"
+      stream_name = client.stream_name if client else "unknown"
       timestamp = int(time.time())
 
-      filename = f"{self.debug_audio_path}_{client_uid}_{timestamp}.wav"
+      filename = f"{self.debug_audio_path}_{stream_name}_{timestamp}.wav"
 
       os.makedirs(
         os.path.dirname(filename) if os.path.dirname(filename) else ".",
@@ -184,12 +127,9 @@ class TranscriptionServer:
       )
       self.debug_audio_files[websocket] = (file_handle, filename)
 
-      self.logger.info(f"Debug audio capture started: {filename}")
-
     file_handle, filename = self.debug_audio_files[websocket]
     try:
       file_handle.write(audio_array)
-      self.logger.debug(f"Debug audio: wrote {len(audio_array)} samples to {filename}")
     except Exception:
       self.logger.exception(f"Error writing debug audio to {filename}")
 
@@ -201,45 +141,41 @@ class TranscriptionServer:
       headers = websocket.request.headers if websocket.request else {}
       client_type = headers.get(WebSocketHeaders.CLIENT_TYPE, ClientType.TRANSCRIBER)
 
-      self.logger.debug(f"handle_new_connection: Client type: {client_type}")
-
       if client_type == ClientType.RTSP_SUBSCRIBER:
-        # Convert headers to dict for easier handling
-        headers_dict = dict(headers)
-        result = await self._handle_subscriber_connection(websocket, headers_dict)
+        result = await self._handle_subscriber_connection(websocket, dict(headers))
         return SubscriberConnection() if result else None
-      else:
-        client = await self._handle_transcriber_connection(websocket)
-        return TranscriberConnection(client) if client else None
+
+      raw_msg = json.loads(await websocket.recv())
+      message = MessageCodec.model_validate({"message": raw_msg}).message
+
+      match (client_type, message):
+        case (ClientType.TRANSCRIBER, TranscriptionSetupMessage()):
+          client = await self._handle_transcriber_connection(websocket, message)
+          return TranscriberConnection(client) if client else None
+
+        case (ClientType.HEALTH_CHECK, HealthCheckRequest()):
+          return await self._handle_health_check(websocket, message)
 
     except ConnectionClosed:
       self.logger.info("handle_new_connection: Connection closed by client")
       return None
+
     except (KeyboardInterrupt, SystemExit):
       raise
-    except Exception:
-      self.logger.exception("handle_new_connection: Error during new connection initialization")
-      return None
+
+  async def _handle_health_check(
+    self, websocket: ServerConnection, message: HealthCheckRequest
+  ) -> None:
+    """Handle traditional transcriber client connections."""
+    self.logger.info("Health check successful", websocket_id=websocket.id)
+    self._send_error_and_close
+    return None
 
   async def _handle_transcriber_connection(
-    self, websocket: ServerConnection
+    self, websocket: ServerConnection, message: TranscriptionSetupMessage
   ) -> WebSocketStreamingClient | None:
     """Handle traditional transcriber client connections."""
-    try:
-      options = await websocket.recv()
-      options = json.loads(options)
-      self.logger.debug(f"_handle_transcriber_connection: Parsed client options: {options}")
-
-      if options.get("type") == "health_check":
-        self.logger.info("_handle_transcriber_connection: Health check successful")
-        await websocket.close()
-        return None
-
-      client = await self.initialize_client(websocket, options)
-      return client
-    except json.JSONDecodeError:
-      self.logger.exception("_handle_transcriber_connection: Failed to decode JSON from client")
-      return None
+    return await self.initialize_client(websocket, message)
 
   async def _handle_subscriber_connection(self, websocket: ServerConnection, headers: dict) -> bool:
     """Handle RTSP subscriber client connections."""
@@ -261,12 +197,6 @@ class TranscriptionServer:
       await self._send_error_and_close(websocket, error_msg)
       return False
 
-    self.logger.info(
-      "handle_subscriber_connection: Attempting to subscribe to streams",
-      streams=stream_names,
-      client=id(websocket),
-    )
-
     # Subscribe the client
     success, error_message = await self.subscriber_manager.subscribe_client(websocket, stream_names)
 
@@ -274,21 +204,18 @@ class TranscriptionServer:
       await self._send_error_and_close(websocket, error_message or "Subscription failed")
       return False
 
-    self.logger.info(
-      "handle_subscriber_connection: Client subscribed successfully",
-      streams=stream_names,
-      client=id(websocket),
-    )
-
     return True
 
   async def _send_error_and_close(self, websocket: ServerConnection, error_message: str) -> None:
     """Send error message and close WebSocket connection."""
+    await self._send_and_close(websocket, ErrorMessage(message=error_message))
+    self.logger.warning("Sent error and closed connection", error=error_message)
+
+  async def _send_and_close(self, websocket: ServerConnection, message: OutboundMessage) -> None:
+    """Send error message and close WebSocket connection."""
     try:
-      error_msg = ErrorMessage(message=error_message)
-      await websocket.send(error_msg.model_dump_json())
+      await websocket.send(json.dumps(asdict(message)))
       await websocket.close()
-      self.logger.warning("Sent error and closed connection", error=error_message)
     except Exception:
       self.logger.exception("Error sending error message and closing connection")
 
@@ -296,50 +223,37 @@ class TranscriptionServer:
     """
     Handle WebSocket client connection (transcriber or subscriber).
     """
-    self.logger.debug("recv_audio: Starting connection handling")
-
-    self.logger.debug("recv_audio: About to handle new connection")
-    connection_result = await self.handle_new_connection(websocket)
-    if not connection_result:
-      self.logger.debug("recv_audio: handle_new_connection returned None, exiting")
+    connection_res = await self.handle_new_connection(websocket)
+    if not connection_res:
       return
 
-    # Check if this is a subscriber client
-    if isinstance(connection_result, SubscriberConnection):
-      await self._handle_subscriber_lifecycle(websocket)
-      return
-
-    # This is a transcriber client
-    assert isinstance(connection_result, TranscriberConnection)
-    client = connection_result.client
-    self.logger.debug("recv_audio: Awaiting transcriber client completion")
-    assert self.client_manager is not None
     try:
-      # Await the client's completion task - this will naturally end when
-      # the WebSocket closes, encounters an error, or times out
-      assert client._completion_task is not None
-      await client._completion_task
+      match connection_res:
+        case SubscriberConnection():
+          await self._handle_subscriber_lifecycle(websocket)
+
+        case TranscriberConnection(client):
+          assert client._completion_task is not None
+          await client._completion_task
     except (ConnectionClosed, InvalidMessage):
-      self.logger.info("recv_audio: Connection closed by client")
+      self.logger.info("Connection closed by client")
     except (KeyboardInterrupt, SystemExit):
-      self.logger.info("recv_audio: Shutdown signal received, exiting client loop.")
+      self.logger.info("Shutdown signal received, exiting client loop.")
       raise
     except Exception:
-      self.logger.exception("recv_audio: Unexpected error")
+      self.logger.exception("Unexpected error")
     finally:
-      self.logger.debug("recv_audio: Entering cleanup phase")
+      self.logger.debug("Entering cleanup phase")
       if self.client_manager.get_client(websocket):
-        self.logger.debug("recv_audio: Calling cleanup")
+        self.logger.debug("Calling cleanup")
         self.cleanup(websocket)
-        self.logger.debug("recv_audio: Closing websocket")
+        self.logger.debug("Closing websocket")
         await websocket.close()
-      self.logger.debug("recv_audio: Deleting websocket reference")
+      self.logger.debug("Deleting websocket reference")
       del websocket
 
   async def _handle_subscriber_lifecycle(self, websocket: ServerConnection) -> None:
     """Handle the lifecycle of an RTSP subscriber client."""
-    self.logger.debug("_handle_subscriber_lifecycle: Starting subscriber lifecycle management")
-
     try:
       # Wait for the WebSocket connection to close
       # Subscribers don't send data, they just receive
@@ -422,14 +336,9 @@ class TranscriptionServer:
     self.logger.debug("cleanup: Starting cleanup process")
     client = self.client_manager.get_client(websocket)
     if client:
-      self.logger.debug(f"cleanup: Starting cleanup for client {client.client_uid}")
-
       # The WebSocketStreamingClient handles its own cleanup in the stop() method
       # which is called from _wait_for_completion(), so we don't need to do much here
-
-      self.logger.debug(f"cleanup: Removing client {client.client_uid} from client manager")
       self.client_manager.remove_client(websocket)
-      self.logger.debug(f"cleanup: Cleanup completed for client {client.client_uid}")
 
     # Clean up debug audio file if exists
     if websocket in self.debug_audio_files:

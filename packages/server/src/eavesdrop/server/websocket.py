@@ -25,10 +25,10 @@ class WebSocketClientManager:
         websocket: The websocket associated with the client to add.
         client: The client object to be added and tracked.
     """
-    self.logger.debug(f"Adding client {client.client_uid} to client manager")
+    self.logger.debug(f"Adding client {client.stream_name} to client manager")
     self.clients[websocket] = client
     self.start_times[websocket] = time.time()
-    self.logger.debug(f"Client {client.client_uid} added. Total clients: {len(self.clients)}")
+    self.logger.debug(f"Client {client.stream_name} added. Total clients: {len(self.clients)}")
 
   def get_client(self, websocket):
     """
@@ -53,7 +53,7 @@ class WebSocketClientManager:
     """
     client = self.clients.pop(websocket, None)
     if client:
-      self.logger.debug(f"Removing client {client.client_uid} from client manager")
+      self.logger.debug(f"Removing client {client.stream_name} from client manager")
       client.cleanup()
     else:
       self.logger.debug("No client found for websocket during removal")
@@ -75,8 +75,6 @@ class WebSocketServer:
     self.host = host
     self.port = port
     self.kwargs = kwargs
-    self.connection_count = 0
-    self.failed_connections = 0
     self.logger = get_logger("ws/server")
 
   async def start(self):
@@ -91,36 +89,23 @@ class WebSocketServer:
 
   async def error_handling_wrapper(self, websocket: ServerConnection):
     """Wrapper that catches and logs connection errors without crashing"""
-    self.connection_count += 1
-    client_addr = getattr(websocket, "remote_address", ("unknown", 0))
-    conn_id = self.connection_count
+    addr = websocket.remote_address
 
     try:
-      self.logger.info(f"Connection #{conn_id} from {client_addr[0]}:{client_addr[1]}")
+      self.logger.info("Connection begin", address=addr, websocket_id=websocket.id)
       await self.handler(websocket)
-
-    except (EOFError, InvalidMessage) as e:
-      self.failed_connections += 1
-      if "did not receive a valid HTTP request" in str(
-        e
-      ) or "connection closed while reading" in str(e):
-        self.logger.debug(
-          f"Connection #{conn_id} from {client_addr[0]} failed handshake "
-          "(likely port scan/health check)"
-        )
-      else:
-        self.logger.warning(f"Connection #{conn_id} from {client_addr[0]} handshake error: {e}")
+    except (EOFError, InvalidMessage):
+      self.logger.debug(
+        "Connection from failed handshake (likely port scan/health check)",
+        websocket_id=websocket.id,
+      )
       # Don't re-raise - this is expected for non-WebSocket clients
-
     except ConnectionClosed as e:
-      self.logger.debug(f"Connection #{conn_id} from {client_addr[0]} closed: {e}")
+      self.logger.debug("Connection closed", error=e, websocket_id=websocket.id)
     except (KeyboardInterrupt, SystemExit):
       raise
     except Exception:
-      self.logger.exception(f"Connection #{conn_id} from {client_addr[0]} unexpected error")
+      self.logger.exception("Connection unexpected error", websocket_id=websocket.id)
 
   def __exit__(self, *args):
-    self.logger.info(
-      f"Server stats: {self.connection_count} total connections, {self.failed_connections} "
-      "failed handshakes"
-    )
+    pass

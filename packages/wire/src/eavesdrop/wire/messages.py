@@ -7,9 +7,10 @@ including both transcriber clients and RTSP subscriber clients.
 
 import time
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Literal
 
 from pydantic import BaseModel, Field
+from pydantic.dataclasses import dataclass
 
 from .transcription import Segment, UserTranscriptionOptions
 
@@ -19,6 +20,7 @@ class ClientType(StrEnum):
 
   TRANSCRIBER = "transcriber"
   RTSP_SUBSCRIBER = "rtsp_subscriber"
+  HEALTH_CHECK = "health_check"
 
 
 class WebSocketHeaders(StrEnum):
@@ -28,12 +30,14 @@ class WebSocketHeaders(StrEnum):
   STREAM_NAMES = "X-Stream-Names"
 
 
-class BaseMessage(BaseModel):
+@dataclass
+class BaseMessage:
   """Base message with common fields for all WebSocket messages."""
 
   timestamp: float = Field(default_factory=time.time)
 
 
+@dataclass
 class TranscriptionMessage(BaseMessage):
   """Message containing transcription results sent to subscribers."""
 
@@ -43,6 +47,7 @@ class TranscriptionMessage(BaseMessage):
   language: str | None = Field(default=None, description="Detected or specified language code")
 
 
+@dataclass
 class StreamStatusMessage(BaseMessage):
   """Message indicating status changes for RTSP streams."""
 
@@ -54,6 +59,7 @@ class StreamStatusMessage(BaseMessage):
   )
 
 
+@dataclass
 class ErrorMessage(BaseMessage):
   """Message indicating an error condition."""
 
@@ -65,6 +71,7 @@ class ErrorMessage(BaseMessage):
   message: str = Field(description="Error message description")
 
 
+@dataclass
 class LanguageDetectionMessage(BaseMessage):
   """Message containing language detection results."""
 
@@ -74,6 +81,7 @@ class LanguageDetectionMessage(BaseMessage):
   language_prob: float = Field(description="Confidence score for the detection", ge=0.0, le=1.0)
 
 
+@dataclass
 class ServerReadyMessage(BaseMessage):
   """Message indicating server is ready for transcription."""
 
@@ -82,6 +90,7 @@ class ServerReadyMessage(BaseMessage):
   backend: str = Field(description="Name of the transcription backend being used")
 
 
+@dataclass
 class DisconnectMessage(BaseMessage):
   """Message indicating client disconnection."""
 
@@ -90,26 +99,47 @@ class DisconnectMessage(BaseMessage):
   message: str | None = Field(default=None, description="Optional disconnect reason")
 
 
-class TranscriptionConfigMessage(BaseMessage):
+@dataclass
+class HealthCheckRequest(BaseMessage):
+  """Message requesting a health check."""
+
+  type: Literal["health_check"] = "health_check"
+
+
+@dataclass
+class TranscriptionSetupMessage(BaseMessage):
   """Message containing user transcription configuration."""
 
-  type: Literal["config"] = "config"
+  type: Literal["setup"] = "setup"
+  stream: str = Field(description="Stream name or client identifier")
   options: UserTranscriptionOptions = Field(description="User-specified transcription options")
 
 
-# Discriminated union for all outbound message types
-OutboundMessage = Annotated[
+class MessageCodec(BaseModel):
+  """Message wrapper type for deserializing the discriminated union of message types."""
+
+  message: (
+    TranscriptionMessage
+    | StreamStatusMessage
+    | ErrorMessage
+    | LanguageDetectionMessage
+    | ServerReadyMessage
+    | DisconnectMessage
+    | HealthCheckRequest
+    | TranscriptionSetupMessage
+  ) = Field(discriminator="type")
+
+
+# Union for all outbound message types
+type OutboundMessage = (
   TranscriptionMessage
   | StreamStatusMessage
   | ErrorMessage
   | LanguageDetectionMessage
   | ServerReadyMessage
-  | DisconnectMessage,
-  Field(discriminator="type"),
-]
+  | DisconnectMessage
+)
 
-# Discriminated union for all inbound message types
-InboundMessage = Annotated[
-  TranscriptionConfigMessage,
-  Field(discriminator="type"),
-]
+
+# Union for all inbound message types
+type InboundMessage = TranscriptionSetupMessage

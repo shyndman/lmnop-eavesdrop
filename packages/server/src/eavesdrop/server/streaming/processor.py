@@ -42,14 +42,14 @@ class StreamingTranscriptionProcessor:
     buffer: AudioStreamBuffer,
     sink: TranscriptionSink,
     config: TranscriptionConfig,
-    client_uid: str,
+    stream_name: str,
     translation_queue: queue.Queue[dict] | None = None,
     logger_name: str = "transcription_processor",
   ) -> None:
     self.buffer = buffer
     self.sink = sink
     self.config = config
-    self.client_uid = client_uid
+    self.stream_name = stream_name
     self.translation_queue = translation_queue
     self.logger = get_logger(logger_name)
 
@@ -125,7 +125,7 @@ class StreamingTranscriptionProcessor:
     self.logger.debug("Creating model", model_reference=self.config.model)
 
     if SINGLE_MODEL:
-      self.logger.debug("Using single model mode", client_uid=self.client_uid)
+      self.logger.debug("Using single model mode", stream=self.stream_name)
       with StreamingTranscriptionProcessor.SINGLE_MODEL_LOCK:
         if StreamingTranscriptionProcessor.SINGLE_MODEL is None:
           self.logger.debug("Creating new single model instance")
@@ -135,7 +135,7 @@ class StreamingTranscriptionProcessor:
           self.logger.debug("Reusing existing single model instance")
           self.transcriber = StreamingTranscriptionProcessor.SINGLE_MODEL
     else:
-      self.logger.debug("Creating dedicated model", client_uid=self.client_uid)
+      self.logger.debug("Creating dedicated model", stream=self.stream_name)
       self._create_model_instance(device, self.config.model_path)
 
   def _create_model_instance(self, device: str, model_ref: str) -> None:
@@ -193,12 +193,12 @@ class StreamingTranscriptionProcessor:
 
   async def start_processing(self) -> None:
     """Start the transcription processing loop."""
-    self.logger.info("Starting transcription processing", client_uid=self.client_uid)
+    self.logger.info("Starting transcription processing", stream=self.stream_name)
     await self._transcription_loop()
 
   async def stop_processing(self) -> None:
     """Stop the transcription processing loop."""
-    self.logger.info("Stopping transcription processing", client_uid=self.client_uid)
+    self.logger.info("Stopping transcription processing", stream=self.stream_name)
     self.exit = True
     await self.sink.disconnect()
 

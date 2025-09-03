@@ -239,29 +239,13 @@ class WhisperModel:
         self.logger.info(
           "Processing audio with duration %s (complete silence detected)",
           format_timestamp(duration),
-        )
-        self.logger.info(
-          "VAD filter removed %s of audio (complete silence)",
-          format_timestamp(duration - duration_after_vad),
+          audio_removed=format_timestamp(duration - duration_after_vad),
         )
         self._last_vad_log_time = current_time
-    else:
-      # Normal logging during active speech periods
-      self.logger.info("Processing audio with duration %s", format_timestamp(duration))
-      if vad_filter and duration_after_vad != duration:
-        self.logger.info(
-          "VAD filter removed %s of audio",
-          format_timestamp(duration - duration_after_vad),
-        )
 
     if audio.shape[0] == 0:
       # Return empty segments and minimal transcription info for empty audio
       empty_info = TranscriptionInfo(
-        language="en",
-        language_probability=0.0,
-        duration=0.0,
-        duration_after_vad=0.0,
-        all_language_probs=None,
         transcription_options=TranscriptionOptions(
           multilingual=multilingual,
           initial_prompt=initial_prompt,

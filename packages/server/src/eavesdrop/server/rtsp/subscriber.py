@@ -5,6 +5,8 @@ Handles WebSocket clients that subscribe to transcription results from named RTS
 rather than sending audio for transcription.
 """
 
+import json
+from dataclasses import asdict
 from typing import TYPE_CHECKING
 
 from websockets.asyncio.server import ServerConnection
@@ -55,15 +57,8 @@ class RTSPSubscriberManager:
     Returns:
         Tuple of (valid_streams, invalid_streams)
     """
-    valid_streams = []
-    invalid_streams = []
-
-    for stream_name in requested_streams:
-      if stream_name in self.available_streams:
-        valid_streams.append(stream_name)
-      else:
-        invalid_streams.append(stream_name)
-
+    valid_streams = [s for s in requested_streams if s in self.available_streams]
+    invalid_streams = [s for s in requested_streams if s not in self.available_streams]
     return valid_streams, invalid_streams
 
   async def subscribe_client(
@@ -84,14 +79,12 @@ class RTSPSubscriberManager:
     """
     # Validate stream names
     valid_streams, invalid_streams = self.validate_stream_names(stream_names)
-
     if invalid_streams:
       available_list = ", ".join(sorted(self.available_streams))
-      error_msg = (
-        f"Unknown streams: {', '.join(invalid_streams)}. Available streams: {available_list}"
+      return (
+        False,
+        f"Unknown streams: {', '.join(invalid_streams)}. Available streams: {available_list}",
       )
-      return False, error_msg
-
     if not valid_streams:
       return False, "No valid streams specified"
 
@@ -102,10 +95,8 @@ class RTSPSubscriberManager:
     # Disconnect any existing subscribers for these streams (single listener policy)
     disconnected_clients = set()
     for stream_name in valid_streams:
-      if stream_name in self.stream_subscribers:
-        existing_websocket = self.stream_subscribers[stream_name]
-        if existing_websocket != websocket:
-          disconnected_clients.add(existing_websocket)
+      if existing_websocket := self.stream_subscribers.get(stream_name, None):
+        disconnected_clients.add(existing_websocket)
 
     # Disconnect previous subscribers
     for old_websocket in disconnected_clients:
@@ -159,7 +150,7 @@ class RTSPSubscriberManager:
     # Remove from subscriber mappings
     del self.subscriber_streams[websocket]
 
-  async def send_to_subscribers(self, stream_name: str, message: OutboundMessage) -> None:
+  async def send_to_subscriber(self, stream_name: str, message: OutboundMessage) -> None:
     """
     Send a message to all subscribers of a specific stream.
 
@@ -171,27 +162,9 @@ class RTSPSubscriberManager:
       return
 
     websocket = self.stream_subscribers[stream_name]
+    success = await self._send_message_to_websocket(websocket, message)
 
-    try:
-      message_json = message.model_dump_json()
-      await websocket.send(message_json)
-
-      self.logger.debug(
-        "Sent message to subscriber",
-        stream=stream_name,
-        message_type=message.type,
-        client=id(websocket),
-      )
-
-    except Exception as e:
-      self.logger.warning(
-        "Failed to send message to subscriber",
-        stream=stream_name,
-        client=id(websocket),
-        error=str(e),
-      )
-
-      # Remove the failed subscriber
+    if not success:
       await self.unsubscribe_client(websocket)
 
   async def send_stream_status(
@@ -205,13 +178,14 @@ class RTSPSubscriberManager:
         status: Stream status ('online', 'offline', 'error')
         message: Optional status message
     """
-    status_message = StreamStatusMessage(
-      stream=stream_name,
-      status=status,  # type: ignore
-      message=message,
+    await self.send_to_subscriber(
+      stream_name,
+      StreamStatusMessage(
+        stream=stream_name,
+        status=status,  # type: ignore
+        message=message,
+      ),
     )
-
-    await self.send_to_subscribers(stream_name, status_message)
 
   async def send_transcription(
     self, stream_name: str, segments: list, language: str | None = None
@@ -228,7 +202,7 @@ class RTSPSubscriberManager:
       stream=stream_name, segments=segments, language=language
     )
 
-    await self.send_to_subscribers(stream_name, transcription_message)
+    await self.send_to_subscriber(stream_name, transcription_message)
 
   async def _disconnect_subscriber(self, websocket: ServerConnection, reason: str) -> None:
     """
@@ -239,9 +213,7 @@ class RTSPSubscriberManager:
         reason: Reason for disconnection
     """
     try:
-      error_message = ErrorMessage(message=reason)
-      message_json = error_message.model_dump_json()
-      await websocket.send(message_json)
+      await self._send_message_to_websocket(websocket, ErrorMessage(message=reason))
       await websocket.close()
 
       self.logger.info("Disconnected subscriber", client=id(websocket), reason=reason)
@@ -302,18 +274,9 @@ class RTSPSubscriberManager:
         recent_messages = await self.transcription_cache.get_recent_messages(stream_name)
 
         for message in recent_messages:
-          try:
-            message_json = message.model_dump_json()
-            await websocket.send(message_json)
+          if await self._send_message_to_websocket(websocket, message):
             total_sent += 1
-          except Exception as e:
-            self.logger.warning(
-              "Failed to send history message to subscriber",
-              stream=stream_name,
-              client=id(websocket),
-              error=str(e),
-            )
-            # Return early if websocket is broken
+          else:
             return total_sent
 
       except Exception as e:
@@ -325,3 +288,34 @@ class RTSPSubscriberManager:
         )
 
     return total_sent
+
+  async def _send_message_to_websocket(
+    self, websocket: ServerConnection, message: OutboundMessage
+  ) -> bool:
+    """
+    Send a message to a specific websocket connection.
+
+    Args:
+        websocket: WebSocket connection to send to
+        message: Message to send
+
+    Returns:
+        True if message was sent successfully, False otherwise
+    """
+    try:
+      await websocket.send(json.dumps(asdict(message)))
+
+      self.logger.debug(
+        "Sent message to websocket",
+        message_type=message.type,
+        client=id(websocket),
+      )
+      return True
+
+    except Exception as e:
+      self.logger.warning(
+        "Failed to send message to websocket",
+        client=id(websocket),
+        error=str(e),
+      )
+      return False

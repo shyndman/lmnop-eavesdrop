@@ -127,7 +127,6 @@ class RTSPTranscriptionSink(TranscriptionSink):
 
   Differences from WebSocket:
     - Logs instead of sending JSON messages
-    - No client UID (uses stream name)
     - Server ready/disconnect are no-ops (no connection state)
     - Error level logging instead of error message sending
 
@@ -702,7 +701,7 @@ class RTSPTranscriptionClient(RTSPClient):
       buffer=self.stream_buffer,
       sink=self.transcription_sink,
       config=transcription_config,
-      client_uid=stream_name,
+      stream_name=stream_name,
       logger_name=f"rtsp/proc.{stream_name}",
     )
 

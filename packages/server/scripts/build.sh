@@ -4,7 +4,9 @@ set -e
 
 # Get script directory and change to server package root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$(dirname "$SCRIPT_DIR")"
+PACKAGES_DIR="$(realpath "$SCRIPT_DIR/../..")"
+
+cd "$PACKAGES_DIR"
 
 BACKEND=${1:-rocm}
 GFX_ARCH=${GFX_ARCH:-'gfx1030;gfx1100'}
@@ -17,28 +19,28 @@ case "$BACKEND" in
             --build-arg GFX_ARCH="$GFX_ARCH" \
             --build-arg HSA_OVERRIDE_GFX_VERSION="$HSA_OVERRIDE_GFX_VERSION" \
             --progress=plain \
-            -f docker/Dockerfile.rocm-base \
+            -f server/docker/Dockerfile.rocm-base \
             -t eavesdrop-rocm-base .
-        
+
         echo "Building eavesdrop with ROCm backend..."
         docker build \
             --build-arg BASE_IMAGE=eavesdrop-rocm-base \
             --progress=plain \
-            -f docker/Dockerfile \
+            -f server/docker/Dockerfile \
             -t ghcr.io/shyndman/lmnop-eavesdrop:latest .
         ;;
     cuda)
         echo "Building CUDA base image..."
         docker build \
             --progress=plain \
-            -f docker/Dockerfile.cuda-base \
+            -f server/docker/Dockerfile.cuda-base \
             -t eavesdrop-cuda-base .
-        
+
         echo "Building eavesdrop with CUDA backend..."
         docker build \
             --build-arg BASE_IMAGE=eavesdrop-cuda-base \
             --progress=plain \
-            -f docker/Dockerfile \
+            -f server/docker/Dockerfile \
             -t ghcr.io/shyndman/lmnop-eavesdrop:latest .
         ;;
     *)

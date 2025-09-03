@@ -158,10 +158,10 @@ class TranscriptionOptions:
 
 @dataclass
 class TranscriptionInfo:
-  language: str
-  language_probability: float
-  duration: float
-  duration_after_vad: float
-  all_language_probs: list[tuple[str, float]] | None
   transcription_options: TranscriptionOptions
   vad_options: VadOptions
+  language: str = "en"
+  language_probability: float = 0.0
+  duration: float = 0.0
+  duration_after_vad: float = 0.0
+  all_language_probs: list[tuple[str, float]] | None = None

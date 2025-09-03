@@ -3,7 +3,6 @@ import asyncio
 import os
 
 from eavesdrop.server.logs import get_logger, setup_logging
-from eavesdrop.server.server import TranscriptionServer
 
 
 def get_env_or_default(env_var, default, var_type: type = str):
@@ -77,6 +76,8 @@ async def main():
     config_path=args.config,
     debug_audio_enabled=bool(args.debug_audio_path),
   )
+
+  from eavesdrop.server.server import TranscriptionServer
 
   server = TranscriptionServer()
   await server.run(

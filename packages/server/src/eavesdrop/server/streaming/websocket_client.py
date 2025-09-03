@@ -34,7 +34,7 @@ class WebSocketStreamingClient:
   def __init__(
     self,
     websocket: ServerConnection,
-    client_uid: str,
+    stream_name: str,
     get_audio_func: Callable[[ServerConnection], Awaitable[np.ndarray | bool]],
     transcription_config: TranscriptionConfig,
     translation_queue: queue.Queue[dict] | None = None,
@@ -44,27 +44,27 @@ class WebSocketStreamingClient:
 
     Args:
         websocket: WebSocket connection for the client.
-        client_uid: Unique identifier for the client.
+        stream_name: Unique identifier for the client.
         get_audio_func: Function to get audio from websocket.
         transcription_config: Configuration for transcription processing (required).
         translation_queue: Optional queue for translation pipeline.
     """
     self.websocket = websocket
-    self.client_uid = client_uid
+    self.stream_name = stream_name
     self.translation_queue = translation_queue
     self.logger = get_logger("ws/client")
 
     # Initialize components
     self.buffer = AudioStreamBuffer(transcription_config.buffer)
     self.audio_source = WebSocketAudioSource(websocket, get_audio_func)
-    self.transcription_sink = WebSocketTranscriptionSink(websocket, client_uid)
+    self.transcription_sink = WebSocketTranscriptionSink(websocket, stream_name)
     self.processor = StreamingTranscriptionProcessor(
       buffer=self.buffer,
       sink=self.transcription_sink,
       config=transcription_config,
-      client_uid=client_uid,
+      stream_name=stream_name,
       translation_queue=translation_queue,
-      logger_name=f"ws/proc.{client_uid[0:4]}",
+      logger_name=f"ws/proc.{stream_name[0:4]}",
     )
 
     # State tracking
@@ -75,7 +75,7 @@ class WebSocketStreamingClient:
 
   async def start(self) -> asyncio.Task:
     """Start the streaming transcription process and return a task to await completion."""
-    self.logger.info("Starting WebSocket streaming client", client_uid=self.client_uid)
+    self.logger.info("Starting WebSocket streaming client", stream=self.stream_name)
 
     # Initialize the processor (loads model and sends server ready)
     await self.processor.initialize()
@@ -87,7 +87,7 @@ class WebSocketStreamingClient:
     # Create a task that waits for either task to complete (indicating the client is done)
     completion_task = asyncio.create_task(self._wait_for_completion())
 
-    self.logger.info("WebSocket streaming client started", client_uid=self.client_uid)
+    self.logger.info("WebSocket streaming client started", stream=self.stream_name)
     return completion_task
 
   async def _wait_for_completion(self) -> None:
@@ -117,7 +117,7 @@ class WebSocketStreamingClient:
 
   async def stop(self) -> None:
     """Stop the streaming transcription process and clean up."""
-    self.logger.info("Stopping WebSocket streaming client", client_uid=self.client_uid)
+    self.logger.info("Stopping WebSocket streaming client", stream=self.stream_name)
 
     self._exit = True
 
@@ -142,7 +142,7 @@ class WebSocketStreamingClient:
     # Clean up resources
     self.audio_source.close()
 
-    self.logger.info("WebSocket streaming client stopped", client_uid=self.client_uid)
+    self.logger.info("WebSocket streaming client stopped", stream=self.stream_name)
 
   def add_frames(self, frames: np.ndarray) -> None:
     """
@@ -184,5 +184,5 @@ class WebSocketStreamingClient:
     """
     Perform cleanup tasks.
     """
-    self.logger.info("Cleaning up WebSocket streaming client", client_uid=self.client_uid)
+    self.logger.info("Cleaning up WebSocket streaming client", stream=self.stream_name)
     # The actual cleanup is handled in stop() method

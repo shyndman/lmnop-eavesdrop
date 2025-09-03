@@ -5,7 +5,9 @@ Provides WebSocket-specific implementations of AudioSource and TranscriptionSink
 that integrate with the existing WebSocket server infrastructure.
 """
 
+import json
 from collections.abc import Awaitable, Callable
+from dataclasses import asdict
 
 import numpy as np
 from websockets.asyncio.server import ServerConnection
@@ -20,6 +22,7 @@ from eavesdrop.wire import (
   DisconnectMessage,
   ErrorMessage,
   LanguageDetectionMessage,
+  OutboundMessage,
   ServerReadyMessage,
   TranscriptionMessage,
 )
@@ -122,11 +125,11 @@ class WebSocketTranscriptionSink(TranscriptionSink):
     - Server status: ready notifications, disconnect signals
 
   JSON Message Format:
-    - All messages include 'uid' field for client identification
-    - Result messages: {"uid": str, "segments": [...]}
-    - Error messages: {"uid": str, "status": "ERROR", "message": str}
-    - Language detection: {"uid": str, "language": str, "language_prob": float}
-    - Server ready: {"uid": str, "message": "SERVER_READY", "backend": str}
+    - All messages include 'stream' field for client identification
+    - Result messages: {"stream": str, "segments": [...]}
+    - Error messages: {"stream": str, "status": "ERROR", "message": str}
+    - Language detection: {"stream": str, "language": str, "language_prob": float}
+    - Server ready: {"stream": str, "message": "SERVER_READY", "backend": str}
 
   Error Handling:
     - Graceful failure on WebSocket send errors (logs but doesn't raise)
@@ -138,105 +141,69 @@ class WebSocketTranscriptionSink(TranscriptionSink):
     - WebSocket send operations are properly awaited and serialized
   """
 
-  def __init__(self, websocket: ServerConnection, client_uid: str) -> None:
+  def __init__(self, websocket: ServerConnection, stream_name: str) -> None:
     """
     Initialize WebSocket transcription sink.
 
     Args:
         websocket: WebSocket connection to send to.
-        client_uid: Unique identifier for the client.
+        stream_name: Unique identifier for the client.
     """
     self.websocket: ServerConnection = websocket
-    self.client_uid: str = client_uid
+    self.stream_name: str = stream_name
     self.logger = get_logger("ws/sink")
     self._closed: bool = False
 
   async def send_result(self, result: TranscriptionResult) -> None:
-    """
-    Send transcription result to the WebSocket client.
-
-    Args:
-        result: The transcription result to send.
-    """
-    if self._closed or not self.websocket:
-      return
-
-    try:
-      # Use the Pydantic TranscriptionMessage for proper serialization
-      transcription_message = TranscriptionMessage(
-        stream=self.client_uid, segments=result.segments, language=result.language
+    await self.send_message(
+      TranscriptionMessage(
+        stream=self.stream_name,
+        segments=result.segments,
+        language=result.language,
       )
-
-      await self.websocket.send(transcription_message.model_dump_json())
-
-    except Exception:
-      self.logger.exception("Error sending transcription result to client")
+    )
 
   async def send_error(self, error: str) -> None:
-    """
-    Send error message to the WebSocket client.
-
-    Args:
-        error: Error message to send.
-    """
-    if self._closed or not self.websocket:
-      return
-
-    try:
-      error_message = ErrorMessage(stream=self.client_uid, message=error)
-      await self.websocket.send(error_message.model_dump_json())
-
-    except Exception:
-      self.logger.exception("Error sending error message to client")
+    await self.send_message(
+      ErrorMessage(
+        stream=self.stream_name,
+        message=error,
+      )
+    )
 
   async def send_language_detection(self, language: str, probability: float) -> None:
-    """
-    Send language detection result to the WebSocket client.
-
-    Args:
-        language: Detected language code.
-        probability: Confidence score for the detection.
-    """
-    if self._closed or not self.websocket:
-      return
-
-    try:
-      language_message = LanguageDetectionMessage(
-        stream=self.client_uid, language=language, language_prob=probability
+    await self.send_message(
+      LanguageDetectionMessage(
+        stream=self.stream_name,
+        language=language,
+        language_prob=probability,
       )
-      await self.websocket.send(language_message.model_dump_json())
-
-    except Exception:
-      self.logger.exception("Error sending language detection to client")
+    )
 
   async def send_server_ready(self, backend: str) -> None:
-    """
-    Send server ready notification to the WebSocket client.
-
-    Args:
-        backend: Name of the transcription backend being used.
-    """
-    if self._closed or not self.websocket:
-      return
-
-    try:
-      server_ready_message = ServerReadyMessage(stream=self.client_uid, backend=backend)
-      await self.websocket.send(server_ready_message.model_dump_json())
-
-    except Exception:
-      self.logger.exception("Error sending server ready message to client")
+    await self.send_message(
+      ServerReadyMessage(
+        stream=self.stream_name,
+        backend=backend,
+      )
+    )
 
   async def disconnect(self) -> None:
     """Send disconnect notification and clean up resources."""
+    try:
+      if self._closed or not self.websocket:
+        await self.send_message(DisconnectMessage(stream=self.stream_name))
+    finally:
+      self._closed = True
+      self.logger.info("WebSocket transcription sink disconnected")
+
+  async def send_message(self, message: OutboundMessage) -> None:
+    """Send a message to the WebSocket client."""
     if self._closed or not self.websocket:
       return
 
     try:
-      disconnect_message = DisconnectMessage(stream=self.client_uid)
-      await self.websocket.send(disconnect_message.model_dump_json())
+      await self.websocket.send(json.dumps(asdict(message)))
 
     except Exception:
-      self.logger.exception("Error sending disconnect message to client")
-    finally:
-      self._closed = True
-      self.logger.debug("WebSocket transcription sink disconnected")
+      self.logger.exception("Error sending message to client")

@@ -4,6 +4,7 @@ Transcription data types for wire protocol communication.
 Contains the core data structures used for transcription results and user configuration.
 """
 
+from pydantic import BaseModel
 from pydantic.dataclasses import dataclass
 
 
@@ -31,8 +32,7 @@ class Segment:
   completed: bool = False
 
 
-@dataclass
-class UserTranscriptionOptions:
+class UserTranscriptionOptions(BaseModel):
   """Transcription options that clients can specify."""
 
   initial_prompt: str | None = None

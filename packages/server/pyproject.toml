@@ -37,7 +37,7 @@ repository = "https://github.com/shyndman/eavesdrop"
 "Bug Tracker" = "https://github.com/shyndman/eavesdrop/issues"
 
 [project.scripts]
-eavesdrop = "eavesdrop.__main__:main"
+eavesdrop-server = "eavesdrop.server.__main__:main"
 
 [build-system]
 requires = ["hatchling"]
