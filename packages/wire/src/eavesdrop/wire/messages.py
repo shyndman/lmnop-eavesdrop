@@ -37,7 +37,7 @@ class BaseMessage:
   timestamp: float = Field(default_factory=time.time)
 
 
-@dataclass
+@dataclass(kw_only=True)
 class TranscriptionMessage(BaseMessage):
   """Message containing transcription results sent to subscribers."""
 
@@ -47,7 +47,7 @@ class TranscriptionMessage(BaseMessage):
   language: str | None = Field(default=None, description="Detected or specified language code")
 
 
-@dataclass
+@dataclass(kw_only=True)
 class StreamStatusMessage(BaseMessage):
   """Message indicating status changes for RTSP streams."""
 
@@ -59,7 +59,7 @@ class StreamStatusMessage(BaseMessage):
   )
 
 
-@dataclass
+@dataclass(kw_only=True)
 class ErrorMessage(BaseMessage):
   """Message indicating an error condition."""
 
@@ -71,7 +71,7 @@ class ErrorMessage(BaseMessage):
   message: str = Field(description="Error message description")
 
 
-@dataclass
+@dataclass(kw_only=True)
 class LanguageDetectionMessage(BaseMessage):
   """Message containing language detection results."""
 
@@ -81,7 +81,7 @@ class LanguageDetectionMessage(BaseMessage):
   language_prob: float = Field(description="Confidence score for the detection", ge=0.0, le=1.0)
 
 
-@dataclass
+@dataclass(kw_only=True)
 class ServerReadyMessage(BaseMessage):
   """Message indicating server is ready for transcription."""
 
@@ -90,7 +90,7 @@ class ServerReadyMessage(BaseMessage):
   backend: str = Field(description="Name of the transcription backend being used")
 
 
-@dataclass
+@dataclass(kw_only=True)
 class DisconnectMessage(BaseMessage):
   """Message indicating client disconnection."""
 
@@ -99,14 +99,14 @@ class DisconnectMessage(BaseMessage):
   message: str | None = Field(default=None, description="Optional disconnect reason")
 
 
-@dataclass
+@dataclass(kw_only=True)
 class HealthCheckRequest(BaseMessage):
   """Message requesting a health check."""
 
   type: Literal["health_check"] = "health_check"
 
 
-@dataclass
+@dataclass(kw_only=True)
 class TranscriptionSetupMessage(BaseMessage):
   """Message containing user transcription configuration."""
 

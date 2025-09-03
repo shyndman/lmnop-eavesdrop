@@ -287,14 +287,14 @@ def setup_logging(
             key_style=hex_to_ansi_fg(0x6E6A86),
             value_style_map=[
               (
-                # Integers (including negative) get green styling
+                # Integers (including negative) get bright green styling
                 r"^-?\d+$",
-                hex_to_ansi_fg(0x31748F),
+                hex_to_ansi_fg(0x63FF5B),
               ),
               (
-                # Floats (including negative) get cyan styling
+                # Floats (including negative) get bright yellow styling
                 r"^-?\d*\.\d+$",
-                hex_to_ansi_fg(0xC4A7E7),
+                hex_to_ansi_fg(0xF6C177),
               ),
             ],
             default_value_style="",
