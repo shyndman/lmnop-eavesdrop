@@ -42,12 +42,11 @@ class WebSocketStreamingClient:
     """
     Initialize WebSocket streaming client.
 
-    Args:
-        websocket: WebSocket connection for the client.
-        stream_name: Unique identifier for the client.
-        get_audio_func: Function to get audio from websocket.
-        transcription_config: Configuration for transcription processing (required).
-        translation_queue: Optional queue for translation pipeline.
+    :param websocket: WebSocket connection for the client.
+    :param stream_name: Unique identifier for the client.
+    :param get_audio_func: Function to get audio from websocket.
+    :param transcription_config: Configuration for transcription processing (required).
+    :param translation_queue: Optional queue for translation pipeline.
     """
     self.websocket = websocket
     self.stream_name = stream_name
@@ -148,8 +147,7 @@ class WebSocketStreamingClient:
     """
     Add audio frames to the buffer for processing.
 
-    Args:
-        frames: Audio frames as numpy array.
+    :param frames: Audio frames as numpy array.
     """
     self.processor.add_audio_frames(frames)
 

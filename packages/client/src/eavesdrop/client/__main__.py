@@ -5,7 +5,7 @@ Main entry point for eavesdrop client.
 
 import argparse
 
-from .microphone_client import MicrophoneClient, parse_host_port
+from .app import MicrophoneClient, parse_host_port
 
 
 def main() -> None:

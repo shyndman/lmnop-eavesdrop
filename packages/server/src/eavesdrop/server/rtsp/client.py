@@ -65,8 +65,7 @@ class RTSPAudioSource(AudioSource):
     """
     Initialize RTSP audio source with FFmpeg byte queue.
 
-    Args:
-        audio_queue: asyncio.Queue containing raw audio bytes from FFmpeg.
+    :param audio_queue: asyncio.Queue containing raw audio bytes from FFmpeg.
                     Queue should contain 16-bit PCM little-endian data at 16kHz.
     """
     self.audio_queue: asyncio.Queue[bytes] = audio_queue
@@ -146,12 +145,11 @@ class RTSPTranscriptionSink(TranscriptionSink):
     """
     Initialize RTSP transcription sink with structured logging and caching.
 
-    Args:
-        stream_name: Unique identifier for the RTSP stream (used in log context).
-        subscriber_manager: Manager for WebSocket subscribers that will receive
+    :param stream_name: Unique identifier for the RTSP stream (used in log context).
+    :param subscriber_manager: Manager for WebSocket subscribers that will receive
                            transcription results.
-        transcription_cache: Cache manager for storing transcription history.
-        logger_name: Logger name for log routing and filtering.
+    :param transcription_cache: Cache manager for storing transcription history.
+    :param logger_name: Logger name for log routing and filtering.
     """
     self.stream_name: str = stream_name
     self.logger = get_logger(logger_name).bind(stream=stream_name)
@@ -298,10 +296,9 @@ class RTSPClient:
     """
     Initialize the RTSP client.
 
-    Args:
-        stream_name: A human-readable name for this stream (e.g., "office", "kitchen")
-        rtsp_url: The RTSP URL to connect to
-        audio_queue: An asyncio.Queue to receive audio chunks
+    :param stream_name: A human-readable name for this stream (e.g., "office", "kitchen")
+    :param rtsp_url: The RTSP URL to connect to
+    :param audio_queue: An asyncio.Queue to receive audio chunks
     """
     self.stream_name = stream_name
     self.rtsp_url = rtsp_url
@@ -326,11 +323,8 @@ class RTSPClient:
     Uses the exact command specified in the design document to capture audio
     at 16kHz sample rate in PCM format suitable for Whisper transcription.
 
-    Returns:
-        The created subprocess.Process object
-
-    Raises:
-        Exception: If the process fails to start
+    :returns: The created subprocess.Process object
+    :raises Exception: If the process fails to start
     """
     cmd = [
       "ffmpeg",

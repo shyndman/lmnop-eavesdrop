@@ -28,7 +28,7 @@ class RTSPClientManager:
     """
     Initialize the RTSP client manager.
 
-    Args:
+    :param
         transcription_config: Global transcription configuration
         subscriber_manager: Manager for WebSocket subscribers
         transcription_cache: Cache for storing transcription history
@@ -49,11 +49,11 @@ class RTSPClientManager:
     """
     Add a new RTSP stream for transcription.
 
-    Args:
+    :param
         stream_name: Unique name for the stream
         rtsp_url: RTSP URL to connect to
 
-    Returns:
+    :returns:
         True if stream was added successfully, False otherwise
     """
     if stream_name in self.clients:
@@ -103,10 +103,10 @@ class RTSPClientManager:
     """
     Remove an RTSP stream and stop its transcription.
 
-    Args:
+    :param
         stream_name: Name of the stream to remove
 
-    Returns:
+    :returns:
         True if stream was removed successfully, False if not found
     """
     if stream_name not in self.clients:
@@ -149,7 +149,7 @@ class RTSPClientManager:
     """
     Start all RTSP streams from configuration.
 
-    Args:
+    :param
         stream_config: Dictionary mapping stream names to RTSP URLs
     """
     self.logger.info("Starting all RTSP streams", stream_count=len(stream_config))
@@ -223,7 +223,7 @@ class RTSPClientManager:
     """
     Get status information for all RTSP streams.
 
-    Returns:
+    :returns:
         Dictionary with stream status information
     """
     status = {

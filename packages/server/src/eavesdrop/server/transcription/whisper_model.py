@@ -55,7 +55,7 @@ class WhisperModel:
   ):
     """Initializes the Whisper model.
 
-    Args:
+    :param
       model_size_or_path: Size of the model to use (tiny, tiny.en, base, base.en,
         small, small.en, distil-small.en, medium, medium.en, distil-medium.en, large-v1,
         large-v2, large-v3, large, distil-large-v2, distil-large-v3, large-v3-turbo, or turbo),
@@ -192,7 +192,7 @@ class WhisperModel:
   ) -> tuple[Iterable[Segment], TranscriptionInfo]:
     """Transcribes audio data for live transcription.
 
-    Arguments:
+    :param
       audio: Audio waveform as numpy array (16kHz sample rate).
       language: The language spoken in the audio. It should be a language code such
         as "en" or "fr". If not set, the language will be detected in the first 30 seconds
@@ -204,7 +204,7 @@ class WhisperModel:
         https://github.com/snakers4/silero-vad.
       vad_parameters: VAD configuration options (VadOptions instance).
       hotwords: Optional hotwords to provide as context to improve recognition of specific terms.
-    Returns:
+    :returns:
       A tuple with:
 
         - a generator over transcribed segments
@@ -812,14 +812,13 @@ class WhisperModel:
     The prompt provides context from previous transcriptions to improve the
     accuracy of the next segment, especially across hard audio boundaries.
 
-    Args:
-        tokenizer: The Whisper tokenizer.
-        previous_tokens: A list of tokens from previously transcribed segments.
-        without_timestamps: Whether to exclude timestamp tokens from the prompt.
-        prefix: An optional prefix string to force the transcription to start with.
-        hotwords: Optional hotwords to provide as context.
+    :param tokenizer: The Whisper tokenizer.
+    :param previous_tokens: A list of tokens from previously transcribed segments.
+    :param without_timestamps: Whether to exclude timestamp tokens from the prompt.
+    :param prefix: An optional prefix string to force the transcription to start with.
+    :param hotwords: Optional hotwords to provide as context.
 
-    Returns:
+    :returns:
         A list of tokens representing the constructed prompt.
     """
     prompt: list[int] = []
@@ -1051,7 +1050,7 @@ class WhisperModel:
     """
         Use Whisper to detect the language of the input audio or features.
 
-        Arguments:
+        :param
             audio: Input audio signal, must be a 1D float array sampled at 16khz.
             features: Input Mel spectrogram features, must be a float array with
                 shape (n_mels, n_frames), if `audio` is provided, the features will be ignored.
@@ -1064,7 +1063,7 @@ class WhisperModel:
                 higher than this value, the language is detected.
             language_detection_segments: Number of segments to consider for the language detection.
 
-        Returns:
+        :returns:
             language: Detected language.
             languege_probability: Probability of the detected language.
             all_language_probs: list of tuples with all language names and probabilities.

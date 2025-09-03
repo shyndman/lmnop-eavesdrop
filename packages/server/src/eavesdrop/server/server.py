@@ -357,9 +357,8 @@ class TranscriptionServer:
     """
     Initialize RTSP client manager and subscriber manager.
 
-    Args:
-        rtsp_config: RTSP configuration object
-        transcription_config: Global transcription configuration
+    :param rtsp_config: RTSP configuration object
+    :param transcription_config: Global transcription configuration
     """
     try:
       self.logger.info("Initializing RTSP transcription system")
@@ -396,8 +395,7 @@ class TranscriptionServer:
     """
     Run WebSocket server concurrently with RTSP streams.
 
-    Args:
-        websocket_server: WebSocket server instance to run
+    :param websocket_server: WebSocket server instance to run
     """
     self.logger.info("Starting server with RTSP and WebSocket support")
 

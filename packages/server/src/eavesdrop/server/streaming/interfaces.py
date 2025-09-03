@@ -39,7 +39,7 @@ class AudioSource(Protocol):
     """
     Read the next chunk of audio data.
 
-    Returns:
+    :returns:
         Audio data as numpy array, or None for end-of-stream.
     """
     ...
@@ -60,7 +60,7 @@ class TranscriptionSink(Protocol):
     """
     Send transcription result to the output destination.
 
-    Args:
+    :param
         result: The transcription result to send.
     """
     ...
@@ -69,7 +69,7 @@ class TranscriptionSink(Protocol):
     """
     Send error message to the output destination.
 
-    Args:
+    :param
         error: Error message to send.
     """
     ...
@@ -78,7 +78,7 @@ class TranscriptionSink(Protocol):
     """
     Send language detection result to the output destination.
 
-    Args:
+    :param
         language: Detected language code.
         probability: Confidence score for the detection.
     """
@@ -88,7 +88,7 @@ class TranscriptionSink(Protocol):
     """
     Send server ready notification to the output destination.
 
-    Args:
+    :param
         backend: Name of the transcription backend being used.
     """
     ...

@@ -38,7 +38,7 @@ class AudioStreamBuffer:
     """
     Initialize the audio stream buffer.
 
-    Args:
+    :param
         config: Configuration for buffer behavior including sample rate,
                 cleanup policies, and processing thresholds.
     """
@@ -75,7 +75,7 @@ class AudioStreamBuffer:
     When cleanup occurs, removes the oldest audio data to prevent unbounded
     memory growth.
 
-    Args:
+    :param
         frame_np: Audio data as float32 NumPy array, normalized to [-1.0, 1.0].
                   Expected to be 1D array at the configured sample rate.
     """
@@ -105,7 +105,7 @@ class AudioStreamBuffer:
     the processed_up_to_time boundary to the end of the buffer. This
     represents the "next chunk" ready for transcription.
 
-    Returns:
+    :returns:
         A tuple containing:
         - audio_data: Unprocessed audio as float32 NumPy array, or empty array if none.
         - duration: Duration of the returned audio chunk in seconds.
@@ -133,7 +133,7 @@ class AudioStreamBuffer:
     indicating that this amount of audio has been successfully transcribed
     and no longer needs processing.
 
-    Args:
+    :param
         offset: Duration in seconds to advance the processed boundary.
                 Must be positive. Typically matches the duration of audio
                 that was just transcribed.
@@ -210,7 +210,7 @@ class AudioStreamBuffer:
     but hasn't been processed yet - essentially the "work queue" for
     transcription.
 
-    Returns:
+    :returns:
         Duration in seconds from processed_up_to_time to the end of the buffer.
         Returns 0.0 if buffer is empty or fully processed.
 

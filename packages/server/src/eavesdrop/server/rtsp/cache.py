@@ -58,7 +58,7 @@ class StreamCache:
     """
     Initialize stream cache.
 
-    Args:
+    :param
         stream_name: Name of the stream this cache serves
         cache_config: Cache duration configuration
     """
@@ -73,7 +73,7 @@ class StreamCache:
     """
     Add new transcription segments to the cache.
 
-    Args:
+    :param
         segments: List of transcription segments to cache
         language: Detected or specified language code
     """
@@ -109,10 +109,10 @@ class StreamCache:
     """
     Get recent transcription messages from the cache.
 
-    Args:
+    :param
         max_age_seconds: Maximum age of messages to return. If None, uses current cache duration.
 
-    Returns:
+    :returns:
         List of transcription messages sorted by timestamp (oldest first)
     """
     if max_age_seconds is None:
@@ -138,7 +138,7 @@ class StreamCache:
     """
     Update the listener presence status to adjust cache duration.
 
-    Args:
+    :param
         has_listeners: Whether this stream currently has active listeners
     """
     if self._has_listeners == has_listeners:
@@ -236,7 +236,7 @@ class RTSPTranscriptionCache:
     """
     Initialize the RTSP transcription cache manager.
 
-    Args:
+    :param
         cache_config: Cache duration configuration
     """
     self.cache_config = cache_config
@@ -256,7 +256,7 @@ class RTSPTranscriptionCache:
     """
     Add transcription segments to the specified stream's cache.
 
-    Args:
+    :param
         stream_name: Name of the stream
         segments: List of transcription segments to cache
         language: Detected or specified language code
@@ -270,11 +270,11 @@ class RTSPTranscriptionCache:
     """
     Get recent transcription messages for a stream.
 
-    Args:
+    :param
         stream_name: Name of the stream
         max_age_seconds: Maximum age of messages to return
 
-    Returns:
+    :returns:
         List of recent transcription messages
     """
     cache = await self._get_or_create_cache(stream_name)
@@ -284,7 +284,7 @@ class RTSPTranscriptionCache:
     """
     Update listener presence for a stream to adjust cache behavior.
 
-    Args:
+    :param
         stream_name: Name of the stream
         has_listeners: Whether the stream currently has active listeners
     """
@@ -295,7 +295,7 @@ class RTSPTranscriptionCache:
     """
     Clear the cache for a specific stream.
 
-    Args:
+    :param
         stream_name: Name of the stream to clear
     """
     async with self._lock:

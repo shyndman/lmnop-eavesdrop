@@ -40,11 +40,8 @@ def serialize_message(message: Message) -> str:
   """
   Serialize a wire protocol message to JSON string.
 
-  Args:
-      message: Any wire protocol message instance
-
-  Returns:
-      JSON string representation of the message
+  :param message: Any wire protocol message instance
+  :returns: JSON string representation of the message
   """
   message_type = type(message)
   adapter = TypeAdapter(message_type)
@@ -55,11 +52,8 @@ def deserialize_message(json_str: str) -> Message:
   """
   Deserialize a JSON string to wire protocol message.
 
-  Args:
-      json_str: JSON string containing the message
-
-  Returns:
-      Deserialized message instance of the appropriate type
+  :param json_str: JSON string containing the message
+  :returns: Deserialized message instance of the appropriate type
   """
   # Wrap the incoming message in the expected MessageCodec structure
   wrapped_json = f'{{"message": {json_str}}}'

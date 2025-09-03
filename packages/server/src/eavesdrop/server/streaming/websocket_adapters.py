@@ -62,9 +62,8 @@ class WebSocketAudioSource(AudioSource):
     """
     Initialize WebSocket audio source.
 
-    Args:
-        websocket: WebSocket connection to read from.
-        get_audio_func: Function to get audio from websocket (from TranscriptionServer).
+    :param websocket: WebSocket connection to read from.
+    :param get_audio_func: Function to get audio from websocket (from TranscriptionServer).
     """
     self.websocket: ServerConnection = websocket
     self.get_audio_func: Callable[[ServerConnection], Awaitable[np.ndarray | bool]] = get_audio_func
@@ -75,8 +74,7 @@ class WebSocketAudioSource(AudioSource):
     """
     Read audio data from the WebSocket connection.
 
-    Returns:
-        Audio data as numpy array, or None for end-of-stream.
+    :returns: Audio data as numpy array, or None for end-of-stream.
     """
     if self._closed:
       return None
@@ -144,9 +142,8 @@ class WebSocketTranscriptionSink(TranscriptionSink):
     """
     Initialize WebSocket transcription sink.
 
-    Args:
-        websocket: WebSocket connection to send to.
-        stream_name: Unique identifier for the client.
+    :param websocket: WebSocket connection to send to.
+    :param stream_name: Unique identifier for the client.
     """
     self.websocket: ServerConnection = websocket
     self.stream_name: str = stream_name

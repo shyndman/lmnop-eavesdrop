@@ -21,9 +21,8 @@ class WebSocketClientManager:
     """
     Adds a client and their connection start time to the tracking dictionaries.
 
-    Args:
-        websocket: The websocket associated with the client to add.
-        client: The client object to be added and tracked.
+    :param websocket: The websocket associated with the client to add.
+    :param client: The client object to be added and tracked.
     """
     self.logger.debug(f"Adding client {client.stream_name} to client manager")
     self.clients[websocket] = client
@@ -34,11 +33,8 @@ class WebSocketClientManager:
     """
     Retrieves a client associated with the given websocket.
 
-    Args:
-        websocket: The websocket associated with the client to retrieve.
-
-    Returns:
-        The client object if found, False otherwise.
+    :param websocket: The websocket associated with the client to retrieve.
+    :returns: The client object if found, False otherwise.
     """
     if websocket in self.clients:
       return self.clients[websocket]

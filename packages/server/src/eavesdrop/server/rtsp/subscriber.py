@@ -36,9 +36,8 @@ class RTSPSubscriberManager:
     """
     Initialize the RTSP subscriber manager.
 
-    Args:
-        available_streams: Set of available RTSP stream names
-        transcription_cache: Cache for storing and retrieving transcription history
+    :param available_streams: Set of available RTSP stream names
+    :param transcription_cache: Cache for storing and retrieving transcription history
     """
     self.available_streams = available_streams
     self.transcription_cache = transcription_cache
@@ -50,11 +49,8 @@ class RTSPSubscriberManager:
     """
     Validate requested stream names against available streams.
 
-    Args:
-        requested_streams: List of stream names requested by client
-
-    Returns:
-        Tuple of (valid_streams, invalid_streams)
+    :param requested_streams: List of stream names requested by client
+    :returns: Tuple of (valid_streams, invalid_streams)
     """
     valid_streams = [s for s in requested_streams if s in self.available_streams]
     invalid_streams = [s for s in requested_streams if s not in self.available_streams]
@@ -69,12 +65,9 @@ class RTSPSubscriberManager:
     Implements the single listener policy by disconnecting any existing subscribers
     for the requested streams.
 
-    Args:
-        websocket: WebSocket connection for the subscriber
-        stream_names: List of stream names to subscribe to
-
-    Returns:
-        Tuple of (success, error_message)
+    :param websocket: WebSocket connection for the subscriber
+    :param stream_names: List of stream names to subscribe to
+    :returns: Tuple of (success, error_message)
     """
     # Validate stream names
     valid_streams, invalid_streams = self.validate_stream_names(stream_names)
@@ -126,8 +119,7 @@ class RTSPSubscriberManager:
     """
     Unsubscribe a WebSocket client from all its streams.
 
-    Args:
-        websocket: WebSocket connection to unsubscribe
+    :param websocket: WebSocket connection to unsubscribe
     """
     if websocket not in self.subscriber_streams:
       return
@@ -153,9 +145,8 @@ class RTSPSubscriberManager:
     """
     Send a message to all subscribers of a specific stream.
 
-    Args:
-        stream_name: Name of the stream
-        message: Message to send
+    :param stream_name: Name of the stream
+    :param message: Message to send
     """
     if stream_name not in self.stream_subscribers:
       return
@@ -172,10 +163,9 @@ class RTSPSubscriberManager:
     """
     Send stream status update to subscribers.
 
-    Args:
-        stream_name: Name of the stream
-        status: Stream status ('online', 'offline', 'error')
-        message: Optional status message
+    :param stream_name: Name of the stream
+    :param status: Stream status ('online', 'offline', 'error')
+    :param message: Optional status message
     """
     await self.send_to_subscriber(
       stream_name,
@@ -192,10 +182,9 @@ class RTSPSubscriberManager:
     """
     Send transcription result to subscribers.
 
-    Args:
-        stream_name: Name of the stream
-        segments: List of transcription segments
-        language: Detected language
+    :param stream_name: Name of the stream
+    :param segments: List of transcription segments
+    :param language: Detected language
     """
     transcription_message = TranscriptionMessage(
       stream=stream_name, segments=segments, language=language
@@ -207,9 +196,8 @@ class RTSPSubscriberManager:
     """
     Disconnect a subscriber with an error message.
 
-    Args:
-        websocket: WebSocket connection to disconnect
-        reason: Reason for disconnection
+    :param websocket: WebSocket connection to disconnect
+    :param reason: Reason for disconnection
     """
     try:
       await self._send_message_to_websocket(websocket, ErrorMessage(message=reason))
@@ -292,12 +280,9 @@ class RTSPSubscriberManager:
     """
     Send a message to a specific websocket connection.
 
-    Args:
-        websocket: WebSocket connection to send to
-        message: Message to send
-
-    Returns:
-        True if message was sent successfully, False otherwise
+    :param websocket: WebSocket connection to send to
+    :param message: Message to send
+    :returns: True if message was sent successfully, False otherwise
     """
     try:
       await websocket.send(serialize_message(message))
