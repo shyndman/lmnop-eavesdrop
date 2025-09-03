@@ -5,8 +5,6 @@ Handles WebSocket clients that subscribe to transcription results from named RTS
 rather than sending audio for transcription.
 """
 
-import json
-from dataclasses import asdict
 from typing import TYPE_CHECKING
 
 from websockets.asyncio.server import ServerConnection
@@ -14,10 +12,11 @@ from websockets.asyncio.server import ServerConnection
 from eavesdrop.server.logs import get_logger
 from eavesdrop.wire import (
   ErrorMessage,
-  OutboundMessage,
   StreamStatusMessage,
   TranscriptionMessage,
+  serialize_message,
 )
+from eavesdrop.wire.codec import Message
 
 if TYPE_CHECKING:
   from eavesdrop.server.rtsp.cache import RTSPTranscriptionCache
@@ -150,7 +149,7 @@ class RTSPSubscriberManager:
     # Remove from subscriber mappings
     del self.subscriber_streams[websocket]
 
-  async def send_to_subscriber(self, stream_name: str, message: OutboundMessage) -> None:
+  async def send_to_subscriber(self, stream_name: str, message: Message) -> None:
     """
     Send a message to all subscribers of a specific stream.
 
@@ -289,9 +288,7 @@ class RTSPSubscriberManager:
 
     return total_sent
 
-  async def _send_message_to_websocket(
-    self, websocket: ServerConnection, message: OutboundMessage
-  ) -> bool:
+  async def _send_message_to_websocket(self, websocket: ServerConnection, message: Message) -> bool:
     """
     Send a message to a specific websocket connection.
 
@@ -303,7 +300,7 @@ class RTSPSubscriberManager:
         True if message was sent successfully, False otherwise
     """
     try:
-      await websocket.send(json.dumps(asdict(message)))
+      await websocket.send(serialize_message(message))
 
       self.logger.debug(
         "Sent message to websocket",
