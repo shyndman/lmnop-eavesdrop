@@ -61,5 +61,7 @@ def deserialize_message(json_str: str) -> Message:
   Returns:
       Deserialized message instance of the appropriate type
   """
-  codec = _MessageCodec.model_validate_json(json_str)
+  # Wrap the incoming message in the expected MessageCodec structure
+  wrapped_json = f'{{"message": {json_str}}}'
+  codec = _MessageCodec.model_validate_json(wrapped_json)
   return codec.message
