@@ -7,6 +7,7 @@ import os
 import queue
 import threading
 import time
+from dataclasses import dataclass
 
 import ctranslate2
 import numpy as np
@@ -22,6 +23,24 @@ from eavesdrop.server.streaming.interfaces import TranscriptionResult, Transcrip
 from eavesdrop.server.transcription.models import TranscriptionInfo
 from eavesdrop.server.transcription.whisper_model import WhisperModel
 from eavesdrop.wire import Segment
+
+
+@dataclass
+class AudioChunk:
+  """Audio data with associated metadata for processing."""
+
+  data: np.ndarray
+  duration: float
+
+
+@dataclass
+class ChunkTranscriptionResult:
+  """Result of transcribing an audio chunk."""
+
+  segments: list[Segment] | None
+  info: TranscriptionInfo | None
+  processing_time: float
+  audio_duration: float
 
 
 class StreamingTranscriptionProcessor:
@@ -101,9 +120,11 @@ class StreamingTranscriptionProcessor:
     self.logger.debug("Selected device", device=device)
 
     if device == "cuda":
-      major, _ = torch.cuda.get_device_capability(device)
-      self.compute_type = "float16" if major >= 7 else "float32"
-      self.logger.debug("CUDA device capability", major=major, compute_type=self.compute_type)
+      major_version, _ = torch.cuda.get_device_capability(device)
+      self.compute_type = "float16"
+      self.logger.debug(
+        "CUDA device capability", major=major_version, compute_type=self.compute_type
+      )
     else:
       self.compute_type = "int8"
       self.logger.debug("Using CPU with compute_type", compute_type=self.compute_type)
@@ -114,6 +135,7 @@ class StreamingTranscriptionProcessor:
       await asyncio.to_thread(self._create_model, device)
     except Exception:
       self.logger.exception("Failed to load model")
+      # TODO: Add try
       await self.sink.send_error(f"Failed to load model: {self.config.model}")
       raise
 
@@ -207,73 +229,87 @@ class StreamingTranscriptionProcessor:
     self.buffer.add_frames(frames)
 
   async def _transcription_loop(self) -> None:
-    """
-    Process an audio stream in an infinite loop, continuously transcribing the speech.
-
-    This method continuously processes audio frames, performs real-time transcription,
-    and sends transcribed segments to the client via the sink.
-    """
-    while True:
-      if self.exit:
-        self.logger.info("Exiting speech to text thread")
-        break
-
-      self.buffer.clip_if_stalled()
-
-      input_bytes, duration = self.buffer.get_chunk_for_processing()
-
-      # Debug logging to track buffer catchup patterns
-      available_duration = self.buffer.available_duration
-      total_duration = self.buffer.total_duration
-      processed_duration = self.buffer.processed_duration
-
-      self.logger.debug(
-        "Buffer status before transcription",
-        available_for_processing=f"{available_duration:.2f}s",
-        total_buffered=f"{total_duration:.2f}s",
-        already_processed=f"{processed_duration:.2f}s",
-        is_caught_up=available_duration < 0.5,
-      )
-
-      if duration < self.buffer.config.min_chunk_duration:
-        await asyncio.sleep(self.buffer.config.min_chunk_duration - duration)
-        continue
-
+    """Main processing loop: get audio → transcribe → send results → wait."""
+    while not self.exit:
       try:
-        # Track transcription time for performance analysis
-        import time
+        audio_chunk = await self._get_next_audio_chunk()
+        if audio_chunk is None:
+          continue
 
-        transcription_start = time.time()
-        input_sample = input_bytes.copy()
-        result, info = await asyncio.to_thread(self._transcribe_audio, input_sample)
-        transcription_time = time.time() - transcription_start
-
-        self.logger.debug(
-          "Transcription performance",
-          audio_duration=f"{duration:.2f}s",
-          transcription_time=f"{transcription_time:.2f}s",
-          speed_vs_realtime=f"{duration / transcription_time:.1f}x faster",
-        )
-
-        if self.language is None and info is not None:
-          await self._set_language(info)
-
-        if result is None or len(result) == 0:
-          self.buffer.advance_processed_boundary(duration)
-        else:
-          await self._handle_transcription_output(result, duration)
-
-        # Timer-based processing: wait for remaining time to maintain consistent interval
-        remaining_wait = self.buffer.config.transcription_interval - transcription_time
-        if remaining_wait > 0:
-          self.logger.debug(f"Waiting {remaining_wait:.2f}s to maintain transcription interval")
-          await asyncio.sleep(remaining_wait)
-        else:
-          self.logger.warning("Transcription took longer than interval, proceeding immediately")
-
+        transcription_result = await self._transcribe_chunk(audio_chunk)
+        await self._process_transcription_result(transcription_result)
+        await self._wait_for_next_interval(transcription_result.processing_time)
       except Exception:
-        self.logger.exception("Failed to transcribe audio chunk")
-        await asyncio.sleep(self.buffer.config.transcription_interval)
+        await self._handle_transcription_error()
+
+    self.logger.info("Exiting speech to text thread")
+
+  async def _get_next_audio_chunk(self) -> AudioChunk | None:
+    """Get the next audio chunk, handling buffer management and minimum duration."""
+    self.buffer.clip_if_stalled()
+    input_bytes, duration = self.buffer.get_chunk_for_processing()
+
+    # Debug logging to track buffer catchup patterns
+    available_duration = self.buffer.available_duration
+    total_duration = self.buffer.total_duration
+    processed_duration = self.buffer.processed_duration
+
+    self.logger.debug(
+      "Buffer status before transcription",
+      available_for_processing=f"{available_duration:.2f}s",
+      total_buffered=f"{total_duration:.2f}s",
+      already_processed=f"{processed_duration:.2f}s",
+      is_caught_up=available_duration < 0.5,
+    )
+
+    if duration < self.buffer.config.min_chunk_duration:
+      await asyncio.sleep(self.buffer.config.min_chunk_duration - duration)
+      return None
+
+    return AudioChunk(data=input_bytes, duration=duration)
+
+  async def _transcribe_chunk(self, chunk: AudioChunk) -> ChunkTranscriptionResult:
+    """Transcribe an audio chunk and return results with timing information."""
+    import time
+
+    transcription_start = time.time()
+    result, info = await asyncio.to_thread(self._transcribe_audio, chunk.data)
+    processing_time = time.time() - transcription_start
+
+    self.logger.debug(
+      "Transcription performance",
+      audio_duration=f"{chunk.duration:.2f}s",
+      transcription_time=f"{processing_time:.2f}s",
+      speed_vs_realtime=f"{chunk.duration / processing_time:.1f}x faster",
+    )
+
+    return ChunkTranscriptionResult(
+      segments=result, info=info, processing_time=processing_time, audio_duration=chunk.duration
+    )
+
+  async def _process_transcription_result(self, result: ChunkTranscriptionResult) -> None:
+    """Process transcription results, update language, and handle segments."""
+    if self.language is None and result.info is not None:
+      await self._set_language(result.info)
+
+    if result.segments is None or len(result.segments) == 0:
+      self.buffer.advance_processed_boundary(result.audio_duration)
+    else:
+      await self._handle_transcription_output(result.segments, result.audio_duration)
+
+  async def _wait_for_next_interval(self, processing_time: float) -> None:
+    """Wait to maintain consistent transcription intervals."""
+    remaining_wait = self.buffer.config.transcription_interval - processing_time
+    if remaining_wait > 0:
+      self.logger.debug(f"Waiting {remaining_wait:.2f}s to maintain transcription interval")
+      await asyncio.sleep(remaining_wait)
+    else:
+      self.logger.warning("Transcription took longer than interval, proceeding immediately")
+
+  async def _handle_transcription_error(self) -> None:
+    """Handle transcription errors with logging and recovery."""
+    self.logger.exception("Failed to transcribe audio chunk")
+    await asyncio.sleep(self.buffer.config.transcription_interval)
 
   def _transcribe_audio(
     self, input_sample: np.ndarray
