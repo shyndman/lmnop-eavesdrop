@@ -7,6 +7,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from io import StringIO
+from typing import Any
 
 import structlog
 from structlog.dev import (
@@ -25,7 +26,7 @@ from structlog.dev import (
   KeyValueColumnFormatter,
   _pad,
 )
-from structlog.typing import EventDict, Processor
+from structlog.typing import EventDict, Processor, WrappedLogger
 
 try:
   import numpy as np
@@ -133,7 +134,7 @@ class NerdStyles:
   kv_value = MAGENTA
 
 
-class FloatPrecisionProcessor:
+class _FloatPrecisionProcessor:
   """
   A structlog processor for rounding floats. Both as single numbers or in data structures like
   (nested) lists, dicts, or numpy arrays.
@@ -141,34 +142,28 @@ class FloatPrecisionProcessor:
   Inspired by https://github.com/underyx/structlog-pretty/blob/master/structlog_pretty/processors.py
   """
 
-  def __init__(self, digits=3, only_fields=None, not_fields=None, np_array_to_list=True):
+  def __init__(
+    self,
+    digits: int = 3,
+    only_fields: set[str] = set(),
+    not_fields: set[str] = set(),
+    np_array_to_list: bool = True,
+  ):
     """
     Create a FloatRounder processor. That rounds floats to the given number of digits.
 
     :param digits: The number of digits to round to
-    :param only_fields: An iterable specifying the fields to round (None = round all fields except
+    :param only_fields: A set specifying the fields to round (None = round all fields except
       not_fields)
-    :param not_fields: An iterable specifying fields not to round
+    :param not_fields: A set specifying fields not to round
     :param np_array_to_list: Whether to cast np.array to list for nicer printing
     """
     self.digits = digits
     self.np_array_to_list = np_array_to_list
-    # convert lists to sets for faster checking
-    if only_fields is None:
-      self.only_fields = only_fields
-    elif type(only_fields) in (set, list):
-      self.only_fields = set(only_fields)
-    else:
-      raise TypeError(f"only_fields has to be a set or a list but was {only_fields}")
+    self.only_fields = only_fields
+    self.not_fields = not_fields
 
-    if not_fields is None:
-      self.not_fields = not_fields
-    elif type(not_fields) in (set, list):
-      self.not_fields = set(not_fields)
-    else:
-      raise TypeError(f"not_fields has to be a set or a list but was {not_fields}")
-
-  def _round(self, value):
+  def _round(self, value: Any):
     """
     Round floats, unpack lists, convert np.arrays to lists
 
@@ -179,7 +174,7 @@ class FloatPrecisionProcessor:
     if isinstance(value, float):
       return round(value, self.digits)
     # convert np.array to list
-    if numpy_installed and self.np_array_to_list:
+    if self.np_array_to_list:
       if isinstance(value, np.ndarray):
         return self._round(list(value))
     # round values in lists recursively (to handle lists of lists)
@@ -195,7 +190,7 @@ class FloatPrecisionProcessor:
     # return any other values as they are
     return value
 
-  def __call__(self, _, __, event_dict):
+  def __call__(self, _: WrappedLogger, __: str, event_dict: EventDict):
     for key, value in event_dict.items():
       if self.only_fields is not None and key not in self.only_fields:
         continue
@@ -316,8 +311,7 @@ def setup_logging(
 
   # Configure processors
   shared_processors: list[Processor] = [
-    # structlog.stdlib.filter_by_level,
-    FloatPrecisionProcessor(digits=3),
+    structlog.stdlib.filter_by_level,
     structlog.stdlib.add_logger_name,
     structlog.stdlib.add_log_level,
     _debug_event_colorer,  # Run before level processing
@@ -327,6 +321,7 @@ def setup_logging(
     _relative_time_processor,
     structlog.processors.StackInfoRenderer(),
     structlog.processors.format_exc_info,
+    _FloatPrecisionProcessor(digits=3),
   ]
 
   # Add correlation ID if provided
@@ -360,8 +355,13 @@ def setup_logging(
             value_style_map=[
               (
                 # Integers (including negative) get bright green styling
+                r"^True|False$",
+                hex_to_ansi_fg(0x6E6A86),
+              ),
+              (
+                # Integers (including negative) get bright green styling
                 r"^-?\d+$",
-                hex_to_ansi_fg(0x63FF5B),
+                hex_to_ansi_fg(0xF6C177),
               ),
               (
                 # Floats (including negative) get bright yellow styling
