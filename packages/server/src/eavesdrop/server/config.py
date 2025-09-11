@@ -80,9 +80,6 @@ class TranscriptionConfig(BaseModel):
   send_last_n_segments: int = Field(default=10, gt=0)
   """Number of most recent segments to send to the client."""
 
-  no_speech_thresh: float = Field(default=0.45, ge=0.0, le=1.0)
-  """Segments with no speech probability above this threshold will be discarded."""
-
   same_output_threshold: int = Field(default=10, gt=0)
   """Number of repeated outputs before considering it as a valid segment."""
 
@@ -214,7 +211,6 @@ class EavesdropConfig(BaseModel):
     logger.info(f"  Initial Prompt: {self.transcription.initial_prompt}")
     logger.info(f"  Hotwords: {self.transcription.hotwords}")
     logger.info(f"  Send Last N Segments: {self.transcription.send_last_n_segments}")
-    logger.info(f"  No Speech Threshold: {self.transcription.no_speech_thresh}")
     logger.info(f"  Same Output Threshold: {self.transcription.same_output_threshold}")
     logger.info(f"  Num Workers: {self.transcription.num_workers}")
     logger.info(f"  Use VAD: {self.transcription.use_vad}")

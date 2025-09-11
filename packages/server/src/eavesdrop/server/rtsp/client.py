@@ -195,7 +195,6 @@ class RTSPTranscriptionSink(TranscriptionSink):
         temp=segment.temperature,
         compression=segment.compression_ratio,
         avg_logprob=segment.avg_logprob,
-        no_speech_prob=segment.no_speech_prob,
       )
 
     # Store transcription in cache for later retrieval by new subscribers

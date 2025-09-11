@@ -7,7 +7,6 @@ from faster_whisper.audio import pad_or_trim
 from faster_whisper.tokenizer import _LANGUAGE_CODES, Tokenizer
 from faster_whisper.utils import get_end
 from faster_whisper.vad import VadOptions
-from tqdm import tqdm
 
 from eavesdrop.server.logs import get_logger
 from eavesdrop.server.transcription.audio_processing import AudioProcessor
@@ -193,7 +192,7 @@ class WhisperModel:
       language, features
     )
 
-    segments = self.generate_segments(
+    segments = self._transcribe_segments(
       features,
       tokenizer=(
         tokenizer := Tokenizer(
@@ -232,7 +231,7 @@ class WhisperModel:
 
     return segments, info
 
-  def generate_segments(
+  def _transcribe_segments(
     self,
     features: np.ndarray,
     tokenizer: Tokenizer,
@@ -240,48 +239,36 @@ class WhisperModel:
     log_progress: bool,
     encoder_output: ctranslate2.StorageView | None = None,
   ) -> Iterable[Segment]:
-    content_frames = features.shape[-1] - 1
-    content_duration = float(content_frames * self.feature_extractor.time_per_frame)
-    # In this implementation, we process the entire audio as a single clip.
-    seek_clips: list[tuple[int, int]] = [(0, content_frames)]
-    # Initialize anomaly detector for hallucination detection
-    anomaly_detector = AnomalyDetector(_PUNCTUATION)
+    """A lower-level transcription function that generates the individual segments for a given
+    audio clip."""
 
-    idx = 0
-    clip_idx = 0
-    seek = seek_clips[clip_idx][0]
-    all_tokens: list[int] = []
-    prompt_reset_since = 0
+    total_frames = features.shape[-1] - 1
+    total_duration = float(total_frames * self.feature_extractor.time_per_frame)
+    # Initialize anomaly detector for hallucination detection
+
+    idx = 0  # Sequential segment ID counter for output segments
+    seek = 0  # Current position in audio features (frame index)
+    all_tokens: list[int] = []  # Accumulated token history for context conditioning
+    prompt_reset_since = 0  # Token position where prompt context was last reset
 
     if transcription_options.initial_prompt is not None:
       initial_prompt = " " + transcription_options.initial_prompt.strip()
       initial_prompt_tokens = tokenizer.encode(initial_prompt)
       all_tokens.extend(initial_prompt_tokens)
 
-    pbar = tqdm(total=content_duration, unit="seconds", disable=not log_progress)
     last_speech_timestamp = 0.0
     all_segments: list[Segment] = []
-    # NOTE: This loop is obscurely flattened to make the diff readable.
-    # A later commit should turn this into a simpler nested loop.
-    # for seek_clip_start, seek_clip_end in seek_clips:
-    #     while seek < seek_clip_end
-    while clip_idx < len(seek_clips):
-      seek_clip_start, seek_clip_end = seek_clips[clip_idx]
-      seek_clip_end = min(seek_clip_end, content_frames)
-      seek = max(seek, seek_clip_start)
-      if seek >= seek_clip_end:
-        clip_idx += 1
-        if clip_idx < len(seek_clips):
-          seek = seek_clips[clip_idx][0]
-        continue
+
+    anomaly_detector = AnomalyDetector(_PUNCTUATION)
+
+    while seek < total_frames:
       time_offset = seek * self.feature_extractor.time_per_frame
       window_end_time = float(
         (seek + self.feature_extractor.nb_max_frames) * self.feature_extractor.time_per_frame
       )
       segment_size = min(
         self.feature_extractor.nb_max_frames,
-        content_frames - seek,
-        seek_clip_end - seek,
+        total_frames - seek,
       )
       segment = features[:, seek : seek + segment_size]
       segment_duration = segment_size * self.feature_extractor.time_per_frame
@@ -292,55 +279,38 @@ class WhisperModel:
       if seek > 0 or encoder_output is None:
         encoder_output = self.encode(segment)
 
+      # You may be thinking, "didn't they just detect a language earlier?", and you'd be quite
+      # correct. That language was only used to initialize the tokenizer for the first pass. The
+      # multilingual case is a little more interesting, so we re-detect the language here to
+      # ensure we have the best possible language for the current segment.
       if transcription_options.multilingual:
-        results = self.model.detect_language(encoder_output)
-        language_token, language_probability = results[0][0]
+        # TODO Let's pull this out into a little helper in the language detector
+        language_token, _probability = self.model.detect_language(encoder_output)[0][0]
         language = language_token[2:-2]
-
         tokenizer.language = tokenizer.tokenizer.token_to_id(language_token)
         tokenizer.language_code = language
 
-      prompt = self.prompt_builder.build_prompt(
-        tokenizer,
-        previous_tokens,
-        without_timestamps=transcription_options.without_timestamps,
-        prefix=transcription_options.prefix if seek == 0 else None,
-        hotwords=transcription_options.hotwords,
-      )
-
+      # Generate the transcription
       result, avg_logprob, temperature, compression_ratio = (
         self.generation_strategies.generate_with_fallback(
-          self.model, encoder_output, prompt, tokenizer, transcription_options
+          model=self.model,
+          encoder_output=encoder_output,
+          prompt=self.prompt_builder.build_prompt(
+            tokenizer,
+            previous_tokens,
+            without_timestamps=transcription_options.without_timestamps,
+            prefix=transcription_options.prefix if seek == 0 else None,
+            hotwords=transcription_options.hotwords,
+          ),
+          tokenizer=tokenizer,
+          transcription_options=transcription_options,
         )
       )
 
-      # TODO no_speech_prob SUCKS, and so does no_speech_threshold. I think we should remove this
-      # across the board, and rely on VAD
-      # if transcription_options.no_speech_threshold is not None:
-      #   # no voice activity check
-      #   should_skip = result.no_speech_prob > transcription_options.no_speech_threshold
-
-      #   if (
-      #     transcription_options.log_prob_threshold is not None
-      #     and avg_logprob > transcription_options.log_prob_threshold
-      #   ):
-      #     # don't skip if the logprob is high enough, despite the no_speech_prob
-      #     should_skip = False
-
-      #   if should_skip:
-      #     self.logger.debug(
-      #       "No speech threshold is met (%f > %f)",
-      #       result.no_speech_prob,
-      #       transcription_options.no_speech_threshold,
-      #     )
-
-      #     # fast-forward to the next segment boundary
-      #     seek += segment_size
-      #     continue
-
       tokens = result.sequences_ids[0]
-      previous_seek = seek
 
+      # Split segments
+      previous_seek = seek
       current_segments, seek, single_timestamp_ending = (
         self.segment_processor.split_segments_by_timestamps(
           tokenizer=tokenizer,
@@ -409,8 +379,8 @@ class WhisperModel:
               )
               if silence_before and silence_after:
                 seek = round(max(time_offset + 1, segment["start"]) * self.frames_per_second)
-                if content_duration - segment["end"] < threshold:
-                  seek = content_frames
+                if total_duration - segment["end"] < threshold:
+                  seek = total_frames
                 current_segments[si:] = []
                 break
             hal_last_end = segment["end"]
@@ -439,7 +409,6 @@ class WhisperModel:
             temperature=temperature,
             avg_logprob=avg_logprob,
             compression_ratio=compression_ratio,
-            no_speech_prob=result.no_speech_prob,
             words=(
               [Word(**word) for word in segment.get("words", [])]
               if transcription_options.word_timestamps
@@ -461,10 +430,6 @@ class WhisperModel:
 
         prompt_reset_since = len(all_tokens)
 
-      pbar.update(
-        (min(content_frames, seek) - previous_seek) * self.feature_extractor.time_per_frame,
-      )
-    pbar.close()
     return all_segments
 
   def encode(self, features: np.ndarray) -> ctranslate2.StorageView:

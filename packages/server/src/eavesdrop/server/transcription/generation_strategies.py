@@ -137,7 +137,6 @@ class GenerationStrategies:
         no_repeat_ngram_size=options.no_repeat_ngram_size,
         max_length=max_length,
         return_scores=True,
-        return_no_speech_prob=True,
         suppress_blank=options.suppress_blank,
         suppress_tokens=options.suppress_tokens,
         max_initial_timestamp_index=max_initial_timestamp_index,
@@ -161,8 +160,6 @@ class GenerationStrategies:
       self.logger.warn(
         "Transcription results",
         scores=result.scores,
-        no_speech_prob=result.no_speech_prob,
-        prob_type=type(result.no_speech_prob).__name__,
       )
 
       decode_result = GenerationResult(
@@ -197,15 +194,6 @@ class GenerationStrategies:
           avg_logprob,
           options.log_prob_threshold,
         )
-
-      # Special case: silence detection overrides low log prob
-      if (
-        options.no_speech_threshold is not None
-        and result.no_speech_prob > options.no_speech_threshold
-        and options.log_prob_threshold is not None
-        and avg_logprob < options.log_prob_threshold
-      ):
-        needs_fallback = False  # silence
 
       if not needs_fallback:
         break

@@ -113,10 +113,6 @@ class TranscriptionOptions(NamedTuple):
   transcription is considered unreliable and the system will fallback to a
   higher temperature."""
 
-  no_speech_threshold: float | None = 0.6
-  """If the probability of a segment being no-speech is higher than this
-  threshold, the segment is discarded."""
-
   compression_ratio_threshold: float | None = 2.4
   """If the compression ratio of a segment's text is higher than this threshold,
   it's considered a hallucination or repetitive output, triggering a fallback
