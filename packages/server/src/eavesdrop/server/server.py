@@ -145,7 +145,7 @@ class TranscriptionServer:
         result = await self._handle_subscriber_connection(websocket, dict(headers))
         return SubscriberConnection() if result else None
 
-      raw_msg = await websocket.recv()
+      raw_msg: str = await websocket.recv(decode=True)
       message = deserialize_message(raw_msg)
 
       match (client_type, message):
