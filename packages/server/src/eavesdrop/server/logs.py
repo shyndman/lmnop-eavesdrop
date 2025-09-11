@@ -364,6 +364,11 @@ def setup_logging(
                 r"^-?\d*\.\d+$",
                 hex_to_ansi_fg(0xF6C177),
               ),
+              (
+                # Numeric durations (123ms, 45.67s, 12h, etc.)
+                r"^-?\d*\.?\d+(?:h|m|s|ms|us|µs)$",
+                hex_to_ansi_fg(0x9CCFD8),
+              ),
             ],
             default_value_style="",
             reset_style=RESET_ALL,
