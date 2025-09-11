@@ -174,3 +174,14 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Symlinked files managed by unroot-llm-files-pre-commit hook
+# These files are symlinks to the .llm directory and should not be committed
+# The actual files are stored in .llm/ - commit changes there instead
+/.claude
+/specs
+/GEMINI.md
+/memory
+/templates
+/CLAUDE.md
+/.gemini
