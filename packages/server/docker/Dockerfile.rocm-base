@@ -32,10 +32,6 @@ ENV GFX_ARCH=$GFX_ARCH
 ENV CTRANSLATE2_ROOT=/opt/ctranslate2
 ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$CTRANSLATE2_ROOT/lib
 
-# Torch audio
-WORKDIR /home
-RUN pip install 'torchaudio==2.6.0'
-
 # CTranslate2
 RUN git clone https://github.com/arlo-phoenix/CTranslate2-rocm.git --recurse-submodules \
     && cd CTranslate2-rocm \
@@ -66,4 +62,3 @@ RUN git clone --depth 1 --branch v1.1.0 https://github.com/SYSTRAN/faster-whispe
 
 ENV CT2_CUDA_ALLOCATOR=cub_caching
 ENV CT2_CUDA_CACHING_ALLOCATOR_CONFIG=4,3,12,419430400
-

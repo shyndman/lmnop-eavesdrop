@@ -12,13 +12,16 @@ dependencies = [
   "netifaces>=0.11.0",
   "numba",
   "numpy<2",
-  "onnxruntime==1.17.0", # Used for VAD
+  "onnxruntime==1.17.0",     # Used for VAD
   "psutil",
   "pydantic>=2",
+  "pytorch-triton-rocm==3.2.0",
   "pyyaml>=6.0",
   "sentencepiece",
   "soundfile",
   "structlog>=25.4.0",
+  "torch==2.6.0",
+  "torchaudio==2.6.0",
   "websocket-client>=1.8.0",
   "websockets",
 
@@ -30,6 +33,7 @@ dependencies = [
   # "ctranslate2 @ file:///~/dev/github.com/ctranslate2",
 ]
 license = {text = "MIT"}
+
 
 [project.urls]
 repository = "https://github.com/shyndman/eavesdrop"
@@ -79,4 +83,17 @@ indent-style = "space"
 line-ending = "auto"
 
 [tool.uv.sources]
-eavesdrop-wire = { path = "../wire", editable = true }
+eavesdrop-wire = {path = "../wire", editable = true}
+torch = {index = "pytorch"}
+torchaudio = {index = "pytorch"}
+pytorch-triton-rocm = {index = "pytorch"}
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true
+
+[[tool.uv.index]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/rocm6.2.4"
+explicit = true

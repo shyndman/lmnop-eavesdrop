@@ -18,9 +18,6 @@ RUN conda create -n py_3.12 python=3.12 -y
 
 SHELL ["conda", "run", "-n", "py_3.12", "/bin/bash", "-c"]
 
-# Torch audio for CUDA 12.4
-RUN pip install 'torchaudio==2.6.0' --index-url https://download.pytorch.org/whl/cu124
-
 # CTranslate2 with CUDA 12.4 support
 RUN pip install 'ctranslate2>=4.5.0'
 
