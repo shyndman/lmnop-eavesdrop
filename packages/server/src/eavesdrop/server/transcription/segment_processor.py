@@ -4,14 +4,14 @@ This module handles the splitting of tokens into segments by timestamps and prov
 anomaly detection for identifying potentially hallucinated or problematic segments.
 """
 
-from typing import TypedDict
+from typing import NamedTuple, TypedDict
 
 from faster_whisper.tokenizer import Tokenizer
 
 from eavesdrop.server.transcription.models import SegmentDict
 
 
-class SegmentTimingResult(TypedDict):
+class SegmentTimingResult(NamedTuple):
   """Result from segment timestamp processing."""
 
   segments: list[SegmentDict]
@@ -100,11 +100,11 @@ class SegmentProcessor:
       current_segments = result["segments"]
       seek = result["seek_position"]
 
-    return {
-      "segments": current_segments,
-      "seek_position": seek,
-      "single_timestamp_ending": single_timestamp_ending,
-    }
+    return SegmentTimingResult(
+      segments=current_segments,
+      seek_position=seek,
+      single_timestamp_ending=single_timestamp_ending,
+    )
 
   def _process_consecutive_timestamps(
     self,

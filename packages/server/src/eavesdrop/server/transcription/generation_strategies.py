@@ -5,7 +5,7 @@ ensure high-quality transcriptions by trying different generation parameters
 when quality thresholds are not met.
 """
 
-from typing import TypedDict
+from typing import NamedTuple
 
 import ctranslate2
 from faster_whisper.tokenizer import Tokenizer
@@ -15,7 +15,7 @@ from eavesdrop.server.transcription.models import TranscriptionOptions
 from eavesdrop.server.transcription.utils import get_compression_ratio
 
 
-class GenerationResult(TypedDict):
+class GenerationResult(NamedTuple):
   """Result from Whisper generation with quality metrics."""
 
   result: ctranslate2.models.WhisperGenerationResult

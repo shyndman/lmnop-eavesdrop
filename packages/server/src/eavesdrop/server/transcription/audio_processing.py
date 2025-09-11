@@ -5,7 +5,7 @@ and feature extraction coordination for the transcription pipeline.
 """
 
 import time
-from typing import TypedDict
+from typing import NamedTuple
 
 import numpy as np
 from faster_whisper.feature_extractor import FeatureExtractor
@@ -17,20 +17,20 @@ from faster_whisper.vad import (
 )
 
 from eavesdrop.server.logs import get_logger
+from eavesdrop.server.transcription.models import SpeechChunk
 
 # Private module constants
 _VAD_LOG_THROTTLE_SECONDS = 60.0  # Throttle VAD complete silence logging to 1 minute
 _MINIMUM_AUDIO_DURATION = 0.0  # Minimum audio duration to process
 
 
-class AudioValidationResult(TypedDict):
+class AudioValidationResult(NamedTuple):
   """Result of audio validation and preprocessing."""
 
   audio: np.ndarray
   duration: float
   duration_after_vad: float
-  # TODO: Add a better type for dict[str, int]
-  speech_chunks: list[dict[str, int]] | None
+  speech_chunks: list[SpeechChunk] | None
   is_complete_silence: bool
 
 
@@ -93,13 +93,13 @@ class AudioProcessor:
       # No VAD filtering applied
       processed_audio = audio
 
-    return {
-      "audio": processed_audio,
-      "duration": original_duration,
-      "duration_after_vad": duration_after_vad,
-      "speech_chunks": speech_chunks,
-      "is_complete_silence": is_complete_silence,
-    }
+    return AudioValidationResult(
+      audio=processed_audio,
+      duration=original_duration,
+      duration_after_vad=duration_after_vad,
+      speech_chunks=speech_chunks,
+      is_complete_silence=is_complete_silence,
+    )
 
   def extract_features(self, audio: np.ndarray) -> np.ndarray:
     """Extract features from audio using the configured feature extractor.

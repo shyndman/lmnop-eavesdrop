@@ -14,16 +14,14 @@ from eavesdrop.server.transcription.audio_processing import AudioProcessor
 from eavesdrop.server.transcription.generation_strategies import GenerationStrategies
 from eavesdrop.server.transcription.language_detection import (
   AnomalyDetector,
-  LanguageDetectionResult,
   LanguageDetector,
 )
 from eavesdrop.server.transcription.models import (
-  SegmentDict,
   TranscriptionInfo,
   TranscriptionOptions,
 )
 from eavesdrop.server.transcription.prompt_builder import PromptBuilder
-from eavesdrop.server.transcription.segment_processor import SegmentProcessor, SegmentTimingResult
+from eavesdrop.server.transcription.segment_processor import SegmentProcessor
 from eavesdrop.server.transcription.utils import (
   get_ctranslate2_storage,
   get_suppressed_tokens,
@@ -36,6 +34,9 @@ from eavesdrop.server.transcription.whisper import (
 from eavesdrop.server.transcription.word_alignment import WordTimestampAligner
 from eavesdrop.wire import Segment, Word
 
+# Combined punctuation string for word alignment processing
+# Contains both prepended ('"\'"¿([{-') and appended ('"\'.。,，!！?？:：")]}、') punctuation marks
+# Used for merging punctuation with adjacent words during timestamp alignment
 _PUNCTUATION = '"\'"¿([{-"\'.。,，!！?？:：")]}、'
 
 
@@ -139,6 +140,7 @@ class WhisperModel:
     vad_filter: bool = False,
     vad_parameters: VadOptions = VadOptions(),
     hotwords: str | None = None,
+    multilingual: bool = False,
   ) -> tuple[Iterable[Segment], TranscriptionInfo]:
     """Transcribes audio data for live transcription.
 
@@ -167,101 +169,60 @@ class WhisperModel:
         - an instance of TranscriptionInfo
     :rtype: tuple[Iterable[Segment], TranscriptionInfo]
     """
-    multilingual = False
 
     # Use our new audio processing module for validation and VAD
-    audio_result = self.audio_processor.validate_and_preprocess_audio(
-      audio, vad_filter, vad_parameters
+    audio, duration, duration_after_vad, speech_chunks, will_be_complete_silence = (
+      self.audio_processor.validate_and_preprocess_audio(audio, vad_filter, vad_parameters)
     )
 
     # Update audio with processed version
-    audio = audio_result["audio"]
-    duration = audio_result["duration"]
-    duration_after_vad = audio_result["duration_after_vad"]
-    speech_chunks = audio_result["speech_chunks"]
-    # Note: will_be_complete_silence available if needed for future logging
-    # will_be_complete_silence = audio_result["is_complete_silence"]
-
-    if audio.shape[0] == 0:
+    no_sound_to_process = audio.shape[0] == 0
+    if no_sound_to_process:
       # Return empty segments and minimal transcription info for empty audio
-      empty_info = TranscriptionInfo(
+      return [], TranscriptionInfo(
         transcription_options=TranscriptionOptions(
           multilingual=multilingual,
           initial_prompt=initial_prompt,
         ),
         vad_options=vad_parameters,
       )
-      return [], empty_info
 
     # Extract features using our audio processor
     features = self.audio_processor.extract_features(audio)
-    sampling_rate = self.audio_processor.sampling_rate
-
-    encoder_output: ctranslate2.StorageView | None = None
-    all_language_probs: list[tuple[str, float]] | None = None
-
-    # detecting the language if not provided
-    if language is None:
-      if not self.model.is_multilingual:
-        language = "en"
-        language_probability = 1
-      else:
-        start_timestamp = 0.0
-        content_frames = features.shape[-1] - 1
-        seek = (
-          int(start_timestamp * self.frames_per_second)
-          if start_timestamp * self.frames_per_second < content_frames
-          else 0
-        )
-        detection_result = self.detect_language(
-          features=features[..., seek:],
-          language_detection_segments=1,
-          language_detection_threshold=0.5,
-        )
-        language = detection_result["language"]
-        language_probability = detection_result["probability"]
-        all_language_probs = detection_result["all_probabilities"]
-
-        self.logger.info(
-          "Detected language '%s' with probability %.2f",
-          language,
-          language_probability,
-        )
-    else:
-      if not self.model.is_multilingual and language != "en":
-        self.logger.warning(
-          "The current model is English-only but the language parameter is set to '%s'; "
-          "using 'en' instead." % language
-        )
-        language = "en"
-
-      language_probability = 1
-
-    assert language is not None, "Language should be determined by this point"
-    tokenizer = Tokenizer(
-      self.hf_tokenizer,
-      self.model.is_multilingual,
-      task=task,
-      language=language,
+    (language, probability), all_language_probs = self.language_detector.resolve_language(
+      language, features
     )
 
-    options = TranscriptionOptions(
-      multilingual=multilingual,
-      initial_prompt=initial_prompt,
-      hotwords=hotwords,
+    segments = self.generate_segments(
+      features,
+      tokenizer=(
+        tokenizer := Tokenizer(
+          self.hf_tokenizer,
+          self.model.is_multilingual,
+          task=task,
+          language=language,
+        )
+      ),
+      transcription_options=(
+        options := TranscriptionOptions(
+          multilingual=multilingual,
+          initial_prompt=initial_prompt,
+          hotwords=hotwords,
+          suppress_tokens=get_suppressed_tokens(tokenizer, [-1, 0]),
+        )
+      ),
+      log_progress=False,
+      encoder_output=None,
     )
-    # Set dynamic defaults
-    if options.suppress_tokens is None:
-      options.suppress_tokens = get_suppressed_tokens(tokenizer, [-1])
-
-    segments = self.generate_segments(features, tokenizer, options, False, encoder_output)
 
     if speech_chunks:
-      segments = restore_speech_timestamps(segments, speech_chunks, sampling_rate)
+      segments = restore_speech_timestamps(
+        segments, speech_chunks, self.audio_processor.sampling_rate
+      )
 
     info = TranscriptionInfo(
       language=language,
-      language_probability=language_probability,
+      language_probability=probability,
       duration=duration,
       duration_after_vad=duration_after_vad,
       transcription_options=options,
@@ -271,25 +232,11 @@ class WhisperModel:
 
     return segments, info
 
-  def _split_segments_by_timestamps(
-    self,
-    tokenizer: Tokenizer,
-    tokens: list[int],
-    time_offset: float,
-    segment_size: int,
-    segment_duration: float,
-    seek: int,
-  ) -> SegmentTimingResult:
-    """Split tokens into segments using our segment processor module."""
-    return self.segment_processor.split_segments_by_timestamps(
-      tokenizer, tokens, time_offset, segment_size, segment_duration, seek
-    )
-
   def generate_segments(
     self,
     features: np.ndarray,
     tokenizer: Tokenizer,
-    options: TranscriptionOptions,
+    transcription_options: TranscriptionOptions,
     log_progress: bool,
     encoder_output: ctranslate2.StorageView | None = None,
   ) -> Iterable[Segment]:
@@ -306,8 +253,8 @@ class WhisperModel:
     all_tokens: list[int] = []
     prompt_reset_since = 0
 
-    if options.initial_prompt is not None:
-      initial_prompt = " " + options.initial_prompt.strip()
+    if transcription_options.initial_prompt is not None:
+      initial_prompt = " " + transcription_options.initial_prompt.strip()
       initial_prompt_tokens = tokenizer.encode(initial_prompt)
       all_tokens.extend(initial_prompt_tokens)
 
@@ -345,7 +292,7 @@ class WhisperModel:
       if seek > 0 or encoder_output is None:
         encoder_output = self.encode(segment)
 
-      if options.multilingual:
+      if transcription_options.multilingual:
         results = self.model.detect_language(encoder_output)
         language_token, language_probability = results[0][0]
         language = language_token[2:-2]
@@ -356,62 +303,64 @@ class WhisperModel:
       prompt = self.prompt_builder.build_prompt(
         tokenizer,
         previous_tokens,
-        without_timestamps=options.without_timestamps,
-        prefix=options.prefix if seek == 0 else None,
-        hotwords=options.hotwords,
+        without_timestamps=transcription_options.without_timestamps,
+        prefix=transcription_options.prefix if seek == 0 else None,
+        hotwords=transcription_options.hotwords,
       )
 
-      generation_result = self.generation_strategies.generate_with_fallback(
-        self.model, encoder_output, prompt, tokenizer, options
+      result, avg_logprob, temperature, compression_ratio = (
+        self.generation_strategies.generate_with_fallback(
+          self.model, encoder_output, prompt, tokenizer, transcription_options
+        )
       )
-      result = generation_result["result"]
-      avg_logprob = generation_result["avg_logprob"]
-      temperature = generation_result["temperature"]
-      compression_ratio = generation_result["compression_ratio"]
 
-      if options.no_speech_threshold is not None:
-        # no voice activity check
-        should_skip = result.no_speech_prob > options.no_speech_threshold
+      # TODO no_speech_prob SUCKS, and so does no_speech_threshold. I think we should remove this
+      # across the board, and rely on VAD
+      # if transcription_options.no_speech_threshold is not None:
+      #   # no voice activity check
+      #   should_skip = result.no_speech_prob > transcription_options.no_speech_threshold
 
-        if options.log_prob_threshold is not None and avg_logprob > options.log_prob_threshold:
-          # don't skip if the logprob is high enough, despite the no_speech_prob
-          should_skip = False
+      #   if (
+      #     transcription_options.log_prob_threshold is not None
+      #     and avg_logprob > transcription_options.log_prob_threshold
+      #   ):
+      #     # don't skip if the logprob is high enough, despite the no_speech_prob
+      #     should_skip = False
 
-        if should_skip:
-          self.logger.debug(
-            "No speech threshold is met (%f > %f)",
-            result.no_speech_prob,
-            options.no_speech_threshold,
-          )
+      #   if should_skip:
+      #     self.logger.debug(
+      #       "No speech threshold is met (%f > %f)",
+      #       result.no_speech_prob,
+      #       transcription_options.no_speech_threshold,
+      #     )
 
-          # fast-forward to the next segment boundary
-          seek += segment_size
-          continue
+      #     # fast-forward to the next segment boundary
+      #     seek += segment_size
+      #     continue
 
       tokens = result.sequences_ids[0]
-
       previous_seek = seek
 
-      timing_result = self._split_segments_by_timestamps(
-        tokenizer=tokenizer,
-        tokens=tokens,
-        time_offset=time_offset,
-        segment_size=segment_size,
-        segment_duration=segment_duration,
-        seek=seek,
+      current_segments, seek, single_timestamp_ending = (
+        self.segment_processor.split_segments_by_timestamps(
+          tokenizer=tokenizer,
+          tokens=tokens,
+          time_offset=time_offset,
+          segment_size=segment_size,
+          segment_duration=segment_duration,
+          seek=seek,
+        )
       )
-      current_segments = timing_result["segments"]
-      seek = timing_result["seek_position"]
-      single_timestamp_ending = timing_result["single_timestamp_ending"]
 
-      if options.word_timestamps:
-        self.add_word_timestamps(
-          [current_segments],
-          tokenizer,
-          encoder_output,
-          segment_size,
-          options.prepend_punctuations,
-          options.append_punctuations,
+      if transcription_options.word_timestamps:
+        self.word_aligner.add_word_timestamps(
+          segments=[current_segments],
+          model=self.model,
+          tokenizer=tokenizer,
+          encoder_output=encoder_output,
+          num_frames=segment_size,
+          prepend_punctuations=transcription_options.prepend_punctuations,
+          append_punctuations=transcription_options.append_punctuations,
           last_speech_timestamp=last_speech_timestamp,
         )
         if not single_timestamp_ending:
@@ -420,8 +369,8 @@ class WhisperModel:
             seek = round(last_word_end * self.frames_per_second)
 
         # skip silence before possible hallucinations
-        if options.hallucination_silence_threshold is not None:
-          threshold = options.hallucination_silence_threshold
+        if transcription_options.hallucination_silence_threshold is not None:
+          threshold = transcription_options.hallucination_silence_threshold
 
           # if first segment might be a hallucination, skip leading silence
           first_segment = anomaly_detector.next_words_segment(current_segments)
@@ -493,20 +442,21 @@ class WhisperModel:
             no_speech_prob=result.no_speech_prob,
             words=(
               [Word(**word) for word in segment.get("words", [])]
-              if options.word_timestamps
+              if transcription_options.word_timestamps
               else None
             ),
           )
         )
 
       if (
-        not options.condition_on_previous_text or temperature > options.prompt_reset_on_temperature
+        not transcription_options.condition_on_previous_text
+        or temperature > transcription_options.prompt_reset_on_temperature
       ):
-        if options.condition_on_previous_text:
+        if transcription_options.condition_on_previous_text:
           self.logger.debug(
             "Reset prompt. prompt_reset_on_temperature threshold is met %f > %f",
             temperature,
-            options.prompt_reset_on_temperature,
+            transcription_options.prompt_reset_on_temperature,
           )
 
         prompt_reset_since = len(all_tokens)
@@ -527,68 +477,3 @@ class WhisperModel:
     features = get_ctranslate2_storage(features)
 
     return self.model.encode(features, to_cpu=to_cpu)
-
-  def add_word_timestamps(
-    self,
-    segments: list[list[SegmentDict]],
-    tokenizer: Tokenizer,
-    encoder_output: ctranslate2.StorageView,
-    num_frames: int,
-    prepend_punctuations: str,
-    append_punctuations: str,
-    last_speech_timestamp: float,
-  ) -> float:
-    """Add word-level timestamps to transcription segments using our word alignment module."""
-    # Use our new word alignment module - this replaces 110+ lines of complex logic
-    return self.word_aligner.add_word_timestamps(
-      segments=segments,
-      model=self.model,
-      tokenizer=tokenizer,
-      encoder_output=encoder_output,
-      num_frames=num_frames,
-      prepend_punctuations=prepend_punctuations,
-      append_punctuations=append_punctuations,
-      last_speech_timestamp=last_speech_timestamp,
-    )
-
-  def detect_language(
-    self,
-    audio: np.ndarray | None = None,
-    features: np.ndarray | None = None,
-    vad_filter: bool = False,
-    vad_parameters: VadOptions = VadOptions(),
-    language_detection_segments: int = 1,
-    language_detection_threshold: float = 0.5,
-  ) -> LanguageDetectionResult:
-    """Use Whisper to detect the language of the input audio or features.
-
-    :param audio: Input audio signal, must be a 1D float array sampled at 16khz.
-    :type audio: np.ndarray | None
-    :param features: Input Mel spectrogram features, must be a float array with
-        shape (n_mels, n_frames), if `audio` is provided, the features will be ignored.
-        Either `audio` or `features` must be provided.
-    :type features: np.ndarray | None
-    :param vad_filter: Enable the voice activity detection (VAD) to filter out parts of the audio
-        without speech. This step is using the Silero VAD model.
-    :type vad_filter: bool
-    :param vad_parameters: VadOptions class instance (see available
-        parameters and default values in the class `VadOptions`).
-    :type vad_parameters: VadOptions
-    :param language_detection_threshold: If the maximum probability of the language tokens is
-        higher than this value, the language is detected.
-    :type language_detection_threshold: float
-    :param language_detection_segments: Number of segments to consider for the language detection.
-    :type language_detection_segments: int
-    :returns: LanguageDetectionResult containing detected language, probability, and all
-      probabilities.
-    :rtype: LanguageDetectionResult
-    """
-    # Use our new language detection module
-    return self.language_detector.detect_language(
-      audio=audio,
-      features=features,
-      vad_filter=vad_filter,
-      vad_parameters=vad_parameters,
-      language_detection_segments=language_detection_segments,
-      language_detection_threshold=language_detection_threshold,
-    )

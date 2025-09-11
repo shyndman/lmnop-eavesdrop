@@ -6,13 +6,13 @@ import numpy as np
 from faster_whisper.tokenizer import Tokenizer
 from faster_whisper.vad import SpeechTimestampsMap
 
-from eavesdrop.server.transcription.models import WordTimingDict
+from eavesdrop.server.transcription.models import SpeechChunk, WordTimingDict
 from eavesdrop.wire import Segment
 
 
 def restore_speech_timestamps(
   segments: Iterable[Segment],
-  speech_chunks: list[dict[str, int]],
+  speech_chunks: list[SpeechChunk],
   sampling_rate: int,
 ) -> Iterable[Segment]:
   ts_map = SpeechTimestampsMap(speech_chunks, sampling_rate)

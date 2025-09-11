@@ -7,7 +7,7 @@ This module provides focused functionality for:
 - Language probability analysis
 """
 
-from typing import TypedDict
+from typing import NamedTuple, TypedDict
 
 import ctranslate2
 import numpy as np
@@ -20,7 +20,7 @@ from faster_whisper.vad import (
 )
 
 from eavesdrop.server.logs import get_logger
-from eavesdrop.server.transcription.models import SegmentDict, WordDict
+from eavesdrop.server.transcription.models import LanguageProbability, SegmentDict, WordDict
 
 # Private module constants for anomaly detection thresholds
 _WORD_PROBABILITY_THRESHOLD = 0.15
@@ -43,12 +43,12 @@ class LanguageAnalysisResult(TypedDict):
   total_languages: int
 
 
-class LanguageDetectionResult(TypedDict):
+class LanguageDetectionResult(NamedTuple):
   """Result from language detection with probability and alternatives."""
 
   language: str
   probability: float
-  all_probabilities: list[tuple[str, float]]
+  all_probabilities: list[LanguageProbability]
 
 
 class SegmentAnomalyResult(TypedDict):
@@ -77,6 +77,66 @@ class LanguageDetector:
     self.model = model
     self.feature_extractor = feature_extractor
     self.logger = get_logger("lang_detect")
+
+  def resolve_language(
+    self, language: str | None, features: np.ndarray
+  ) -> tuple[LanguageProbability, list[LanguageProbability]]:
+    """Resolve the language for transcription based on input and model capabilities.
+
+    :param language: Language code specified by caller (e.g., "en", "fr") or None for
+      auto-detection.
+    :type language: str | None
+    :param features: Audio feature array for language detection if needed.
+    :type features: np.ndarray
+    :returns: Tuple containing the determined language with probability and all language
+      probabilities.
+    :rtype: tuple[LanguageProbability, list[LanguageProbability]]
+    """
+    # 1. Language specified by caller: use it if it's valid
+    if language is not None:
+      invalid_lang = not self.model.is_multilingual and language != "en"
+      if invalid_lang:
+        self.logger.warning(
+          "Model is English-only but the language arg is not. Default is 'en'", lang=language
+        )
+        language = "en"
+      return ((language, 1.0), [(language, 1.0)])
+
+    # 2. No language specified for a unilingual model: automatically English, because all
+    #    single-language models are English
+    if not self.model.is_multilingual:
+      language = "en"
+      return ((language, 1.0), [(language, 1.0)])
+
+    # 3. No language specified, multilingual model: detect the language
+
+    # Determine the samples in question
+    start_timestamp = 0.0
+    content_frames = features.shape[-1] - 1
+    frames_per_second = self.feature_extractor.sampling_rate / self.feature_extractor.hop_length
+    seek = (
+      int(start_timestamp * frames_per_second)
+      if start_timestamp * frames_per_second < content_frames
+      else 0
+    )
+
+    # Detect the language
+    detection_result = self.detect_language(
+      features=features[..., seek:],
+      language_detection_segments=1,
+      language_detection_threshold=0.5,
+    )
+
+    self.logger.info(
+      "Detected language '%s' with probability %.2f",
+      detection_result.language,
+      detection_result.probability,
+    )
+
+    return (
+      (detection_result.language, detection_result.probability),
+      detection_result.all_probabilities,
+    )
 
   def detect_language(
     self,
@@ -170,11 +230,11 @@ class LanguageDetector:
     self.logger.debug(
       f"Final detected language: {language} with probability {language_probability:.3f}"
     )
-    return {
-      "language": language,
-      "probability": language_probability,
-      "all_probabilities": all_language_probs,
-    }
+    return LanguageDetectionResult(
+      language=language,
+      probability=language_probability,
+      all_probabilities=all_language_probs,
+    )
 
   def _encode(self, features: np.ndarray) -> ctranslate2.StorageView:
     """Encode features using the Whisper model.
@@ -239,6 +299,16 @@ class AnomalyDetector:
       score += duration - _LONG_WORD_DURATION_THRESHOLD
 
     return score
+
+  def next_words_segment(self, segments: list[SegmentDict]) -> SegmentDict | None:
+    """Find the next segment that contains words.
+
+    :param segments: List of segment dictionaries to search
+    :type segments: list[SegmentDict]
+    :returns: First segment containing words, or None if none found
+    :rtype: SegmentDict | None
+    """
+    return next((s for s in segments if s.get("words")), None)
 
   def is_segment_anomaly(self, segment: SegmentDict | None) -> bool:
     """Determine if a segment is anomalous based on its words.
