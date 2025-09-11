@@ -5,30 +5,29 @@ description = "Real-time audio transcription server with WebSocket-based speech-
 authors = [{name = "shyndman", email = "scotty.hyndman@gmail.com"}]
 requires-python = ">=3.12"
 dependencies = [
+  "eavesdrop-wire",
+  "evaluate",
+  "jiwer",
+  "kaldialign",
+  "netifaces>=0.11.0",
+  "numba",
+  "numpy<2",
+  "onnxruntime==1.17.0", # Used for VAD
+  "psutil",
+  "pydantic>=2",
+  "pyyaml>=6.0",
+  "sentencepiece",
+  "soundfile",
+  "structlog>=25.4.0",
+  "websocket-client>=1.8.0",
+  "websockets",
+
   # These are installed via other means (see Dockerfile)
   # "tokenizers==0.20.3",
   # "transformers[torch]==4.54",
   # "faster-whisper==1.1.1",
   # "openai-whisper==20240930",
   # "ctranslate2 @ file:///~/dev/github.com/ctranslate2",
-  # Server dependencies
-  "netifaces>=0.11.0",
-  "numba",
-  "numpy<2",
-  "onnxruntime==1.17.0", # Used for VAD
-  "psutil",
-  "sentencepiece",
-  "structlog>=25.4.0",
-  "websockets",
-  # Audio processing (commented in requirements but including for documentation)
-  "kaldialign",
-  "soundfile",
-  "jiwer",
-  "evaluate",
-  "websocket-client>=1.8.0",
-  "pyyaml>=6.0",
-  "pydantic>=2",
-  "eavesdrop-wire",
 ]
 license = {text = "MIT"}
 
