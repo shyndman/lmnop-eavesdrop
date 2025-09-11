@@ -12,7 +12,6 @@ dependencies = [
   "netifaces>=0.11.0",
   "numba",
   "numpy<2",
-  "onnxruntime==1.17.0", # Used for VAD
   "psutil",
   "pydantic>=2",
   "pyyaml>=6.0",
@@ -31,6 +30,7 @@ dependencies = [
 ]
 license = {text = "MIT"}
 
+
 [project.urls]
 repository = "https://github.com/shyndman/eavesdrop"
 "Bug Tracker" = "https://github.com/shyndman/eavesdrop/issues"
@@ -47,6 +47,12 @@ packages = ["src/eavesdrop"]
 
 [dependency-groups]
 dev = ["pyfakefs>=5.9.3", "pytest>=8.3.5"]
+type_checkable = [
+  "torch==2.6.0",
+  "torchaudio==2.6.0",
+  "faster-whisper==1.1.0",
+  "pytorch-triton-rocm==3.2.0",
+]
 
 [tool.pyright]
 include = ["src", "tests"]
@@ -79,4 +85,17 @@ indent-style = "space"
 line-ending = "auto"
 
 [tool.uv.sources]
-eavesdrop-wire = { path = "../wire", editable = true }
+eavesdrop-wire = {path = "../wire", editable = true}
+torch = {index = "pytorch"}
+torchaudio = {index = "pytorch"}
+pytorch-triton-rocm = {index = "pytorch"}
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true
+
+[[tool.uv.index]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/rocm6.2.4"
+explicit = true
