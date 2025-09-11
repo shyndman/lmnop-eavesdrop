@@ -56,6 +56,10 @@ ruff check && ruff format
 pyright
 ```
 
+### Development Tools
+
+- **watchexec** - Used for file watching and auto-restarting during development
+
 ## Docker
 
 ```bash
