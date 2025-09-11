@@ -29,6 +29,7 @@ class AudioValidationResult(TypedDict):
   audio: np.ndarray
   duration: float
   duration_after_vad: float
+  # TODO: Add a better type for dict[str, int]
   speech_chunks: list[dict[str, int]] | None
   is_complete_silence: bool
 
@@ -39,8 +40,8 @@ class AudioProcessor:
   def __init__(self, feature_extractor: FeatureExtractor):
     """Initialize the audio processor.
 
-    Args:
-        feature_extractor: The feature extractor instance for audio processing.
+    :param feature_extractor: The feature extractor instance for audio processing.
+    :type feature_extractor: FeatureExtractor
     """
     self._feature_extractor = feature_extractor
     self._logger = get_logger("audio_processor")
@@ -59,13 +60,14 @@ class AudioProcessor:
   ) -> AudioValidationResult:
     """Validate and preprocess audio data for transcription.
 
-    Args:
-        audio: Audio waveform as numpy array (16kHz sample rate).
-        vad_filter: Enable voice activity detection to filter silent parts.
-        vad_parameters: VAD configuration options.
-
-    Returns:
-        AudioValidationResult with processed audio and metadata.
+    :param audio: Audio waveform as numpy array (16kHz sample rate).
+    :type audio: np.ndarray
+    :param vad_filter: Enable voice activity detection to filter silent parts.
+    :type vad_filter: bool
+    :param vad_parameters: VAD configuration options.
+    :type vad_parameters: VadOptions
+    :returns: AudioValidationResult with processed audio and metadata.
+    :rtype: AudioValidationResult
     """
     if audio.ndim != 1:
       raise ValueError(f"Audio must be 1D array, got {audio.ndim}D")
@@ -102,11 +104,10 @@ class AudioProcessor:
   def extract_features(self, audio: np.ndarray) -> np.ndarray:
     """Extract features from audio using the configured feature extractor.
 
-    Args:
-        audio: Preprocessed audio array.
-
-    Returns:
-        Feature array ready for transcription.
+    :param audio: Preprocessed audio array.
+    :type audio: np.ndarray
+    :returns: Feature array ready for transcription.
+    :rtype: np.ndarray
     """
     if audio.shape[0] == 0:
       # Return empty features for empty audio
@@ -118,12 +119,12 @@ class AudioProcessor:
   def prepare_segments_for_detection(self, audio: np.ndarray, max_segments: int = 1) -> np.ndarray:
     """Prepare audio segments for language detection.
 
-    Args:
-        audio: Input audio array.
-        max_segments: Maximum number of segments to prepare.
-
-    Returns:
-        Truncated audio for language detection.
+    :param audio: Input audio array.
+    :type audio: np.ndarray
+    :param max_segments: Maximum number of segments to prepare.
+    :type max_segments: int
+    :returns: Truncated audio for language detection.
+    :rtype: np.ndarray
     """
     max_samples = max_segments * self._feature_extractor.n_samples
     return audio[:max_samples]
@@ -136,10 +137,12 @@ class AudioProcessor:
   ) -> None:
     """Log VAD processing results with throttling for complete silence.
 
-    Args:
-        original_duration: Original audio duration in seconds.
-        duration_after_vad: Duration after VAD filtering in seconds.
-        is_complete_silence: Whether the audio is completely silent after VAD.
+    :param original_duration: Original audio duration in seconds.
+    :type original_duration: float
+    :param duration_after_vad: Duration after VAD filtering in seconds.
+    :type duration_after_vad: float
+    :param is_complete_silence: Whether the audio is completely silent after VAD.
+    :type is_complete_silence: bool
     """
     current_time = time.time()
 
@@ -165,11 +168,9 @@ class AudioProcessor:
 def validate_audio_input(audio: np.ndarray) -> None:
   """Validate audio input meets basic requirements.
 
-  Args:
-      audio: Audio array to validate.
-
-  Raises:
-      ValueError: If audio doesn't meet requirements.
+  :param audio: Audio array to validate.
+  :type audio: np.ndarray
+  :raises ValueError: If audio doesn't meet requirements.
   """
   if not isinstance(audio, np.ndarray):
     raise ValueError(f"Audio must be numpy array, got {type(audio)}")

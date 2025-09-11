@@ -51,10 +51,12 @@ class WordAlignmentProcessor:
   ):
     """Initialize the word alignment processor.
 
-    Args:
-        frames_per_second: Number of frames per second in the audio
-        tokens_per_second: Number of tokens per second for time conversion
-        median_filter_width: Width for median filtering in alignment
+    :param frames_per_second: Number of frames per second in the audio
+    :type frames_per_second: float
+    :param tokens_per_second: Number of tokens per second for time conversion
+    :type tokens_per_second: float
+    :param median_filter_width: Width for median filtering in alignment
+    :type median_filter_width: int
     """
     self.frames_per_second = frames_per_second
     self.tokens_per_second = tokens_per_second
@@ -70,24 +72,27 @@ class WordAlignmentProcessor:
   ) -> list[list[WordTimingDict]]:
     """Find word alignments using the Whisper model's alignment capabilities.
 
-    Args:
-        model: The Whisper model instance used for forced alignment
-        tokenizer: Tokenizer for processing tokens and splitting into words
-        text_tokens: List of integer token IDs to be aligned with audio frames.
-            Each token typically represents a word or sub-word unit from the transcription.
-        encoder_output: Pre-computed encoder features from the Whisper model.
-            This is the mel-spectrogram audio processed by the encoder into a feature
-            representation with shape [batch_size, sequence_length, d_model]. Contains
-            the audio context needed for cross-attention alignment.
-        num_frames: Total number of audio frames in the original audio segment.
-            Used by the alignment algorithm to properly scale timestamp indices back
-            to the original audio timeline. Critical for accurate timing calculations.
-
-    Returns:
-        List of word timing dictionaries for each token. The return structure is
+    :param model: The Whisper model instance used for forced alignment
+    :type model: ctranslate2.models.Whisper
+    :param tokenizer: Tokenizer for processing tokens and splitting into words
+    :type tokenizer: Tokenizer
+    :param text_tokens: List of integer token IDs to be aligned with audio frames.
+        Each token typically represents a word or sub-word unit from the transcription.
+    :type text_tokens: list[int]
+    :param encoder_output: Pre-computed encoder features from the Whisper model.
+        This is the mel-spectrogram audio processed by the encoder into a feature
+        representation with shape [batch_size, sequence_length, d_model]. Contains
+        the audio context needed for cross-attention alignment.
+    :type encoder_output: ctranslate2.StorageView
+    :param num_frames: Total number of audio frames in the original audio segment.
+        Used by the alignment algorithm to properly scale timestamp indices back
+        to the original audio timeline. Critical for accurate timing calculations.
+    :type num_frames: int
+    :returns: List of word timing dictionaries for each token. The return structure is
         two-dimensional: the outer list corresponds to each input text token, and
         the inner list contains the individual words extracted from that token
         with their timing information.
+    :rtype: list[list[WordTimingDict]]
     """
     if len(text_tokens) == 0:
       return []
@@ -154,19 +159,18 @@ class TimingProcessor:
   def __init__(self, frames_per_second: float):
     """Initialize the timing processor.
 
-    Args:
-        frames_per_second: Number of frames per second in the audio
+    :param frames_per_second: Number of frames per second in the audio
+    :type frames_per_second: float
     """
     self.frames_per_second = frames_per_second
 
   def calculate_duration_statistics(self, alignment: list[WordTimingDict]) -> tuple[float, float]:
     """Calculate median and maximum duration thresholds for word timing.
 
-    Args:
-        alignment: List of word timing dictionaries
-
-    Returns:
-        Tuple of (median_duration, max_duration) thresholds
+    :param alignment: List of word timing dictionaries
+    :type alignment: list[WordTimingDict]
+    :returns: Tuple of (median_duration, max_duration) thresholds
+    :rtype: tuple[float, float]
     """
     word_durations = np.array([word["end"] - word["start"] for word in alignment])
     word_durations = word_durations[word_durations.nonzero()]
@@ -185,9 +189,10 @@ class TimingProcessor:
     This is a heuristic to truncate long words at sentence boundaries,
     as a better segmentation algorithm based on VAD should eventually replace this.
 
-    Args:
-        alignment: List of word timing dictionaries to modify in-place
-        max_duration: Maximum allowed duration for words at boundaries
+    :param alignment: List of word timing dictionaries to modify in-place
+    :type alignment: list[WordTimingDict]
+    :param max_duration: Maximum allowed duration for words at boundaries
+    :type max_duration: float
     """
     if len(alignment) == 0:
       return
@@ -212,12 +217,16 @@ class TimingProcessor:
 
     This handles edge cases where words are too long after pauses or at segment boundaries.
 
-    Args:
-        words: List of word dictionaries to modify in-place
-        subsegment: Segment dictionary to potentially modify
-        last_speech_timestamp: Timestamp of the last speech segment
-        median_duration: Median duration for timing corrections
-        max_duration: Maximum allowed duration for words
+    :param words: List of word dictionaries to modify in-place
+    :type words: list[WordDict]
+    :param subsegment: Segment dictionary to potentially modify
+    :type subsegment: SegmentDict
+    :param last_speech_timestamp: Timestamp of the last speech segment
+    :type last_speech_timestamp: float
+    :param median_duration: Median duration for timing corrections
+    :type median_duration: float
+    :param max_duration: Maximum allowed duration for words
+    :type max_duration: float
     """
     if len(words) == 0:
       return
@@ -262,9 +271,10 @@ class WordTimestampAligner:
   def __init__(self, frames_per_second: float, tokens_per_second: float):
     """Initialize the word timestamp aligner.
 
-    Args:
-        frames_per_second: Number of frames per second in the audio
-        tokens_per_second: Number of tokens per second for time conversion
+    :param frames_per_second: Number of frames per second in the audio
+    :type frames_per_second: float
+    :param tokens_per_second: Number of tokens per second for time conversion
+    :type tokens_per_second: float
     """
     self.alignment_processor = WordAlignmentProcessor(frames_per_second, tokens_per_second)
     self.timing_processor = TimingProcessor(frames_per_second)
@@ -282,18 +292,24 @@ class WordTimestampAligner:
   ) -> float:
     """Add word-level timestamps to transcription segments.
 
-    Args:
-        segments: List of segment groups to add timestamps to
-        model: The Whisper model instance
-        tokenizer: Tokenizer for processing tokens
-        encoder_output: Encoder output from the model
-        num_frames: Number of audio frames
-        prepend_punctuations: Characters to merge with following words
-        append_punctuations: Characters to merge with preceding words
-        last_speech_timestamp: Timestamp of the last speech segment
-
-    Returns:
-        Updated last speech timestamp
+    :param segments: List of segment groups to add timestamps to
+    :type segments: list[list[SegmentDict]]
+    :param model: The Whisper model instance
+    :type model: ctranslate2.models.Whisper
+    :param tokenizer: Tokenizer for processing tokens
+    :type tokenizer: Tokenizer
+    :param encoder_output: Encoder output from the model
+    :type encoder_output: ctranslate2.StorageView
+    :param num_frames: Number of audio frames
+    :type num_frames: int
+    :param prepend_punctuations: Characters to merge with following words
+    :type prepend_punctuations: str
+    :param append_punctuations: Characters to merge with preceding words
+    :type append_punctuations: str
+    :param last_speech_timestamp: Timestamp of the last speech segment
+    :type last_speech_timestamp: float
+    :returns: Updated last speech timestamp
+    :rtype: float
     """
     if len(segments) == 0:
       return 0.0

@@ -88,6 +88,47 @@ This codebase enforces strict typing standards:
 - Protocol implementations must be explicit when implementing interfaces
 - Handle `Iterable` to `list` conversions explicitly (critical for Whisper transcriber results)
 
+## Documentation Standards
+
+This project uses **reStructuredText format** for all function and method docstrings:
+
+### Docstring Format Requirements
+
+- **Parameter documentation**: Use `:param parameter_name: description` and `:type parameter_name: type_annotation`
+- **Return documentation**: Use `:returns: description` and `:rtype: return_type`
+- **Exception documentation**: Use `:raises ExceptionType: description`
+- **Line length**: Keep docstring lines under 100 characters, wrap when necessary
+
+### Example Docstring Format
+
+```python
+def process_audio(
+    self,
+    audio: np.ndarray,
+    sample_rate: int = 16000,
+    apply_vad: bool = True,
+) -> AudioResult:
+    """Process audio data with optional voice activity detection.
+
+    :param audio: Input audio waveform as numpy array.
+    :type audio: np.ndarray
+    :param sample_rate: Audio sample rate in Hz.
+    :type sample_rate: int
+    :param apply_vad: Whether to apply voice activity detection filtering.
+    :type apply_vad: bool
+    :returns: Processed audio result with metadata.
+    :rtype: AudioResult
+    :raises ValueError: If audio format is invalid.
+    """
+```
+
+### Migration from Google-style
+
+- Convert `Args:` sections to `:param`/`:type` pairs
+- Convert `Returns:` sections to `:returns:`/`:rtype` pairs  
+- Convert `Raises:` sections to `:raises` entries
+- Maintain all original description content
+
 ## Configuration
 
 - **YAML-based configuration** via EavesdropConfig (Pydantic models)

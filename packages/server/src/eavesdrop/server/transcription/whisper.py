@@ -54,22 +54,30 @@ class WhisperModelConfig:
   ):
     """Initialize Whisper model configuration.
 
-    Args:
-        model_size_or_path: Size of the model to use (tiny, tiny.en, base, base.en,
-            small, small.en, distil-small.en, medium, medium.en, distil-medium.en,
-            large-v1, large-v2, large-v3, large, distil-large-v2, distil-large-v3,
-            large-v3-turbo, or turbo), a path to a converted model directory, or a
-            CTranslate2-converted Whisper model ID from the HF Hub.
-        device: Device to use for computation ("cpu", "cuda", "auto").
-        device_index: Device ID to use. Can be a list for multi-GPU setups.
-        compute_type: Type to use for computation.
-            See https://opennmt.net/CTranslate2/quantization.html.
-        cpu_threads: Number of threads to use when running on CPU.
-        num_workers: Number of workers for parallel transcription.
-        download_root: Directory where models should be saved.
-        local_files_only: If True, avoid downloading and use local cached files.
-        files: Load model files from memory (dict mapping filenames to contents).
-        **model_kwargs: Additional arguments passed to CTranslate2 model.
+    :param model_size_or_path: Size of the model to use (tiny, tiny.en, base, base.en,
+        small, small.en, distil-small.en, medium, medium.en, distil-medium.en,
+        large-v1, large-v2, large-v3, large, distil-large-v2, distil-large-v3,
+        large-v3-turbo, or turbo), a path to a converted model directory, or a
+        CTranslate2-converted Whisper model ID from the HF Hub.
+    :type model_size_or_path: str
+    :param device: Device to use for computation ("cpu", "cuda", "auto").
+    :type device: str
+    :param device_index: Device ID to use. Can be a list for multi-GPU setups.
+    :type device_index: int | list[int]
+    :param compute_type: Type to use for computation.
+        See https://opennmt.net/CTranslate2/quantization.html.
+    :type compute_type: str
+    :param cpu_threads: Number of threads to use when running on CPU.
+    :type cpu_threads: int
+    :param num_workers: Number of workers for parallel transcription.
+    :type num_workers: int
+    :param download_root: Directory where models should be saved.
+    :type download_root: str | None
+    :param local_files_only: If True, avoid downloading and use local cached files.
+    :type local_files_only: bool
+    :param files: Load model files from memory (dict mapping filenames to contents).
+    :type files: dict | None
+    :param model_kwargs: Additional arguments passed to CTranslate2 model.
     """
     self.model_size_or_path = model_size_or_path
     self.device = device
@@ -96,12 +104,16 @@ class WhisperModelBundle:
   ):
     """Initialize the model bundle.
 
-    Args:
-        model: The loaded CTranslate2 Whisper model.
-        feature_extractor: The configured feature extractor.
-        hf_tokenizer: The HuggingFace tokenizer.
-        model_path: Path to the model directory.
-        feature_kwargs: Configuration used for the feature extractor.
+    :param model: The loaded CTranslate2 Whisper model.
+    :type model: ctranslate2.models.Whisper
+    :param feature_extractor: The configured feature extractor.
+    :type feature_extractor: FeatureExtractor
+    :param hf_tokenizer: The HuggingFace tokenizer.
+    :type hf_tokenizer: tokenizers.Tokenizer
+    :param model_path: Path to the model directory.
+    :type model_path: str
+    :param feature_kwargs: Configuration used for the feature extractor.
+    :type feature_kwargs: FeatureExtractorConfig
     """
     self.model = model
     self.feature_extractor = feature_extractor
@@ -128,11 +140,10 @@ class WhisperModelBundle:
 def _resolve_model_path(config: WhisperModelConfig) -> ModelPathResolution:
   """Resolve the model path and extract tokenizer/preprocessor bytes if available.
 
-  Args:
-      config: The model configuration.
-
-  Returns:
-      ModelPathResolution containing model path and extracted file bytes.
+  :param config: The model configuration.
+  :type config: WhisperModelConfig
+  :returns: ModelPathResolution containing model path and extracted file bytes.
+  :rtype: ModelPathResolution
   """
   tokenizer_bytes: bytes | None = None
   preprocessor_bytes: bytes | None = None
@@ -162,12 +173,12 @@ def _load_ctranslate2_model(
 ) -> ctranslate2.models.Whisper:
   """Load the CTranslate2 Whisper model.
 
-  Args:
-      config: The model configuration.
-      model_path: Path to the model directory.
-
-  Returns:
-      The loaded CTranslate2 Whisper model.
+  :param config: The model configuration.
+  :type config: WhisperModelConfig
+  :param model_path: Path to the model directory.
+  :type model_path: str
+  :returns: The loaded CTranslate2 Whisper model.
+  :rtype: ctranslate2.models.Whisper
   """
   return ctranslate2.models.Whisper(
     model_path,
@@ -186,13 +197,14 @@ def _load_hf_tokenizer(
 ) -> tokenizers.Tokenizer:
   """Load the HuggingFace tokenizer.
 
-  Args:
-      model_path: Path to the model directory.
-      tokenizer_bytes: Pre-loaded tokenizer bytes, if available.
-      is_multilingual: Whether the model is multilingual.
-
-  Returns:
-      The loaded HuggingFace tokenizer.
+  :param model_path: Path to the model directory.
+  :type model_path: str
+  :param tokenizer_bytes: Pre-loaded tokenizer bytes, if available.
+  :type tokenizer_bytes: bytes | None
+  :param is_multilingual: Whether the model is multilingual.
+  :type is_multilingual: bool
+  :returns: The loaded HuggingFace tokenizer.
+  :rtype: tokenizers.Tokenizer
   """
   tokenizer_file = os.path.join(model_path, "tokenizer.json")
 
@@ -210,15 +222,13 @@ def _get_feature_extractor_config(
 ) -> FeatureExtractorConfig:
   """Extract feature extractor configuration from model directory.
 
-  Args:
-      model_path: Path to the model directory.
-      preprocessor_bytes: Pre-loaded preprocessor config bytes, if available.
-
-  Returns:
-      Configuration dictionary for the FeatureExtractor.
-
-  Raises:
-      json.JSONDecodeError: If the preprocessor config cannot be parsed.
+  :param model_path: Path to the model directory.
+  :type model_path: str
+  :param preprocessor_bytes: Pre-loaded preprocessor config bytes, if available.
+  :type preprocessor_bytes: bytes | None
+  :returns: Configuration dictionary for the FeatureExtractor.
+  :rtype: FeatureExtractorConfig
+  :raises json.JSONDecodeError: If the preprocessor config cannot be parsed.
   """
   logger = get_logger("whisper.config")
   config = {}
@@ -246,11 +256,10 @@ def _get_feature_extractor_config(
 def _create_feature_extractor(feature_kwargs: FeatureExtractorConfig) -> FeatureExtractor:
   """Create and configure the feature extractor.
 
-  Args:
-      feature_kwargs: Configuration for the feature extractor.
-
-  Returns:
-      The configured FeatureExtractor instance.
+  :param feature_kwargs: Configuration for the feature extractor.
+  :type feature_kwargs: FeatureExtractorConfig
+  :returns: The configured FeatureExtractor instance.
+  :rtype: FeatureExtractor
   """
   return FeatureExtractor(**feature_kwargs)
 
@@ -262,14 +271,11 @@ def load_whisper_model(config: WhisperModelConfig) -> WhisperModelBundle:
   downloading, CTranslate2 setup, tokenizer loading, and feature extractor
   configuration.
 
-  Args:
-      config: Configuration for the model to load.
-
-  Returns:
-      A WhisperModelBundle containing the loaded model and components.
-
-  Raises:
-      Various exceptions related to model loading, file I/O, or JSON parsing.
+  :param config: Configuration for the model to load.
+  :type config: WhisperModelConfig
+  :returns: A WhisperModelBundle containing the loaded model and components.
+  :rtype: WhisperModelBundle
+  :raises: Various exceptions related to model loading, file I/O, or JSON parsing.
   """
   logger = get_logger("whisper.loader")
 
@@ -338,20 +344,27 @@ def create_whisper_model(
   This is a simplified interface that creates a WhisperModelConfig and loads
   the model in one step.
 
-  Args:
-      model_size_or_path: Model size or path (same as WhisperModelConfig).
-      device: Device to use for computation.
-      device_index: Device ID or list of IDs.
-      compute_type: Computation type.
-      cpu_threads: Number of CPU threads.
-      num_workers: Number of workers.
-      download_root: Model download directory.
-      local_files_only: Whether to use only local files.
-      files: In-memory model files.
-      **model_kwargs: Additional model arguments.
-
-  Returns:
-      A WhisperModelBundle with the loaded model and components.
+  :param model_size_or_path: Model size or path (same as WhisperModelConfig).
+  :type model_size_or_path: str
+  :param device: Device to use for computation.
+  :type device: str
+  :param device_index: Device ID or list of IDs.
+  :type device_index: int | list[int]
+  :param compute_type: Computation type.
+  :type compute_type: str
+  :param cpu_threads: Number of CPU threads.
+  :type cpu_threads: int
+  :param num_workers: Number of workers.
+  :type num_workers: int
+  :param download_root: Model download directory.
+  :type download_root: str | None
+  :param local_files_only: Whether to use only local files.
+  :type local_files_only: bool
+  :param files: In-memory model files.
+  :type files: dict | None
+  :param model_kwargs: Additional model arguments.
+  :returns: A WhisperModelBundle with the loaded model and components.
+  :rtype: WhisperModelBundle
   """
   config = WhisperModelConfig(
     model_size_or_path=model_size_or_path,

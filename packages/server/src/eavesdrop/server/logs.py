@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from io import StringIO
 from typing import Any
 
+import numpy as np
 import structlog
 from structlog.dev import (
   BLUE,
@@ -28,13 +29,6 @@ from structlog.dev import (
   _pad,
 )
 from structlog.typing import EventDict, Processor, WrappedLogger
-
-try:
-  import numpy as np
-
-  numpy_installed = True
-except ImportError:
-  numpy_installed = False
 
 # Store program start time for relative timestamps
 _PROGRAM_START_TIME = time.time()

@@ -69,9 +69,10 @@ class LanguageDetector:
   ):
     """Initialize the language detector.
 
-    Args:
-      model: The CTranslate2 Whisper model instance
-      feature_extractor: Feature extractor for processing audio
+    :param model: The CTranslate2 Whisper model instance
+    :type model: ctranslate2.models.Whisper
+    :param feature_extractor: Feature extractor for processing audio
+    :type feature_extractor: FeatureExtractor
     """
     self.model = model
     self.feature_extractor = feature_extractor
@@ -88,23 +89,26 @@ class LanguageDetector:
   ) -> LanguageDetectionResult:
     """Use Whisper to detect the language of the input audio or features.
 
-    Args:
-      audio: Input audio signal, must be a 1D float array sampled at 16khz.
-      features: Input Mel spectrogram features, must be a float array with
-        shape (n_mels, n_frames), if `audio` is provided, the features will be ignored.
-        Either `audio` or `features` must be provided.
-      vad_filter: Enable the voice activity detection (VAD) to filter out parts of the audio
-        without speech. This step is using the Silero VAD model.
-      vad_parameters: VadOptions class instance (see available
-        parameters and default values in the class `VadOptions`).
-      language_detection_threshold: If the maximum probability of the language tokens is
-        higher than this value, the language is detected.
-      language_detection_segments: Number of segments to consider for the language detection.
-
-    Returns:
-      language: Detected language.
-      language_probability: Probability of the detected language.
-      all_language_probs: list of tuples with all language names and probabilities.
+    :param audio: Input audio signal, must be a 1D float array sampled at 16khz.
+    :type audio: np.ndarray | None
+    :param features: Input Mel spectrogram features, must be a float array with
+      shape (n_mels, n_frames), if `audio` is provided, the features will be ignored.
+      Either `audio` or `features` must be provided.
+    :type features: np.ndarray | None
+    :param vad_filter: Enable the voice activity detection (VAD) to filter out parts of the audio
+      without speech. This step is using the Silero VAD model.
+    :type vad_filter: bool
+    :param vad_parameters: VadOptions class instance (see available
+      parameters and default values in the class `VadOptions`).
+    :type vad_parameters: VadOptions
+    :param language_detection_threshold: If the maximum probability of the language tokens is
+      higher than this value, the language is detected.
+    :type language_detection_threshold: float
+    :param language_detection_segments: Number of segments to consider for the language detection.
+    :type language_detection_segments: int
+    :returns: LanguageDetectionResult containing detected language, probability, and all
+      probabilities.
+    :rtype: LanguageDetectionResult
     """
     self.logger.debug(
       f"Detecting language: vad_filter={vad_filter}, segments={language_detection_segments}, "
@@ -175,11 +179,10 @@ class LanguageDetector:
   def _encode(self, features: np.ndarray) -> ctranslate2.StorageView:
     """Encode features using the Whisper model.
 
-    Args:
-      features: Audio features to encode
-
-    Returns:
-      Encoded features as CTranslate2 storage view
+    :param features: Audio features to encode
+    :type features: np.ndarray
+    :returns: Encoded features as CTranslate2 storage view
+    :rtype: ctranslate2.StorageView
     """
     # When the model is running on multiple GPUs, the encoder output should be moved
     # to the CPU since we don't know which GPU will handle the next job.
@@ -202,8 +205,8 @@ class AnomalyDetector:
   def __init__(self, punctuation: str = _DEFAULT_PUNCTUATION):
     """Initialize the anomaly detector.
 
-    Args:
-      punctuation: String of punctuation characters to ignore in anomaly detection
+    :param punctuation: String of punctuation characters to ignore in anomaly detection
+    :type punctuation: str
     """
     self.punctuation = punctuation
     self.logger = get_logger("anomaly_detect")
@@ -214,11 +217,10 @@ class AnomalyDetector:
     Anomalous words are very long/short/improbable. Higher scores indicate
     more anomalous words.
 
-    Args:
-      word: Word dictionary containing timing and probability information
-
-    Returns:
-      Anomaly score (higher = more anomalous)
+    :param word: Word dictionary containing timing and probability information
+    :type word: WordDict
+    :returns: Anomaly score (higher = more anomalous)
+    :rtype: float
     """
     probability = word.get("probability", 0.0)
     duration = word["end"] - word["start"]
@@ -241,11 +243,10 @@ class AnomalyDetector:
   def is_segment_anomaly(self, segment: SegmentDict | None) -> bool:
     """Determine if a segment is anomalous based on its words.
 
-    Args:
-      segment: Segment dictionary containing words and timing information
-
-    Returns:
-      True if the segment is considered anomalous, False otherwise
+    :param segment: Segment dictionary containing words and timing information
+    :type segment: SegmentDict | None
+    :returns: True if the segment is considered anomalous, False otherwise
+    :rtype: bool
     """
     if segment is None or not segment.get("words"):
       return False
@@ -269,11 +270,10 @@ class AnomalyDetector:
   def analyze_segment_anomalies(self, segments: list[SegmentDict]) -> list[SegmentAnomalyResult]:
     """Analyze multiple segments for anomalies.
 
-    Args:
-      segments: List of segment dictionaries to analyze
-
-    Returns:
-      List of tuples containing (segment_index, is_anomaly, total_score)
+    :param segments: List of segment dictionaries to analyze
+    :type segments: list[SegmentDict]
+    :returns: List of tuples containing (segment_index, is_anomaly, total_score)
+    :rtype: list[SegmentAnomalyResult]
     """
     results = []
     for i, segment in enumerate(segments):
@@ -310,23 +310,22 @@ class LanguageProbabilityAnalyzer:
   ) -> list[tuple[str, float]]:
     """Get the top N languages by probability.
 
-    Args:
-      all_language_probs: List of (language, probability) tuples
-      top_n: Number of top languages to return
-
-    Returns:
-      List of top N (language, probability) tuples
+    :param all_language_probs: List of (language, probability) tuples
+    :type all_language_probs: list[tuple[str, float]]
+    :param top_n: Number of top languages to return
+    :type top_n: int
+    :returns: List of top N (language, probability) tuples
+    :rtype: list[tuple[str, float]]
     """
     return sorted(all_language_probs, key=lambda x: x[1], reverse=True)[:top_n]
 
   def get_confidence_level(self, language_probability: float) -> str:
     """Categorize confidence level based on probability.
 
-    Args:
-      language_probability: Probability of the detected language
-
-    Returns:
-      Confidence level as string: "high", "medium", "low"
+    :param language_probability: Probability of the detected language
+    :type language_probability: float
+    :returns: Confidence level as string: "high", "medium", "low"
+    :rtype: str
     """
     if language_probability >= 0.8:
       return "high"
@@ -340,11 +339,10 @@ class LanguageProbabilityAnalyzer:
 
     Higher entropy indicates more uncertainty in language detection.
 
-    Args:
-      all_language_probs: List of (language, probability) tuples
-
-    Returns:
-      Entropy value (higher = more uncertain)
+    :param all_language_probs: List of (language, probability) tuples
+    :type all_language_probs: list[tuple[str, float]]
+    :returns: Entropy value (higher = more uncertain)
+    :rtype: float
     """
     if not all_language_probs:
       return 0.0
@@ -361,11 +359,11 @@ class LanguageProbabilityAnalyzer:
   ) -> LanguageAnalysisResult:
     """Comprehensive analysis of language probability distribution.
 
-    Args:
-      all_language_probs: List of (language, probability) tuples
-
-    Returns:
-      LanguageAnalysisResult with analysis results including top languages, entropy, and confidence
+    :param all_language_probs: List of (language, probability) tuples
+    :type all_language_probs: list[tuple[str, float]]
+    :returns: LanguageAnalysisResult with analysis results including top languages, entropy,
+      and confidence
+    :rtype: LanguageAnalysisResult
     """
     if not all_language_probs:
       return LanguageAnalysisResult(

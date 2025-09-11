@@ -142,23 +142,30 @@ class WhisperModel:
   ) -> tuple[Iterable[Segment], TranscriptionInfo]:
     """Transcribes audio data for live transcription.
 
-    :param
-      audio: Audio waveform as numpy array (16kHz sample rate).
-      language: The language spoken in the audio. It should be a language code such
+    :param audio: Audio waveform as numpy array (16kHz sample rate).
+    :type audio: np.ndarray
+    :param language: The language spoken in the audio. It should be a language code such
         as "en" or "fr". If not set, the language will be detected in the first 30 seconds
         of audio.
-      task: Task to execute (transcribe or translate).
-      initial_prompt: Optional text string to provide as a prompt for the first window.
-      vad_filter: Enable the voice activity detection (VAD) to filter out parts of the audio
+    :type language: str | None
+    :param task: Task to execute (transcribe or translate).
+    :type task: str
+    :param initial_prompt: Optional text string to provide as a prompt for the first window.
+    :type initial_prompt: str | None
+    :param vad_filter: Enable the voice activity detection (VAD) to filter out parts of the audio
         without speech. This step is using the Silero VAD model
         https://github.com/snakers4/silero-vad.
-      vad_parameters: VAD configuration options (VadOptions instance).
-      hotwords: Optional hotwords to provide as context to improve recognition of specific terms.
-    :returns:
-      A tuple with:
+    :type vad_filter: bool
+    :param vad_parameters: VAD configuration options (VadOptions instance).
+    :type vad_parameters: VadOptions
+    :param hotwords: Optional hotwords to provide as context to improve recognition of
+      specific terms.
+    :type hotwords: str | None
+    :returns: A tuple with:
 
         - a generator over transcribed segments
         - an instance of TranscriptionInfo
+    :rtype: tuple[Iterable[Segment], TranscriptionInfo]
     """
     multilingual = False
 
@@ -555,23 +562,26 @@ class WhisperModel:
   ) -> LanguageDetectionResult:
     """Use Whisper to detect the language of the input audio or features.
 
-    :param
-        audio: Input audio signal, must be a 1D float array sampled at 16khz.
-        features: Input Mel spectrogram features, must be a float array with
-            shape (n_mels, n_frames), if `audio` is provided, the features will be ignored.
-            Either `audio` or `features` must be provided.
-        vad_filter: Enable the voice activity detection (VAD) to filter out parts of the audio
-            without speech. This step is using the Silero VAD model.
-        vad_parameters: VadOptions class instance (see available
-            parameters and default values in the class `VadOptions`).
-        language_detection_threshold: If the maximum probability of the language tokens is
-            higher than this value, the language is detected.
-        language_detection_segments: Number of segments to consider for the language detection.
-
-    :returns:
-        language: Detected language.
-        languege_probability: Probability of the detected language.
-        all_language_probs: list of tuples with all language names and probabilities.
+    :param audio: Input audio signal, must be a 1D float array sampled at 16khz.
+    :type audio: np.ndarray | None
+    :param features: Input Mel spectrogram features, must be a float array with
+        shape (n_mels, n_frames), if `audio` is provided, the features will be ignored.
+        Either `audio` or `features` must be provided.
+    :type features: np.ndarray | None
+    :param vad_filter: Enable the voice activity detection (VAD) to filter out parts of the audio
+        without speech. This step is using the Silero VAD model.
+    :type vad_filter: bool
+    :param vad_parameters: VadOptions class instance (see available
+        parameters and default values in the class `VadOptions`).
+    :type vad_parameters: VadOptions
+    :param language_detection_threshold: If the maximum probability of the language tokens is
+        higher than this value, the language is detected.
+    :type language_detection_threshold: float
+    :param language_detection_segments: Number of segments to consider for the language detection.
+    :type language_detection_segments: int
+    :returns: LanguageDetectionResult containing detected language, probability, and all
+      probabilities.
+    :rtype: LanguageDetectionResult
     """
     # Use our new language detection module
     return self.language_detector.detect_language(

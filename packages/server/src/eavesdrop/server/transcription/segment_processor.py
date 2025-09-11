@@ -32,9 +32,10 @@ class SegmentProcessor:
   def __init__(self, time_precision: float, input_stride: int):
     """Initialize the segment processor.
 
-    Args:
-        time_precision: Time precision for timestamp calculations.
-        input_stride: Input stride for seeking calculations.
+    :param time_precision: Time precision for timestamp calculations.
+    :type time_precision: float
+    :param input_stride: Input stride for seeking calculations.
+    :type input_stride: int
     """
     self.time_precision = time_precision
     self.input_stride = input_stride
@@ -50,16 +51,20 @@ class SegmentProcessor:
   ) -> SegmentTimingResult:
     """Split tokens into segments based on timestamp boundaries.
 
-    Args:
-        tokenizer: The Whisper tokenizer for timestamp detection.
-        tokens: List of token IDs to process.
-        time_offset: Time offset for the current segment.
-        segment_size: Size of the audio segment in frames.
-        segment_duration: Duration of the segment in seconds.
-        seek: Current seek position in frames.
-
-    Returns:
-        SegmentTimingResult containing processed segments and updated seek position.
+    :param tokenizer: The Whisper tokenizer for timestamp detection.
+    :type tokenizer: Tokenizer
+    :param tokens: List of token IDs to process.
+    :type tokens: list[int]
+    :param time_offset: Time offset for the current segment.
+    :type time_offset: float
+    :param segment_size: Size of the audio segment in frames.
+    :type segment_size: int
+    :param segment_duration: Duration of the segment in seconds.
+    :type segment_duration: float
+    :param seek: Current seek position in frames.
+    :type seek: int
+    :returns: SegmentTimingResult containing processed segments and updated seek position.
+    :rtype: SegmentTimingResult
     """
     current_segments: list[SegmentDict] = []
     single_timestamp_ending = (

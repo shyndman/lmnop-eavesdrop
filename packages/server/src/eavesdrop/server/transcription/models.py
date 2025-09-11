@@ -5,6 +5,7 @@ from faster_whisper.vad import VadOptions
 from pydantic.dataclasses import dataclass
 
 
+# TODO Add docstrings to all these typed dicts
 class FeatureExtractorConfig(TypedDict):
   feature_size: NotRequired[int]
   sampling_rate: NotRequired[int]

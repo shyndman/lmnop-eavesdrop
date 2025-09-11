@@ -14,8 +14,8 @@ class PromptBuilder:
   def __init__(self, max_length: int):
     """Initialize the prompt builder.
 
-    Args:
-        max_length: Maximum sequence length supported by the model.
+    :param max_length: Maximum sequence length supported by the model.
+    :type max_length: int
     """
     self.max_length = max_length
     self._max_context_len = max_length // 2 - 1
@@ -33,15 +33,18 @@ class PromptBuilder:
     The prompt provides context from previous transcriptions to improve the
     accuracy of the next segment, especially across hard audio boundaries.
 
-    Args:
-        tokenizer: The Whisper tokenizer.
-        previous_tokens: A list of tokens from previously transcribed segments.
-        without_timestamps: Whether to exclude timestamp tokens from the prompt.
-        prefix: An optional prefix string to force the transcription to start with.
-        hotwords: Optional hotwords to provide as context.
-
-    Returns:
-        A list of tokens representing the constructed prompt.
+    :param tokenizer: The Whisper tokenizer.
+    :type tokenizer: Tokenizer
+    :param previous_tokens: A list of tokens from previously transcribed segments.
+    :type previous_tokens: list[int]
+    :param without_timestamps: Whether to exclude timestamp tokens from the prompt.
+    :type without_timestamps: bool
+    :param prefix: An optional prefix string to force the transcription to start with.
+    :type prefix: str | None
+    :param hotwords: Optional hotwords to provide as context.
+    :type hotwords: str | None
+    :returns: A list of tokens representing the constructed prompt.
+    :rtype: list[int]
     """
     prompt: list[int] = []
 

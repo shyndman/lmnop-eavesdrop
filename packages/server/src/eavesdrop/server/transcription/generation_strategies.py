@@ -45,9 +45,10 @@ class GenerationStrategies:
   def __init__(self, max_length: int, time_precision: float):
     """Initialize the generation strategies handler.
 
-    Args:
-        max_length: Maximum sequence length supported by the model.
-        time_precision: Time precision for timestamp calculations.
+    :param max_length: Maximum sequence length supported by the model.
+    :type max_length: int
+    :param time_precision: Time precision for timestamp calculations.
+    :type time_precision: float
     """
     self.max_length = max_length
     self.time_precision = time_precision
@@ -67,18 +68,19 @@ class GenerationStrategies:
     like compression ratio and log probability. Falls back to higher temperatures
     if quality thresholds are not met.
 
-    Args:
-        model: The CTranslate2 Whisper model.
-        encoder_output: Encoded audio features.
-        prompt: Token sequence to use as prompt.
-        tokenizer: The Whisper tokenizer.
-        options: Transcription configuration options.
-
-    Returns:
-        GenerationResult with the best transcription attempt and quality metrics.
-
-    Raises:
-        ValueError: If prompt + max_new_tokens exceeds model's max_length.
+    :param model: The CTranslate2 Whisper model.
+    :type model: ctranslate2.models.Whisper
+    :param encoder_output: Encoded audio features.
+    :type encoder_output: ctranslate2.StorageView
+    :param prompt: Token sequence to use as prompt.
+    :type prompt: list[int]
+    :param tokenizer: The Whisper tokenizer.
+    :type tokenizer: Tokenizer
+    :param options: Transcription configuration options.
+    :type options: TranscriptionOptions
+    :returns: GenerationResult with the best transcription attempt and quality metrics.
+    :rtype: GenerationResult
+    :raises ValueError: If prompt + max_new_tokens exceeds model's max_length.
     """
     decode_result = None
     all_results = []
