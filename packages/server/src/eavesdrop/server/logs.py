@@ -442,9 +442,11 @@ def setup_logging(
   #   liblog.propagate = False
 
 
-def get_logger(name: str | None = None) -> structlog.stdlib.BoundLogger:
+def get_logger(
+  name: str | None = None, *args: list[Any], **initial_values: Any
+) -> structlog.stdlib.BoundLogger:
   """Get a structured logger instance."""
-  return structlog.get_logger(name)
+  return structlog.get_logger(*([name] + list(args)), **initial_values)
 
 
 def setup_logging_from_env() -> None:

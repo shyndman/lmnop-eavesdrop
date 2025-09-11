@@ -43,7 +43,7 @@ class RTSPSubscriberManager:
     self.transcription_cache = transcription_cache
     self.stream_subscribers: dict[str, ServerConnection] = {}
     self.subscriber_streams: dict[ServerConnection, set[str]] = {}
-    self.logger = get_logger("rtsp/subscribermgr")
+    self.logger = get_logger("rtsp/mgr")
 
   def validate_stream_names(self, requested_streams: list[str]) -> tuple[list[str], list[str]]:
     """

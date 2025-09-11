@@ -63,7 +63,7 @@ class StreamingTranscriptionProcessor:
     config: TranscriptionConfig,
     stream_name: str,
     translation_queue: queue.Queue[dict] | None = None,
-    logger_name: str = "transcription_processor",
+    logger_name: str = "proc",
   ) -> None:
     self.buffer = buffer
     self.sink = sink

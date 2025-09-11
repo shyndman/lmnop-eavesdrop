@@ -152,7 +152,7 @@ class RTSPTranscriptionSink(TranscriptionSink):
     :param logger_name: Logger name for log routing and filtering.
     """
     self.stream_name: str = stream_name
-    self.logger = get_logger(logger_name).bind(stream=stream_name)
+    self.logger = get_logger(logger_name, stream=stream_name)
     self.transcription_count: int = 0
     self.subscriber_manager = subscriber_manager
     self.transcription_cache = transcription_cache
@@ -309,7 +309,7 @@ class RTSPClient:
     self.stopped = False
 
     # Logging with stream context
-    self.logger = get_logger("rtsp/client").bind(stream=stream_name)
+    self.logger = get_logger("rtsp/client", stream=stream_name)
 
     # Statistics tracking
     self.chunks_read = 0

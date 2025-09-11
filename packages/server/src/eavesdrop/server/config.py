@@ -10,7 +10,7 @@ from pydantic.types import FilePath
 from eavesdrop.server.constants import CACHE_PATH, SINGLE_MODEL, TASK
 from eavesdrop.server.logs import get_logger
 
-logger = get_logger("config")
+logger = get_logger("cfg")
 
 
 @dataclass
