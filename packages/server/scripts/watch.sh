@@ -27,6 +27,7 @@ cd "$PACKAGES_DIR"
 exec watchexec \
     --watch wire/src \
     --watch server/src \
+    --watch server/uv.lock \
     --ignore '**/__pycache__/**' \
     --ignore '**/.pytest_cache/**' \
     --ignore '**/.venv/**' \
