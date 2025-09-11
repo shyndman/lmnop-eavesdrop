@@ -18,11 +18,12 @@ BLOCKSIZE = 4096
 class AudioCapture:
   """Handles audio capture from microphone and streaming to server."""
 
-  def __init__(self, on_error: Callable[[str], None]):
+  def __init__(self, on_error: Callable[[str], None], audio_device: str | int | None = None):
     self.audio_queue: asyncio.Queue[bytes] = asyncio.Queue()
     self.audio_stream: sd.InputStream | None = None
     self.recording = False
     self.on_error = on_error
+    self.audio_device = audio_device
 
   def audio_callback(self, indata: np.ndarray, frames: int, time_info, status):
     """Sounddevice audio callback."""
@@ -44,7 +45,7 @@ class AudioCapture:
 
     try:
       self.audio_stream = sd.InputStream(
-        device=None,
+        device=self.audio_device,
         channels=CHANNELS,
         samplerate=SAMPLE_RATE,
         dtype=DTYPE,
