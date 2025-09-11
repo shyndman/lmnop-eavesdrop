@@ -332,6 +332,7 @@ class StreamingTranscriptionProcessor:
         vad=self.config.use_vad,
       )
 
+      transcribe_start_ns = time.perf_counter_ns()
       result, info = self.transcriber.transcribe(
         input_sample,
         initial_prompt=self.config.initial_prompt,
@@ -341,10 +342,15 @@ class StreamingTranscriptionProcessor:
         vad_parameters=self.vad_parameters,
         hotwords=" ".join(self.config.hotwords) if self.config.hotwords else None,
       )
+      transcribe_time_ns = time.perf_counter_ns() - transcribe_start_ns
+      self.logger.info(
+        "Transcription method timing",
+        transcribe_time=f"{transcribe_time_ns / 1_000_000:.3f}ms",
+        shape=input_sample.shape[0],
+      )
 
       result_list = list(result) if result else None
-      result_count = len(result_list) if result_list else 0
-      self.logger.debug("Transcription completed", segments=result_count)
+
       return result_list, info
 
     finally:
