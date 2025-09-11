@@ -5,32 +5,30 @@ description = "Real-time audio transcription server with WebSocket-based speech-
 authors = [{name = "shyndman", email = "scotty.hyndman@gmail.com"}]
 requires-python = ">=3.12"
 dependencies = [
+  "ctranslate2==4.1.0",
   "eavesdrop-wire",
   "evaluate",
+  "faster-whisper==1.1.0",
   "jiwer",
   "kaldialign",
   "netifaces>=0.11.0",
   "numba",
   "numpy<2",
-  "onnxruntime==1.17.0",     # Used for VAD
+  "onnxruntime==1.17.0",        # Used for VAD
   "psutil",
   "pydantic>=2",
   "pytorch-triton-rocm==3.2.0",
   "pyyaml>=6.0",
+  "scipy",
   "sentencepiece",
   "soundfile",
   "structlog>=25.4.0",
+  "tokenizers==0.21",
   "torch==2.6.0",
   "torchaudio==2.6.0",
+  "transformers[torch]==4.54",
   "websocket-client>=1.8.0",
   "websockets",
-
-  # These are installed via other means (see Dockerfile)
-  # "tokenizers==0.20.3",
-  # "transformers[torch]==4.54",
-  # "faster-whisper==1.1.1",
-  # "openai-whisper==20240930",
-  # "ctranslate2 @ file:///~/dev/github.com/ctranslate2",
 ]
 license = {text = "MIT"}
 

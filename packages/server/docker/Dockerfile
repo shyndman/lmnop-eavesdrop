@@ -21,7 +21,7 @@ COPY server/pyproject.toml ./pyproject.toml
 COPY server/uv.lock ./uv.lock
 RUN /bin/uv venv --system-site-packages
 RUN --mount=type=cache,target=/root/.cache/uv \
-    /bin/uv sync --locked
+    /bin/uv sync --locked --verbose
 
 # Copy eavesdrop source directly from project
 COPY server/src/ ./src

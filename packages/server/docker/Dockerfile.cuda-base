@@ -21,9 +21,6 @@ SHELL ["conda", "run", "-n", "py_3.12", "/bin/bash", "-c"]
 # CTranslate2 with CUDA 12.4 support
 RUN pip install 'ctranslate2>=4.5.0'
 
-# Faster-Whisper
-RUN pip install 'faster-whisper>=1.1.0' pytest scipy
-
 ENV CT2_CUDA_ALLOCATOR=cub_caching
 ENV CT2_CUDA_CACHING_ALLOCATOR_CONFIG=4,3,12,419430400
 

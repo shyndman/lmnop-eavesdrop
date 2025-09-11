@@ -53,12 +53,5 @@ RUN git clone https://github.com/arlo-phoenix/CTranslate2-rocm.git --recurse-sub
     && pip install dist/*.whl \
     && export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$CONDA_PREFIX/lib/
 
-# Faster-Whisper
-WORKDIR /home
-RUN git clone --depth 1 --branch v1.1.0 https://github.com/SYSTRAN/faster-whisper.git \
-    && cd faster-whisper \
-    && pip install . \
-    && pip install pytest scipy
-
 ENV CT2_CUDA_ALLOCATOR=cub_caching
 ENV CT2_CUDA_CACHING_ALLOCATOR_CONFIG=4,3,12,419430400
