@@ -15,7 +15,7 @@ class WebSocketClientManager:
     """
     self.clients = {}
     self.start_times = {}
-    self.logger = get_logger("ws/clientmgr")
+    self.logger = get_logger("ws/mgr")
 
   def add_client(self, websocket, client):
     """
@@ -71,7 +71,7 @@ class WebSocketServer:
     self.host = host
     self.port = port
     self.kwargs = kwargs
-    self.logger = get_logger("ws/server")
+    self.logger = get_logger("ws/svr")
 
   async def start(self):
     self.logger.info(f"Starting WebSocket server on {self.host}:{self.port}")

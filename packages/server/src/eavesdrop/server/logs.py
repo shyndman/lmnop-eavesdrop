@@ -219,23 +219,19 @@ def _relative_time_processor(
   dark_gray = "\x1b[90m"  # Darker gray for zeros
   reset = "\x1b[0m"
 
+  separator = f"{gray}:{reset}"
+
   # Format hours with darker gray if zero, normal gray otherwise
-  if hours == 0:
-    hours_str = f"{dark_gray}{hours:02d}{reset}"
-  else:
-    hours_str = f"{gray}{hours:02d}{reset}"
+  hours_str = f"{gray}{hours:02d}{reset}{separator}" if hours != 0 else ""
 
   # Format minutes with darker gray if zero, normal gray otherwise
-  if minutes == 0:
-    minutes_str = f"{dark_gray}{minutes:02d}{reset}"
-  else:
-    minutes_str = f"{gray}{minutes:02d}{reset}"
+  minutes_str = f"{gray}{minutes:02d}{reset}{separator}" if minutes != 0 and hours != 0 else ""
 
   # Always show seconds in normal gray
   seconds_str = f"{gray}{seconds:06.3f}{reset}"
 
   # Colons in normal gray too
-  time_str = f"{gray}+{reset}{hours_str}{gray}:{reset}{minutes_str}{gray}:{reset}{seconds_str}"
+  time_str = f"{dark_gray}+{reset}{hours_str}{minutes_str}{seconds_str}"
 
   event_dict["timestamp"] = time_str
   return event_dict
@@ -368,6 +364,11 @@ def setup_logging(
                 r"^-?\d*\.\d+$",
                 hex_to_ansi_fg(0xF6C177),
               ),
+              (
+                # Numeric durations (123ms, 45.67s, 12h, etc.)
+                r"^-?\d*\.?\d+(?:h|m|s|ms|us|µs)$",
+                hex_to_ansi_fg(0x9CCFD8),
+              ),
             ],
             default_value_style="",
             reset_style=RESET_ALL,
@@ -442,9 +443,11 @@ def setup_logging(
   #   liblog.propagate = False
 
 
-def get_logger(name: str | None = None) -> structlog.stdlib.BoundLogger:
+def get_logger(
+  name: str | None = None, *args: list[Any], **initial_values: Any
+) -> structlog.stdlib.BoundLogger:
   """Get a structured logger instance."""
-  return structlog.get_logger(name)
+  return structlog.get_logger(*([name] + list(args)), **initial_values)
 
 
 def setup_logging_from_env() -> None:

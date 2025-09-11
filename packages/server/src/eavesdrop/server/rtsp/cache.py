@@ -67,7 +67,7 @@ class StreamCache:
     self._entries: deque[CacheEntry] = deque()
     self._lock = asyncio.Lock()
     self._has_listeners = False
-    self.logger = get_logger(f"rtsp/cache.{stream_name}")
+    self.logger = get_logger("rtsp/cache", stream=stream_name)
 
   async def add_transcription(self, segments: list[Segment], language: str | None = None) -> None:
     """

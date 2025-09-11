@@ -67,7 +67,7 @@ class WebSocketAudioSource(AudioSource):
     """
     self.websocket: ServerConnection = websocket
     self.get_audio_func: Callable[[ServerConnection], Awaitable[np.ndarray | bool]] = get_audio_func
-    self.logger = get_logger("ws/audiosrc")
+    self.logger = get_logger("ws/src")
     self._closed: bool = False
 
   async def read_audio(self) -> np.ndarray | None:
