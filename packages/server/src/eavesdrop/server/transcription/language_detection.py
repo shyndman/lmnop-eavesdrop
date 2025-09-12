@@ -13,6 +13,7 @@ import ctranslate2
 import numpy as np
 from faster_whisper.audio import pad_or_trim
 from faster_whisper.feature_extractor import FeatureExtractor
+from faster_whisper.tokenizer import Tokenizer
 from faster_whisper.vad import (
   VadOptions,
   collect_chunks,
@@ -257,6 +258,28 @@ class LanguageDetector:
     features = get_ctranslate2_storage(features)
 
     return self.model.encode(features, to_cpu=to_cpu)
+
+  def update_tokenizer_language(
+    self, tokenizer: Tokenizer, encoder_output: ctranslate2.StorageView
+  ) -> str:
+    """Detect and update tokenizer language for current segment.
+
+    This method is used in multilingual transcription to re-detect the language
+    for each segment, ensuring optimal transcription quality when the language
+    may change between segments.
+
+    :param tokenizer: The tokenizer instance to update with detected language.
+    :type tokenizer: Tokenizer
+    :param encoder_output: Encoded audio features for language detection.
+    :type encoder_output: ctranslate2.StorageView
+    :returns: The detected language code (e.g., "en", "fr").
+    :rtype: str
+    """
+    language_token, _probability = self.model.detect_language(encoder_output)[0][0]
+    language = language_token[2:-2]  # Remove <| and |> markers
+    tokenizer.language = tokenizer.tokenizer.token_to_id(language_token)
+    tokenizer.language_code = language
+    return language
 
 
 class AnomalyDetector:

@@ -115,7 +115,6 @@ class TestTranscriptionConfig:
     assert config3.model_path == "distil-medium.en"
 
 
-
 class TestEavesdropConfig:
   """Test EavesdropConfig integration."""
 

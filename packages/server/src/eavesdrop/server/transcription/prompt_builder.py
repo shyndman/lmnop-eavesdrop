@@ -67,6 +67,18 @@ class PromptBuilder:
 
     return prompt
 
+  def encode_initial_prompt(self, tokenizer: Tokenizer, initial_prompt: str | None) -> list[int]:
+    """Encode the initial prompt text into tokens.
+
+    :param tokenizer: The Whisper tokenizer for encoding the prompt text.
+    :type tokenizer: Tokenizer
+    :param initial_prompt: Optional initial prompt text to encode.
+    :type initial_prompt: str | None
+    :returns: List of encoded tokens from the initial prompt, or empty list if None.
+    :rtype: list[int]
+    """
+    return tokenizer.encode(" " + initial_prompt.strip()) if initial_prompt else []
+
   def _append_previous(
     self,
     tokenizer: Tokenizer,

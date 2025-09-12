@@ -60,7 +60,7 @@ class GenerationStrategies:
     encoder_output: ctranslate2.StorageView,
     prompt: list[int],
     tokenizer: Tokenizer,
-    options: TranscriptionOptions,
+    transcription_options: TranscriptionOptions,
   ) -> GenerationResult:
     """Generate transcription with temperature fallback strategy.
 
@@ -86,11 +86,13 @@ class GenerationStrategies:
     all_results = []
     below_cr_threshold_results = []
 
-    max_initial_timestamp_index = int(round(options.max_initial_timestamp / self.time_precision))
+    max_initial_timestamp_index = int(
+      round(transcription_options.max_initial_timestamp / self.time_precision)
+    )
 
     # Calculate maximum generation length
-    if options.max_new_tokens is not None:
-      max_length = len(prompt) + options.max_new_tokens
+    if transcription_options.max_new_tokens is not None:
+      max_length = len(prompt) + transcription_options.max_new_tokens
     else:
       max_length = self.max_length
 
@@ -106,7 +108,7 @@ class GenerationStrategies:
     # - temperature = 0.0: Deterministic beam search for highest quality/consistency
     # - temperature > 0.0: Sampling with randomness to avoid repetition/loops
     # Quality is measured by compression ratio and average log probability thresholds.
-    for temperature in options.temperatures:
+    for temperature in transcription_options.temperatures:
       self.logger.debug(f"Trying temperature: {temperature}")
 
       # Configure generation parameters based on temperature
@@ -116,29 +118,29 @@ class GenerationStrategies:
         # sampling_topk=0 means we sample from the full vocabulary distribution.
         kwargs = {
           "beam_size": 1,
-          "num_hypotheses": options.best_of,
+          "num_hypotheses": transcription_options.best_of,
           "sampling_topk": 0,
           "sampling_temperature": temperature,
         }
         self.logger.debug(f"Using sampling with temperature {temperature}")
       else:
         kwargs = {
-          "beam_size": options.beam_size,
-          "patience": options.patience,
+          "beam_size": transcription_options.beam_size,
+          "patience": transcription_options.patience,
         }
-        self.logger.debug(f"Using beam search with beam_size {options.beam_size}")
+        self.logger.debug(f"Using beam search with beam_size {transcription_options.beam_size}")
 
       # Generate transcription
       result = model.generate(
         encoder_output,
         [prompt],
-        length_penalty=options.length_penalty,
-        repetition_penalty=options.repetition_penalty,
-        no_repeat_ngram_size=options.no_repeat_ngram_size,
+        length_penalty=transcription_options.length_penalty,
+        repetition_penalty=transcription_options.repetition_penalty,
+        no_repeat_ngram_size=transcription_options.no_repeat_ngram_size,
         max_length=max_length,
         return_scores=True,
-        suppress_blank=options.suppress_blank,
-        suppress_tokens=options.suppress_tokens,
+        suppress_blank=transcription_options.suppress_blank,
+        suppress_tokens=transcription_options.suppress_tokens,
         max_initial_timestamp_index=max_initial_timestamp_index,
         **kwargs,
       )[0]
@@ -147,7 +149,7 @@ class GenerationStrategies:
 
       # Calculate quality metrics
       seq_len = len(tokens)
-      cum_logprob = result.scores[0] * (seq_len**options.length_penalty)
+      cum_logprob = result.scores[0] * (seq_len**transcription_options.length_penalty)
       avg_logprob = cum_logprob / (seq_len + 1)
 
       text = tokenizer.decode(tokens).strip()
@@ -173,26 +175,29 @@ class GenerationStrategies:
       needs_fallback = False
 
       # Check compression ratio threshold
-      if options.compression_ratio_threshold is not None:
-        if compression_ratio > options.compression_ratio_threshold:
+      if transcription_options.compression_ratio_threshold is not None:
+        if compression_ratio > transcription_options.compression_ratio_threshold:
           needs_fallback = True  # too repetitive
           self.logger.info(
             "Compression ratio threshold is not met with temperature %.1f (%f > %f)",
             temperature,
             compression_ratio,
-            options.compression_ratio_threshold,
+            transcription_options.compression_ratio_threshold,
           )
         else:
           below_cr_threshold_results.append(decode_result)
 
       # Check log probability threshold
-      if options.log_prob_threshold is not None and avg_logprob < options.log_prob_threshold:
+      if (
+        transcription_options.log_prob_threshold is not None
+        and avg_logprob < transcription_options.log_prob_threshold
+      ):
         needs_fallback = True  # average log probability is too low
         self.logger.info(
           "Log probability threshold is not met with temperature %.1f (%f < %f)",
           temperature,
           avg_logprob,
-          options.log_prob_threshold,
+          transcription_options.log_prob_threshold,
         )
 
       if not needs_fallback:
