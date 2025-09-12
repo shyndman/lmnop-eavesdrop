@@ -26,7 +26,6 @@ class Segment:
   tokens: list[int]
   avg_logprob: float
   compression_ratio: float
-  no_speech_prob: float
   words: list[Word] | None
   temperature: float | None
   completed: bool = False

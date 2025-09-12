@@ -332,6 +332,7 @@ class StreamingTranscriptionProcessor:
         vad=self.config.use_vad,
       )
 
+      transcribe_start_ns = time.perf_counter_ns()
       result, info = self.transcriber.transcribe(
         input_sample,
         initial_prompt=self.config.initial_prompt,
@@ -341,10 +342,15 @@ class StreamingTranscriptionProcessor:
         vad_parameters=self.vad_parameters,
         hotwords=" ".join(self.config.hotwords) if self.config.hotwords else None,
       )
+      transcribe_time_ns = time.perf_counter_ns() - transcribe_start_ns
+      self.logger.info(
+        "Transcription method timing",
+        transcribe_time=f"{transcribe_time_ns / 1_000_000:.3f}ms",
+        shape=input_sample.shape[0],
+      )
 
       result_list = list(result) if result else None
-      result_count = len(result_list) if result_list else 0
-      self.logger.debug("Transcription completed", segments=result_count)
+
       return result_list, info
 
     finally:
@@ -398,7 +404,6 @@ class StreamingTranscriptionProcessor:
           tokens=segment.tokens,
           avg_logprob=segment.avg_logprob,
           compression_ratio=segment.compression_ratio,
-          no_speech_prob=segment.no_speech_prob,
           words=segment.words,
           temperature=segment.temperature,
           completed=i < len(result) - 1,  # All but last segment are completed
@@ -421,14 +426,14 @@ class StreamingTranscriptionProcessor:
     self.current_out = ""
 
     # Process complete segments
-    if len(segments) > 1 and segments[-1].no_speech_prob <= self.config.no_speech_thresh:
+    if len(segments) > 1:
       for s in segments[:-1]:
         text_: str = s.text
         self.text.append(text_)
         start = self.buffer.processed_up_to_time + s.start
         end = self.buffer.processed_up_to_time + min(duration, s.end)
 
-        if start >= end or s.no_speech_prob > self.config.no_speech_thresh:
+        if start >= end:
           continue
 
         completed_segment = self._format_segment(start, end, text_, completed=True)
@@ -443,8 +448,7 @@ class StreamingTranscriptionProcessor:
         offset = min(duration, s.end)
 
     # Process last segment
-    if segments[-1].no_speech_prob <= self.config.no_speech_thresh:
-      self.current_out += segments[-1].text
+    self.current_out += segments[-1].text
 
     # Handle repeated output
     if self.current_out.strip() == self.prev_out.strip() and self.current_out != "":

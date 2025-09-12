@@ -1,11 +1,27 @@
 from dataclasses import field
-from typing import NotRequired, Required, TypedDict
+from typing import NamedTuple, NotRequired, Required, TypedDict
 
 from faster_whisper.vad import VadOptions
-from pydantic.dataclasses import dataclass
+
+
+class SpeechChunk(TypedDict):
+  """Represents a speech chunk from Voice Activity Detection.
+
+  Contains begin and end sample indices for a detected speech segment.
+  Returned by faster_whisper.vad.get_speech_timestamps().
+  """
+
+  start: int
+  end: int
 
 
 class FeatureExtractorConfig(TypedDict):
+  """Configuration parameters for Whisper feature extraction.
+
+  All parameters are optional and will use faster-whisper defaults if not provided.
+  Used to customize audio preprocessing and feature computation settings.
+  """
+
   feature_size: NotRequired[int]
   sampling_rate: NotRequired[int]
   hop_length: NotRequired[int]
@@ -14,6 +30,12 @@ class FeatureExtractorConfig(TypedDict):
 
 
 class WordDict(TypedDict):
+  """Word-level timing and probability information from transcription.
+
+  Contains timing boundaries and confidence scores for individual words.
+  Used in segment word arrays when word-level timestamps are enabled.
+  """
+
   start: Required[float]
   end: Required[float]
   word: Required[str]
@@ -21,6 +43,12 @@ class WordDict(TypedDict):
 
 
 class SegmentDict(TypedDict):
+  """Segment-level transcription result with timing and token information.
+
+  Represents a contiguous speech segment with its transcribed content,
+  timing boundaries, and optional word-level breakdown.
+  """
+
   seek: Required[int]
   start: Required[float]
   end: Required[float]
@@ -29,6 +57,12 @@ class SegmentDict(TypedDict):
 
 
 class WordTimingDict(TypedDict):
+  """Word timing result from forced alignment processing.
+
+  Contains detailed timing and token information for words computed through
+  cross-attention alignment between audio and text representations.
+  """
+
   word: str
   tokens: list[int]
   start: float
@@ -36,8 +70,7 @@ class WordTimingDict(TypedDict):
   probability: float
 
 
-@dataclass
-class TranscriptionOptions:
+class TranscriptionOptions(NamedTuple):
   """Options for the transcription process."""
 
   # Required fields without defaults
@@ -79,10 +112,6 @@ class TranscriptionOptions:
   """If the average log probability of a segment is below this threshold, the
   transcription is considered unreliable and the system will fallback to a
   higher temperature."""
-
-  no_speech_threshold: float | None = 0.6
-  """If the probability of a segment being no-speech is higher than this
-  threshold, the segment is discarded."""
 
   compression_ratio_threshold: float | None = 2.4
   """If the compression ratio of a segment's text is higher than this threshold,
@@ -156,12 +185,14 @@ class TranscriptionOptions:
   model, increasing the likelihood of these words being transcribed correctly."""
 
 
-@dataclass
-class TranscriptionInfo:
-  transcription_options: TranscriptionOptions
-  vad_options: VadOptions
+type LanguageProbability = tuple[str, float]
+
+
+class TranscriptionInfo(NamedTuple):
+  transcription_options: TranscriptionOptions = TranscriptionOptions()
+  vad_options: VadOptions = VadOptions()
   language: str = "en"
   language_probability: float = 0.0
   duration: float = 0.0
   duration_after_vad: float = 0.0
-  all_language_probs: list[tuple[str, float]] | None = None
+  all_language_probs: list[LanguageProbability] | None = None

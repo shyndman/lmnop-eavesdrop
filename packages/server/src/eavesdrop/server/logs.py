@@ -3,12 +3,14 @@
 import logging
 import os
 import re
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from io import StringIO
 from typing import Any
 
+import numpy as np
 import structlog
 from structlog.dev import (
   BLUE,
@@ -27,13 +29,6 @@ from structlog.dev import (
   _pad,
 )
 from structlog.typing import EventDict, Processor, WrappedLogger
-
-try:
-  import numpy as np
-
-  numpy_installed = True
-except ImportError:
-  numpy_installed = False
 
 # Store program start time for relative timestamps
 _PROGRAM_START_TIME = time.time()
@@ -192,14 +187,16 @@ class _FloatPrecisionProcessor:
 
   def __call__(self, _: WrappedLogger, __: str, event_dict: EventDict):
     for key, value in event_dict.items():
-      if self.only_fields is not None and key not in self.only_fields:
+      if not len(self.only_fields) and key not in self.only_fields:
         continue
-      if self.not_fields is not None and key in self.not_fields:
+      if not len(self.not_fields) and key in self.not_fields:
         continue
       if isinstance(value, bool):
         continue  # don't convert True to 1.0
 
       event_dict[key] = self._round(value)
+      if isinstance(value, float):
+        print(f"!!! Rounded {key}: {value} -> {event_dict[key]}", file=sys.stderr)
     return event_dict
 
 
@@ -314,10 +311,10 @@ def setup_logging(
     _compact_level_processor,
     structlog.stdlib.PositionalArgumentsFormatter(),
     structlog.stdlib.ExtraAdder(),
+    _FloatPrecisionProcessor(digits=3),
     _relative_time_processor,
     structlog.processors.StackInfoRenderer(),
     structlog.processors.format_exc_info,
-    _FloatPrecisionProcessor(digits=3),
   ]
 
   # Add correlation ID if provided

@@ -37,10 +37,6 @@ transcription:
   # Affects how much recent context clients receive.
   send_last_n_segments: 10
   
-  # Threshold for discarding segments with low speech probability (0.0-1.0).
-  # Higher values are more aggressive at filtering out non-speech.
-  no_speech_thresh: 0.45
-  
   # Number of consecutive identical outputs before marking a segment as completed.
   # Helps stabilize transcription output by waiting for consistency.
   same_output_threshold: 10

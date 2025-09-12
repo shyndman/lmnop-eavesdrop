@@ -114,22 +114,6 @@ class TestTranscriptionConfig:
     config3 = TranscriptionConfig(model=None)
     assert config3.model_path == "distil-medium.en"
 
-  def test_no_speech_threshold_range(self):
-    """Test that no_speech_thresh is properly constrained."""
-    # Valid values
-    config1 = TranscriptionConfig(no_speech_thresh=0.0)
-    assert config1.no_speech_thresh == 0.0
-
-    config2 = TranscriptionConfig(no_speech_thresh=1.0)
-    assert config2.no_speech_thresh == 1.0
-
-    # Invalid values
-    with pytest.raises(ValueError):
-      TranscriptionConfig(no_speech_thresh=-0.1)
-
-    with pytest.raises(ValueError):
-      TranscriptionConfig(no_speech_thresh=1.1)
-
 
 class TestEavesdropConfig:
   """Test EavesdropConfig integration."""
