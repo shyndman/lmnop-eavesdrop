@@ -1,5 +1,5 @@
 import asyncio
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 from eavesdrop.server.config import TranscriptionConfig
 from eavesdrop.server.logs import get_logger
@@ -8,6 +8,39 @@ from eavesdrop.server.rtsp.client import RTSPTranscriptionClient
 if TYPE_CHECKING:
   from eavesdrop.server.rtsp.cache import RTSPTranscriptionCache
   from eavesdrop.server.rtsp.subscriber import RTSPSubscriberManager
+
+
+class StreamStatusDict(TypedDict):
+  """Status information for a single RTSP stream."""
+
+  url: str
+  reconnect_count: int
+  chunks_read: int
+  total_bytes: int
+  transcriptions_completed: int
+  transcription_errors: int
+  task_running: bool
+  stopped: bool
+  buffer_duration: float
+  processed_duration: float
+  available_duration: float
+  processor_active: bool
+  segments_processed: int
+
+
+class StreamSummaryDict(TypedDict):
+  """Summary statistics for all RTSP streams."""
+
+  total_created: int
+  active_streams: int
+  failed_streams: int
+
+
+class RTSPManagerStatusDict(TypedDict):
+  """Complete status information for the RTSP manager."""
+
+  summary: StreamSummaryDict
+  streams: dict[str, StreamStatusDict]
 
 
 class RTSPClientManager:
@@ -219,14 +252,14 @@ class RTSPClientManager:
 
     self.logger.info("All RTSP streams stopped successfully")
 
-  def get_stream_status(self) -> dict[str, dict]:
+  def get_stream_status(self) -> RTSPManagerStatusDict:
     """
     Get status information for all RTSP streams.
 
     :returns:
         Dictionary with stream status information
     """
-    status = {
+    status: RTSPManagerStatusDict = {
       "summary": {
         "total_created": self.total_streams_created,
         "active_streams": self.active_streams,
@@ -249,7 +282,7 @@ class RTSPClientManager:
         "buffer_duration": client.stream_buffer.total_duration,
         "processed_duration": client.stream_buffer.processed_duration,
         "available_duration": client.stream_buffer.available_duration,
-        "processor_active": not client.processor.exit,
+        "processor_active": client.processor is not None and not client.processor.exit,
         "segments_processed": getattr(client.processor, "segments_processed", 0),
       }
 

@@ -85,8 +85,7 @@ class TranscriptionServer:
     Receives audio buffer from websocket and creates a numpy array out of it.
     """
     frame_data = await websocket.recv()
-    byte_count = len(frame_data) if frame_data != b"END_OF_AUDIO" else 0
-    self.logger.debug("Received audio", bytes_received=byte_count)
+    _byte_count = len(frame_data) if frame_data != b"END_OF_AUDIO" else 0
 
     if frame_data == b"END_OF_AUDIO":
       return False

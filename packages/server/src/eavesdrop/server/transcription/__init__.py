@@ -3,6 +3,7 @@ from eavesdrop.server.transcription.models import (
   TranscriptionInfo,
   TranscriptionOptions,
 )
+from eavesdrop.server.transcription.pipeline import WhisperModel
 from eavesdrop.server.transcription.utils import (
   get_compression_ratio,
   get_ctranslate2_storage,
@@ -10,7 +11,6 @@ from eavesdrop.server.transcription.utils import (
   merge_punctuations,
   restore_speech_timestamps,
 )
-from eavesdrop.server.transcription.whisper_model import WhisperModel
 from eavesdrop.wire import Segment, Word
 
 __all__ = [

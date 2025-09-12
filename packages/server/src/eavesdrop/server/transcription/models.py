@@ -1,4 +1,3 @@
-from dataclasses import field
 from typing import NamedTuple, NotRequired, Required, TypedDict
 
 from faster_whisper.vad import VadOptions
@@ -74,11 +73,11 @@ class TranscriptionOptions(NamedTuple):
   """Options for the transcription process."""
 
   # Required fields without defaults
-  multilingual: bool
+  multilingual: bool = False
   """If True, enables multilingual transcription, where the model can detect and
   transcribe multiple languages within the same audio."""
 
-  initial_prompt: str | None
+  initial_prompt: str | None = None
   """An initial text prompt to guide the model's transcription at the beginning
   of the audio."""
 
@@ -127,7 +126,7 @@ class TranscriptionOptions(NamedTuple):
   """If the generation temperature exceeds this value, the context prompt is
   reset. This helps prevent the model from getting stuck in a bad state."""
 
-  temperatures: list[float] = field(default_factory=lambda: [0.0, 0.2, 0.4, 0.6, 0.8, 1.0])
+  temperatures: list[float] = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
   """A list of temperatures to try for decoding. The system starts with the
   first temperature and falls back to subsequent ones if the output is
   unreliable (based on log_prob_threshold or compression_ratio_threshold)."""

@@ -1,5 +1,6 @@
 import zlib
 from collections.abc import Iterable
+from typing import cast
 
 import ctranslate2
 import numpy as np
@@ -15,7 +16,7 @@ def restore_speech_timestamps(
   speech_chunks: list[SpeechChunk],
   sampling_rate: int,
 ) -> Iterable[Segment]:
-  ts_map = SpeechTimestampsMap(speech_chunks, sampling_rate)
+  ts_map = SpeechTimestampsMap(cast(list[dict], speech_chunks), sampling_rate)
 
   for segment in segments:
     if segment.words:

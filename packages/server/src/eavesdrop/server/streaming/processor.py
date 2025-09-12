@@ -16,12 +16,13 @@ from faster_whisper.vad import VadOptions
 from huggingface_hub import snapshot_download
 
 from eavesdrop.server.config import TranscriptionConfig
-from eavesdrop.server.constants import CACHE_PATH, SINGLE_MODEL, TASK
+from eavesdrop.server.constants import CACHE_PATH, SINGLE_MODEL
 from eavesdrop.server.logs import get_logger
 from eavesdrop.server.streaming.buffer import AudioStreamBuffer
 from eavesdrop.server.streaming.interfaces import TranscriptionResult, TranscriptionSink
 from eavesdrop.server.transcription.models import TranscriptionInfo
-from eavesdrop.server.transcription.whisper_model import WhisperModel
+from eavesdrop.server.transcription.pipeline import WhisperModel
+from eavesdrop.server.transcription.session import TranscriptionSession
 from eavesdrop.wire import Segment
 
 
@@ -64,13 +65,15 @@ class StreamingTranscriptionProcessor:
     stream_name: str,
     translation_queue: queue.Queue[dict] | None = None,
     logger_name: str = "proc",
+    session: TranscriptionSession | None = None,
   ) -> None:
     self.buffer = buffer
     self.sink = sink
     self.config = config
     self.stream_name = stream_name
     self.translation_queue = translation_queue
-    self.logger = get_logger(logger_name)
+    self.session = session
+    self.logger = get_logger("proc", stream=self.stream_name)
 
     # Transcription state
     self.exit: bool = False
@@ -162,44 +165,7 @@ class StreamingTranscriptionProcessor:
 
   def _create_model_instance(self, device: str, model_ref: str) -> None:
     """Create a single model instance."""
-    if model_ref in self.model_sizes:
-      self.logger.debug("Model found in standard model sizes", model=model_ref)
-      model_to_load = model_ref
-    else:
-      self.logger.debug("Model not in standard model sizes, checking if custom", model=model_ref)
-      if os.path.isdir(model_ref) and ctranslate2.contains_model(model_ref):
-        self.logger.debug("Found local CTranslate2 model", path=model_ref)
-        model_to_load = model_ref
-      else:
-        self.logger.debug("Downloading model from HuggingFace", model=model_ref)
-        local_snapshot = snapshot_download(repo_id=model_ref, repo_type="model")
-        self.logger.debug("Downloaded model", path=local_snapshot)
-
-        if ctranslate2.contains_model(local_snapshot):
-          self.logger.debug("Downloaded model is already in CTranslate2 format")
-          model_to_load = local_snapshot
-        else:
-          cache_root = os.path.expanduser(os.path.join(CACHE_PATH, "whisper-ct2-models/"))
-          os.makedirs(cache_root, exist_ok=True)
-          safe_name = model_ref.replace("/", "--")
-          ct2_dir = os.path.join(cache_root, safe_name)
-          self.logger.debug("CTranslate2 cache directory", path=ct2_dir)
-
-          if not ctranslate2.contains_model(ct2_dir):
-            self.logger.info("Converting to CTranslate2", model=model_ref, output_dir=ct2_dir)
-            ct2_converter = ctranslate2.converters.TransformersConverter(
-              local_snapshot,
-              copy_files=["tokenizer.json", "preprocessor_config.json"],
-            )
-            ct2_converter.convert(
-              output_dir=ct2_dir,
-              quantization=self.compute_type,
-              force=False,
-            )
-            self.logger.debug("Model conversion completed")
-          else:
-            self.logger.debug("CTranslate2 model already exists in cache")
-          model_to_load = ct2_dir
+    model_to_load = self._resolve_model_path(model_ref)
 
     self.logger.info("Loading model", model=model_to_load)
     self.transcriber = WhisperModel(
@@ -212,6 +178,59 @@ class StreamingTranscriptionProcessor:
       local_files_only=False,
     )
     self.logger.debug("Model loaded successfully")
+
+  def _resolve_model_path(self, model_ref: str) -> str:
+    """Resolve model reference to a loadable path."""
+    if model_ref in self.model_sizes:
+      self.logger.debug("Model found in standard model sizes", model=model_ref)
+      return model_ref
+
+    if self._is_local_ct2_model(model_ref):
+      self.logger.debug("Found local CTranslate2 model", path=model_ref)
+      return model_ref
+
+    return self._download_and_convert_model(model_ref)
+
+  def _is_local_ct2_model(self, model_ref: str) -> bool:
+    """Check if model reference points to a local CTranslate2 model."""
+    return os.path.isdir(model_ref) and ctranslate2.contains_model(model_ref)
+
+  def _download_and_convert_model(self, model_ref: str) -> str:
+    """Download model from HuggingFace and convert to CTranslate2 if needed."""
+    self.logger.debug("Downloading model from HuggingFace", model=model_ref)
+    local_snapshot = snapshot_download(repo_id=model_ref, repo_type="model")
+    self.logger.debug("Downloaded model", path=local_snapshot)
+
+    if ctranslate2.contains_model(local_snapshot):
+      self.logger.debug("Downloaded model is already in CTranslate2 format")
+      return local_snapshot
+
+    return self._convert_to_ct2(model_ref, local_snapshot)
+
+  def _convert_to_ct2(self, model_ref: str, local_snapshot: str) -> str:
+    """Convert downloaded model to CTranslate2 format."""
+    cache_root = os.path.expanduser(os.path.join(CACHE_PATH, "whisper-ct2-models/"))
+    os.makedirs(cache_root, exist_ok=True)
+    safe_name = model_ref.replace("/", "--")
+    ct2_dir = os.path.join(cache_root, safe_name)
+    self.logger.debug("CTranslate2 cache directory", path=ct2_dir)
+
+    if ctranslate2.contains_model(ct2_dir):
+      self.logger.debug("CTranslate2 model already exists in cache")
+      return ct2_dir
+
+    self.logger.info("Converting to CTranslate2", model=model_ref, output_dir=ct2_dir)
+    ct2_converter = ctranslate2.converters.TransformersConverter(
+      local_snapshot,
+      copy_files=["tokenizer.json", "preprocessor_config.json"],
+    )
+    ct2_converter.convert(
+      output_dir=ct2_dir,
+      quantization=self.compute_type,
+      force=False,
+    )
+    self.logger.debug("Model conversion completed")
+    return ct2_dir
 
   async def start_processing(self) -> None:
     """Start the transcription processing loop."""
@@ -318,7 +337,7 @@ class StreamingTranscriptionProcessor:
     if not self.transcriber:
       raise RuntimeError("Transcriber not initialized")
 
-    shape = input_sample.shape if hasattr(input_sample, "shape") else "unknown"
+    shape = input_sample.shape
     self.logger.debug("Transcribing audio sample", shape=shape)
 
     # if SINGLE_MODEL:
@@ -326,31 +345,17 @@ class StreamingTranscriptionProcessor:
     #   StreamingTranscriptionProcessor.SINGLE_MODEL_LOCK.acquire()
 
     try:
-      self.logger.debug(
-        "Starting transcription",
-        language=self.language,
-        vad=self.config.use_vad,
-      )
-
-      transcribe_start_ns = time.perf_counter_ns()
       result, info = self.transcriber.transcribe(
         input_sample,
         initial_prompt=self.config.initial_prompt,
         language=self.language,
-        task=TASK,
         vad_filter=self.config.use_vad,
         vad_parameters=self.vad_parameters,
         hotwords=" ".join(self.config.hotwords) if self.config.hotwords else None,
+        session=self.session,
+        start_offset=self.buffer.processed_up_to_time,
       )
-      transcribe_time_ns = time.perf_counter_ns() - transcribe_start_ns
-      self.logger.info(
-        "Transcription method timing",
-        transcribe_time=f"{transcribe_time_ns / 1_000_000:.3f}ms",
-        shape=input_sample.shape[0],
-      )
-
       result_list = list(result) if result else None
-
       return result_list, info
 
     finally:

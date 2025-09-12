@@ -77,7 +77,7 @@ class LanguageDetector:
     """
     self.model = model
     self.feature_extractor = feature_extractor
-    self.logger = get_logger("lang_detect")
+    self.logger = get_logger("lang")
 
   def resolve_language(
     self, language: str | None, features: np.ndarray
@@ -292,7 +292,7 @@ class AnomalyDetector:
     :type punctuation: str
     """
     self.punctuation = punctuation
-    self.logger = get_logger("anomaly_detect")
+    self.logger = get_logger("anomaly")
 
   def word_anomaly_score(self, word: WordDict) -> float:
     """Calculate anomaly score for a word based on probability and duration.
@@ -396,7 +396,7 @@ class LanguageProbabilityAnalyzer:
 
   def __init__(self):
     """Initialize the language probability analyzer."""
-    self.logger = get_logger("lang_prob_analyzer")
+    self.logger = get_logger("lang")
 
   def get_top_languages(
     self, all_language_probs: list[tuple[str, float]], top_n: int = 5

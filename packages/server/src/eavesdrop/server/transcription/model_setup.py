@@ -230,7 +230,7 @@ def _get_feature_extractor_config(
   :rtype: FeatureExtractorConfig
   :raises json.JSONDecodeError: If the preprocessor config cannot be parsed.
   """
-  logger = get_logger("whisper.config")
+  logger = get_logger("shh/conf")
   config = {}
 
   try:
@@ -277,7 +277,7 @@ def load_whisper_model(config: WhisperModelConfig) -> WhisperModelBundle:
   :rtype: WhisperModelBundle
   :raises: Various exceptions related to model loading, file I/O, or JSON parsing.
   """
-  logger = get_logger("whisper.loader")
+  logger = get_logger("shh/load")
 
   # Resolve model path and extract embedded files
   path_resolution = _resolve_model_path(config)

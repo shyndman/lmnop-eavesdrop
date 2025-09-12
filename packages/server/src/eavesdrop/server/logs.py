@@ -3,7 +3,6 @@
 import logging
 import os
 import re
-import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -135,6 +134,9 @@ class _FloatPrecisionProcessor:
   (nested) lists, dicts, or numpy arrays.
 
   Inspired by https://github.com/underyx/structlog-pretty/blob/master/structlog_pretty/processors.py
+
+  NOTE: It seems that if your processor logs internally, like for debugging purposes, it will be
+  detected and removed from the processing stack.
   """
 
   def __init__(
@@ -187,16 +189,14 @@ class _FloatPrecisionProcessor:
 
   def __call__(self, _: WrappedLogger, __: str, event_dict: EventDict):
     for key, value in event_dict.items():
-      if not len(self.only_fields) and key not in self.only_fields:
+      if len(self.only_fields) > 0 and key not in self.only_fields:
         continue
-      if not len(self.not_fields) and key in self.not_fields:
+      if len(self.not_fields) > 0 and key in self.not_fields:
         continue
       if isinstance(value, bool):
         continue  # don't convert True to 1.0
 
       event_dict[key] = self._round(value)
-      if isinstance(value, float):
-        print(f"!!! Rounded {key}: {value} -> {event_dict[key]}", file=sys.stderr)
     return event_dict
 
 
@@ -304,9 +304,9 @@ def setup_logging(
 
   # Configure processors
   shared_processors: list[Processor] = [
-    structlog.stdlib.filter_by_level,
     structlog.stdlib.add_logger_name,
     structlog.stdlib.add_log_level,
+    structlog.stdlib.filter_by_level,
     _debug_event_colorer,  # Run before level processing
     _compact_level_processor,
     structlog.stdlib.PositionalArgumentsFormatter(),

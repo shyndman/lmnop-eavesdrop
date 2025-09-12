@@ -21,6 +21,7 @@ from eavesdrop.server.streaming.processor import (
   StreamingTranscriptionProcessor,
   TranscriptionConfig,
 )
+from eavesdrop.server.transcription.session import create_session
 
 
 class RTSPAudioSource(AudioSource):
@@ -683,19 +684,18 @@ class RTSPTranscriptionClient(RTSPClient):
     # Initialize parent with internal queue
     super().__init__(stream_name, rtsp_url, asyncio.Queue(maxsize=100))
 
-    # Create abstracted components
+    # Store config for session creation on reconnect
+    self.transcription_config = transcription_config
+    self.subscriber_manager = subscriber_manager
+    self.transcription_cache = transcription_cache
+
+    # Create abstracted components (session will be created per connection)
     self.audio_source = RTSPAudioSource(self.audio_queue)
     self.stream_buffer = AudioStreamBuffer(transcription_config.buffer)
     self.transcription_sink = RTSPTranscriptionSink(
       stream_name, subscriber_manager, transcription_cache
     )
-    self.processor = StreamingTranscriptionProcessor(
-      buffer=self.stream_buffer,
-      sink=self.transcription_sink,
-      config=transcription_config,
-      stream_name=stream_name,
-      logger_name=f"rtsp/proc.{stream_name}",
-    )
+    self.processor: StreamingTranscriptionProcessor | None = None
 
     # Statistics (preserved from current implementation)
     self.transcriptions_completed = 0
@@ -712,6 +712,19 @@ class RTSPTranscriptionClient(RTSPClient):
             self.logger.info("Reconnecting to RTSP stream", attempt=self.reconnect_count + 1)
           else:
             self.logger.info("Connecting to RTSP stream")
+
+          # Create new session for this connection attempt
+          session = create_session(self.stream_name)
+
+          # Create processor with session for this connection
+          self.processor = StreamingTranscriptionProcessor(
+            buffer=self.stream_buffer,
+            sink=self.transcription_sink,
+            config=self.transcription_config,
+            stream_name=self.stream_name,
+            logger_name="rtsp/proc",
+            session=session,
+          )
 
           process = await self._create_ffmpeg_process()
 
@@ -764,6 +777,7 @@ class RTSPTranscriptionClient(RTSPClient):
   async def _streaming_processor_task(self) -> None:
     """New task to run the streaming transcription processor"""
     try:
+      assert self.processor is not None, "Processor must be initialized"
       await self.processor.initialize()
       await self.processor.start_processing()
     except Exception:
@@ -779,6 +793,7 @@ class RTSPTranscriptionClient(RTSPClient):
           break
 
         if len(audio_array) > 0:
+          assert self.processor is not None, "Processor must be initialized"
           self.processor.add_audio_frames(audio_array)
 
     except Exception:
@@ -792,7 +807,8 @@ class RTSPTranscriptionClient(RTSPClient):
     self.logger.info("Stopping RTSP transcription client")
     self.stopped = True
 
-    await self.processor.stop_processing()
+    if self.processor:
+      await self.processor.stop_processing()
     self.audio_source.close()
 
     await self._cleanup_process()

@@ -1,6 +1,9 @@
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import ReadOnly, cast
+from typing import TYPE_CHECKING, NamedTuple, cast
+
+if TYPE_CHECKING:
+  from eavesdrop.server.transcription.session import TranscriptionSessionProtocol
 
 import ctranslate2
 import numpy as np
@@ -17,6 +20,10 @@ from eavesdrop.server.transcription.language_detection import (
   AnomalyDetector,
   LanguageDetector,
 )
+from eavesdrop.server.transcription.model_setup import (
+  WhisperModelConfig,
+  load_whisper_model,
+)
 from eavesdrop.server.transcription.models import (
   SegmentDict,
   TranscriptionInfo,
@@ -29,10 +36,6 @@ from eavesdrop.server.transcription.utils import (
   get_suppressed_tokens,
   restore_speech_timestamps,
 )
-from eavesdrop.server.transcription.whisper import (
-  WhisperModelConfig,
-  load_whisper_model,
-)
 from eavesdrop.server.transcription.word_alignment import WordTimestampAligner
 from eavesdrop.wire import Segment, Word
 
@@ -40,6 +43,16 @@ from eavesdrop.wire import Segment, Word
 # Contains both prepended ('"\'"¿([{-') and appended ('"\'.。,，!！?？:：")]}、') punctuation marks
 # Used for merging punctuation with adjacent words during timestamp alignment
 _PUNCTUATION = '"\'"¿([{-"\'.。,，!！?？:：")]}、'
+
+# Whisper has a couple of modes of operation. For now, we only use transcription.
+_TRANSCRIBE_TASK = "transcribe"
+
+
+class _TranscribeSegmentsResult(NamedTuple):
+  """Result from transcription with generation metrics."""
+
+  segments: Iterable[Segment]
+  total_attempts: int
 
 
 class WhisperModel:
@@ -86,7 +99,7 @@ class WhisperModel:
         to file contents as file-like or bytes objects. If this is set, model_path acts as an
         identifier for this model.
     """
-    self.logger = get_logger("whispr")
+    self.logger = get_logger("shh")
     self._last_vad_log_time = 0  # Track when we last logged VAD filtering
 
     # Use our new whisper module for model loading
@@ -129,8 +142,7 @@ class WhisperModel:
     self.generation_strategies = GenerationStrategies(self.max_length, self.time_precision)
 
     # Initialize anomaly detector and hallucination filter
-    anomaly_detector = AnomalyDetector(_PUNCTUATION)
-    self.hallucination_filter = HallucinationFilter(anomaly_detector)
+    self.hallucination_filter = HallucinationFilter(AnomalyDetector(_PUNCTUATION))
 
   @property
   def supported_languages(self) -> list[str]:
@@ -140,13 +152,14 @@ class WhisperModel:
   def transcribe(
     self,
     audio: np.ndarray,
+    session: "TranscriptionSessionProtocol | None" = None,
     language: str | None = None,
-    task: str = "transcribe",
     initial_prompt: str | None = None,
     vad_filter: bool = False,
     vad_parameters: VadOptions = VadOptions(),
     hotwords: str | None = None,
     multilingual: bool = False,
+    start_offset: float = 0.0,
   ) -> tuple[Iterable[Segment], TranscriptionInfo]:
     """Transcribes audio data for live transcription.
 
@@ -169,6 +182,8 @@ class WhisperModel:
     :param hotwords: Optional hotwords to provide as context to improve recognition of
       specific terms.
     :type hotwords: str | None
+    :param start_offset: Start time offset in seconds from stream/connection start.
+    :type start_offset: float
     :returns: A tuple with:
 
         - a generator over transcribed segments
@@ -176,10 +191,48 @@ class WhisperModel:
     :rtype: tuple[Iterable[Segment], TranscriptionInfo]
     """
 
-    # Use our new audio processing module for validation and VAD
-    audio, duration, duration_after_vad, speech_chunks, will_be_complete_silence = (
-      self.audio_processor.validate_and_preprocess_audio(audio, vad_filter, vad_parameters)
+    # Use noop session if none provided
+    if session is None:
+      from eavesdrop.server.transcription.session import _noop_session
+
+      session = _noop_session
+
+    # Update session timing context with real buffer timing
+    session.update_audio_context(
+      start_offset=start_offset, duration=audio.shape[0] / self.audio_processor.sampling_rate
     )
+
+    with session.trace_pipeline():
+      return self._transcribe(
+        audio=audio,
+        session=session,
+        language=language,
+        initial_prompt=initial_prompt,
+        vad_filter=vad_filter,
+        vad_parameters=vad_parameters,
+        hotwords=hotwords,
+        multilingual=multilingual,
+      )
+
+  def _transcribe(
+    self,
+    audio: np.ndarray,
+    session: "TranscriptionSessionProtocol",
+    language: str | None = None,
+    initial_prompt: str | None = None,
+    vad_filter: bool = False,
+    vad_parameters: VadOptions = VadOptions(),
+    hotwords: str | None = None,
+    multilingual: bool = False,
+  ) -> tuple[Iterable[Segment], TranscriptionInfo]:
+    # Use our new audio processing module for validation and VAD
+    with session.trace_vad_stage() as tracer:
+      audio, duration, duration_after_vad, speech_chunks, will_be_complete_silence = (
+        self.audio_processor.validate_and_preprocess_audio(audio, vad_filter, vad_parameters)
+      )
+      tracer(
+        speech_chunks if vad_filter else None, self.audio_processor.sampling_rate, audio.shape[0]
+      )
 
     # Update audio with processed version
     no_sound_to_process = audio.shape[0] == 0
@@ -194,37 +247,45 @@ class WhisperModel:
       )
 
     # Extract features using our audio processor
-    features = self.audio_processor.extract_features(audio)
-    (language, probability), all_language_probs = self.language_detector.resolve_language(
-      language, features
-    )
-
-    segments = self._transcribe_segments(
-      features,
-      tokenizer=(
-        tokenizer := Tokenizer(
-          self.hf_tokenizer,
-          self.model.is_multilingual,
-          task=task,
-          language=language,
-        )
-      ),
-      transcription_options=(
-        options := TranscriptionOptions(
-          multilingual=multilingual,
-          initial_prompt=initial_prompt,
-          hotwords=hotwords,
-          suppress_tokens=get_suppressed_tokens(tokenizer, [-1, 0]),
-        )
-      ),
-      log_progress=False,
-      encoder_output=None,
-    )
-
-    if speech_chunks:
-      segments = restore_speech_timestamps(
-        segments, speech_chunks, self.audio_processor.sampling_rate
+    with session.trace_feature_stage():
+      features = self.audio_processor.extract_features(audio)
+      (language, probability), all_language_probs = self.language_detector.resolve_language(
+        language, features
       )
+
+    # Model inference and segment processing
+    with session.trace_inference_stage() as tracer:
+      segments, total_attempts = self._transcribe_segments(
+        features,
+        tokenizer=(
+          tokenizer := Tokenizer(
+            self.hf_tokenizer,
+            self.model.is_multilingual,
+            task=_TRANSCRIBE_TASK,
+            language=language,
+          )
+        ),
+        transcription_options=(
+          options := TranscriptionOptions(
+            multilingual=multilingual,
+            initial_prompt=initial_prompt,
+            hotwords=hotwords,
+            suppress_tokens=get_suppressed_tokens(tokenizer, [-1, 0]),
+          )
+        ),
+        log_progress=False,
+        encoder_output=None,
+        session=session,
+      )
+      tracer(total_attempts, 0.0)
+
+    # Final segment processing and results
+    with session.trace_segment_stage() as tracer:
+      if speech_chunks:
+        segments = restore_speech_timestamps(
+          segments, speech_chunks, self.audio_processor.sampling_rate
+        )
+      tracer(segments)
 
     info = TranscriptionInfo(
       language=language,
@@ -245,9 +306,14 @@ class WhisperModel:
     transcription_options: TranscriptionOptions,
     log_progress: bool,
     encoder_output: ctranslate2.StorageView | None = None,
-  ) -> Iterable[Segment]:
+    session: "TranscriptionSessionProtocol | None" = None,
+  ) -> _TranscribeSegmentsResult:
     """A lower-level transcription function that generates the individual segments for a given
-    audio clip."""
+    audio clip.
+
+    :returns: _TranscribeSegmentsResult containing segments and total generation attempts.
+    :rtype: _TranscribeSegmentsResult
+    """
 
     # Prepare initial tokens from prompt using prompt builder
     initial_tokens = self.prompt_builder.encode_initial_prompt(
@@ -277,7 +343,7 @@ class WhisperModel:
         self.language_detector.update_tokenizer_language(tokenizer, encoder_output)
 
       # Generate the transcription
-      result, avg_logprob, temperature, compression_ratio = (
+      result, avg_logprob, temperature, compression_ratio, attempts = (
         self.generation_strategies.generate_with_fallback(
           model=self.model,
           encoder_output=encoder_output,
@@ -292,8 +358,8 @@ class WhisperModel:
           transcription_options=transcription_options,
         )
       )
-
       tokens = result.sequences_ids[0]
+      ctx.total_attempts += attempts
 
       # Split segments
       previous_seek = ctx.seek
@@ -368,7 +434,7 @@ class WhisperModel:
 
         ctx.prompt_reset_since = len(ctx.all_tokens)
 
-    return ctx.all_segments
+    return _TranscribeSegmentsResult(segments=ctx.all_segments, total_attempts=ctx.total_attempts)
 
   def encode(self, features: np.ndarray) -> ctranslate2.StorageView:
     # When the model is running on multiple GPUs, the encoder output should be moved
@@ -423,7 +489,7 @@ class WhisperModel:
     # 2. SEEK ADJUSTMENT: Move transcription window to end of actual speech
     # (Skip this if segment ended with single timestamp, indicating silence)
     if not single_timestamp_ending:
-      last_word_end: float | None = get_end(cast(list[SegmentDict], current_segments))
+      last_word_end: float | None = get_end(cast(list[dict], current_segments))
       if last_word_end is not None and last_word_end > ctx.time_offset:
         ctx.seek_next_to(round(last_word_end * self.frames_per_second))
 
@@ -439,7 +505,7 @@ class _TranscribeContext:
 
   # Input parameters
   features: np.ndarray
-  time_per_frame: ReadOnly[float]
+  time_per_frame: float
   max_segment_frames: int  # nb_max_frames from feature extractor
   frames_per_second: float
   initial_tokens: list[int] = field(default_factory=list)
@@ -475,6 +541,9 @@ class _TranscribeContext:
 
   all_segments: list[Segment] = field(default_factory=list, init=False)
   """Collected transcription segments."""
+
+  total_attempts: int = field(default=0, init=False)
+  """Total generation attempts across all segments."""
 
   # Computed fields (updated on commit)
   time_offset: float = field(default=0.0, init=False)
@@ -535,7 +604,7 @@ class _TranscribeContext:
     word_timestamps: bool,
   ):
     """Add completed segment to results."""
-    text = segment_data.get("text", "").strip()
+    text = text.strip()
     if segment_data["start"] == segment_data["end"] or not text:
       return
 

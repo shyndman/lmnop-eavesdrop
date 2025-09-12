@@ -10,8 +10,5 @@ CACHE_PATH = "/app/.cache/eavesdrop/"
 SINGLE_MODEL = True
 """Whether to use single shared model instance - hardcoded constant."""
 
-TASK = "transcribe"
-"""Transcription task type - hardcoded constant."""
-
 SAMPLE_RATE = 16_000
 """Sample rate required for the Whisper model - hardcoded constant."""

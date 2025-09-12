@@ -43,7 +43,7 @@ class AudioStreamBuffer:
                 cleanup policies, and processing thresholds.
     """
     self.config: BufferConfig = config
-    self.logger = get_logger("buff")
+    self.logger = get_logger("snd/buf")
 
     # Audio buffer state
     self.frames_np: np.ndarray | None = None

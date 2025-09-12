@@ -44,7 +44,7 @@ class AudioProcessor:
     :type feature_extractor: FeatureExtractor
     """
     self._feature_extractor = feature_extractor
-    self._logger = get_logger("audio_processor")
+    self._logger = get_logger("snd/proc")
     self._last_vad_log_time = 0.0
 
   @property
@@ -81,8 +81,7 @@ class AudioProcessor:
 
     # Apply VAD filtering if requested
     if vad_filter:
-      speech_chunks = get_speech_timestamps(audio, vad_parameters)
-      audio_chunks, _ = collect_chunks(audio, speech_chunks)
+      audio_chunks, _ = collect_chunks(audio, get_speech_timestamps(audio, vad_parameters))
       processed_audio = np.concatenate(audio_chunks, axis=0)
       duration_after_vad = processed_audio.shape[0] / sampling_rate
       is_complete_silence = duration_after_vad <= _MINIMUM_AUDIO_DURATION
@@ -110,6 +109,8 @@ class AudioProcessor:
     :rtype: np.ndarray
     """
     if audio.shape[0] == 0:
+      # DEBUG: Empty audio passed to feature extraction
+      self._logger.debug("Feature extraction skipped - audio is empty", audio_shape=audio.shape)
       # Return empty features for empty audio
       # Use n_mels as the feature dimension
       return np.empty((80, 0))  # Default Whisper n_mels is 80
@@ -158,10 +159,10 @@ class AudioProcessor:
       # Always log when there's actual speech content
       audio_removed = original_duration - duration_after_vad
       self._logger.info(
-        "VAD processing: original_duration=%s, after_vad=%s, removed=%s",
-        format_timestamp(original_duration),
-        format_timestamp(duration_after_vad),
-        format_timestamp(audio_removed),
+        "VAD processing",
+        duration=format_timestamp(original_duration),
+        duration_post_vad=format_timestamp(duration_after_vad),
+        duration_removed=format_timestamp(audio_removed),
       )
 
 

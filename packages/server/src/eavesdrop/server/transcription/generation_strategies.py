@@ -22,6 +22,7 @@ class GenerationResult(NamedTuple):
   avg_logprob: float
   temperature: float
   compression_ratio: float
+  attempts: int
 
 
 def _create_max_length_error(
@@ -52,7 +53,7 @@ class GenerationStrategies:
     """
     self.max_length = max_length
     self.time_precision = time_precision
-    self.logger = get_logger("whisper.generation")
+    self.logger = get_logger("shh/gen")
 
   def generate_with_fallback(
     self,
@@ -102,6 +103,7 @@ class GenerationStrategies:
       )
 
     temperature = 0.0  # Initialize to avoid unbound variable warning
+    attempt_count = 0
 
     # TEMPERATURE FALLBACK STRATEGY:
     # We try each temperature in sequence until we get acceptable quality results.
@@ -109,6 +111,7 @@ class GenerationStrategies:
     # - temperature > 0.0: Sampling with randomness to avoid repetition/loops
     # Quality is measured by compression ratio and average log probability thresholds.
     for temperature in transcription_options.temperatures:
+      attempt_count += 1
       self.logger.debug(f"Trying temperature: {temperature}")
 
       # Configure generation parameters based on temperature
@@ -159,16 +162,13 @@ class GenerationStrategies:
         f"Generated text (temp={temperature}): '{text[:50]}...', "
         f"compression_ratio: {compression_ratio:.3f}, avg_logprob: {avg_logprob:.3f}"
       )
-      self.logger.warn(
-        "Transcription results",
-        scores=result.scores,
-      )
 
       decode_result = GenerationResult(
         result=result,
         avg_logprob=avg_logprob,
         temperature=temperature,
         compression_ratio=compression_ratio,
+        attempts=attempt_count,
       )
       all_results.append(decode_result)
 
@@ -204,13 +204,14 @@ class GenerationStrategies:
         break
     else:
       # All temperatures failed, select the result with highest average log probability
-      decode_result = max(below_cr_threshold_results or all_results, key=lambda x: x["avg_logprob"])
+      decode_result = max(below_cr_threshold_results or all_results, key=lambda x: x.avg_logprob)
       # Update temperature to pass final value for prompt_reset_on_temperature
       decode_result = GenerationResult(
-        result=decode_result["result"],
-        avg_logprob=decode_result["avg_logprob"],
+        result=decode_result.result,
+        avg_logprob=decode_result.avg_logprob,
         temperature=temperature,
-        compression_ratio=decode_result["compression_ratio"],
+        compression_ratio=decode_result.compression_ratio,
+        attempts=attempt_count,
       )
 
     return decode_result

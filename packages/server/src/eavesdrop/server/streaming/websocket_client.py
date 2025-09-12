@@ -20,6 +20,7 @@ from eavesdrop.server.streaming.websocket_adapters import (
   WebSocketAudioSource,
   WebSocketTranscriptionSink,
 )
+from eavesdrop.server.transcription.session import create_session
 
 
 class WebSocketStreamingClient:
@@ -53,7 +54,8 @@ class WebSocketStreamingClient:
     self.translation_queue = translation_queue
     self.logger = get_logger("ws/client")
 
-    # Initialize components
+    # Initialize session and components
+    self.session = create_session(stream_name)
     self.buffer = AudioStreamBuffer(transcription_config.buffer)
     self.audio_source = WebSocketAudioSource(websocket, get_audio_func)
     self.transcription_sink = WebSocketTranscriptionSink(websocket, stream_name)
@@ -64,6 +66,7 @@ class WebSocketStreamingClient:
       stream_name=stream_name,
       translation_queue=translation_queue,
       logger_name=f"ws/proc.{stream_name[0:4]}",
+      session=self.session,
     )
 
     # State tracking
