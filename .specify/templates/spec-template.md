@@ -82,6 +82,41 @@ When creating this spec from a user prompt:
 - **[Entity 1]**: [What it represents, key attributes without implementation]
 - **[Entity 2]**: [What it represents, relationships to other entities]
 
+### Data Modeling Requirements *(mandatory for Python data models)*
+When implementing data models, ensure strict typing practices:
+
+**Type Safety**:
+- Type EVERYTHING - no `Any` types allowed
+- Use modern union syntax: `str | None` instead of `Optional[str]`
+- Use `TypedDict` for structured dictionaries with known keys
+- Use `NamedTuple` subclasses for immutable data structures
+- Prefer union types over `Union`: `int | str` not `Union[int, str]`
+
+**Examples**:
+```python
+# ✅ Good - TypedDict for structured data
+class UserConfig(TypedDict):
+    name: str
+    age: int | None
+    settings: dict[str, str | int]
+
+# ✅ Good - NamedTuple for immutable records
+class Coordinate(NamedTuple):
+    x: float
+    y: float
+    label: str | None = None
+
+# ✅ Good - Modern union syntax
+def process_data(input: str | bytes | None) -> dict[str, Any]:
+    # Never use Any in return - this is just for example
+```
+
+**Validation Requirements**:
+- All entity fields must specify types explicitly
+- Optional fields use `| None` syntax
+- Complex nested structures use appropriate generic types
+- No bare `dict` or `list` - always parameterized: `dict[str, int]`, `list[User]`
+
 ---
 
 ## Review & Acceptance Checklist

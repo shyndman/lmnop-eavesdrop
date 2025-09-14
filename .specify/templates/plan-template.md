@@ -156,6 +156,13 @@ ios/ or android/
    - Entity name, fields, relationships
    - Validation rules from requirements
    - State transitions if applicable
+   - **Python Typing Requirements**: All data models MUST follow strict typing:
+     * NO `Any` types - type everything explicitly
+     * Use modern union syntax: `str | None` not `Optional[str]`
+     * Use `TypedDict` for structured dictionaries with known keys
+     * Use `NamedTuple` subclasses for immutable data structures
+     * Parameterize all generics: `dict[str, int]` not bare `dict`
+     * Union types over `Union`: `int | str` not `Union[int, str]`
 
 2. **Generate API contracts** from functional requirements:
    - For each user action → endpoint

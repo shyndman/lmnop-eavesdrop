@@ -49,14 +49,64 @@
 
 ## Phase 3.2: Tests First (TDD) ⚠️ MUST COMPLETE BEFORE 3.3
 **CRITICAL: These tests MUST be written and MUST FAIL before ANY implementation**
+
+**Type Checker vs Tests**: We use static type checking (Pylance/mypy) which already validates:
+- Class/function existence
+- Method signatures
+- Import correctness
+- Type compatibility
+
+**Contract tests should test BEHAVIOR, not existence:**
+- ❌ `assert hasattr(obj, 'method')` - Type checker handles this
+- ❌ `assert callable(obj.method)` - Type checker handles this
+- ❌ `assert isinstance(obj, SomeClass)` - Type checker handles this
+- ✅ `assert obj.method(input) == expected_output` - Tests actual behavior
+- ✅ `assert obj.validates_correctly(invalid_input) raises ValueError` - Tests contracts
+- ✅ `assert complex_workflow() produces correct state changes` - Tests integration
+
+**Tests should fail because functionality is unimplemented, not because classes don't exist.**
+
 - [ ] T004 [P] Contract test POST /api/users in tests/contract/test_users_post.py
 - [ ] T005 [P] Contract test GET /api/users/{id} in tests/contract/test_users_get.py
 - [ ] T006 [P] Integration test user registration in tests/integration/test_registration.py
 - [ ] T007 [P] Integration test auth flow in tests/integration/test_auth.py
 
 ## Phase 3.3: Core Implementation (ONLY after tests are failing)
-- [ ] T008 [P] User model in src/models/user.py
-- [ ] T009 [P] UserService CRUD in src/services/user_service.py
+
+**Python Type Safety Requirements (NON-NEGOTIABLE)**:
+- NO `Any` types - type everything explicitly
+- Use modern union syntax: `str | None` not `Optional[str]`
+- Use `TypedDict` for structured dictionaries
+- Use `NamedTuple` for immutable data structures
+- Parameterize generics: `dict[str, int]` not `dict`
+
+**Model Creation Examples**:
+```python
+# ✅ TypedDict for configuration/data structures
+class UserConfig(TypedDict):
+    name: str
+    email: str
+    preferences: dict[str, str | int]
+    metadata: dict[str, str] | None
+
+# ✅ NamedTuple for immutable records
+class UserRecord(NamedTuple):
+    id: int
+    name: str
+    created_at: datetime
+    active: bool = True
+
+# ✅ Pydantic/dataclass for mutable models
+@dataclass
+class User:
+    name: str
+    email: str
+    age: int | None = None
+    tags: list[str] = field(default_factory=list)
+```
+
+- [ ] T008 [P] User model in src/models/user.py (TypedDict/NamedTuple/dataclass - NO Any types)
+- [ ] T009 [P] UserService CRUD in src/services/user_service.py (fully typed methods)
 - [ ] T010 [P] CLI --create-user in src/cli/user_commands.py
 - [ ] T011 POST /api/users endpoint
 - [ ] T012 GET /api/users/{id} endpoint
@@ -93,9 +143,11 @@ Task: "Integration test auth in tests/integration/test_auth.py"
 
 ## Notes
 - [P] tasks = different files, no dependencies
-- Verify tests fail before implementing
+- Verify tests fail before implementing (due to missing functionality, not missing classes)
+- Write meaningful behavioral tests, not existence checks
+- Type checker validates structure; tests validate behavior
 - Commit after each task
-- Avoid: vague tasks, same file conflicts
+- Avoid: vague tasks, same file conflicts, `hasattr()` tests
 
 ## Task Generation Rules
 *Applied during main() execution*
