@@ -4,7 +4,7 @@ Transcription data types for wire protocol communication.
 Contains the core data structures used for transcription results and user configuration.
 """
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pydantic.dataclasses import dataclass
 
 
@@ -34,7 +34,15 @@ class Segment:
 class UserTranscriptionOptions(BaseModel):
   """Transcription options that clients can specify."""
 
+  # Transcription behavior
+  send_last_n_segments: int = Field(default=1, gt=0)
+  """Number of most recent segments to send to the client."""
+
   initial_prompt: str | None = None
-  hotwords: str | None = None
-  beam_size: int = 5
+  """Initial prompt for whisper inference."""
+
+  hotwords: list[str] | None = None
+  """List of hotwords for whisper inference to improve recognition of specific terms."""
+
   word_timestamps: bool = False
+  """Whether to include word timestamps in the transcription output."""

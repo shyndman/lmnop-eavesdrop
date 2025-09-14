@@ -1,0 +1,64 @@
+[project]
+name = "active-listener"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Scott Hyndman", email = "scotty.hyndman@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "clypi>=1.8.1",
+    "eavesdrop-client",
+    "eavesdrop-wire",
+    "python-ydotool>=1.0.4.post1",
+    "sounddevice>=0.5.2",
+    "structlog>=25.4.0",
+]
+
+[project.scripts]
+al = "eavesdrop.active_listener:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/eavesdrop"]
+
+[tool.uv.sources]
+eavesdrop-client = { path = "../client", editable = true }
+eavesdrop-wire = { path = "../wire", editable = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2",
+    "pytest-asyncio>=1.2.0",
+    "pytest-mock>=3.15.0",
+]
+
+[tool.pyright]
+include = ["src"]
+ignore = ["**/.venv"]
+defineConstant = {DEBUG = true}
+reportMissingImports = "error"
+deprecateTypingAliases = true
+reportDeprecated = "information"
+pythonPlatform = "Linux"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+indent-width = 2
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+ignore = []
+
+[tool.ruff.lint.isort]
+known-first-party = ["eavesdrop"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"

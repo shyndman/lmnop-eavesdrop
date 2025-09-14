@@ -77,14 +77,8 @@ class TranscriptionConfig(BaseModel):
   """Configuration for transcription processing behavior."""
 
   # Transcription behavior
-  send_last_n_segments: int = Field(default=10, gt=0)
+  send_last_n_segments: int = Field(default=1, gt=0)
   """Number of most recent segments to send to the client."""
-
-  same_output_threshold: int = Field(default=10, gt=0)
-  """Number of repeated outputs before considering it as a valid segment."""
-
-  use_vad: bool = True
-  """Whether to use Voice Activity Detection."""
 
   # Model configuration - these fields will be validated by model validators
   model: str | None = "distil-medium.en"
@@ -102,20 +96,26 @@ class TranscriptionConfig(BaseModel):
   hotwords: list[str] = Field(default_factory=list)
   """Hotwords for whisper inference to improve recognition of specific terms."""
 
-  vad_parameters: VadOptions = Field(default_factory=VadOptions)
-  """Voice Activity Detection parameters."""
-
   gpu_name: str | None = None
   """GPU device name to use (device_index computed from this)."""
-
-  num_workers: int = Field(default=1, gt=0)
-  """Number of workers for parallel transcription processing."""
 
   device_index: int = Field(default=0, ge=0, exclude=True)
   """GPU device index to use (computed from gpu_name)."""
 
+  num_workers: int = Field(default=1, gt=0)
+  """Number of workers for parallel transcription processing."""
+
   buffer: BufferConfig = Field(default_factory=BufferConfig)
   """Audio buffer configuration for streaming transcription."""
+
+  use_vad: bool = True
+  """Whether to use Voice Activity Detection."""
+
+  vad_parameters: VadOptions = Field(default_factory=VadOptions)
+  """Voice Activity Detection parameters."""
+
+  same_output_threshold: int = Field(default=10, gt=0)
+  """Number of repeated outputs before considering it as a valid segment."""
 
   @model_validator(mode="before")
   @classmethod

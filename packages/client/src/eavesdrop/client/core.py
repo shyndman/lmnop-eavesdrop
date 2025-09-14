@@ -51,7 +51,9 @@ class EavesdropClient:
     self._client_type = client_type
     self._stream_names = stream_names or []
     self._audio_device = audio_device
-    self._transcription_options = transcription_options or UserTranscriptionOptions()
+    self._transcription_options: UserTranscriptionOptions = (
+      transcription_options or UserTranscriptionOptions()
+    )
 
     # Internal state
     self._connection: WebSocketConnection | None = None
@@ -76,9 +78,6 @@ class EavesdropClient:
     if self._port <= 0 or self._port > 65535:
       raise ValueError(f"Invalid port number: {self._port}")
 
-    if self._transcription_options.beam_size <= 0:
-      raise ValueError(f"Invalid beam_size: {self._transcription_options.beam_size}")
-
   @classmethod
   def transcriber(
     cls,
@@ -88,7 +87,7 @@ class EavesdropClient:
     beam_size: int = 5,
     word_timestamps: bool = False,
     initial_prompt: str | None = None,
-    hotwords: str | None = None,
+    hotwords: list[str] | None = None,
   ) -> "EavesdropClient":
     """
     Create a transcriber client for sending audio for transcription.
