@@ -12,7 +12,7 @@ import sounddevice as sd
 SAMPLE_RATE = 16000
 CHANNELS = 1
 DTYPE = np.float32
-BLOCKSIZE = 4096
+BLOCKSIZE = 0
 
 
 class AudioCapture:
