@@ -7,9 +7,9 @@ to maintain consistency between transcribed text and desktop applications.
 from __future__ import annotations
 
 import dataclasses
+from collections import OrderedDict
 from enum import Enum
 
-from ordered_set import OrderedSet
 from pydantic import NonNegativeInt
 from pydantic.dataclasses import dataclass
 
@@ -68,8 +68,8 @@ class TextState:
   current_segment: Segment | None = None
   """The currently in-progress (not yet finalized) transcription segment"""
 
-  completed_segments: OrderedSet[Segment] = dataclasses.field(
-    default_factory=lambda: OrderedSet([])
+  completed_segment_ids: OrderedDict[int, Segment] = dataclasses.field(
+    default_factory=lambda: OrderedDict([])
   )
   """Set of finalized transcription segments"""
 
@@ -77,26 +77,26 @@ class TextState:
     """Process a new transcription segment and return required text update."""
 
     # Case 1. The segment completed, and we already have it marked completed
-    if segment.completed and segment in self.completed_segments:
+    if segment.completed and segment.id in self.completed_segment_ids:
       return None
 
     # Case 2. The segment is newly completed, transitioning from in-progress
-    if segment.completed and segment not in self.completed_segments:
+    if segment.completed and segment.id not in self.completed_segment_ids:
       assert self.current_segment is not None and segment.id == self.current_segment.id
       update = calculate_text_update(from_segment=self.current_segment, to_segment=segment)
       self.current_segment = None
-      self.completed_segments.add(segment)
+      self.completed_segment_ids[segment.id] = segment
       return update
 
     # Case 3. We are receiving the latest in-progress update for the current segment
     if not segment.completed and self.current_segment:
       assert self.current_segment.id == segment.id
       update = calculate_text_update(from_segment=self.current_segment, to_segment=segment)
-      self.current_segment = segment
       return update
 
     # Case 4. We are receiving the first in-progress segment
     if not segment.completed and not self.current_segment:
+      self.current_segment = segment
       return calculate_text_update(from_segment=None, to_segment=segment)
 
     raise ValueError(
@@ -105,7 +105,7 @@ class TextState:
 
   def get_complete_text(self) -> str:
     """Returns full text as currently typed (completed + in-progress)."""
-    completed_text = " ".join([segment.text for segment in self.completed_segments])
+    completed_text = " ".join([segment.text for segment in self.completed_segment_ids.values()])
     return f"{completed_text} {self.current_segment.text if self.current_segment else ''}".strip()
 
 

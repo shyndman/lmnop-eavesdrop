@@ -11,7 +11,6 @@ dependencies = [
     "clypi>=1.8.1",
     "eavesdrop-client",
     "eavesdrop-wire",
-    "ordered-set>=4.1.0",
     "pydantic>=2.11.9",
     "python-ydotool>=1.0.4.post1",
     "sounddevice>=0.5.2",
