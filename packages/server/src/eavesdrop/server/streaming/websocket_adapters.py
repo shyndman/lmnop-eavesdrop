@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable
 
 import numpy as np
 from websockets.asyncio.server import ServerConnection
+from websockets.exceptions import ConnectionClosedError
 
 from eavesdrop.server.logs import get_logger
 from eavesdrop.server.streaming.interfaces import (
@@ -94,6 +95,9 @@ class WebSocketAudioSource(AudioSource):
         self.logger.error(f"Unexpected audio data type: {type(audio_data)}")
         return None
 
+    except ConnectionClosedError:
+      self.logger.info("WebSocket connection closed")
+      return None
     except Exception:
       self.logger.exception("Error reading audio from WebSocket")
       return None
