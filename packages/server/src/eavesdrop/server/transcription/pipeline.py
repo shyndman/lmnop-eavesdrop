@@ -160,6 +160,7 @@ class WhisperModel:
     hotwords: str | None = None,
     multilingual: bool = False,
     start_offset: float = 0.0,
+    absolute_stream_start: float = 0.0,
   ) -> tuple[Iterable[Segment], TranscriptionInfo]:
     """Transcribes audio data for live transcription.
 
@@ -212,6 +213,7 @@ class WhisperModel:
         vad_parameters=vad_parameters,
         hotwords=hotwords,
         multilingual=multilingual,
+        absolute_stream_start=absolute_stream_start,
       )
 
   def _transcribe(
@@ -224,6 +226,7 @@ class WhisperModel:
     vad_parameters: VadOptions = VadOptions(),
     hotwords: str | None = None,
     multilingual: bool = False,
+    absolute_stream_start: float = 0.0,
   ) -> tuple[Iterable[Segment], TranscriptionInfo]:
     # Use our new audio processing module for validation and VAD
     with session.trace_vad_stage() as tracer:
@@ -276,6 +279,7 @@ class WhisperModel:
         log_progress=False,
         encoder_output=None,
         session=session,
+        absolute_stream_start=absolute_stream_start,
       )
       tracer(total_attempts, 0.0)
 
@@ -307,6 +311,7 @@ class WhisperModel:
     log_progress: bool,
     encoder_output: ctranslate2.StorageView | None = None,
     session: "TranscriptionSessionProtocol | None" = None,
+    absolute_stream_start: float = 0.0,
   ) -> _TranscribeSegmentsResult:
     """A lower-level transcription function that generates the individual segments for a given
     audio clip.
@@ -419,6 +424,7 @@ class WhisperModel:
           avg_logprob=avg_logprob,
           compression_ratio=compression_ratio,
           word_timestamps=transcription_options.word_timestamps,
+          time_offset=absolute_stream_start,
         )
 
       if (
@@ -521,8 +527,6 @@ class _TranscribeContext:
   """Detector for hallucination filtering."""
 
   # Loop state
-  idx: int = field(default=0, init=False)
-  """Sequential segment ID counter for output segments."""
 
   seek: int = field(default=0, init=False)
   """Current position in audio features (frame index)."""
@@ -602,6 +606,7 @@ class _TranscribeContext:
     avg_logprob: float,
     compression_ratio: float,
     word_timestamps: bool,
+    time_offset: float,
   ):
     """Add completed segment to results."""
     text = text.strip()
@@ -609,11 +614,29 @@ class _TranscribeContext:
       return
 
     self.all_tokens.extend(tokens)
-    self.idx += 1
+
+    # Use absolute stream position for stable ID generation
+    # Convert absolute start time to frame position
+    absolute_start_time = time_offset + segment_data["start"]
+    segment_id = int(round(absolute_start_time * self.frames_per_second))
+
+    # Log segment ID generation for debugging
+    from eavesdrop.server.logs import get_logger
+
+    id_logger = get_logger("seg-id")
+    id_logger.debug(
+      "Generated segment ID",
+      segment_id=segment_id,
+      relative_start=segment_data["start"],
+      time_offset=time_offset,
+      absolute_start_time=absolute_start_time,
+      seek=self.seek,
+      text=text[:50] + "..." if len(text) > 50 else text,
+    )
 
     self.all_segments.append(
       Segment(
-        id=self.idx,
+        id=segment_id,
         seek=self.seek,
         start=segment_data["start"],
         end=segment_data["end"],

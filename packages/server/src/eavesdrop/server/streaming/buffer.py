@@ -97,7 +97,7 @@ class AudioStreamBuffer:
       else:
         self.frames_np = np.concatenate((self.frames_np, frame_np), axis=0)
 
-  def get_chunk_for_processing(self) -> tuple[np.ndarray, float]:
+  def get_chunk_for_processing(self) -> tuple[np.ndarray, float, float]:
     """
     Extract all unprocessed audio data from the buffer.
 
@@ -109,6 +109,7 @@ class AudioStreamBuffer:
         A tuple containing:
         - audio_data: Unprocessed audio as float32 NumPy array, or empty array if none.
         - duration: Duration of the returned audio chunk in seconds.
+        - start_time: Absolute stream time where this chunk begins.
 
     Note:
         The returned array is always a copy, so modifications won't affect
@@ -116,14 +117,15 @@ class AudioStreamBuffer:
     """
     with self.lock:
       if self.frames_np is None:
-        return np.array([]), 0.0
+        return np.array([]), 0.0, self.processed_up_to_time
 
       offset_diff = self.processed_up_to_time - self.buffer_start_time
       samples_take = max(0, int(offset_diff * self.config.sample_rate))
       input_bytes = self.frames_np[samples_take:].copy()
+      chunk_start_time = self.processed_up_to_time
 
     duration = input_bytes.shape[0] / self.config.sample_rate
-    return input_bytes, duration
+    return input_bytes, duration, chunk_start_time
 
   def advance_processed_boundary(self, offset: float) -> None:
     """

@@ -32,6 +32,7 @@ class AudioChunk:
 
   data: np.ndarray
   duration: float
+  start_time: float
 
 
 @dataclass
@@ -266,7 +267,7 @@ class StreamingTranscriptionProcessor:
   async def _get_next_audio_chunk(self) -> AudioChunk | None:
     """Get the next audio chunk, handling buffer management and minimum duration."""
     self.buffer.clip_if_stalled()
-    input_bytes, duration = self.buffer.get_chunk_for_processing()
+    input_bytes, duration, start_time = self.buffer.get_chunk_for_processing()
 
     # Debug logging to track buffer catchup patterns
     available_duration = self.buffer.available_duration
@@ -285,14 +286,14 @@ class StreamingTranscriptionProcessor:
       await asyncio.sleep(self.buffer.config.min_chunk_duration - duration)
       return None
 
-    return AudioChunk(data=input_bytes, duration=duration)
+    return AudioChunk(data=input_bytes, duration=duration, start_time=start_time)
 
   async def _transcribe_chunk(self, chunk: AudioChunk) -> ChunkTranscriptionResult:
     """Transcribe an audio chunk and return results with timing information."""
     import time
 
     transcription_start = time.time()
-    result, info = await asyncio.to_thread(self._transcribe_audio, chunk.data)
+    result, info = await asyncio.to_thread(self._transcribe_audio, chunk)
     processing_time = time.time() - transcription_start
 
     self.logger.debug(
@@ -331,14 +332,14 @@ class StreamingTranscriptionProcessor:
     await asyncio.sleep(self.buffer.config.transcription_interval)
 
   def _transcribe_audio(
-    self, input_sample: np.ndarray
+    self, chunk: AudioChunk
   ) -> tuple[list[Segment] | None, TranscriptionInfo | None]:
     """Transcribe audio sample using the Faster Whisper model."""
     if not self.transcriber:
       raise RuntimeError("Transcriber not initialized")
 
-    shape = input_sample.shape
-    self.logger.debug("Transcribing audio sample", shape=shape)
+    shape = chunk.data.shape
+    self.logger.debug("Transcribing audio sample", shape=shape, start_time=chunk.start_time)
 
     # if SINGLE_MODEL:
     #   self.logger.debug("Acquiring single model lock")
@@ -346,11 +347,12 @@ class StreamingTranscriptionProcessor:
 
     try:
       result, info = self.transcriber.transcribe(
-        input_sample,
+        chunk.data,
         initial_prompt=self.config.initial_prompt,
         language=self.language,
         vad_filter=self.config.use_vad,
         vad_parameters=self.vad_parameters,
+        absolute_stream_start=chunk.start_time,
         hotwords=" ".join(self.config.hotwords) if self.config.hotwords else None,
         session=self.session,
         start_offset=self.buffer.processed_up_to_time,
