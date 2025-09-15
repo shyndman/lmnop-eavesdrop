@@ -39,7 +39,7 @@ graph TD
         WebSocketServer -- Handles --> WS_Transcriber
         WebSocketServer -- Handles --> RTSP_Subscriber
 
-        RTSPClientManager -- Manages --> RTSPStream[RTSP Stream (ffmpeg)]
+        RTSPClientManager -- Manages --> RTSPStream["RTSP Stream (ffmpeg)"]
 
         WS_Transcriber --> WebSocketServer
         RTSP_Subscriber --> WebSocketServer
@@ -60,7 +60,7 @@ graph TD
 
 
     style StreamingProcessor fill:#bbf,stroke:#333,stroke-width:2px
-    style AudioBuffer fill:#bbf,stroke:#333,stroke-width'2px
+    style AudioBuffer fill:#bbf,stroke:#333,stroke-width:2px
     style WhisperModel fill:#bbf,stroke:#333,stroke-width:2px
     style AudioSource fill:#f9f,stroke:#333,stroke-width:2px
     style TranscriptionSink fill:#f9f,stroke:#333,stroke-width:2px
