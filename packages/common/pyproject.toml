@@ -5,8 +5,9 @@ description = "Add your description here"
 authors = [{name = "shyndman", email = "scotty.hyndman@gmail.com"}]
 requires-python = ">=3.12"
 dependencies = [
-    "numpy>=2.3.3",
+    "numpy<2",
     "pydantic>=2",
+    "rich>=14.1.0",
     "structlog>=25.4.0",
 ]
 
