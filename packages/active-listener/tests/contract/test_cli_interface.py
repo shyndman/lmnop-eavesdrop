@@ -8,7 +8,7 @@ CRITICAL: These tests must fail until implementation is complete.
 
 import pytest
 
-from eavesdrop.active_listener.cli import ActiveListenerCommand
+from eavesdrop.active_listener.cli import ActiveListener
 
 
 class TestCLIInterface:
@@ -18,7 +18,7 @@ class TestCLIInterface:
     """Test that command arguments have expected default values."""
     from eavesdrop.active_listener.cli import ServerHostPort
 
-    cmd = ActiveListenerCommand.parse([])
+    cmd = ActiveListener.parse([])
 
     # Default values from specification
     assert cmd.server == ServerHostPort(host="localhost", port=9090)
@@ -65,11 +65,11 @@ class TestCLIInterface:
     """Test that empty server value is rejected."""
     # This should fail until validation is implemented
     with pytest.raises(SystemExit):
-      ActiveListenerCommand.parse(["--server", "", "--audio-device", "default"])
+      ActiveListener.parse(["--server", "", "--audio-device", "default"])
 
   def test_command_help_text(self):
     """Test that command provides help text for arguments."""
-    cmd = ActiveListenerCommand.parse([])
+    cmd = ActiveListener.parse([])
 
     # Should have docstring or help attributes
     # This will fail until implementation
@@ -83,19 +83,17 @@ class TestCLIInterface:
     from eavesdrop.active_listener.cli import ServerHostPort
 
     # This should work with valid server format
-    cmd = ActiveListenerCommand.parse(
-      ["--server", "192.168.1.100:8080", "--audio-device", "hw:1,0"]
-    )
+    cmd = ActiveListener.parse(["--server", "192.168.1.100:8080", "--audio-device", "hw:1,0"])
     assert cmd.server == ServerHostPort(host="192.168.1.100", port=8080)
 
     # This should fail with invalid format (Clypi exits on parser error)
     with pytest.raises(SystemExit):
-      ActiveListenerCommand.parse(["--server", "invalid-format", "--audio-device", "default"])
+      ActiveListener.parse(["--server", "invalid-format", "--audio-device", "default"])
 
   @pytest.mark.asyncio
   async def test_graceful_shutdown_on_sigint(self):
     """Test that command handles SIGINT gracefully."""
-    cmd = ActiveListenerCommand.parse([])
+    cmd = ActiveListener.parse([])
 
     # Test that shutdown method exists and can be called
     await cmd._handle_shutdown()
@@ -106,7 +104,7 @@ class TestCLIInterface:
     """Test that command can extract host and port from parsed server."""
     from eavesdrop.active_listener.cli import ServerHostPort
 
-    cmd = ActiveListenerCommand.parse(["--server", "example.com:8080"])
+    cmd = ActiveListener.parse(["--server", "example.com:8080"])
 
     # Server should be a ServerHostPort with direct access to host and port
     assert cmd.server == ServerHostPort(host="example.com", port=8080)

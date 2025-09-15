@@ -1,14 +1,15 @@
 """Mock implementations for testing active listener components."""
 
 import asyncio
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
 
 from eavesdrop.active_listener.text_manager import ConnectionState, TypingOperation
 from eavesdrop.wire.transcription import Segment, UserTranscriptionOptions
 
 
-class MockDesktopTyper:
-  """Mock implementation of DesktopTyper for testing."""
+class MockYdoToolTypist:
+  """Mock implementation of YdoToolTypist for testing."""
 
   def __init__(self, available: bool = True, should_fail: bool = False):
     self._available = available

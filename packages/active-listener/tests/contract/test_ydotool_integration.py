@@ -11,66 +11,46 @@ from unittest.mock import patch
 import pytest
 
 from eavesdrop.active_listener.text_manager import TypingOperation
-from eavesdrop.active_listener.typer import DesktopTyper
+from eavesdrop.active_listener.typist import YdoToolTypist
 
 
 class TestYdotoolIntegration:
   """Test ydotool integration contracts."""
 
-  def test_desktop_typer_initialization(self):
-    """Test that DesktopTyper properly initializes ydotool."""
+  def test_desktop_typist_initialization(self):
+    """Test that YdoToolTypist properly initializes ydotool."""
     # This will fail until implementation
     with patch("pydotool.init") as mock_init:
       mock_init.return_value = True
 
-      typer = DesktopTyper()
-      typer.initialize()
+      typist = YdoToolTypist()
 
-      # Should call ydotool.init()
+      # Should call ydotool.init() during construction
       mock_init.assert_called_once()
-      assert typer._initialized is True
-      assert typer._available is True
+      assert typist._initialized is True
+      assert typist._available is True
 
-  def test_desktop_typer_initialization_failure(self):
+  def test_desktop_typist_initialization_failure(self):
     """Test handling of ydotool initialization failure."""
     # This will fail until error handling is implemented
     with patch("pydotool.init") as mock_init:
       mock_init.side_effect = Exception("ydotool not available")
 
-      typer = DesktopTyper()
-
       with pytest.raises(Exception):
-        typer.initialize()
+        _typist = YdoToolTypist()
 
-      assert typer._available is False
-
-  def test_desktop_typer_has_typing_methods(self):
-    """Test that DesktopTyper has required typing methods."""
-    typer = DesktopTyper()
-
-    # Required methods from specification
-    assert hasattr(typer, "type_text")
-    assert callable(typer.type_text)
-
-    assert hasattr(typer, "delete_characters")
-    assert callable(typer.delete_characters)
-
-    assert hasattr(typer, "execute_typing_operation")
-    assert callable(typer.execute_typing_operation)
-
-    assert hasattr(typer, "is_available")
-    assert callable(typer.is_available)
+      # If construction failed, typist shouldn't be created
 
   def test_type_text_basic_functionality(self):
     """Test basic text typing functionality."""
     # This will fail until implementation
     with patch("pydotool.type_string") as mock_type:
-      typer = DesktopTyper()
-      typer._initialized = True
-      typer._available = True
+      typist = YdoToolTypist()
+      typist._initialized = True
+      typist._available = True
 
       text = "Hello world"
-      typer.type_text(text)
+      typist.type_text(text)
 
       # Should call ydotool.type_string with the text
       mock_type.assert_called_once_with(text)
@@ -79,12 +59,12 @@ class TestYdotoolIntegration:
     """Test character deletion functionality."""
     # This will fail until implementation
     with patch("pydotool.key_combination") as mock_key_combination:
-      typer = DesktopTyper()
-      typer._initialized = True
-      typer._available = True
+      typist = YdoToolTypist()
+      typist._initialized = True
+      typist._available = True
 
       count = 5
-      typer.delete_characters(count)
+      typist.delete_characters(count)
 
       # Should call key_combination for backspace operations
       assert mock_key_combination.call_count == count
@@ -92,9 +72,9 @@ class TestYdotoolIntegration:
   def test_execute_typing_operation_complete_workflow(self):
     """Test executing complete typing operation with delete + type."""
     # This will fail until implementation
-    typer = DesktopTyper()
-    typer._initialized = True
-    typer._available = True
+    typist = YdoToolTypist()
+    typist._initialized = True
+    typist._available = True
 
     operation = TypingOperation(
       operation_id="test-001",
@@ -105,10 +85,10 @@ class TestYdotoolIntegration:
     )
 
     with (
-      patch.object(typer, "delete_characters") as mock_delete,
-      patch.object(typer, "type_text") as mock_type,
+      patch.object(typist, "delete_characters") as mock_delete,
+      patch.object(typist, "type_text") as mock_type,
     ):
-      result = typer.execute_typing_operation(operation)
+      result = typist.execute_typing_operation(operation)
 
       # Should delete first, then type
       mock_delete.assert_called_once_with(5)
@@ -120,32 +100,26 @@ class TestYdotoolIntegration:
 
   def test_is_available_check(self):
     """Test that is_available correctly reports ydotool status."""
-    # This will fail until implementation
-    typer = DesktopTyper()
-
-    # Before initialization
-    assert typer.is_available() is False
-
-    # After successful initialization
+    # Test successful initialization
     with patch("pydotool.init") as mock_init:
       mock_init.return_value = True
-      typer.initialize()
-      assert typer.is_available() is True
+      typist = YdoToolTypist()
+      assert typist.is_available() is True
 
-    # After failed initialization
-    typer._available = False
-    assert typer.is_available() is False
+    # Test that manual flag setting works
+    typist._available = False
+    assert typist.is_available() is False
 
   def test_unicode_text_handling(self):
     """Test that typing handles Unicode characters correctly."""
     # This will fail until Unicode support is implemented
     with patch("pydotool.type_string") as mock_type:
-      typer = DesktopTyper()
-      typer._initialized = True
-      typer._available = True
+      typist = YdoToolTypist()
+      typist._initialized = True
+      typist._available = True
 
       unicode_text = "Hello 世界 🌍"
-      typer.type_text(unicode_text)
+      typist.type_text(unicode_text)
 
       # Should handle Unicode correctly
       mock_type.assert_called_once_with(unicode_text)
@@ -153,26 +127,26 @@ class TestYdotoolIntegration:
   def test_error_handling_during_typing(self):
     """Test error handling when ydotool operations fail."""
     # This will fail until error handling is implemented
-    typer = DesktopTyper()
-    typer._initialized = True
-    typer._available = True
+    typist = YdoToolTypist()
+    typist._initialized = True
+    typist._available = True
 
     with patch("pydotool.type_string") as mock_type:
       mock_type.side_effect = Exception("Typing failed")
 
       # Should handle errors gracefully
       with pytest.raises(Exception):
-        typer.type_text("test")
+        typist.type_text("test")
 
       # Availability should be updated on failure
-      assert typer.is_available() is False
+      assert typist.is_available() is False
 
   def test_operation_atomicity(self):
     """Test that typing operations are atomic (all-or-nothing)."""
     # This will fail until atomicity is implemented
-    typer = DesktopTyper()
-    typer._initialized = True
-    typer._available = True
+    typist = YdoToolTypist()
+    typist._initialized = True
+    typist._available = True
 
     operation = TypingOperation(
       operation_id="atomic-test",
@@ -183,13 +157,13 @@ class TestYdotoolIntegration:
     )
 
     with (
-      patch.object(typer, "delete_characters"),
-      patch.object(typer, "type_text") as mock_type,
+      patch.object(typist, "delete_characters"),
+      patch.object(typist, "type_text") as mock_type,
     ):
       # Simulate failure during typing
       mock_type.side_effect = Exception("Typing failed")
 
-      result = typer.execute_typing_operation(operation)
+      result = typist.execute_typing_operation(operation)
 
       # Operation should not be marked as completed on failure
       assert result is False
@@ -198,9 +172,9 @@ class TestYdotoolIntegration:
   def test_retry_mechanism(self):
     """Test retry mechanism for failed typing operations."""
     # This will fail until retry logic is implemented
-    typer = DesktopTyper()
-    typer._initialized = True
-    typer._available = True
+    typist = YdoToolTypist()
+    typist._initialized = True
+    typist._available = True
 
     operation = TypingOperation(
       operation_id="retry-test",
@@ -210,13 +184,13 @@ class TestYdotoolIntegration:
       completed=False,
     )
 
-    with patch.object(typer, "type_text") as mock_type:
+    with patch.object(typist, "type_text") as mock_type:
       # First call fails, second succeeds
       mock_type.side_effect = [Exception("Failed"), None]
 
       # Should have retry capability
-      assert hasattr(typer, "execute_with_retry")
-      result = typer.execute_with_retry(operation, max_attempts=2)
+      assert hasattr(typist, "execute_with_retry")
+      result = typist.execute_with_retry(operation, max_attempts=2)
 
       assert result is True
       assert operation.completed is True
@@ -225,15 +199,15 @@ class TestYdotoolIntegration:
   def test_large_text_handling(self):
     """Test handling of large text blocks."""
     # This will fail until optimization is implemented
-    typer = DesktopTyper()
-    typer._initialized = True
-    typer._available = True
+    typist = YdoToolTypist()
+    typist._initialized = True
+    typist._available = True
 
     # Large text block (simulate real-world transcription)
     large_text = "This is a very long transcription that might come from speech recognition. " * 20
 
     with patch("pydotool.type_string") as mock_type:
-      typer.type_text(large_text)
+      typist.type_text(large_text)
 
       # Should handle large text efficiently
       mock_type.assert_called_once_with(large_text)
@@ -241,9 +215,9 @@ class TestYdotoolIntegration:
   def test_rapid_operations_handling(self):
     """Test handling of rapid successive typing operations."""
     # This will fail until rate limiting/queuing is implemented
-    typer = DesktopTyper()
-    typer._initialized = True
-    typer._available = True
+    typist = YdoToolTypist()
+    typist._initialized = True
+    typist._available = True
 
     operations = []
     for i in range(10):
@@ -257,28 +231,28 @@ class TestYdotoolIntegration:
         )
       )
 
-    with patch.object(typer, "type_text"):
+    with patch.object(typist, "type_text"):
       for operation in operations:
-        result = typer.execute_typing_operation(operation)
+        result = typist.execute_typing_operation(operation)
         assert result is True
         assert operation.completed is True
 
   def test_system_permission_validation(self):
     """Test validation of system permissions for ydotool."""
     # This will fail until permission checking is implemented
-    typer = DesktopTyper()
+    typist = YdoToolTypist()
 
     # Should have method to check permissions
-    assert hasattr(typer, "check_permissions")
+    assert hasattr(typist, "check_permissions")
 
     # Should validate uinput access
     with patch("os.access") as mock_access:
       mock_access.return_value = False
 
-      permissions_ok = typer.check_permissions()
+      permissions_ok = typist.check_permissions()
       assert permissions_ok is False
 
       # Should provide helpful error message
-      assert hasattr(typer, "get_permission_error_message")
-      error_msg = typer.get_permission_error_message()
+      assert hasattr(typist, "get_permission_error_message")
+      error_msg = typist.get_permission_error_message()
       assert "input group" in error_msg.lower() or "uinput" in error_msg.lower()

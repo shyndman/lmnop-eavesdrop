@@ -6,8 +6,12 @@ to maintain consistency between transcribed text and desktop applications.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import dataclasses
 from enum import Enum
+
+from ordered_set import OrderedSet
+from pydantic import NonNegativeInt
+from pydantic.dataclasses import dataclass
 
 from eavesdrop.wire.transcription import Segment
 
@@ -25,16 +29,14 @@ class UpdateType(Enum):
 class TextUpdate:
   """Represents typing actions needed to update desktop text."""
 
-  chars_to_delete: int  # Number of characters to backspace from current position
-  text_to_type: str  # New text content to type after deletions
-  operation_type: UpdateType  # Classification of update for logging/debugging
+  chars_to_delete: NonNegativeInt
+  """Number of characters to backspace from current position"""
 
-  def __post_init__(self):
-    """Validate TextUpdate fields after initialization."""
-    if self.chars_to_delete < 0:
-      raise ValueError("chars_to_delete must be >= 0")
-    if not isinstance(self.text_to_type, str):
-      raise ValueError("text_to_type must be a valid UTF-8 string")
+  text_to_type: str
+  """New text content to type after deletions"""
+
+  operation_type: UpdateType
+  """Classification of update for logging/debugging purposes"""
 
 
 @dataclass
@@ -42,15 +44,10 @@ class TypingOperation:
   """Encapsulates a single desktop typing action with error recovery."""
 
   operation_id: str  # Unique identifier for operation tracking
-  chars_to_delete: int  # Backspace operations to perform
+  chars_to_delete: NonNegativeInt  # Backspace operations to perform
   text_to_type: str  # Text content to type
   timestamp: float  # When operation was initiated
   completed: bool  # Whether operation finished successfully
-
-  def __post_init__(self):
-    """Validate TypingOperation fields after initialization."""
-    if self.chars_to_delete < 0:
-      raise ValueError("chars_to_delete must be >= 0")
 
 
 @dataclass
@@ -64,61 +61,66 @@ class ConnectionState:
   error_message: str | None = None  # Last error encountered, if any
 
 
+@dataclasses.dataclass
 class TextState:
   """Manages the complete state of text that has been typed to the desktop."""
 
-  def __init__(self):
-    self.completed_segments: list[str] = []  # List of finalized transcription segments
-    self.current_in_progress_text: str = ""  # Text of current in-progress segment
-    self.current_segment_id: int | None = None  # ID of current in-progress segment
-    self.total_typed_length: int = 0  # Total character count of all typed text
+  current_segment: Segment | None = None
+  """The currently in-progress (not yet finalized) transcription segment"""
+
+  completed_segments: OrderedSet[Segment] = dataclasses.field(
+    default_factory=lambda: OrderedSet([])
+  )
+  """Set of finalized transcription segments"""
+
+  def process_segment(self, segment: Segment) -> TextUpdate | None:
+    """Process a new transcription segment and return required text update."""
+
+    # Case 1. The segment completed, and we already have it marked completed
+    if segment.completed and segment in self.completed_segments:
+      return None
+
+    # Case 2. The segment is newly completed, transitioning from in-progress
+    if segment.completed and segment not in self.completed_segments:
+      assert self.current_segment is not None and segment.id == self.current_segment.id
+      update = calculate_text_update(from_segment=self.current_segment, to_segment=segment)
+      self.current_segment = None
+      self.completed_segments.add(segment)
+      return update
+
+    # Case 3. We are receiving the latest in-progress update for the current segment
+    if not segment.completed and self.current_segment:
+      assert self.current_segment.id == segment.id
+      update = calculate_text_update(from_segment=self.current_segment, to_segment=segment)
+      self.current_segment = segment
+      return update
+
+    # Case 4. We are receiving the first in-progress segment
+    if not segment.completed and not self.current_segment:
+      return calculate_text_update(from_segment=None, to_segment=segment)
+
+    raise ValueError(
+      "Received segment state that does not match any known case.",
+    )
 
   def get_complete_text(self) -> str:
     """Returns full text as currently typed (completed + in-progress)."""
-    completed_text = "".join(self.completed_segments)
-    return completed_text + self.current_in_progress_text
+    completed_text = " ".join([segment.text for segment in self.completed_segments])
+    return f"{completed_text} {self.current_segment.text if self.current_segment else ''}".strip()
 
-  def calculate_update(self, new_segment: Segment) -> TextUpdate:
-    """Determines typing actions needed to update from current to new segment state."""
-    # Handle new segment case
-    if self.current_segment_id is None or new_segment.id != self.current_segment_id:
-      return self._handle_new_segment(new_segment)
 
-    # Handle in-progress segment update
-    return self._handle_in_progress_update(new_segment)
+def calculate_text_update(from_segment: Segment | None, to_segment: Segment) -> TextUpdate:
+  """Determines typing actions needed to update from current to new segment state."""
 
-  def apply_segment_completion(self, completed_segment: str) -> None:
-    """Moves in-progress text to completed segments list."""
-    if self.current_in_progress_text:
-      self.completed_segments.append(completed_segment)
-      self.total_typed_length += len(completed_segment)
-      self.current_in_progress_text = ""
-      self.current_segment_id = None
-
-  def reset_in_progress(self, new_segment: Segment) -> None:
-    """Starts tracking new in-progress segment."""
-    self.current_segment_id = new_segment.id
-    self.current_in_progress_text = new_segment.text
-
-  def _handle_new_segment(self, segment: Segment) -> TextUpdate:
-    """Handle case where we're starting a new segment."""
-    self.reset_in_progress(segment)
+  if from_segment is None:
+    # Handle new in-progress segment
     return TextUpdate(
-      chars_to_delete=0, text_to_type=segment.text, operation_type=UpdateType.NEW_SEGMENT
+      chars_to_delete=0,
+      text_to_type=to_segment.text,
+      operation_type=UpdateType.NEW_SEGMENT,
     )
 
-  def _handle_in_progress_update(self, segment: Segment) -> TextUpdate:
-    """Handle case where we're updating the current in-progress segment."""
-    old_text = self.current_in_progress_text
-    new_text = segment.text
-
-    # Check if no change needed
-    if old_text == new_text:
-      return TextUpdate(chars_to_delete=0, text_to_type="", operation_type=UpdateType.NO_CHANGE)
-
-    # Calculate diff and update internal state
-    self.current_in_progress_text = new_text
-    return calculate_text_diff(old_text, new_text)
+  return calculate_text_diff(from_segment.text, to_segment.text)
 
 
 def find_common_prefix(str1: str, str2: str) -> str:

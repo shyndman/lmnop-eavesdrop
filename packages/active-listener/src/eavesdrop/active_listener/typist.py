@@ -12,15 +12,16 @@ import structlog
 from eavesdrop.active_listener.text_manager import TypingOperation
 
 
-class DesktopTyper:
+class YdoToolTypist:
   """Handles desktop typing operations using ydotool."""
 
   def __init__(self):
     self._initialized: bool = False
     self._available: bool = False
-    self.logger = structlog.get_logger("🤸👂")
+    self.logger = structlog.get_logger("👂")
+    self._open_ydotool_socket()
 
-  def initialize(self) -> None:
+  def _open_ydotool_socket(self) -> None:
     """Initialize ydotool system integration."""
     socket_paths = [
       f"/run/user/{os.getuid()}/.ydotool_socket",
@@ -106,10 +107,6 @@ class DesktopTyper:
       try:
         if self.execute_typing_operation(operation):
           return True
-
-        # If pydotool became unavailable, try to reinitialize
-        if not self.is_available():
-          self.initialize()
 
       except Exception:
         if attempt == max_attempts - 1:

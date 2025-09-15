@@ -4,7 +4,6 @@ Provides command-line interface using Clypi framework with server argument parsi
 async execution, and graceful shutdown handling.
 """
 
-import asyncio
 import signal
 from typing import NamedTuple, TypedDict
 
@@ -12,9 +11,9 @@ import sounddevice as sd
 import structlog
 from clypi import Command, arg
 
+from eavesdrop.active_listener.app import App
 from eavesdrop.active_listener.client import EavesdropClientWrapper
-from eavesdrop.active_listener.text_manager import TextState, TypingOperation
-from eavesdrop.active_listener.typer import DesktopTyper
+from eavesdrop.active_listener.typist import YdoToolTypist
 
 
 class AudioDevice(TypedDict):
@@ -132,116 +131,25 @@ class ActiveListener(Command):
 
   def __init__(self, **kwargs):
     super().__init__(**kwargs)
-    self.logger = structlog.get_logger("🤸👂")
-    self._client: EavesdropClientWrapper | None = None
-    self._typer = DesktopTyper()
-    self._text_state = TextState()
-    self._shutdown_event = asyncio.Event()
-
-  async def run(self) -> None:
-    """Main entry point for the command."""
-    await self._initialize_components()
-    await self._setup_signal_handlers()
-    await self._start_transcription_loop()
-
-  async def _initialize_components(self) -> None:
-    """Initialize all application components."""
-    self.logger.info("Initializing components", server=self.server, audio_device=self.audio_device)
-
-    # Initialize desktop typer
-    self._typer.initialize()
-
-    if not self._typer.is_available():
-      raise Exception("ydotool is not available - check permissions and installation")
-
-    # Initialize eavesdrop client
+    self.logger = structlog.get_logger("👂")
     self._client = EavesdropClientWrapper(
       host=self.server.host, port=self.server.port, audio_device=self.audio_device
     )
-    await self._client.initialize()
+    self._typist = YdoToolTypist()
+    self._app = App(client=self._client, typist=self._typist)
 
-    # Assert client is initialized for type checker
-    assert self._client is not None
+  async def run(self) -> None:
+    """Main entry point for the command."""
+    await self._client.initialize()
+    await self._setup_signal_handlers()
+    await self._app.start()
 
   async def _setup_signal_handlers(self) -> None:
     """Setup graceful shutdown signal handlers."""
 
     def signal_handler(signum, _frame):
       self.logger.info("Received shutdown signal", signal=signum)
-      self._shutdown_event.set()
+      self._app.shutdown()
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
-
-  async def _start_transcription_loop(self) -> None:
-    """Start the main transcription processing loop."""
-    self.logger.info("Starting transcription loop")
-    assert self._client is not None  # Should be initialized before this is called
-
-    # Start audio streaming
-    await self._client.start_streaming()
-
-    # Main message processing loop
-    try:
-      async for message in self._client:
-        if self._shutdown_event.is_set():
-          break
-
-        await self._handle_transcription_message(message)
-
-    except Exception:
-      self.logger.exception("Error in transcription loop")
-      raise
-
-  async def _handle_transcription_message(self, message) -> None:
-    """Handle incoming transcription messages from the server."""
-    try:
-      # Process segments in the message
-      for segment in message.segments:
-        if segment.completed:
-          # Handle completed segment
-          if (
-            self._text_state.current_segment_id == segment.id
-            and self._text_state.current_in_progress_text
-          ):
-            self._text_state.apply_segment_completion(segment.text)
-        else:
-          # Handle in-progress segment
-          text_update = self._text_state.calculate_update(segment)
-          await self._execute_text_update(text_update)
-
-    except Exception:
-      self.logger.exception("Error handling transcription message")
-      raise
-
-  async def _execute_text_update(self, text_update) -> None:
-    """Execute a text update by creating and running a typing operation."""
-    operation = TypingOperation(
-      operation_id=f"op-{asyncio.get_event_loop().time()}",
-      chars_to_delete=text_update.chars_to_delete,
-      text_to_type=text_update.text_to_type,
-      timestamp=asyncio.get_event_loop().time(),
-      completed=False,
-    )
-
-    # Execute with retry
-    success = self._typer.execute_with_retry(operation)
-    if not success:
-      self.logger.error("Failed to execute typing operation", operation_id=operation.operation_id)
-
-  async def _handle_shutdown(self) -> None:
-    """Handle graceful shutdown sequence."""
-    self.logger.info("Starting graceful shutdown")
-
-    if self._client:
-      await self._client.shutdown()
-
-    self.logger.info("Shutdown complete")
-
-  async def _monitor_connection_health(self) -> None:
-    """Monitor connection health and attempt recovery if needed."""
-    if not self._client:
-      return
-
-    if not self._client.check_connection_health():
-      await self._client.attempt_reconnection()

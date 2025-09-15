@@ -60,7 +60,7 @@
 - [x] T012 [P] UpdateType enum in src/eavesdrop/active_listener/text_manager.py
 
 ## Phase 3.4: Core Implementation
-- [x] T013 [P] DesktopTyper class in src/eavesdrop/active_listener/typer.py
+- [x] T013 [P] YdoToolTypist class in src/eavesdrop/active_listener/typer.py
 - [x] T014 Text diffing algorithms (find_common_prefix, calculate_text_diff) in src/eavesdrop/active_listener/text_manager.py
 - [x] T015 Segment processing logic in src/eavesdrop/active_listener/text_manager.py
 - [x] T016 EavesdropClient wrapper in src/eavesdrop/active_listener/client.py

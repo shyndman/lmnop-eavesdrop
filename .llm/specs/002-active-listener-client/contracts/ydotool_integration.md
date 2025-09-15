@@ -5,7 +5,7 @@
 ### Typing Operations Contract
 
 ```python
-class DesktopTyper:
+class YdoToolTypist:
     def __init__(self):
         """Initialize desktop typer and pydotool connection."""
 
@@ -247,7 +247,7 @@ def log_typing_operation(
 ### Mock Interface for Testing
 
 ```python
-class MockDesktopTyper(DesktopTyper):
+class MockYdoToolTypist(YdoToolTypist):
     """Mock implementation for testing text processing logic.
 
     Behavior:
@@ -270,11 +270,11 @@ class MockDesktopTyper(DesktopTyper):
 ### Integration Testing
 
 ```python
-def create_real_typer_for_testing() -> DesktopTyper:
+def create_real_typer_for_testing() -> YdoToolTypist:
     """Create real typer instance for integration testing.
 
     Returns:
-        Real DesktopTyper that actually performs desktop operations
+        Real YdoToolTypist that actually performs desktop operations
 
     Safety:
         - Only used in controlled test environments

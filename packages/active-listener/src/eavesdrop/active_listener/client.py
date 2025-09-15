@@ -21,7 +21,7 @@ class EavesdropClientWrapper:
     self._audio_device = audio_device
     self._client: EavesdropClient | None = None
     self._connection_state = ConnectionState()
-    self.logger = structlog.get_logger("🤸👂")
+    self.logger = structlog.get_logger("👂")
 
   async def initialize(self) -> None:
     """Initialize the eavesdrop client connection."""
