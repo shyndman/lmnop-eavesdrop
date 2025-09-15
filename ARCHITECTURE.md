@@ -58,12 +58,23 @@ graph TD
         TranscriptionSink -- Delivers To --> RTSP_Subscriber
     end
 
+    %% Rose Pine color scheme
+    style WS_Transcriber fill:#f6c177,stroke:#e0def4,stroke-width:2px,color:#191724
+    style RTSP_Subscriber fill:#f6c177,stroke:#e0def4,stroke-width:2px,color:#191724
 
-    style StreamingProcessor fill:#bbf,stroke:#333,stroke-width:2px
-    style AudioBuffer fill:#bbf,stroke:#333,stroke-width:2px
-    style WhisperModel fill:#bbf,stroke:#333,stroke-width:2px
-    style AudioSource fill:#f9f,stroke:#333,stroke-width:2px
-    style TranscriptionSink fill:#f9f,stroke:#333,stroke-width:2px
+    style WebSocketServer fill:#ebbcba,stroke:#e0def4,stroke-width:2px,color:#191724
+    style RTSPClientManager fill:#ebbcba,stroke:#e0def4,stroke-width:2px,color:#191724
+    style RTSPStream fill:#31748f,stroke:#e0def4,stroke-width:2px,color:#e0def4
+
+    style StreamingProcessor fill:#9ccfd8,stroke:#e0def4,stroke-width:2px,color:#191724
+    style AudioBuffer fill:#9ccfd8,stroke:#e0def4,stroke-width:2px,color:#191724
+    style WhisperModel fill:#9ccfd8,stroke:#e0def4,stroke-width:2px,color:#191724
+
+    style AudioSource fill:#c4a7e7,stroke:#e0def4,stroke-width:2px,color:#191724
+    style TranscriptionSink fill:#c4a7e7,stroke:#e0def4,stroke-width:2px,color:#191724
+
+    style WebSocketStreamingClient fill:#26233a,stroke:#e0def4,stroke-width:1px,color:#e0def4
+    style RTSPTranscriptionClient fill:#26233a,stroke:#e0def4,stroke-width:1px,color:#e0def4
 ```
 
 ### Core Components
@@ -110,6 +121,19 @@ graph LR
 
     TranscriptionSink -- Implemented By --> WebSocketTranscriptionSink
     TranscriptionSink -- Implemented By --> RTSPTranscriptionSink
+
+    %% Rose Pine color scheme
+    style WebSocketAudioSource fill:#ebbcba,stroke:#e0def4,stroke-width:2px,color:#191724
+    style RTSPAudioSource fill:#ebbcba,stroke:#e0def4,stroke-width:2px,color:#191724
+
+    style AudioStreamBuffer fill:#9ccfd8,stroke:#e0def4,stroke-width:2px,color:#191724
+    style StreamingTranscriptionProcessor fill:#9ccfd8,stroke:#e0def4,stroke-width:2px,color:#191724
+
+    style WebSocketTranscriptionSink fill:#ebbcba,stroke:#e0def4,stroke-width:2px,color:#191724
+    style RTSPTranscriptionSink fill:#ebbcba,stroke:#e0def4,stroke-width:2px,color:#191724
+
+    style AudioSource fill:#c4a7e7,stroke:#e0def4,stroke-width:2px,color:#191724
+    style TranscriptionSink fill:#c4a7e7,stroke:#e0def4,stroke-width:2px,color:#191724
 ```
 
 ## Workflow 1: WebSocket Transcriber
@@ -226,18 +250,15 @@ graph TD
     end
 
     subgraph "Shared Core"
-        style Core fill:#bbf,stroke:#333,stroke-width:2px
         StreamingProcessor[StreamingTranscriptionProcessor]
     end
 
     subgraph "WebSocket Implementation"
-        style WSImpl fill:#cfc,stroke:#333,stroke-width:1px
         WebSocketAudioSource
         WebSocketTranscriptionSink
     end
 
     subgraph "RTSP Implementation"
-        style RTSPImpl fill:#ccf,stroke:#333,stroke-width:1px
         RTSPAudioSource
         RTSPTranscriptionSink
     end
@@ -252,6 +273,17 @@ graph TD
     TranscriptionSink -- Implemented by --> WebSocketTranscriptionSink
     TranscriptionSink -- Implemented by --> RTSPTranscriptionSink
 
+    %% Rose Pine color scheme
+    style AudioSource fill:#c4a7e7,stroke:#e0def4,stroke-width:2px,color:#191724
+    style TranscriptionSink fill:#c4a7e7,stroke:#e0def4,stroke-width:2px,color:#191724
+
+    style StreamingProcessor fill:#9ccfd8,stroke:#e0def4,stroke-width:2px,color:#191724
+
+    style WebSocketAudioSource fill:#ebbcba,stroke:#e0def4,stroke-width:2px,color:#191724
+    style WebSocketTranscriptionSink fill:#ebbcba,stroke:#e0def4,stroke-width:2px,color:#191724
+
+    style RTSPAudioSource fill:#31748f,stroke:#e0def4,stroke-width:2px,color:#e0def4
+    style RTSPTranscriptionSink fill:#31748f,stroke:#e0def4,stroke-width:2px,color:#e0def4
 ```
 
 ### Similarities
