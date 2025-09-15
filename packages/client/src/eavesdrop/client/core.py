@@ -12,11 +12,14 @@ from typing import Any
 
 from eavesdrop.client.audio import AudioCapture
 from eavesdrop.client.connection import WebSocketConnection
+from eavesdrop.common import get_logger
 from eavesdrop.wire import (
   ClientType,
   TranscriptionMessage,
   UserTranscriptionOptions,
 )
+
+logger = get_logger("cli")
 
 
 class EavesdropClient:
@@ -343,4 +346,4 @@ class EavesdropClient:
     """Handle error callback."""
     # For now, just print error
     # In full implementation, could raise exceptions or call user error handlers
-    print(f"EavesdropClient error: {error}")
+    self.logger(f"EavesdropClient error: {error}")
