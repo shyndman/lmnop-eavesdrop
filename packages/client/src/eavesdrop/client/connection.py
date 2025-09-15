@@ -157,6 +157,7 @@ class WebSocketConnection:
 
     except Exception as e:
       self.on_error(f"Error processing message: {e}")
+      raise
 
   async def send_audio_data(self, audio_data: bytes):
     """Send audio data to server."""
