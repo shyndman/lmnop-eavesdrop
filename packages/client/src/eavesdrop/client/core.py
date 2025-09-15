@@ -6,6 +6,7 @@ and context manager protocols for streaming transcription results.
 """
 
 import asyncio
+import secrets
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -169,7 +170,7 @@ class EavesdropClient:
     self._connection = WebSocketConnection(
       host=self._host,
       port=self._port,
-      stream_name="transcriber",  # Default stream name for transcriber
+      stream_name=f"t{secrets.token_hex(2)}",
       on_ready=self._on_ready,
       on_transcription=self._on_transcription_text,
       on_error=self._on_error,
@@ -190,7 +191,7 @@ class EavesdropClient:
     self._connection = WebSocketConnection(
       host=self._host,
       port=self._port,
-      stream_name="subscriber",  # Default stream name for subscriber
+      stream_name=f"s{secrets.token_hex(2)}",
       on_ready=self._on_ready,
       on_transcription=self._on_transcription_text,
       on_error=self._on_error,
