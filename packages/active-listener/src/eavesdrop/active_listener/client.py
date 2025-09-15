@@ -6,10 +6,9 @@ transcription message handling, and error recovery for real-time audio streaming
 
 import time
 
-import structlog
-
 from eavesdrop.active_listener.text_manager import ConnectionState
 from eavesdrop.client import EavesdropClient
+from eavesdrop.common import get_logger
 
 
 class EavesdropClientWrapper:
@@ -21,7 +20,7 @@ class EavesdropClientWrapper:
     self._audio_device = audio_device
     self._client: EavesdropClient | None = None
     self._connection_state = ConnectionState()
-    self.logger = structlog.get_logger("👂")
+    self.logger = get_logger("client")
 
   async def initialize(self) -> None:
     """Initialize the eavesdrop client connection."""

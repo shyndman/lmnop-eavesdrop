@@ -8,12 +8,12 @@ import signal
 from typing import NamedTuple, TypedDict
 
 import sounddevice as sd
-import structlog
 from clypi import Command, arg
 
 from eavesdrop.active_listener.app import App
 from eavesdrop.active_listener.client import EavesdropClientWrapper
 from eavesdrop.active_listener.typist import YdoToolTypist
+from eavesdrop.common import get_logger
 
 
 class AudioDevice(TypedDict):
@@ -131,7 +131,7 @@ class ActiveListener(Command):
 
   def __init__(self, **kwargs):
     super().__init__(**kwargs)
-    self.logger = structlog.get_logger("👂")
+    self.logger = get_logger("cli")
     self._client = EavesdropClientWrapper(
       host=self.server.host, port=self.server.port, audio_device=self.audio_device
     )

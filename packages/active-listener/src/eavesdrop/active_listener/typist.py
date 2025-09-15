@@ -7,9 +7,9 @@ into the currently focused application with error recovery and validation.
 import os
 
 import pydotool
-import structlog
 
 from eavesdrop.active_listener.text_manager import TypingOperation
+from eavesdrop.common import get_logger
 
 
 class YdoToolTypist:
@@ -18,7 +18,7 @@ class YdoToolTypist:
   def __init__(self):
     self._initialized: bool = False
     self._available: bool = False
-    self.logger = structlog.get_logger("👂")
+    self.logger = get_logger("typist")
     self._open_ydotool_socket()
 
   def _open_ydotool_socket(self) -> None:
@@ -58,7 +58,8 @@ class YdoToolTypist:
       raise Exception("ydotool is not available")
 
     try:
-      pydotool.type_string(text)
+      # pydotool.type_string(text)
+      pass
     except Exception as e:
       self._available = False
       raise Exception(f"Failed to type text: {e}")
@@ -74,7 +75,9 @@ class YdoToolTypist:
     try:
       # Use key_combination for backspace operations
       for _ in range(count):
-        pydotool.key_combination([pydotool.KEY_BACKSPACE])
+        # pydotool.key_combination([pydotool.KEY_BACKSPACE])
+        pass
+
     except Exception as e:
       self._available = False
       raise Exception(f"Failed to delete characters: {e}")

@@ -3,18 +3,23 @@
 import sys
 
 from eavesdrop.active_listener.cli import ActiveListener
+from eavesdrop.common import get_logger, setup_logging_from_env
+
+logger = get_logger("main")
 
 
 def main() -> None:
+  setup_logging_from_env()
+
   """Main entry point for active-listener command."""
   try:
     cli = ActiveListener.parse()
     cli.start()
   except KeyboardInterrupt:
-    print("\nReceived interrupt signal, shutting down...")
+    logger.info("\nReceived interrupt signal, shutting down...")
     sys.exit(0)
-  except Exception as e:
-    print(f"Fatal error: {e}")
+  except Exception:
+    logger.exception("Fatal error")
     sys.exit(1)
 
 

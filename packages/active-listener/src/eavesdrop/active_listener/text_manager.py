@@ -12,6 +12,7 @@ from enum import Enum
 
 from pydantic import NonNegativeInt
 from pydantic.dataclasses import dataclass
+from structlog import get_logger
 
 from eavesdrop.wire.transcription import Segment
 
@@ -61,6 +62,9 @@ class ConnectionState:
   error_message: str | None = None  # Last error encountered, if any
 
 
+logger = get_logger("txt")
+
+
 @dataclasses.dataclass
 class TextState:
   """Manages the complete state of text that has been typed to the desktop."""
@@ -78,24 +82,29 @@ class TextState:
 
     # Case 1. The segment completed, and we already have it marked completed
     if segment.completed and segment.id in self.completed_segment_ids:
+      logger.warn("Still completed")
       return None
 
     # Case 2. The segment is newly completed, transitioning from in-progress
     if segment.completed and segment.id not in self.completed_segment_ids:
-      assert self.current_segment is not None and segment.id == self.current_segment.id
-      update = calculate_text_update(from_segment=self.current_segment, to_segment=segment)
-      self.current_segment = None
+      logger.warn("New completed", previous_in_progress=self.current_segment)
+      assert self.current_segment is not None
       self.completed_segment_ids[segment.id] = segment
+      update = calculate_text_update(from_segment=self.current_segment, to_segment=segment)
+      if segment.id == self.current_segment.id:
+        self.current_segment = None
       return update
 
     # Case 3. We are receiving the latest in-progress update for the current segment
     if not segment.completed and self.current_segment:
+      logger.warn("Updated in-progress")
       assert self.current_segment.id == segment.id
       update = calculate_text_update(from_segment=self.current_segment, to_segment=segment)
       return update
 
     # Case 4. We are receiving the first in-progress segment
     if not segment.completed and not self.current_segment:
+      logger.warn("New in-progress")
       self.current_segment = segment
       return calculate_text_update(from_segment=None, to_segment=segment)
 

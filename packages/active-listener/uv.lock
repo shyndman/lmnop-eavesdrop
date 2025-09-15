@@ -9,6 +9,7 @@ source = { editable = "." }
 dependencies = [
     { name = "clypi" },
     { name = "eavesdrop-client" },
+    { name = "eavesdrop-common" },
     { name = "eavesdrop-wire" },
     { name = "pydantic" },
     { name = "python-ydotool" },
@@ -27,6 +28,7 @@ dev = [
 requires-dist = [
     { name = "clypi", specifier = ">=1.8.1" },
     { name = "eavesdrop-client", editable = "../client" },
+    { name = "eavesdrop-common", editable = "../common" },
     { name = "eavesdrop-wire", editable = "../wire" },
     { name = "pydantic", specifier = ">=2.11.9" },
     { name = "python-ydotool", specifier = ">=1.0.4.post1" },
@@ -134,6 +136,7 @@ name = "eavesdrop-client"
 version = "0.0.0"
 source = { editable = "../client" }
 dependencies = [
+    { name = "eavesdrop-common" },
     { name = "eavesdrop-wire" },
     { name = "numpy" },
     { name = "pydantic" },
@@ -144,12 +147,30 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "eavesdrop-common", editable = "../common" },
     { name = "eavesdrop-wire", editable = "../wire" },
     { name = "numpy", specifier = "<2" },
     { name = "pydantic", specifier = ">=2" },
     { name = "sounddevice", specifier = ">=0.5.2" },
     { name = "structlog", specifier = ">=25.4.0" },
     { name = "websockets", specifier = ">=13.0" },
+]
+
+[[package]]
+name = "eavesdrop-common"
+version = "0.0.0"
+source = { editable = "../common" }
+dependencies = [
+    { name = "numpy" },
+    { name = "pydantic" },
+    { name = "structlog" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "numpy", specifier = "<2" },
+    { name = "pydantic", specifier = ">=2" },
+    { name = "structlog", specifier = ">=25.4.0" },
 ]
 
 [[package]]
