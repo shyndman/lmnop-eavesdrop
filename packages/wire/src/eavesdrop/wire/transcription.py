@@ -29,6 +29,19 @@ class Segment:
   words: list[Word] | None
   temperature: float | None
   completed: bool = False
+  time_offset: float = 0.0
+
+  def absolute_start_time(self) -> float:
+    """Return the absolute start time in the audio stream."""
+    return self.time_offset + self.start
+
+  def absolute_end_time(self) -> float:
+    """Return the absolute end time in the audio stream."""
+    return self.time_offset + self.end
+
+  def duration(self) -> float:
+    """Return the duration of this segment in seconds."""
+    return self.end - self.start
 
 
 class UserTranscriptionOptions(BaseModel):

@@ -615,17 +615,16 @@ class _TranscribeContext:
 
     self.all_tokens.extend(tokens)
 
-    # Use absolute stream position for stable ID generation
-    # Convert absolute start time to frame position
+    # Temporary ID generation - will be replaced with foolproof system
     absolute_start_time = time_offset + segment_data["start"]
-    segment_id = int(round(absolute_start_time * self.frames_per_second))
+    segment_id = 0  # Placeholder for foolproof ID system
 
-    # Log segment ID generation for debugging
-    from eavesdrop.common import get_logger
+    # Log segment information for debugging
+    from eavesdrop.server.logs import get_logger
 
     id_logger = get_logger("seg-id")
     id_logger.debug(
-      "Generated segment ID",
+      "Segment created with stream timing",
       segment_id=segment_id,
       relative_start=segment_data["start"],
       time_offset=time_offset,
@@ -648,6 +647,7 @@ class _TranscribeContext:
         words=(
           [Word(**word) for word in segment_data.get("words", [])] if word_timestamps else None
         ),
+        time_offset=time_offset,
       )
     )
 
