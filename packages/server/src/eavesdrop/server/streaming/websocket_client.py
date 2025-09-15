@@ -12,8 +12,8 @@ from collections.abc import Awaitable, Callable
 import numpy as np
 from websockets.asyncio.server import ServerConnection
 
+from eavesdrop.common import get_logger
 from eavesdrop.server.config import TranscriptionConfig
-from eavesdrop.server.logs import get_logger
 from eavesdrop.server.streaming.buffer import AudioStreamBuffer
 from eavesdrop.server.streaming.processor import StreamingTranscriptionProcessor
 from eavesdrop.server.streaming.websocket_adapters import (

@@ -20,7 +20,7 @@ from faster_whisper.vad import (
   get_speech_timestamps,
 )
 
-from eavesdrop.server.logs import get_logger
+from eavesdrop.common import get_logger
 from eavesdrop.server.transcription.models import LanguageProbability, SegmentDict, WordDict
 
 # Private module constants for anomaly detection thresholds

@@ -326,10 +326,26 @@ wheels = [
 ]
 
 [[package]]
+name = "eavesdrop-common"
+version = "0.0.0"
+source = { editable = "../common" }
+dependencies = [
+    { name = "pydantic" },
+    { name = "structlog" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pydantic", specifier = ">=2" },
+    { name = "structlog", specifier = ">=25.4.0" },
+]
+
+[[package]]
 name = "eavesdrop-server"
 version = "0.0.0"
 source = { editable = "." }
 dependencies = [
+    { name = "eavesdrop-common" },
     { name = "eavesdrop-wire" },
     { name = "evaluate" },
     { name = "jiwer" },
@@ -361,6 +377,7 @@ type-checkable = [
 
 [package.metadata]
 requires-dist = [
+    { name = "eavesdrop-common", editable = "../common" },
     { name = "eavesdrop-wire", editable = "../wire" },
     { name = "evaluate" },
     { name = "jiwer" },

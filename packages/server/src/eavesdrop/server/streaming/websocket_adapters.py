@@ -11,7 +11,7 @@ import numpy as np
 from websockets.asyncio.server import ServerConnection
 from websockets.exceptions import ConnectionClosedError
 
-from eavesdrop.server.logs import get_logger
+from eavesdrop.common import get_logger
 from eavesdrop.server.streaming.interfaces import (
   AudioSource,
   TranscriptionResult,

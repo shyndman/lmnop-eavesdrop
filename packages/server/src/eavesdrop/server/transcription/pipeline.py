@@ -12,7 +12,7 @@ from faster_whisper.tokenizer import _LANGUAGE_CODES, Tokenizer
 from faster_whisper.utils import get_end
 from faster_whisper.vad import VadOptions
 
-from eavesdrop.server.logs import get_logger
+from eavesdrop.common import get_logger
 from eavesdrop.server.transcription.audio_processing import AudioProcessor
 from eavesdrop.server.transcription.generation_strategies import GenerationStrategies
 from eavesdrop.server.transcription.hallucination_filter import HallucinationFilter
@@ -621,7 +621,7 @@ class _TranscribeContext:
     segment_id = int(round(absolute_start_time * self.frames_per_second))
 
     # Log segment ID generation for debugging
-    from eavesdrop.server.logs import get_logger
+    from eavesdrop.common import get_logger
 
     id_logger = get_logger("seg-id")
     id_logger.debug(

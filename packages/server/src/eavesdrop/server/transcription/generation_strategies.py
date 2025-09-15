@@ -10,7 +10,7 @@ from typing import NamedTuple
 import ctranslate2
 from faster_whisper.tokenizer import Tokenizer
 
-from eavesdrop.server.logs import get_logger
+from eavesdrop.common import get_logger
 from eavesdrop.server.transcription.models import TranscriptionOptions
 from eavesdrop.server.transcription.utils import get_compression_ratio
 

@@ -8,8 +8,8 @@ import threading
 
 import numpy as np
 
+from eavesdrop.common import get_logger
 from eavesdrop.server.config import BufferConfig
-from eavesdrop.server.logs import get_logger
 
 
 class AudioStreamBuffer:

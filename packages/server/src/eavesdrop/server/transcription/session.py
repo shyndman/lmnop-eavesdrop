@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from structlog.stdlib import BoundLogger
 
-from eavesdrop.server.logs import get_logger
+from eavesdrop.common import get_logger
 from eavesdrop.server.transcription.models import SpeechChunk
 
 if TYPE_CHECKING:

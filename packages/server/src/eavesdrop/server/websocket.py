@@ -5,7 +5,7 @@ from collections.abc import Awaitable, Callable
 from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosed, InvalidMessage
 
-from eavesdrop.server.logs import get_logger
+from eavesdrop.common import get_logger
 
 
 class WebSocketClientManager:

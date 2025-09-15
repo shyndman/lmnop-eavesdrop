@@ -5,6 +5,7 @@ description = "Real-time audio transcription server with WebSocket-based speech-
 authors = [{name = "shyndman", email = "scotty.hyndman@gmail.com"}]
 requires-python = ">=3.12"
 dependencies = [
+  "eavesdrop-common",
   "eavesdrop-wire",
   "evaluate",
   "jiwer",
@@ -20,7 +21,6 @@ dependencies = [
   "structlog>=25.4.0",
   "websocket-client>=1.8.0",
   "websockets",
-
   # These are installed via other means (see Dockerfile)
   # "tokenizers==0.20.3",
   # "transformers[torch]==4.54",
@@ -89,6 +89,7 @@ eavesdrop-wire = {path = "../wire", editable = true}
 torch = {index = "pytorch"}
 torchaudio = {index = "pytorch"}
 pytorch-triton-rocm = {index = "pytorch"}
+eavesdrop-common = { path = "../common", editable = true }
 
 [[tool.uv.index]]
 name = "pypi"

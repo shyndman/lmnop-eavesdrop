@@ -4,8 +4,8 @@ from typing import TYPE_CHECKING
 import numpy as np
 import structlog
 
+from eavesdrop.common import get_logger
 from eavesdrop.server.constants import SAMPLE_RATE
-from eavesdrop.server.logs import get_logger
 from eavesdrop.wire import Segment
 
 if TYPE_CHECKING:

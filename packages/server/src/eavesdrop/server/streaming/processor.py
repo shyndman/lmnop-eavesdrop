@@ -15,9 +15,9 @@ import torch
 from faster_whisper.vad import VadOptions
 from huggingface_hub import snapshot_download
 
+from eavesdrop.common import get_logger
 from eavesdrop.server.config import TranscriptionConfig
 from eavesdrop.server.constants import CACHE_PATH, SINGLE_MODEL
-from eavesdrop.server.logs import get_logger
 from eavesdrop.server.streaming.buffer import AudioStreamBuffer
 from eavesdrop.server.streaming.interfaces import TranscriptionResult, TranscriptionSink
 from eavesdrop.server.transcription.models import TranscriptionInfo

@@ -169,7 +169,7 @@ class SegmentProcessor:
       duration = last_timestamp_position * self.time_precision
 
     # Log whether segment has final timestamp or uses full duration
-    from eavesdrop.server.logs import get_logger
+    from eavesdrop.common import get_logger
 
     logger = get_logger("seg")
     has_final_timestamp = len(timestamps) > 0 and timestamps[-1] != tokenizer.timestamp_begin

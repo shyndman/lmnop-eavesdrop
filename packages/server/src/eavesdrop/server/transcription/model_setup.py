@@ -16,7 +16,7 @@ from faster_whisper.feature_extractor import FeatureExtractor
 from faster_whisper.tokenizer import _LANGUAGE_CODES
 from faster_whisper.utils import download_model
 
-from eavesdrop.server.logs import get_logger
+from eavesdrop.common import get_logger
 from eavesdrop.server.transcription.models import FeatureExtractorConfig
 
 # Private module constants

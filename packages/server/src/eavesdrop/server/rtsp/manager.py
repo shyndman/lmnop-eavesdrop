@@ -1,8 +1,8 @@
 import asyncio
 from typing import TYPE_CHECKING, TypedDict
 
+from eavesdrop.common import get_logger
 from eavesdrop.server.config import TranscriptionConfig
-from eavesdrop.server.logs import get_logger
 from eavesdrop.server.rtsp.client import RTSPTranscriptionClient
 
 if TYPE_CHECKING:

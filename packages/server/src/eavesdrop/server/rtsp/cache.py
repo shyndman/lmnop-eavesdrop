@@ -13,8 +13,8 @@ from typing import TypedDict
 
 from pydantic.dataclasses import dataclass
 
+from eavesdrop.common import get_logger
 from eavesdrop.server.config import RTSPCacheConfig
-from eavesdrop.server.logs import get_logger
 from eavesdrop.wire import Segment, TranscriptionMessage
 
 
