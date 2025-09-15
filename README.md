@@ -4,11 +4,26 @@ A real-time audio transcription system with WebSocket-based speech-to-text servi
 
 ## Architecture
 
-Eavesdrop is split into three packages:
+Eavesdrop is built around a central, reusable transcription pipeline that's agnostic to audio sources and transcription destinations. The system uses protocol-based adapters to integrate with different transport layers (WebSockets, RTSP streams).
 
-- **[eavesdrop-server](./packages/server/)** - WebSocket server handling client connections, audio processing, and transcription coordination
-- **[eavesdrop-client](./packages/client/)** - Python client library for streaming transcription
+### Packages
+
+- **[eavesdrop-server](./packages/server/)** - WebSocket server with core transcription pipeline, RTSP stream processing, and client connection management
+- **[eavesdrop-client](./packages/client/)** - Python client library for streaming transcription and RTSP subscription
 - **[eavesdrop-wire](./packages/wire/)** - Shared message types and protocol definitions
+- **[eavesdrop-common](./packages/common/)** - Shared utilities, logging, and data structures
+- **[active-listener](./packages/active-listener/)** - Desktop application for voice-to-text input using system audio capture
+
+### Core Design
+
+The architecture separates audio sources from transcription logic through two key protocols:
+
+- **`AudioSource`** - Defines how audio enters the system (WebSocket, RTSP, etc.)
+- **`TranscriptionSink`** - Defines how results are delivered (WebSocket responses, broadcast to subscribers, etc.)
+
+This allows the same `StreamingTranscriptionProcessor` to handle both real-time client transcription and background RTSP stream processing.
+
+For detailed architecture information, see [ARCHITECTURE.md](./ARCHITECTURE.md).
 
 ## Quick Start
 
