@@ -31,7 +31,7 @@ _LONG_WORD_DURATION_THRESHOLD = 2.0
 _SEGMENT_ANOMALY_SCORE_THRESHOLD = 3.0
 _SEGMENT_ANOMALY_SCORE_OFFSET = 0.01
 _MAX_WORDS_FOR_ANOMALY_CHECK = 8
-_DEFAULT_PUNCTUATION = '"\'"¿([{-"\'.。,，!！?？:：")]}、'
+_ANOMALY_IGNORED_PUNCTUATION = '"\'"¿([{-"\'.。,，!！?？:：")]}、'
 
 
 class LanguageAnalysisResult(TypedDict):
@@ -285,7 +285,7 @@ class LanguageDetector:
 class AnomalyDetector:
   """Handles anomaly detection for transcription segments and words."""
 
-  def __init__(self, punctuation: str = _DEFAULT_PUNCTUATION):
+  def __init__(self, punctuation: str = _ANOMALY_IGNORED_PUNCTUATION):
     """Initialize the anomaly detector.
 
     :param punctuation: String of punctuation characters to ignore in anomaly detection
