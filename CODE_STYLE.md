@@ -167,7 +167,6 @@ def __init__(
     sink: TranscriptionSink,
     config: TranscriptionConfig,
     stream_name: str,
-    translation_queue: queue.Queue[dict] | None = None,
     logger_name: str = "transcription_processor",
 ) -> None:
 
