@@ -4,14 +4,14 @@ import numpy as np
 from structlog.typing import EventDict, WrappedLogger
 
 
-class _FloatPrecisionProcessor:
+class FloatPrecisionProcessor:
   """
   A structlog processor for rounding floats. Both as single numbers or in data structures like
   (nested) lists, dicts, or numpy arrays.
 
   Inspired by https://github.com/underyx/structlog-pretty/blob/master/structlog_pretty/processors.py
 
-  NOTE: It seems that if your processor logs internally, like for debugging purposes, it will be
+  NOTE: It seems that if a processor logs internally, like for debugging purposes, it will be
   detected and removed from the processing stack.
   """
 
