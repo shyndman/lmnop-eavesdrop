@@ -615,17 +615,16 @@ class _TranscribeContext:
 
     self.all_tokens.extend(tokens)
 
-    # Temporary ID generation - will be replaced with foolproof system
-    absolute_start_time = time_offset + segment_data["start"]
-    segment_id = 0  # Placeholder for foolproof ID system
+    # Assign baseline ID for incomplete segments (will get chain ID when completed)
+    from eavesdrop.wire.transcription import compute_segment_chain_id
 
-    # Log segment information for debugging
-    from eavesdrop.server.logs import get_logger
+    segment_id = compute_segment_chain_id(0, "")  # Baseline ID for incomplete segments
+    absolute_start_time = time_offset + segment_data["start"]
 
     id_logger = get_logger("seg-id")
     id_logger.debug(
-      "Segment created with stream timing",
-      segment_id=segment_id,
+      "Segment created (incomplete, will get chain ID when completed)",
+      baseline_id=segment_id,
       relative_start=segment_data["start"],
       time_offset=time_offset,
       absolute_start_time=absolute_start_time,

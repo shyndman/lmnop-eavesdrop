@@ -209,6 +209,9 @@ class TranscriptionSession:
   generation_attempts: int = 0
   final_temperature: float = 0.0
 
+  # Segment chain tracking
+  completed_segments: list["Segment"] = field(default_factory=list)
+
   def __post_init__(self):
     """Initialize the session logger."""
     self.logger = get_logger("trace", stream=self.stream_name)
@@ -363,6 +366,26 @@ class TranscriptionSession:
       parts.append(f"total={total_time * 1000:.3f}ms")
 
     return " ".join(parts)
+
+  # Segment chain management
+  def get_last_completed_segment(self) -> "Segment | None":
+    """Get the most recently completed segment for chain ID computation.
+
+    :returns: The last completed segment, or None if no segments completed yet
+    :rtype: Segment | None
+    """
+    return self.completed_segments[-1] if self.completed_segments else None
+
+  def add_completed_segment(self, segment: "Segment") -> None:
+    """Add a completed segment to the chain.
+
+    This should be called after a segment has been marked as completed
+    and assigned its chain-based ID.
+
+    :param segment: The completed segment to add to the chain
+    :type segment: Segment
+    """
+    self.completed_segments.append(segment)
 
   # Tracer factory methods
   def trace_pipeline(self) -> "PipelineTracer":

@@ -4,7 +4,6 @@ Streaming transcription processor with integrated Faster Whisper transcriber.
 
 import asyncio
 import os
-import queue
 import threading
 import time
 from dataclasses import dataclass
@@ -64,7 +63,6 @@ class StreamingTranscriptionProcessor:
     sink: TranscriptionSink,
     config: TranscriptionConfig,
     stream_name: str,
-    translation_queue: queue.Queue[dict] | None = None,
     logger_name: str = "proc",
     session: TranscriptionSession | None = None,
   ) -> None:
@@ -72,14 +70,12 @@ class StreamingTranscriptionProcessor:
     self.sink = sink
     self.config = config
     self.stream_name = stream_name
-    self.translation_queue = translation_queue
     self.session = session
     self.logger = get_logger("proc", stream=self.stream_name)
 
     # Transcription state
     self.exit: bool = False
     self.language: str | None = config.language
-    self.transcript: list[dict] = []
     self.text: list[str] = []
 
     # Segment processing state
@@ -401,7 +397,7 @@ class StreamingTranscriptionProcessor:
       # Typically all segments except the last are completed
       segments_for_client = []
       for i, segment in enumerate(result):
-        # Create a copy and set the completed field
+        # Create a copy for client
         segment_copy = Segment(
           id=segment.id,
           seek=segment.seek,
@@ -413,8 +409,20 @@ class StreamingTranscriptionProcessor:
           compression_ratio=segment.compression_ratio,
           words=segment.words,
           temperature=segment.temperature,
-          completed=i < len(result) - 1,  # All but last segment are completed
+          completed=segment.completed,
+          time_offset=segment.time_offset,
         )
+
+        # Apply chain-based completion for all but the last segment
+        should_complete = i < len(result) - 1
+        if should_complete and not segment_copy.completed and self.session:
+          # Mark as completed and assign chain-based ID
+          preceding_segment = self.session.get_last_completed_segment()
+          segment_copy.mark_completed(preceding_segment)
+
+          # Add to session's completed segments chain
+          self.session.add_completed_segment(segment_copy)
+
         segments_for_client.append(segment_copy)
 
       # Send rich Segment objects to client
@@ -443,14 +451,8 @@ class StreamingTranscriptionProcessor:
         if start >= end:
           continue
 
-        completed_segment = self._format_segment(start, end, text_, completed=True)
-        self.transcript.append(completed_segment)
-
-        if self.translation_queue:
-          try:
-            self.translation_queue.put(completed_segment.copy(), timeout=0.1)
-          except queue.Full:
-            self.logger.warning("Translation queue is full, skipping segment")
+        # Note: Segment completion and chain ID assignment now handled
+        # in _handle_transcription_output via mark_completed()
 
         offset = min(duration, s.end)
 
@@ -471,19 +473,9 @@ class StreamingTranscriptionProcessor:
     if self.same_output_count > self.config.same_output_threshold:
       if not self.text or self.text[-1].strip().lower() != self.current_out.strip().lower():
         self.text.append(self.current_out)
-        completed_segment = self._format_segment(
-          self.buffer.processed_up_to_time,
-          self.buffer.processed_up_to_time + min(duration, self.end_time_for_same_output),  # type: ignore
-          self.current_out,
-          completed=True,
-        )
-        self.transcript.append(completed_segment)
-
-        if self.translation_queue:
-          try:
-            self.translation_queue.put(completed_segment.copy(), timeout=0.1)
-          except queue.Full:
-            self.logger.warning("Translation queue is full, skipping segment")
+        # Note: Completion via repeated output threshold
+        # This path may need special handling for translation queue
+        # since it doesn't go through the normal segment completion flow
 
       self.current_out = ""
       offset = min(duration, self.end_time_for_same_output)  # type: ignore
@@ -496,12 +488,28 @@ class StreamingTranscriptionProcessor:
       self.buffer.advance_processed_boundary(offset)
 
   def _prepare_segments(self, last_segment: dict | None = None) -> list[dict]:
-    """Prepare segments for client."""
+    """Prepare segments for client using session completed segments."""
     segments: list[dict] = []
-    if len(self.transcript) >= self.config.send_last_n_segments:
-      segments = self.transcript[-self.config.send_last_n_segments :].copy()
-    else:
-      segments = self.transcript.copy()
+
+    if self.session and self.session.completed_segments:
+      # Convert Segment objects to dict format for client
+      completed_dicts = []
+      for seg in self.session.completed_segments:
+        completed_dicts.append(
+          {
+            "id": str(seg.id),
+            "start": "{:.3f}".format(seg.absolute_start_time()),
+            "end": "{:.3f}".format(seg.absolute_end_time()),
+            "text": seg.text,
+            "completed": seg.completed,
+          }
+        )
+
+      # Apply send_last_n_segments limit
+      if len(completed_dicts) >= self.config.send_last_n_segments:
+        segments = completed_dicts[-self.config.send_last_n_segments :].copy()
+      else:
+        segments = completed_dicts.copy()
 
     if last_segment is not None:
       segments = segments + [last_segment]

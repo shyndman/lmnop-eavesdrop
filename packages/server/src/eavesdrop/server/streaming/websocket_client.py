@@ -6,7 +6,6 @@ to replace the existing ServeClientFasterWhisper functionality.
 """
 
 import asyncio
-import queue
 from collections.abc import Awaitable, Callable
 
 import numpy as np
@@ -38,7 +37,6 @@ class WebSocketStreamingClient:
     stream_name: str,
     get_audio_func: Callable[[ServerConnection], Awaitable[np.ndarray | bool]],
     transcription_config: TranscriptionConfig,
-    translation_queue: queue.Queue[dict] | None = None,
   ) -> None:
     """
     Initialize WebSocket streaming client.
@@ -47,11 +45,9 @@ class WebSocketStreamingClient:
     :param stream_name: Unique identifier for the client.
     :param get_audio_func: Function to get audio from websocket.
     :param transcription_config: Configuration for transcription processing (required).
-    :param translation_queue: Optional queue for translation pipeline.
     """
     self.websocket = websocket
     self.stream_name = stream_name
-    self.translation_queue = translation_queue
     self.logger = get_logger("ws/client")
 
     # Initialize session and components
@@ -64,7 +60,6 @@ class WebSocketStreamingClient:
       sink=self.transcription_sink,
       config=transcription_config,
       stream_name=stream_name,
-      translation_queue=translation_queue,
       logger_name=f"ws/proc.{stream_name[0:4]}",
       session=self.session,
     )
