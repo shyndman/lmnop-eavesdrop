@@ -388,52 +388,67 @@ class StreamingTranscriptionProcessor:
       segments=result_count,
     )
 
-    if len(result):
-      self.logger.debug("Processing transcription segments")
-      # Update internal transcript (for translation queue, etc.)
-      self._update_segments(result, duration)
-
-      # Mark segments as completed/incomplete based on position
-      # Typically all segments except the last are completed
-      segments_for_client = []
-      for i, segment in enumerate(result):
-        # Create a copy for client
-        segment_copy = Segment(
-          id=segment.id,
-          seek=segment.seek,
-          start=segment.start,
-          end=segment.end,
-          text=segment.text,
-          tokens=segment.tokens,
-          avg_logprob=segment.avg_logprob,
-          compression_ratio=segment.compression_ratio,
-          words=segment.words,
-          temperature=segment.temperature,
-          completed=segment.completed,
-          time_offset=segment.time_offset,
-        )
-
-        # Apply chain-based completion for all but the last segment
-        should_complete = i < len(result) - 1
-        if should_complete and not segment_copy.completed and self.session:
-          # Mark as completed and assign chain-based ID
-          preceding_segment = self.session.get_last_completed_segment()
-          segment_copy.mark_completed(preceding_segment)
-
-          # Add to session's completed segments chain
-          self.session.add_completed_segment(segment_copy)
-
-        segments_for_client.append(segment_copy)
-
-      # Send rich Segment objects to client
-      transcription_result = TranscriptionResult(
-        segments=segments_for_client,
-        language=self.language,
-      )
-      self.logger.debug("Sending segments to client", segment_count=len(segments_for_client))
-      await self.sink.send_result(transcription_result)
-    else:
+    if not result:
       self.logger.debug("No segments to send to client")
+      return
+
+    self.logger.debug("Processing transcription segments")
+    # Update internal transcript (for translation queue, etc.)
+    self._update_segments(result, duration)
+
+    # Mark segments as completed/incomplete based on position
+    # Typically all segments except the last are completed
+    current_incomplete_segment = None
+
+    for i, segment in enumerate(result):
+      # Create a copy for processing
+      segment_copy = Segment(
+        id=segment.id,
+        seek=segment.seek,
+        start=segment.start,
+        end=segment.end,
+        text=segment.text,
+        tokens=segment.tokens,
+        avg_logprob=segment.avg_logprob,
+        compression_ratio=segment.compression_ratio,
+        words=segment.words,
+        temperature=segment.temperature,
+        completed=segment.completed,
+        time_offset=segment.time_offset,
+      )
+
+      # Apply chain-based completion for all but the last segment
+      should_complete = i < len(result) - 1
+      if should_complete and not segment_copy.completed and self.session:
+        # Mark as completed and assign chain-based ID
+        preceding_segment = self.session.get_last_completed_segment()
+        segment_copy.mark_completed(preceding_segment)
+
+        # Add to session's completed segments chain
+        self.session.add_completed_segment(segment_copy)
+      else:
+        # This is the incomplete (current) segment
+        current_incomplete_segment = segment_copy
+
+    # Prepare segments for client: last N completed + current incomplete
+    segments_for_client = []
+
+    # Add the last N completed segments from session
+    if self.session and self.session.completed_segments:
+      recent_completed = self.session.completed_segments[-self.config.send_last_n_segments :]
+      segments_for_client.extend(recent_completed)
+
+    # Add the current incomplete segment if present
+    if current_incomplete_segment:
+      segments_for_client.append(current_incomplete_segment)
+
+    # Send rich Segment objects to client
+    transcription_result = TranscriptionResult(
+      segments=segments_for_client,
+      language=self.language,
+    )
+    self.logger.debug("Sending segments to client", segment_count=len(segments_for_client))
+    await self.sink.send_result(transcription_result)
 
   def _update_segments(self, segments: list[Segment], duration: float) -> None:
     """Process segments and update transcript."""

@@ -66,6 +66,25 @@ class TranscriptionServer:
 
     # Create configuration for the streaming client with client overrides
     transcription_config = self.transcription_config.model_copy(update=client_overrides)
+
+    # Log the effective transcription configuration
+    self.logger.info(
+      "Client transcription config",
+      stream=msg.stream,
+      model=transcription_config.model,
+      custom_model=str(transcription_config.custom_model)
+      if transcription_config.custom_model
+      else None,
+      language=transcription_config.language,
+      use_vad=transcription_config.use_vad,
+      num_workers=transcription_config.num_workers,
+      send_last_n_segments=transcription_config.send_last_n_segments,
+      same_output_threshold=transcription_config.same_output_threshold,
+      initial_prompt=transcription_config.initial_prompt,
+      hotwords=transcription_config.hotwords,
+      gpu_name=transcription_config.gpu_name,
+    )
+
     client = WebSocketStreamingClient(
       websocket=websocket,
       stream_name=msg.stream,
