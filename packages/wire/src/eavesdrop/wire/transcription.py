@@ -8,6 +8,22 @@ from pydantic import BaseModel, Field
 from pydantic.dataclasses import dataclass
 
 
+def compute_segment_chain_id(previous_id: int, text: str) -> int:
+  """Generate chain-based segment ID using CRC64.
+
+  Creates a deterministic, collision-resistant ID by chaining the previous
+  segment's ID with the current segment's text content.
+
+  :param previous_id: ID of the preceding segment in the chain
+  :param text: Text content of the current segment
+  :returns: CRC64 hash as positive integer
+  """
+  from fastcrc import crc64
+
+  chain_input = f"{previous_id}{text}"
+  return crc64.ecma_182(chain_input.encode())
+
+
 @dataclass
 class Word:
   start: float
@@ -42,6 +58,28 @@ class Segment:
   def duration(self) -> float:
     """Return the duration of this segment in seconds."""
     return self.end - self.start
+
+  def mark_completed(self, preceding_segment: "Segment | None") -> None:
+    """Mark segment as completed and assign chain-based ID.
+
+    Computes a deterministic ID based on the preceding segment's ID and this
+    segment's text content. This creates a stable chain where the same sequence
+    of text always produces the same sequence of IDs.
+
+    :param preceding_segment: The segment that comes before this one in time order,
+                             or None if this is the first segment
+    """
+    self.completed = True
+
+    # Get previous ID or use baseline for first segment
+    if preceding_segment is not None:
+      previous_id = preceding_segment.id
+    else:
+      # Baseline ID for chain start
+      previous_id = compute_segment_chain_id(0, "")
+
+    # Assign chain-based ID
+    self.id = compute_segment_chain_id(previous_id, self.text)
 
 
 class UserTranscriptionOptions(BaseModel):

@@ -4,7 +4,10 @@ version = "0.0.0"
 description = "Shared message types and protocol definitions for Eavesdrop transcription services"
 authors = [{name = "shyndman", email = "scotty.hyndman@gmail.com"}]
 requires-python = ">=3.12"
-dependencies = ["pydantic>=2"]
+dependencies = [
+    "fastcrc>=0.3.2",
+    "pydantic>=2",
+]
 
 [project.urls]
 repository = "https://github.com/shyndman/eavesdrop"
