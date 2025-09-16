@@ -10,10 +10,13 @@ COPY --from=ghcr.io/astral-sh/uv:0.8.13 /uv /uvx /bin/
 
 RUN mkdir -p /app/{wire,server}
 
-# Copy the eavesdrop-wire project
+# Copy the wire and common projects
 WORKDIR /app/wire
 COPY ./wire/pyproject.toml ./pyproject.toml
 COPY ./wire/src/ ./src
+WORKDIR /app/common
+COPY ./common/pyproject.toml ./pyproject.toml
+COPY ./common/src/ ./src
 
 # Copy and build the eavesdrop-server project
 WORKDIR /app/server
