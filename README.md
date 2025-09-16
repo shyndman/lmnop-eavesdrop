@@ -33,28 +33,55 @@ For detailed architecture information, see [ARCHITECTURE.md](./ARCHITECTURE.md).
 cd packages/server
 uv sync
 cp config.sample.yaml config.yaml
-# Edit config.yaml for your needs
-eavesdrop --config config.yaml
+# Edit config.yaml for your needs (model, language, RTSP streams, etc.)
+uv run eavesdrop-server --config config.yaml
 ```
 
-### Client
+### Active Listener (Desktop Voice Input)
+
+```bash
+cd packages/active-listener
+uv sync
+
+# List available audio devices
+uv run al list-devices
+
+# Start voice-to-text typing (default: localhost:9090)
+uv run al --audio-device "Your Microphone" --server localhost:9090
+```
+
+### Client Library
 
 ```bash
 cd packages/client
 uv sync
+
 # Use the client library in your Python code
+# See examples in packages/client/examples/
 ```
 
 ## Features
 
-- **Real-time transcription** - Stream audio and get transcription results in real-time
-- **RTSP stream support** - Subscribe to transcription results from IP cameras and audio streams
+### Core Transcription
+- **Real-time transcription** - Stream audio and get transcription results in real-time with configurable latency
 - **Multiple Whisper models** - Support for all standard Whisper models (tiny to large-v3, distil variants, turbo)
+- **Custom model support** - Load fine-tuned or custom Whisper models for specialized domains
 - **GPU acceleration** - CUDA/ROCm and CPU inference with automatic precision selection
-- **WebSocket protocol** - Simple WebSocket-based API for easy integration
 - **Voice Activity Detection** - Intelligent audio filtering with configurable VAD parameters
-- **Hotwords support** - Improve recognition accuracy for specific terms
+- **Hotwords support** - Improve recognition accuracy for specific terms and domains
+- **Language support** - Configurable language settings for optimal transcription accuracy
+
+### Connectivity & Streaming
+- **WebSocket protocol** - Simple WebSocket-based API for easy integration
+- **RTSP stream support** - Subscribe to transcription results from IP cameras and audio streams
 - **Multi-client support** - No limits on concurrent connections or connection duration
+- **Historical transcription** - New RTSP subscribers receive recent transcription history
+- **Configurable caching** - Smart cache management based on active listeners
+
+### Applications
+- **Active Listener** - Desktop application for voice-to-text input using system audio capture and automatic typing
+- **Parallel processing** - Configurable worker count for improved throughput
+- **Automatic reconnection** - Robust connection handling for RTSP streams
 
 ## Development
 
@@ -63,17 +90,26 @@ This is a monorepo using `uv` for dependency management. Each package has its ow
 ```bash
 # Install all dependencies across packages
 cd packages/server && uv sync
-cd packages/client && uv sync  
+cd packages/client && uv sync
 cd packages/wire && uv sync
+cd packages/common && uv sync
+cd packages/active-listener && uv sync
 
 # Code quality (run from any package directory)
 ruff check && ruff format
 pyright
+
+# Testing (where applicable)
+pytest
 ```
 
 ### Development Tools
 
-- **watchexec** - Used for file watching and auto-restarting during development
+- **uv** - Fast Python package manager and environment management
+- **ruff** - Fast Python linter and formatter
+- **pyright** - Static type checker for Python
+- **pytest** - Testing framework
+- **watchexec** - File watching and auto-restarting during development
 
 ## Docker
 
