@@ -62,15 +62,14 @@ class StreamingTranscriptionProcessor:
     buffer: AudioStreamBuffer,
     sink: TranscriptionSink,
     config: TranscriptionConfig,
+    session: TranscriptionSession,
     stream_name: str,
-    logger_name: str = "proc",
-    session: TranscriptionSession | None = None,
   ) -> None:
     self.buffer = buffer
     self.sink = sink
     self.config = config
     self.stream_name = stream_name
-    self.session = session
+    self.session: TranscriptionSession = session
     self.logger = get_logger("proc", stream=self.stream_name)
 
     # Transcription state
@@ -401,42 +400,26 @@ class StreamingTranscriptionProcessor:
     current_incomplete_segment = None
 
     for i, segment in enumerate(result):
-      # Create a copy for processing
-      segment_copy = Segment(
-        id=segment.id,
-        seek=segment.seek,
-        start=segment.start,
-        end=segment.end,
-        text=segment.text,
-        tokens=segment.tokens,
-        avg_logprob=segment.avg_logprob,
-        compression_ratio=segment.compression_ratio,
-        words=segment.words,
-        temperature=segment.temperature,
-        completed=segment.completed,
-        time_offset=segment.time_offset,
-      )
-
       # Apply chain-based completion for all but the last segment
       should_complete = i < len(result) - 1
-      if should_complete and not segment_copy.completed and self.session:
+      if should_complete and not segment.completed:
         # Mark as completed and assign chain-based ID
         preceding_segment = self.session.get_last_completed_segment()
-        segment_copy.mark_completed(preceding_segment)
+        segment.mark_completed(preceding_segment)
 
         # Add to session's completed segments chain
-        self.session.add_completed_segment(segment_copy)
+        self.session.add_completed_segment(segment)
       else:
         # This is the incomplete (current) segment
-        current_incomplete_segment = segment_copy
+        current_incomplete_segment = segment
 
     # Prepare segments for client: last N completed + current incomplete
     segments_for_client = []
 
     # Add the last N completed segments from session
-    if self.session and self.session.completed_segments:
-      recent_completed = self.session.completed_segments[-self.config.send_last_n_segments :]
-      segments_for_client.extend(recent_completed)
+    segments_for_client.extend(
+      self.session.most_recent_completed_segments(self.config.send_last_n_segments)
+    )
 
     # Add the current incomplete segment if present
     if current_incomplete_segment:
@@ -447,7 +430,7 @@ class StreamingTranscriptionProcessor:
       segments=segments_for_client,
       language=self.language,
     )
-    self.logger.debug("Sending segments to client", segment_count=len(segments_for_client))
+    self.logger.debug("Sending segments to client", segments=segments_for_client)
     await self.sink.send_result(transcription_result)
 
   def _update_segments(self, segments: list[Segment], duration: float) -> None:

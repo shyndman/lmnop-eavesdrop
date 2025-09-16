@@ -220,6 +220,36 @@ class TranscriptionSession:
   audio_start_offset: float = 0.0
   audio_duration: float = 0.0
 
+  # Segment chain management
+  def get_last_completed_segment(self) -> "Segment | None":
+    """Get the most recently completed segment for chain ID computation.
+
+    :returns: The last completed segment, or None if no segments completed yet
+    :rtype: Segment | None
+    """
+    return self.completed_segments[-1] if self.completed_segments else None
+
+  def most_recent_completed_segments(self, n: int) -> Iterable["Segment"]:
+    """Get the last N completed segments for sending to the client.
+
+    :param n: Number of recent completed segments to retrieve.
+    :type n: int
+    :returns: Iterable of the last N completed segments.
+    :rtype: Iterable[Segment]
+    """
+    return self.completed_segments[-n:]
+
+  def add_completed_segment(self, segment: "Segment") -> None:
+    """Add a completed segment to the chain.
+
+    This should be called after a segment has been marked as completed
+    and assigned its chain-based ID.
+
+    :param segment: The completed segment to add to the chain
+    :type segment: Segment
+    """
+    self.completed_segments.append(segment)
+
   def get_absolute_time_range(self) -> tuple[float, float]:
     """Get the absolute time range of the current audio chunk.
 
@@ -366,26 +396,6 @@ class TranscriptionSession:
       parts.append(f"total={total_time * 1000:.3f}ms")
 
     return " ".join(parts)
-
-  # Segment chain management
-  def get_last_completed_segment(self) -> "Segment | None":
-    """Get the most recently completed segment for chain ID computation.
-
-    :returns: The last completed segment, or None if no segments completed yet
-    :rtype: Segment | None
-    """
-    return self.completed_segments[-1] if self.completed_segments else None
-
-  def add_completed_segment(self, segment: "Segment") -> None:
-    """Add a completed segment to the chain.
-
-    This should be called after a segment has been marked as completed
-    and assigned its chain-based ID.
-
-    :param segment: The completed segment to add to the chain
-    :type segment: Segment
-    """
-    self.completed_segments.append(segment)
 
   # Tracer factory methods
   def trace_pipeline(self) -> "PipelineTracer":

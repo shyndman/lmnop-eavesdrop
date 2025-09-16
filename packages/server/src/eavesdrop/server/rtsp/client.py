@@ -722,7 +722,6 @@ class RTSPTranscriptionClient(RTSPClient):
             sink=self.transcription_sink,
             config=self.transcription_config,
             stream_name=self.stream_name,
-            logger_name="rtsp/proc",
             session=session,
           )
 

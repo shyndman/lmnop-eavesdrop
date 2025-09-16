@@ -5,7 +5,6 @@ Contains the core data structures used for transcription results and user config
 """
 
 from pydantic import BaseModel, Field
-from pydantic.dataclasses import dataclass
 
 
 def compute_segment_chain_id(previous_id: int, text: str) -> int:
@@ -24,16 +23,17 @@ def compute_segment_chain_id(previous_id: int, text: str) -> int:
   return crc64.ecma_182(chain_input.encode())
 
 
-@dataclass
-class Word:
+class Word(BaseModel):
+  """Lists of these objects are sent accomanpanying segments if word-level timestamps are
+  requested."""
+
   start: float
   end: float
   word: str
   probability: float
 
 
-@dataclass
-class Segment:
+class Segment(BaseModel):
   id: int
   seek: int
   start: float

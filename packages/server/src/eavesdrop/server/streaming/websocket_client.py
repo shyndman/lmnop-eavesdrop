@@ -60,7 +60,6 @@ class WebSocketStreamingClient:
       sink=self.transcription_sink,
       config=transcription_config,
       stream_name=stream_name,
-      logger_name=f"ws/proc.{stream_name[0:4]}",
       session=self.session,
     )
 
