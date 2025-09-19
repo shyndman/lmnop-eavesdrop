@@ -237,6 +237,19 @@ class WhisperModel:
         speech_chunks if vad_filter else None, self.audio_processor.sampling_rate, audio.shape[0]
       )
 
+    # VAD Gatekeeper: Skip transcription if no speech detected
+    if vad_filter and will_be_complete_silence:
+      # VAD detected no speech - don't waste compute on Whisper
+      return [], TranscriptionInfo(
+        transcription_options=TranscriptionOptions(
+          multilingual=multilingual,
+          initial_prompt=initial_prompt,
+        ),
+        vad_options=vad_parameters,
+        duration=duration,
+        duration_after_vad=0.0,  # No speech detected
+      )
+
     # Update audio with processed version
     no_sound_to_process = audio.shape[0] == 0
     if no_sound_to_process:
