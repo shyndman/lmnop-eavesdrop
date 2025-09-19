@@ -120,6 +120,9 @@ class TranscriptionConfig(BaseModel):
   silence_completion_threshold: float = Field(default=0.8, gt=0.0)
   """Seconds of silence after speech to mark segment as completed."""
 
+  debug_audio_path: str | None = None
+  """Path prefix for debug audio files. When set, received audio is saved as .wav files."""
+
   @model_validator(mode="before")
   @classmethod
   def validate_model_configuration(cls, values: dict) -> dict:
@@ -231,6 +234,9 @@ class EavesdropConfig(BaseModel):
     logger.info(f"  Hotwords: {self.transcription.hotwords}")
     logger.info(f"  Send Last N Segments: {self.transcription.send_last_n_segments}")
     logger.info(f"  Same Output Threshold: {self.transcription.same_output_threshold}")
+    silence_threshold = self.transcription.silence_completion_threshold
+    logger.info(f"  Silence Completion Threshold: {silence_threshold}s")
+    logger.info(f"  Debug Audio Path: {self.transcription.debug_audio_path}")
     logger.info(f"  Num Workers: {self.transcription.num_workers}")
     logger.info(f"  Use VAD: {self.transcription.use_vad}")
 

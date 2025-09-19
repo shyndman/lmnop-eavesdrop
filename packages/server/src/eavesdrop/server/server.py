@@ -301,7 +301,6 @@ class TranscriptionServer:
     host,
     config_path: str,
     port=9090,
-    debug_audio_path=None,
   ):
     """
     Run the transcription server.
@@ -324,7 +323,7 @@ class TranscriptionServer:
       self.logger.error("Ensure the configuration file exists and is readable.")
       raise
 
-    self.debug_audio_path = debug_audio_path
+    self.debug_audio_path = self.transcription_config.debug_audio_path
     self.debug_audio_files = {}  # websocket -> (file_handle, filename)
 
     self.client_manager = WebSocketClientManager()

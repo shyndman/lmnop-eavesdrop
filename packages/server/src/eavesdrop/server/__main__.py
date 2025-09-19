@@ -38,13 +38,7 @@ async def main():
     default=get_env_or_default("EAVESDROP_CONFIG", None),
     help="Path to the configuration file. (Env: EAVESDROP_CONFIG)",
   )
-  parser.add_argument(
-    "--debug_audio_path",
-    type=str,
-    default=None,
-    help="Path prefix for debug audio files. When set, audio received from clients will be "
-    "saved as .wav files for debugging.",
-  )
+
   parser.add_argument(
     "--json_logs",
     action="store_true",
@@ -79,7 +73,6 @@ async def main():
     "Starting Eavesdrop Server",
     port=args.port,
     config_path=args.config,
-    debug_audio_enabled=bool(args.debug_audio_path),
   )
 
   from eavesdrop.server.server import TranscriptionServer
@@ -89,7 +82,6 @@ async def main():
     "0.0.0.0",
     args.config,
     port=args.port,
-    debug_audio_path=args.debug_audio_path,
   )
 
 

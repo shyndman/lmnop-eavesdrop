@@ -46,6 +46,11 @@ transcription:
   # Higher values wait longer for speech to continue but may delay completion.
   silence_completion_threshold: 0.8
 
+  # Path prefix for debug audio files. When set, audio received from clients
+  # will be saved as .wav files for debugging purposes. Leave null to disable.
+  debug_audio_path: null
+    # Example: "/tmp/eavesdrop-debug/audio"
+
   # Specific GPU device name to target for transcription processing.
   # Leave commented to use automatic GPU selection. Useful for multi-GPU systems.
   # gpu_name: "NVIDIA GeForce RTX 3080"
