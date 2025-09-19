@@ -37,6 +37,7 @@ repository = "https://github.com/shyndman/eavesdrop"
 
 [project.scripts]
 eavesdrop-server = "eavesdrop.server.__main__:main"
+eavesdrop-debug-vad = "eavesdrop.server.debug_vad:main"
 
 [build-system]
 requires = ["hatchling"]
