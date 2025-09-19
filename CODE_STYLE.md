@@ -1,236 +1,365 @@
-# Code Style Guide
+## Tooling (These run automatically on every commit, so make sure everything passes)
 
-## Code Quality Tools
+**Static Type Checking**:
 
-### Formatting
-```bash
+```sh
+pyright
+```
+
+**Formatting**:
+
+```sh
 ruff format
 ```
 
-### Linting
-```bash
+**Linting**:
+
+```sh
 ruff check
 ruff check --fix  # for autofixes
 ```
 
-### Type Checking
-```bash
-pyright
-```
+## Python
 
-## Python Type System Guidelines
+### Type Safety (NON-NEGOTIABLE)
 
-### Type Annotations
-- **ALWAYS type everything, NEVER use Any**
+#### Strict Typing Requirements
+
+- NO `Any` types allowed - type everything explicitly
+- Use type annotations for all class attributes and method parameters
 - Use modern union syntax: `str | None` instead of `Optional[str]`
-- Explicit type annotations for all class attributes and method parameters
+- Use modern union syntax: `int | str` instead of `Union[int, str]`
+- Use `TypedDict` for structured dictionaries with known keys
+- Use `NamedTuple` subclasses for immutable data structures
+- Always parameterize generics: `dict[str, int]`, `list[User]`, never bare `dict` or `list`
+- Import `Iterable`, `Awaitable` from `collections.abc`, NOT from `typing`
 
 ```python
-# Good
-class RTSPAudioSource:
-    def __init__(self, audio_queue: asyncio.Queue[bytes]) -> None:
-        self.audio_queue: asyncio.Queue[bytes] = audio_queue
-        self.closed: bool = False
+# ✅ Modern union syntax and proper imports
+from collections.abc import Iterable, Awaitable, Mapping
+from typing import TypedDict, Literal
 
-    async def read_audio(self) -> np.ndarray | None:
-        # Type guards for None checks
-        if audio_data is not None:
-            return audio_data
-        return None
+def process_items(
+    items: list[str | int],  # Modern union syntax
+    config: dict[str, bool],  # Parameterized generic
+    unique_ids: set[int],  # Built-in set generic
+    optional_data: bytes | None = None,  # Modern optional
+) -> tuple[str, int]:  # Built-in generic
+    # Implementation...
 
-# Bad
-class RTSPAudioSource:
-    def __init__(self, audio_queue):  # Missing types
-        self.audio_queue = audio_queue  # Missing type annotation
-        self.closed = False  # Missing type annotation
+async def fetch_data(sources: Iterable[str]) -> Awaitable[dict[str, int]]:
+    # Proper collections.abc imports
+    pass
 
-    async def read_audio(self):  # Missing return type
-        return audio_data  # No type safety
+# ❌ Old syntax - FORBIDDEN
+from typing import Optional, Union, List, Dict, Tuple, Set, Iterable, Awaitable
+
+def process_items_old(
+    items: List[Union[str, int]],  # Old union and generic syntax
+    config: Dict[str, bool],
+    unique_ids: Set[int],  # Old Set syntax
+    optional_data: Optional[bytes] = None,
+) -> Tuple[str, int]:
+    pass
 ```
 
-### Protocol Implementation
-- Protocol inheritance must be explicit when implementing interfaces
-- Use structural typing for interface compliance
+#### Duck Typing is FORBIDDEN
+
+- NO `getattr()`, `hasattr()`, or `setattr()` usage - these bypass type safety
+- NO duck typing patterns - always use proper types and the `.` operator
+- If you need dynamic attribute access, redesign with proper types (TypedDict, dataclass, etc.)
+- If you truly need dynamic attribute access, it requires a discussion and a sign off
+
+#### Testing Type Safety (THESE WILL GET YOUR PR REJECTED)
+
+- If I find a single test that interrogates the shape of an object, heads will roll
+- NO tests that check for attribute existence with `hasattr()` or `getattr()`
+- NO tests that verify object structure instead of behavior
+- NO `isinstance()` checks in tests unless testing error conditions
+- NO `type()` comparisons in production or test code
 
 ```python
-# Good
-class RTSPTranscriptionSink(TranscriptionSink, Protocol):
-    async def send_result(self, result: TranscriptionResult) -> None:
-        try:
-            # transcription work
-        except Exception:
-            self.logger.exception("Transcription failed")
-```
+# ❌ Shape interrogation - FORBIDDEN
+def test_processor_has_required_methods():
+    processor = AudioProcessor()
+    assert hasattr(processor, 'process')
+    assert hasattr(processor, 'cleanup')
+    assert callable(getattr(processor, 'process'))
 
-### Type Safety Requirements
-- Handle Iterable-to-list conversions explicitly
-- Never assume return types without verification
+# ❌ Structure testing - FORBIDDEN
+def test_user_object_structure():
+    user = create_user()
+    assert isinstance(user.id, int)
+    assert isinstance(user.name, str)
+    assert type(user.created_at) == datetime
+
+# ❌ Duck typing validation - FORBIDDEN
+def test_can_process_different_types():
+    for obj in [AudioProcessor(), TextProcessor(), VideoProcessor()]:
+        if hasattr(obj, 'process'):
+            result = obj.process(test_data)
+            assert result is not None
+
+# ✅ Behavior testing - type safety enforced by static analysis
+def test_audio_processor_transforms_segments():
+    processor = AudioProcessor()
+    segment = AudioSegment(data=b"test", sample_rate=44100)
+
+    result = processor.process(segment)  # Type-safe call
+
+    assert result.sample_rate == 44100
+    assert len(result.data) > 0
+
+# ✅ Protocol compliance - tested through behavior, not shape
+def test_processors_implement_cleanup():
+    processors: list[Processor] = [
+        AudioProcessor(),
+        TextProcessor(),
+        VideoProcessor()
+    ]
+
+    for processor in processors:
+        processor.cleanup()  # Type system guarantees this exists
+        # Test the behavior/side effects, not the method existence
+
+# ✅ Error condition testing with isinstance - ONLY acceptable use
+def test_invalid_input_raises_type_error():
+    processor = AudioProcessor()
+
+    with pytest.raises(TypeError) as exc_info:
+        processor.process("invalid_input")  # type: ignore
+
+    # Only check isinstance for error validation
+    assert isinstance(exc_info.value, TypeError)
+```
 
 ```python
-# CRITICAL: Whisper transcriber returns Iterable[Segment], not list
-def _transcribe_audio(self, input_sample: np.ndarray) -> tuple[list[Segment] | None, TranscriptionInfo | None]:
-    result, info = self.transcriber.transcribe(...)
-    # MUST convert Iterable to list immediately
-    result_list = list(result) if result else None
-    return result_list, info
+# ❌ Duck typing - bypasses type safety
+if hasattr(obj, 'process'):
+    result = getattr(obj, 'process')(data)
+
+# ✅ Proper typing with protocols or unions
+from typing import Protocol
+
+class Processor(Protocol):
+    def process(self, data: str) -> str: ...
+
+def handle_processor(processor: Processor, data: str) -> str:
+    return processor.process(data)  # Type-safe access
 ```
 
-## Error Handling Patterns
+#### Configuration Handling (FAIL FAST, NO COERCION)
 
-### Exception Logging
-- Use `.exception()` method for proper stack traces
-- Don't use `.error()` for exceptions
+- Configuration must be loaded into Pydantic models with strict validation
+- NO silent type coercion - if the input is wrong, fail immediately
+- NO default value fallbacks for required configuration
+- NO string-to-type conversion beyond what Pydantic provides by default
+- Command line arguments and config files must validate to the same strict schema
 
 ```python
-# Good
-try:
-    await self.processor.initialize()
-except Exception:
-    self.logger.exception("Failed to initialize processor")
-    raise  # Stop client creation
+# ✅ Strict configuration with Pydantic - fails fast on invalid input
+from pydantic import BaseModel, Field, ValidationError
+from pathlib import Path
 
-# Bad
-except Exception as e:
-    self.logger.error(f"Failed to initialize: {e}")  # Missing stack trace
+class ServerConfig(BaseModel):
+    host: str = Field(min_length=1)
+    port: int = Field(ge=1, le=65535)  # No coercion from strings
+    debug: bool  # No coercion from "true"/"false" strings
+    workers: int = Field(ge=1)
+    timeout: float = Field(gt=0.0)
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"]
+    data_dir: Path
+
+# ❌ Silent coercion and loose validation - FORBIDDEN
+def load_config_loose(raw_config: dict[str, str]) -> dict[str, Any]:
+    return {
+        'port': int(raw_config.get('port', '8000')),  # Silent string->int
+        'debug': raw_config.get('debug', 'false').lower() == 'true',  # String->bool
+        'workers': max(1, int(raw_config.get('workers', '1'))),  # Coercion with fallback
+        'timeout': float(raw_config.get('timeout', '30.0')),  # Silent conversion
+    }
+
+# ✅ Strict validation - fail immediately on bad input
+def load_config_strict(config_path: Path) -> ServerConfig:
+    try:
+        with open(config_path) as f:
+            return ServerConfig.model_validate_json(f.read(), strict=True)
+    except ValidationError:
+        logger.exception(f"Invalid configuration in {config_path}")
+        raise  # Fail fast - don't start with bad config
+    except FileNotFoundError:
+        logger.exception(f"Configuration file not found: {config_path}")
+        raise  # Required config missing - fail fast
+
+# ✅ Command line parsing with same strict validation
+def parse_cli_args() -> ServerConfig:
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--host', required=True)
+    parser.add_argument('--port', type=int, required=True)
+    parser.add_argument('--debug', action='store_true')
+    parser.add_argument('--workers', type=int, required=True)
+
+    args = parser.parse_args()
+
+    try:
+        # Same validation as file config - no special CLI handling
+        return ServerConfig.model_validate(vars(args))
+    except ValidationError:
+        logger.exception("Invalid command line arguments")
+        raise SystemExit(1)  # Fail fast on startup
 ```
 
-### Error Propagation
-- Fail fast on critical initialization failures
+### Base classes and when to use them
+
+```python
+from datetime import datetime
+from typing import NamedTuple, TypedDict, NotRequired
+from dataclasses import field
+from pydantic import BaseModel, Field
+from pydantic.dataclasses import dataclass
+
+# ✅ BaseModel for API boundaries and data validation
+class UserCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    email: str = Field(pattern=r'^[^@]+@[^@]+\.[^@]+$')
+    age: int = Field(ge=0, le=150)
+    preferences: dict[str, str | int] = Field(default_factory=dict)
+
+    # Provides: automatic validation on creation, built-in JSON
+    # serialization/deserialization, integration with FastAPI/SQLAlchemy
+
+# ✅ TypedDict for internal data structures - fast, typed, but limited functionality
+class UserSegment(TypedDict):
+    name: str
+    email: str
+    preferences: dict[str, str | int]
+    metadata: NotRequired[dict[str, str] | None]  # Optional field
+
+# ✅ NamedTuple for immutable records or structured return values
+class UserRecord(NamedTuple):
+    id: int
+    name: str
+    created_at: datetime
+    active: bool = True
+
+# ✅ Pydantic dataclass for rich data models with validation
+@dataclass
+class User:
+    name: str
+    age: int | None = None
+    email: NotRequired[str] = None  # Optional field with NotRequired
+    tags: list[str] = field(default_factory=list)
+```
+
+#### Imports
+
+```python
+# ✅ Always use absolute imports
+from eavesdrop.common.types import AudioSegment
+from eavesdrop.client.core import Client
+
+# ❌ Never use relative imports
+from ..common.types import AudioSegment
+from .core import Client
+
+# ✅ Allowed typing imports
+from typing import TypedDict, NamedTuple, TYPE_CHECKING
+
+# ✅ Import abstract base classes from collections.abc
+from collections.abc import Iterable, Awaitable
+
+# ❌ Never import these from typing
+from typing import Any, Optional, Union, Iterable, Awaitable
+# Any: lazy typing - always type specifically
+# Optional[T]: use T | None syntax instead
+# Union[A, B]: use A | B syntax instead
+# Iterable/Awaitable: import from collections.abc instead
+```
+
+#### Errors
+
+**Propagation**:
+
+- CORE TENET: Fail fast on critical initialization failures
 - Use proper exception chaining
 
 ```python
-# Good
+## Good
 try:
     await self.processor.initialize()
 except Exception:
     self.logger.exception("Failed to initialize processor")
     raise  # Stop client creation
 
-# Bad
+## Bad
 except Exception:
     self.logger.exception("Failed to initialize processor")
     return None  # Swallow critical errors
 ```
 
-## Async Patterns
+**Logging**:
 
-### Task Management
-- Always cancel and await tasks during cleanup
-- Use proper task lifecycle management
-
-```python
-# Good
-async def stop(self):
-    self._exit = True
-    await self.processor.stop_processing()
-
-    # Must cancel and await all tasks
-    if self._processing_task and not self._processing_task.done():
-        self._processing_task.cancel()
-        try:
-            await self._processing_task
-        except asyncio.CancelledError:
-            pass
-
-# Bad
-async def stop(self):
-    self._processing_task.cancel()  # No await - potential resource leak
-```
-
-### Task Coordination
-- Use `asyncio.wait()` with `FIRST_COMPLETED` instead of polling
-- Avoid `await asyncio.sleep()` loops
+- COMMON MISTAKE: Use `.exception()` method for proper stack traces
+- Don't use `.error()` for exceptions
 
 ```python
-# Good
-tasks = [ffmpeg_task, audio_task, transcription_task]
-done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-for task in pending:
-    task.cancel()
-
-# Bad
-while not self.stopped:
-    await asyncio.sleep(0.1)  # Polling instead of event-driven
-```
-
-## Class Design Patterns
-
-### Constructor Type Safety
-- All constructor parameters must be explicitly typed
-- Use dataclasses for configuration objects
-
-```python
-# Good
-def __init__(
-    self,
-    buffer: AudioStreamBuffer,
-    sink: TranscriptionSink,
-    config: TranscriptionConfig,
-    stream_name: str,
-    logger_name: str = "transcription_processor",
-) -> None:
-
-# Bad
-def __init__(self, buffer, sink, config, stream_name, **kwargs):  # Missing types
-```
-
-### Method Return Types
-- Always specify return types, including `-> None`
-- Use union types for nullable returns
-
-```python
-# Good
-async def read_audio(self) -> np.ndarray | None:
-    if data is None:
-        return None
-    return process_data(data)
-
-def get_status(self) -> dict[str, str | int | bool]:
-    return {"active": True, "count": 42}
-
-# Bad
-async def read_audio():  # Missing return type
-    return data
-
-def get_status():  # Missing return type
-    return {"active": True}
-```
-
-## Threading and Concurrency
-
-### Lock Management
-- Use appropriate lock types for context (async vs sync)
-- Never mix `threading.Lock()` with async code
-
-```python
-# Good - Async context
-class AsyncModelManager:
-    def __init__(self):
-        self.model_lock = asyncio.Lock()
-
-    async def get_model(self):
-        async with self.model_lock:
-            # async operations
-
-# Bad - Mixed threading models
-class MixedManager:
-    def __init__(self):
-        self.model_lock = threading.Lock()  # Wrong for async context
-```
-
-### Resource Management
-- Use context managers for resource cleanup
-- Ensure proper cleanup in finally blocks
-
-```python
-# Good
-async with self.model_lock:
-    # protected operations
-
+## Good
 try:
-    # work
+    await self.processor.initialize()
 except Exception:
-    self.logger.exception("Operation failed")
-finally:
-    await self.cleanup()
+    self.logger.exception("Failed to initialize processor")
+    raise  # Stop client creation
+
+## Bad
+except Exception as e:
+    self.logger.error(f"Failed to initialize: {e}")  # Missing stack trace
+```
+
+### Documentation
+
+#### Docstrings (Sphinx/reStructuredText Format)
+
+All public functions, classes, and methods must have comprehensive docstrings using Sphinx-style reStructuredText format.
+
+```python
+# ✅ Proper Sphinx-style docstring
+def process_audio_segment(segment: AudioSegment, sample_rate: int) -> ProcessedSegment:
+    """Process an audio segment with noise reduction and normalization.
+
+    :param segment: The audio data to process
+    :type segment: AudioSegment
+    :param sample_rate: Target sample rate in Hz, must be > 0
+    :type sample_rate: int
+    :return: Processed audio segment with metadata
+    :rtype: ProcessedSegment
+    :raises ValueError: If sample_rate is <= 0
+
+    Example:
+        >>> result = process_audio_segment(segment, 44100)
+    """
+    # Implementation...
+
+# ✅ Class docstring
+class AudioProcessor:
+    """High-performance audio processing pipeline.
+
+    :param buffer_size: Internal buffer size in samples
+    :type buffer_size: int
+    :param enable_stats: Whether to collect processing statistics
+    :type enable_stats: bool
+    """
+    def __init__(self, buffer_size: int = 1024, enable_stats: bool = False) -> None:
+        # Implementation...
+
+# ❌ Insufficient - REJECTED
+def process_audio(data, rate):
+    """Process audio."""  # Too brief, missing params/types
+
+# ❌ Wrong format - REJECTED
+def convert_format(segment: AudioSegment) -> bytes:
+    """Convert audio segment to bytes.
+
+    Args:  # Google/NumPy style forbidden
+        segment: Audio to convert
+    """
 ```
