@@ -41,6 +41,11 @@ transcription:
   # Helps stabilize transcription output by waiting for consistency.
   same_output_threshold: 10
 
+  # Duration of silence (in seconds) after speech to automatically mark segments as completed.
+  # Lower values complete segments faster but may cut off slow speech patterns.
+  # Higher values wait longer for speech to continue but may delay completion.
+  silence_completion_threshold: 0.8
+
   # Specific GPU device name to target for transcription processing.
   # Leave commented to use automatic GPU selection. Useful for multi-GPU systems.
   # gpu_name: "NVIDIA GeForce RTX 3080"
@@ -63,8 +68,9 @@ transcription:
     # or aggressively split just before this limit to prevent cutting speech.
     max_speech_duration_s: .inf
 
-    # Wait for this much silence before separating speech chunks.
-    min_silence_duration_ms: 2000
+    # Silence duration for separating speech chunks is automatically set from
+    # silence_completion_threshold above to keep segmentation and completion aligned.
+    # min_silence_duration_ms: (set programmatically)
 
     # Final speech chunks are padded by this amount on each side.
     speech_pad_ms: 800

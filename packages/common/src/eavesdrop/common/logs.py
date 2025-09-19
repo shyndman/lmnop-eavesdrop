@@ -28,7 +28,7 @@ from structlog.dev import (
 )
 from structlog.typing import EventDict, Processor
 
-from eavesdrop.common.float import FloatPrecisionProcessor
+from eavesdrop.common.proc import FloatPrecisionProcessor, LoggerFilterProcessor
 
 # Store program start time for relative timestamps
 _PROGRAM_START_TIME = time.time()
@@ -227,15 +227,21 @@ def _debug_event_colorer(
 
 
 def setup_logging(
-  level: str = "INFO", json_output: bool = False, correlation_id: str | None = None
+  level: str = "INFO",
+  json_output: bool = False,
+  correlation_id: str | None = None,
+  filter_to_logger: str | None = None,
 ) -> None:
   """Configure structured logging for the application."""
+  filters = [structlog.stdlib.filter_by_level]
+  if filter_to_logger:
+    filters += [LoggerFilterProcessor(filter_to_logger)]
 
   # Configure processors
   shared_processors: list[Processor] = [
     structlog.stdlib.add_logger_name,
     structlog.stdlib.add_log_level,
-    structlog.stdlib.filter_by_level,
+    *filters,
     _debug_event_colorer,  # Run before level processing
     _compact_level_processor,
     structlog.stdlib.PositionalArgumentsFormatter(),
@@ -243,7 +249,7 @@ def setup_logging(
     FloatPrecisionProcessor(digits=3),
     _relative_time_processor,
     structlog.processors.StackInfoRenderer(),
-    structlog.processors.format_exc_info,
+    # structlog.processors.format_exc_info,
   ]
 
   # Add correlation ID if provided

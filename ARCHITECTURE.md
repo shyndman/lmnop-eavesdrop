@@ -306,3 +306,108 @@ The differences lie entirely in the concrete implementations of the `AudioSource
 ### Shared Components
 
 The key shared component is the `StreamingTranscriptionProcessor`. By programming to the `AudioSource` and `TranscriptionSink` interfaces, it remains blissfully unaware of whether it's processing audio from a live client WebSocket or a background `ffmpeg` process. This is the cornerstone of the server's elegant and extensible design.
+
+## Transcription Pipeline Algorithm
+
+The `StreamingTranscriptionProcessor` implements a **silence-based segment completion algorithm** that replaces the previous repetition detection approach. This provides more reliable segment boundaries and prevents buffer management issues.
+
+### Core Algorithm Flow
+
+```mermaid
+graph TD
+    subgraph "Audio Processing"
+        AudioChunk[Audio Chunk 2s intervals]
+        VADAnalysis[VAD Analysis]
+        WhisperTranscribe[Whisper Transcription]
+    end
+    
+    subgraph "Segment Completion Logic"  
+        ExplicitRule[All segments except last → Complete]
+        SilenceAnalysis[Last segment: Silence Analysis]
+        CompletionDecision[Completion Decision]
+    end
+    
+    subgraph "Buffer Management"
+        BufferAdvancement[Advance Buffer Pointer]
+        SilenceSkipping[Skip Through Silence]
+    end
+    
+    subgraph "Client Output"
+        InvariantCheck[Ensure Incomplete Tail Segment]
+        SyntheticSegment[Create Synthetic if Needed]
+        SendToClient[Send to Client]
+    end
+    
+    AudioChunk --> VADAnalysis
+    VADAnalysis --> WhisperTranscribe
+    WhisperTranscribe --> ExplicitRule
+    ExplicitRule --> SilenceAnalysis
+    SilenceAnalysis --> CompletionDecision
+    CompletionDecision --> BufferAdvancement
+    BufferAdvancement --> SilenceSkipping
+    SilenceSkipping --> InvariantCheck
+    InvariantCheck --> SyntheticSegment
+    SyntheticSegment --> SendToClient
+    
+    %% Rose Pine color scheme
+    style AudioChunk fill:#f6c177,stroke:#e0def4,stroke-width:2px,color:#191724
+    style VADAnalysis fill:#ebbcba,stroke:#e0def4,stroke-width:2px,color:#191724
+    style WhisperTranscribe fill:#ebbcba,stroke:#e0def4,stroke-width:2px,color:#191724
+    style ExplicitRule fill:#9ccfd8,stroke:#e0def4,stroke-width:2px,color:#191724
+    style SilenceAnalysis fill:#9ccfd8,stroke:#e0def4,stroke-width:2px,color:#191724
+    style CompletionDecision fill:#9ccfd8,stroke:#e0def4,stroke-width:2px,color:#191724
+    style BufferAdvancement fill:#c4a7e7,stroke:#e0def4,stroke-width:2px,color:#191724
+    style SilenceSkipping fill:#c4a7e7,stroke:#e0def4,stroke-width:2px,color:#191724
+    style InvariantCheck fill:#31748f,stroke:#e0def4,stroke-width:2px,color:#e0def4
+    style SyntheticSegment fill:#31748f,stroke:#e0def4,stroke-width:2px,color:#e0def4
+    style SendToClient fill:#31748f,stroke:#e0def4,stroke-width:2px,color:#e0def4
+```
+
+### Algorithm Details
+
+**1. Silence-Based Completion**
+- **Configuration**: Single `silence_completion_threshold` parameter (default: 0.8s) controls completion timing
+- **VAD Integration**: Voice Activity Detection analyzes speech vs silence patterns in real-time  
+- **Automatic Alignment**: VAD's `min_silence_duration_ms` is automatically set from `silence_completion_threshold * 1000`
+
+**2. Dual Completion Rules**
+- **Explicit Rule**: All segments except the last are always marked complete (maintains structural invariant)
+- **Enhanced Rule**: Last segment can complete early if silence analysis detects sufficient quiet period after speech
+
+**3. Buffer Pointer Management**  
+- **Primary Advancement**: Buffer moves forward to the end of completed segments
+- **Silence Skipping**: Additional advancement through confirmed silence periods (when silence > 2x threshold)
+- **Prevents Bloat**: Eliminates buffer growth from unprocessed silence
+
+**4. Client State Machine Invariant**
+- **Always Incomplete Tail**: Ensures there's always an incomplete segment at the end of the segment list
+- **Synthetic Segments**: Creates zero-length incomplete segments when all segments are marked complete
+- **Client Compatibility**: Maintains expected state machine behavior for downstream clients
+
+### Configuration Architecture
+
+**Single Source of Truth**:
+```yaml
+transcription:
+  silence_completion_threshold: 0.8  # User-configurable
+  vad_parameters:
+    # min_silence_duration_ms: (set automatically to 800ms)
+```
+
+**Validation Protection**:
+- Users cannot manually set `min_silence_duration_ms` in VAD parameters
+- Clear error messages prevent conflicting silence duration settings  
+- Eliminates logical inconsistencies between VAD segmentation and completion logic
+
+### Tracing and Debugging
+
+The algorithm includes comprehensive tracing at six key points:
+
+1. **Audio Chunk Processing**: Buffer status, timestamp ranges
+2. **VAD Analysis**: Speech/silence timeline with visual representation (`S` = speech, `~` = silence)
+3. **Whisper Output**: Raw segments with IDs, text, timing, probabilities
+4. **Completion Decisions**: Why segments were marked complete (positional vs silence analysis)
+5. **Buffer Advancement**: How far the processed boundary moved and why
+6. **Client Output**: Final segment list with completed/incomplete/synthetic flags
+
+**Usage**: `tracing_logger = get_logger("tracing")` provides structured logging for pipeline visibility.

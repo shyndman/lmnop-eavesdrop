@@ -183,6 +183,9 @@ class TranscriptionOptions(NamedTuple):
   """A string of 'hotwords' or 'boosted tokens' to provide as context to the
   model, increasing the likelihood of these words being transcribed correctly."""
 
+  silence_completion_threshold: float = 0.8
+  """Seconds of silence after speech to mark segment as completed."""
+
 
 type LanguageProbability = tuple[str, float]
 

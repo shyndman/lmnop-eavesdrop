@@ -117,6 +117,9 @@ class TranscriptionConfig(BaseModel):
   same_output_threshold: int = Field(default=10, gt=0)
   """Number of repeated outputs before considering it as a valid segment."""
 
+  silence_completion_threshold: float = Field(default=0.8, gt=0.0)
+  """Seconds of silence after speech to mark segment as completed."""
+
   @model_validator(mode="before")
   @classmethod
   def validate_model_configuration(cls, values: dict) -> dict:
@@ -147,6 +150,16 @@ class TranscriptionConfig(BaseModel):
         "computed automatically."
       )
 
+    # Reject min_silence_duration_ms in VAD parameters - it's set programmatically
+    vad_params = values.get("vad_parameters")
+    if vad_params and isinstance(vad_params, dict):
+      if "min_silence_duration_ms" in vad_params:
+        raise ValueError(
+          "min_silence_duration_ms cannot be specified in vad_parameters. "
+          "It is automatically set from 'silence_completion_threshold' to keep "
+          "VAD segmentation and segment completion behavior aligned."
+        )
+
     return values
 
   @model_validator(mode="after")
@@ -154,6 +167,12 @@ class TranscriptionConfig(BaseModel):
     """Compute device_index from gpu_name if provided."""
     if self.gpu_name:
       self.device_index = self._resolve_gpu_device_index(self.gpu_name)
+    return self
+
+  @model_validator(mode="after")
+  def align_vad_parameters(self) -> "TranscriptionConfig":
+    """Align VAD silence duration with completion threshold for consistent behavior."""
+    self.vad_parameters.min_silence_duration_ms = int(self.silence_completion_threshold * 1000)
     return self
 
   def _resolve_gpu_device_index(self, gpu_name: str) -> int:

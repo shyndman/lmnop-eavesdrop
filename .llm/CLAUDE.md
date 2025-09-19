@@ -162,6 +162,42 @@ docker run --device /dev/kfd --device /dev/dri --publish 9090:9090 eavesdrop
 - **Model caching** - Automatic HuggingFace to CTranslate2 conversion and local caching
 - **Voice Activity Detection** - ONNX-based VAD with configurable parameters
 
+## Transcription Algorithm (Updated Architecture)
+
+### Silence-Based Segment Completion
+The transcription system uses a **silence-based completion algorithm** instead of repetition detection:
+
+- **`silence_completion_threshold`** - Single configurable parameter (default: 0.8s) that controls when segments are marked complete
+- **VAD Integration** - Uses Voice Activity Detection to analyze speech vs silence patterns in real-time
+- **Automatic VAD Alignment** - VAD's `min_silence_duration_ms` is automatically set from `silence_completion_threshold * 1000` to ensure consistent behavior
+
+### Key Algorithm Components
+
+1. **Segment Completion Logic**:
+   - All segments except the last are marked complete (explicit rule)
+   - Last segment can complete early based on silence analysis
+   - If VAD detects sufficient silence after speech, mark segment complete immediately
+
+2. **Buffer Pointer Management**:
+   - Buffer advances based on completed segment boundaries
+   - Additional advancement through confirmed silence periods  
+   - Prevents buffer bloat from unprocessed silence
+
+3. **Client State Machine Invariant**:
+   - Always maintains an incomplete segment at tail position
+   - Creates synthetic zero-length incomplete segments when needed
+   - Ensures client state machines never break
+
+4. **Tracing and Debugging**:
+   - Six key tracing points: audio chunk processing, VAD analysis, Whisper output, completion decisions, buffer advancement, client output
+   - Use `tracing_logger = get_logger("tracing")` for pipeline visibility
+   - Structured logging with timeline visualization for VAD results
+
+### Configuration Validation
+- **`min_silence_duration_ms`** - Cannot be manually configured; automatically derived from `silence_completion_threshold`
+- **Validation errors** - Clear error messages prevent conflicting silence duration settings
+- **Single source of truth** - Eliminates logical inconsistencies between VAD segmentation and completion logic
+
 ## Testing and Validation
 
 - Configure test framework by examining existing test files and dependencies

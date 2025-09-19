@@ -5,16 +5,14 @@ Streaming transcription processor with integrated Faster Whisper transcriber.
 import asyncio
 import os
 import threading
-import time
 from dataclasses import dataclass
 
 import ctranslate2
 import numpy as np
 import torch
-from faster_whisper.vad import VadOptions
 from huggingface_hub import snapshot_download
 
-from eavesdrop.common import get_logger
+from eavesdrop.common import Pretty, Range, Seconds, get_logger
 from eavesdrop.server.config import TranscriptionConfig
 from eavesdrop.server.constants import CACHE_PATH, SINGLE_MODEL
 from eavesdrop.server.streaming.buffer import AudioStreamBuffer
@@ -23,6 +21,8 @@ from eavesdrop.server.transcription.models import TranscriptionInfo
 from eavesdrop.server.transcription.pipeline import WhisperModel
 from eavesdrop.server.transcription.session import TranscriptionSession
 from eavesdrop.wire import Segment
+
+tracing_logger = get_logger("tracing")
 
 
 @dataclass
@@ -42,6 +42,7 @@ class ChunkTranscriptionResult:
   info: TranscriptionInfo | None
   processing_time: float
   audio_duration: float
+  speech_chunks: list | None = None
 
 
 class StreamingTranscriptionProcessor:
@@ -77,11 +78,7 @@ class StreamingTranscriptionProcessor:
     self.language: str | None = config.language
     self.text: list[str] = []
 
-    # Segment processing state
-    self.current_out: str = ""
-    self.prev_out: str = ""
-    self.same_output_count: int = 0
-    self.end_time_for_same_output: float | None = None
+    # Segment processing state - repetition logic removed
 
     # Model attributes
     self.transcriber: WhisperModel | None = None
@@ -104,14 +101,7 @@ class StreamingTranscriptionProcessor:
       "large-v3-turbo",
       "turbo",
     ]
-
-    # Prepare VAD parameters
-    if config.vad_parameters is None:
-      self.vad_parameters = VadOptions()
-    elif isinstance(config.vad_parameters, dict):
-      self.vad_parameters = VadOptions(**config.vad_parameters)
-    else:
-      self.vad_parameters = config.vad_parameters
+    self.vad_parameters = config.vad_parameters
 
   async def initialize(self) -> None:
     """Initialize the transcriber model."""
@@ -120,7 +110,9 @@ class StreamingTranscriptionProcessor:
 
     if device == "cuda":
       major_version, _ = torch.cuda.get_device_capability(device)
-      self.compute_type = "float16"
+      # self.compute_type = "float16"
+      self.compute_type = "int8"
+
       self.logger.debug(
         "CUDA device capability", major=major_version, compute_type=self.compute_type
       )
@@ -281,6 +273,18 @@ class StreamingTranscriptionProcessor:
       await asyncio.sleep(self.buffer.config.min_chunk_duration - duration)
       return None
 
+    # TRACING: Audio chunk range being processed
+    tracing_logger.info("\n\n")
+    tracing_logger.info(
+      "Processing audio chunk",
+      chunk_start=f"{start_time:.2f}s",
+      chunk_end=f"{start_time + duration:.2f}s",
+      chunk_duration=f"{duration:.2f}s",
+      buffer_available=f"{available_duration:.2f}s",
+      buffer_total=f"{total_duration:.2f}s",
+      buffer_processed=f"{processed_duration:.2f}s",
+    )
+
     return AudioChunk(data=input_bytes, duration=duration, start_time=start_time)
 
   async def _transcribe_chunk(self, chunk: AudioChunk) -> ChunkTranscriptionResult:
@@ -288,7 +292,7 @@ class StreamingTranscriptionProcessor:
     import time
 
     transcription_start = time.time()
-    result, info = await asyncio.to_thread(self._transcribe_audio, chunk)
+    result, info, speech_chunks = await asyncio.to_thread(self._transcribe_audio, chunk)
     processing_time = time.time() - transcription_start
 
     self.logger.debug(
@@ -298,8 +302,13 @@ class StreamingTranscriptionProcessor:
       speed_vs_realtime=f"{chunk.duration / processing_time:.1f}x faster",
     )
 
+    # Store speech chunks for silence-based completion
     return ChunkTranscriptionResult(
-      segments=result, info=info, processing_time=processing_time, audio_duration=chunk.duration
+      segments=result,
+      info=info,
+      processing_time=processing_time,
+      audio_duration=chunk.duration,
+      speech_chunks=speech_chunks,
     )
 
   async def _process_transcription_result(self, result: ChunkTranscriptionResult) -> None:
@@ -310,7 +319,9 @@ class StreamingTranscriptionProcessor:
     if result.segments is None or len(result.segments) == 0:
       self.buffer.advance_processed_boundary(result.audio_duration)
     else:
-      await self._handle_transcription_output(result.segments, result.audio_duration)
+      await self._handle_transcription_output(
+        result.segments, result.audio_duration, result.speech_chunks
+      )
 
   async def _wait_for_next_interval(self, processing_time: float) -> None:
     """Wait to maintain consistent transcription intervals."""
@@ -328,7 +339,7 @@ class StreamingTranscriptionProcessor:
 
   def _transcribe_audio(
     self, chunk: AudioChunk
-  ) -> tuple[list[Segment] | None, TranscriptionInfo | None]:
+  ) -> tuple[list[Segment] | None, TranscriptionInfo | None, list | None]:
     """Transcribe audio sample using the Faster Whisper model."""
     if not self.transcriber:
       raise RuntimeError("Transcriber not initialized")
@@ -353,7 +364,52 @@ class StreamingTranscriptionProcessor:
         start_offset=self.buffer.processed_up_to_time,
       )
       result_list = list(result) if result else None
-      return result_list, info
+
+      # Store VAD speech chunks for silence analysis
+      speech_chunks = getattr(info, "speech_chunks", None) if info else None
+
+      # TRACING: VAD speech detection results
+      sample_rate = 16000  # Standard Whisper sample rate
+
+      if speech_chunks:
+        speech_ranges = [
+          f"{chunk['start'] / sample_rate:.2f}-{chunk['end'] / sample_rate:.2f}s"
+          for chunk in speech_chunks
+        ]
+        total_speech_duration = sum(
+          (chunk["end"] - chunk["start"]) / sample_rate for chunk in speech_chunks
+        )
+
+        # Build timeline showing speech vs silence (S=speech, ~=silence)
+        timeline = ["~"] * int(chunk.duration * 10)  # 100ms resolution
+        for speech_chunk in speech_chunks:
+          start_idx = int((speech_chunk["start"] / sample_rate) * 10)
+          end_idx = int((speech_chunk["end"] / sample_rate) * 10)
+          for i in range(start_idx, min(end_idx, len(timeline))):
+            timeline[i] = "S"
+        timeline_str = "".join(timeline)
+
+        tracing_logger.info(
+          "VAD analysis",
+          speech_ranges=speech_ranges,
+          speech_duration=f"{total_speech_duration:.2f}s",
+          silence_duration=f"{chunk.duration - total_speech_duration:.2f}s",
+          audio_duration=f"{chunk.duration:.2f}s",
+          speech_ratio=f"{total_speech_duration / chunk.duration:.1%}",
+          timeline=timeline_str,
+        )
+      else:
+        tracing_logger.info(
+          "VAD analysis",
+          speech_ranges=[],
+          speech_duration="0.00s",
+          silence_duration=f"{chunk.duration:.2f}s",
+          audio_duration=f"{chunk.duration:.2f}s",
+          speech_ratio="0.0%",
+          timeline="~" * int(chunk.duration * 10),
+        )
+
+      return result_list, info, speech_chunks
 
     finally:
       pass
@@ -378,7 +434,9 @@ class StreamingTranscriptionProcessor:
       )
       await self.sink.send_language_detection(info.language, info.language_probability)
 
-  async def _handle_transcription_output(self, result: list[Segment], duration: float) -> None:
+  async def _handle_transcription_output(
+    self, result: list[Segment], duration: float, speech_chunks: list | None = None
+  ) -> None:
     """Handle transcription output and send to client."""
     result_count = len(result) if result else 0
     self.logger.debug(
@@ -391,17 +449,45 @@ class StreamingTranscriptionProcessor:
       self.logger.debug("No segments to send to client")
       return
 
+    # TRACING: Raw Whisper segments generated
+    raw_segments = [
+      {
+        "id": seg.id,
+        "timespan": Range(Seconds(seg.start), Seconds(seg.end)),
+        "text": seg.text[:50] + ("..." if len(seg.text) > 50 else ""),
+        "logprob": f"{seg.avg_logprob:.3f}",
+        "completed": seg.completed,
+      }
+      for seg in result
+    ]
+    tracing_logger.info(
+      "Whisper generated segments",
+      segment_count=len(result),
+      segments=Pretty(raw_segments),
+      audio_duration=Seconds(duration),
+    )
+
     self.logger.debug("Processing transcription segments")
     # Update internal transcript (for translation queue, etc.)
     self._update_segments(result, duration)
 
-    # Mark segments as completed/incomplete based on position
-    # Typically all segments except the last are completed
+    # Apply explicit completion rule: all but last segment are completed
+    # Plus enhanced rule: last segment can also complete based on silence
     current_incomplete_segment = None
+    silence_threshold = self.config.silence_completion_threshold
 
     for i, segment in enumerate(result):
-      # Apply chain-based completion for all but the last segment
-      should_complete = i < len(result) - 1
+      is_last_segment = i == len(result) - 1
+
+      # Explicit rule: all segments except last are marked complete
+      should_complete = not is_last_segment
+
+      # Enhanced rule: last segment can also complete if silence analysis says so
+      if is_last_segment:
+        should_complete = self._should_complete_segment_by_silence(
+          segment, speech_chunks, silence_threshold, duration
+        )
+
       if should_complete and not segment.completed:
         # Mark as completed and assign chain-based ID
         preceding_segment = self.session.get_last_completed_segment()
@@ -409,9 +495,29 @@ class StreamingTranscriptionProcessor:
 
         # Add to session's completed segments chain
         self.session.add_completed_segment(segment)
+
+        # TRACING: Completion decision
+        completion_reason = "positional" if not is_last_segment else "silence_analysis"
+        tracing_logger.info(
+          "Segment marked complete",
+          segment_id=segment.id,
+          reason=completion_reason,
+          text=segment.text[:50] + ("..." if len(segment.text) > 50 else ""),
+          time_range=f"{segment.start:.2f}-{segment.end:.2f}s",
+        )
       else:
         # This is the incomplete (current) segment
         current_incomplete_segment = segment
+
+        # TRACING: Incomplete segment
+        if is_last_segment:
+          tracing_logger.info(
+            "Last segment remains incomplete",
+            segment_id=segment.id,
+            reason="insufficient_silence",
+            text=segment.text[:50] + ("..." if len(segment.text) > 50 else ""),
+            time_range=f"{segment.start:.2f}-{segment.end:.2f}s",
+          )
 
     # Prepare segments for client: last N completed + current incomplete
     segments_for_client = []
@@ -421,9 +527,41 @@ class StreamingTranscriptionProcessor:
       self.session.most_recent_completed_segments(self.config.send_last_n_segments)
     )
 
-    # Add the current incomplete segment if present
+    # Ensure client invariant: always have an incomplete segment at the tail
     if current_incomplete_segment:
       segments_for_client.append(current_incomplete_segment)
+    else:
+      # Create synthetic incomplete segment to maintain client state machine invariant
+      synthetic_segment = self._create_synthetic_incomplete_segment(
+        speech_chunks, silence_threshold, duration
+      )
+      segments_for_client.append(synthetic_segment)
+
+    # Advance buffer pointer based on completed segments
+    self._advance_buffer_by_completed_segments(speech_chunks, silence_threshold, duration)
+
+    # TRACING: Final client output
+    client_segments = [
+      {
+        "id": seg.id,
+        "start": f"{seg.start:.2f}s",
+        "end": f"{seg.end:.2f}s",
+        "text": seg.text[:30] + ("..." if len(seg.text) > 30 else ""),
+        "completed": seg.completed,
+        "synthetic": seg.text == "" and seg.start == seg.end,
+      }
+      for seg in segments_for_client
+    ]
+    completed_count = sum(1 for seg in segments_for_client if seg.completed)
+    incomplete_count = len(segments_for_client) - completed_count
+
+    tracing_logger.info(
+      "Sending segments to client",
+      total_segments=len(segments_for_client),
+      completed_segments=completed_count,
+      incomplete_segments=incomplete_count,
+      segments=client_segments,
+    )
 
     # Send rich Segment objects to client
     transcription_result = TranscriptionResult(
@@ -435,55 +573,10 @@ class StreamingTranscriptionProcessor:
 
   def _update_segments(self, segments: list[Segment], duration: float) -> None:
     """Process segments and update transcript."""
-    offset: float | None = None
-    self.current_out = ""
-
-    # Process complete segments
-    if len(segments) > 1:
-      for s in segments[:-1]:
-        text_: str = s.text
-        self.text.append(text_)
-        start = self.buffer.processed_up_to_time + s.start
-        end = self.buffer.processed_up_to_time + min(duration, s.end)
-
-        if start >= end:
-          continue
-
-        # Note: Segment completion and chain ID assignment now handled
-        # in _handle_transcription_output via mark_completed()
-
-        offset = min(duration, s.end)
-
-    # Process last segment
-    self.current_out += segments[-1].text
-
-    # Handle repeated output
-    if self.current_out.strip() == self.prev_out.strip() and self.current_out != "":
-      self.same_output_count += 1
-      if self.end_time_for_same_output is None:
-        self.end_time_for_same_output = segments[-1].end
-      time.sleep(0.1)
-    else:
-      self.same_output_count = 0
-      self.end_time_for_same_output = None
-
-    # Complete repeated segments
-    if self.same_output_count > self.config.same_output_threshold:
-      if not self.text or self.text[-1].strip().lower() != self.current_out.strip().lower():
-        self.text.append(self.current_out)
-        # Note: Completion via repeated output threshold
-        # This path may need special handling for translation queue
-        # since it doesn't go through the normal segment completion flow
-
-      self.current_out = ""
-      offset = min(duration, self.end_time_for_same_output)  # type: ignore
-      self.same_output_count = 0
-      self.end_time_for_same_output = None
-    else:
-      self.prev_out = self.current_out
-
-    if offset is not None:
-      self.buffer.advance_processed_boundary(offset)
+    # Update internal transcript for translation queue
+    for segment in segments:
+      if segment.completed and segment.text.strip():
+        self.text.append(segment.text)
 
   def _prepare_segments(self, last_segment: dict | None = None) -> list[dict]:
     """Prepare segments for client using session completed segments."""
@@ -513,6 +606,139 @@ class StreamingTranscriptionProcessor:
       segments = segments + [last_segment]
 
     return segments
+
+  def _should_complete_segment_by_silence(
+    self,
+    segment: Segment,
+    speech_chunks: list | None,
+    silence_threshold: float,
+    audio_duration: float,
+  ) -> bool:
+    """Determine if segment should be completed based on silence after speech."""
+    sample_rate = self.buffer.config.sample_rate
+
+    if not speech_chunks:
+      # No speech in current chunk - check if we have a segment from previous speech
+      # If the segment exists and we have sufficient silence duration, complete it
+      if segment.text.strip() and audio_duration >= silence_threshold:
+        tracing_logger.info(
+          "Completing segment due to silence chunk",
+          segment_id=segment.id,
+          silence_duration=f"{audio_duration:.2f}s",
+          threshold=f"{silence_threshold:.2f}s",
+        )
+        return True
+      return False
+
+    # Convert speech chunks from samples to seconds
+    last_speech_time = max(chunk["end"] for chunk in speech_chunks) / sample_rate
+
+    # Time since last speech in this audio chunk
+    chunk_end_time = audio_duration
+    silence_duration = chunk_end_time - last_speech_time
+
+    # If we have enough silence after the segment ends, mark it complete
+    if (
+      segment.end <= last_speech_time + silence_threshold and silence_duration >= silence_threshold
+    ):
+      tracing_logger.info(
+        "Completing segment due to silence after speech",
+        segment_id=segment.id,
+        silence_duration=f"{silence_duration:.2f}s",
+        last_speech_time=f"{last_speech_time:.2f}s",
+        threshold=f"{silence_threshold:.2f}s",
+      )
+      return True
+
+    return False
+
+  def _advance_buffer_by_completed_segments(
+    self,
+    speech_chunks: list | None,
+    silence_threshold: float,
+    audio_duration: float,
+  ) -> None:
+    """Advance buffer pointer based on speech boundaries and completed segments."""
+    # Get the last completed segment to determine how far we can advance
+    last_completed = self.session.get_last_completed_segment()
+
+    if not last_completed:
+      return
+
+    # Calculate how far we can safely advance
+    completed_end_time = last_completed.absolute_end_time()
+    current_processed_time = self.buffer.processed_up_to_time
+
+    # Only advance if we're moving forward
+    if completed_end_time > current_processed_time:
+      advance_amount = completed_end_time - current_processed_time
+      self.buffer.advance_processed_boundary(advance_amount)
+
+      # TRACING: Buffer pointer advancement
+      tracing_logger.info(
+        "Buffer advanced by completed segment",
+        advance_amount=f"{advance_amount:.2f}s",
+        old_processed_time=f"{current_processed_time:.2f}s",
+        new_processed_time=f"{completed_end_time:.2f}s",
+        last_completed_id=last_completed.id,
+      )
+
+    # Additionally, if we have pure silence after completion, advance through it
+    if speech_chunks:
+      sample_rate = self.buffer.config.sample_rate
+      last_speech_time = max(chunk["end"] for chunk in speech_chunks) / sample_rate
+      chunk_end_time = audio_duration
+      silence_after_speech = chunk_end_time - last_speech_time
+
+      # If we have significant silence, advance through most of it
+      if silence_after_speech > silence_threshold * 2:
+        additional_advance = silence_after_speech - silence_threshold
+        self.buffer.advance_processed_boundary(additional_advance)
+
+        # TRACING: Additional silence advancement
+        tracing_logger.info(
+          "Buffer advanced through silence",
+          silence_duration=f"{silence_after_speech:.2f}s",
+          additional_advance=f"{additional_advance:.2f}s",
+          silence_threshold=f"{silence_threshold:.2f}s",
+        )
+
+  def _create_synthetic_incomplete_segment(
+    self,
+    speech_chunks: list | None,
+    silence_threshold: float,
+    duration: float,
+  ) -> Segment:
+    """Create a synthetic incomplete segment to maintain client state machine invariant."""
+    from eavesdrop.wire.transcription import compute_segment_chain_id
+
+    # Determine where the synthetic segment should start
+    if speech_chunks:
+      # Start after the last detected speech + threshold
+      sample_rate = self.buffer.config.sample_rate
+      last_speech_time = max(chunk["end"] for chunk in speech_chunks) / sample_rate
+      synthetic_start = last_speech_time + silence_threshold
+    else:
+      # No speech detected, start at current buffer position
+      synthetic_start = duration
+
+    # Always create to maintain client invariant - place at end if necessary
+    actual_start = min(synthetic_start, duration)
+
+    return Segment(
+      id=compute_segment_chain_id(0, ""),  # Baseline ID for incomplete
+      seek=0,
+      start=actual_start,
+      end=actual_start,  # Zero-duration synthetic segment
+      text="",  # Empty text is fine for client state machine
+      tokens=[],
+      avg_logprob=0.0,
+      compression_ratio=0.0,
+      words=None,
+      temperature=0.0,
+      completed=False,
+      time_offset=self.buffer.processed_up_to_time,
+    )
 
   def _format_segment(self, start: float, end: float, text: str, completed: bool = False) -> dict:
     """Format a transcription segment."""
