@@ -1,5 +1,6 @@
 """Main entry point for eavesdrop active listener application."""
 
+import asyncio
 import signal
 import sys
 from typing import NamedTuple, TypedDict
@@ -147,9 +148,21 @@ class ActiveListener(Command):
     def signal_handler(signum, _frame):
       self.logger.info("Received shutdown signal", signal=signum)
       self._app.shutdown()
+      # Create a task to force client shutdown asynchronously
+      asyncio.create_task(self._force_shutdown())
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
+
+  async def _force_shutdown(self) -> None:
+    """Force shutdown of client to break blocking operations."""
+    try:
+      # Give the app a moment to shutdown gracefully
+      await asyncio.sleep(0.1)
+      # If still running, force client disconnect to break async iteration
+      await self._client.shutdown()
+    except Exception:
+      self.logger.exception("Error during forced shutdown")
 
 
 def main() -> None:

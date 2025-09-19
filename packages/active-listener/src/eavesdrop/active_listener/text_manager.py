@@ -77,10 +77,9 @@ class TextState:
     # Case 2. The segment is newly completed, transitioning from in-progress
     if segment.completed and segment.id not in self.completed_segment_ids:
       logger.warn("New completed", previous_in_progress=self.current_segment)
-      assert self.current_segment is not None
       self.completed_segment_ids[segment.id] = segment
       update = calculate_text_update(from_segment=self.current_segment, to_segment=segment)
-      if segment.id == self.current_segment.id:
+      if self.current_segment and segment.id == self.current_segment.id:
         self.current_segment = None
       return update
 

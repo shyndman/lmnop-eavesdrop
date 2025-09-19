@@ -29,25 +29,38 @@ class App:
     """Start the main transcription processing loop."""
     self.logger.info("Starting transcription loop")
 
-    # Start audio streaming
-    await self._client.start_streaming()
-
-    # Main message processing loop
     try:
-      async for message in self._client:
-        if self._shutdown_event.is_set():
-          break
+      # Start audio streaming
+      await self._client.start_streaming()
 
-        await self._handle_transcription_message(message)
+      # Main message processing loop
+      try:
+        async for message in self._client:
+          if self._shutdown_event.is_set():
+            break
 
-    except Exception:
-      self.logger.exception("Error in transcription loop")
-      raise
+          await self._handle_transcription_message(message)
+
+      except Exception:
+        self.logger.exception("Error in transcription loop")
+        raise
+    finally:
+      # Ensure proper cleanup on exit
+      await self._cleanup()
 
   def shutdown(self) -> None:
     """Signal the application to shutdown gracefully."""
     self.logger.info("Shutdown requested")
     self._shutdown_event.set()
+
+  async def _cleanup(self) -> None:
+    """Perform cleanup operations."""
+    self.logger.info("Performing cleanup")
+    try:
+      await self._client.shutdown()
+      self.logger.info("Client shutdown complete")
+    except Exception:
+      self.logger.exception("Error during cleanup")
 
   async def _handle_transcription_message(self, message: TranscriptionMessage) -> None:
     """Handle incoming transcription messages from the server."""

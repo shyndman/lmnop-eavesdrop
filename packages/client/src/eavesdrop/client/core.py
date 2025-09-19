@@ -303,12 +303,18 @@ class EavesdropClient:
   async def __anext__(self) -> TranscriptionMessage:
     """Get next transcription message."""
     if not self._connected:
-      raise RuntimeError("Client must be connected to iterate over messages")
+      raise StopAsyncIteration
 
     try:
-      # Wait for next message from queue
-      message = await self._message_queue.get()
+      # Wait for next message from queue with timeout to allow interruption
+      message = await asyncio.wait_for(self._message_queue.get(), timeout=0.5)
       return message
+    except asyncio.TimeoutError:
+      # Check if still connected, continue loop if so
+      if self._connected:
+        return await self.__anext__()
+      else:
+        raise StopAsyncIteration
     except Exception:
       raise StopAsyncIteration
 
