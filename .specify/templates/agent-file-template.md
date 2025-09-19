@@ -34,7 +34,8 @@ class UserConfig(TypedDict):
     preferences: dict[str, str | int]
     metadata: dict[str, str] | None
 
-# ✅ NamedTuple for immutable records, and convenient function return values
+# ✅ NamedTuple for immutable records, and convenient function return values (they can be
+# destructured, AND they have field names for self-documentation)
 class UserRecord(NamedTuple):
     id: int
     name: str
@@ -52,8 +53,26 @@ class User:
 
 **Import Style**:
 ```python
+# ✅ Always use absolute imports
+from eavesdrop.common.types import AudioSegment
+from eavesdrop.client.core import Client
+
+# ❌ Never use relative imports
+from ..common.types import AudioSegment
+from .core import Client
+
+# ✅ Allowed typing imports
 from typing import TypedDict, NamedTuple, TYPE_CHECKING
-# Never: from typing import Any, Optional, Union
+
+# ✅ Import abstract base classes from collections.abc
+from collections.abc import Iterable, Awaitable
+
+# ❌ Never import these from typing
+from typing import Any, Optional, Union, Iterable, Awaitable
+# Any: lazy typing - always type specifically
+# Optional[T]: use T | None syntax instead
+# Union[A, B]: use A | B syntax instead
+# Iterable/Awaitable: import from collections.abc instead
 ```
 
 ## Recent Changes

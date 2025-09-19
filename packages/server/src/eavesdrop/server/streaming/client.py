@@ -48,7 +48,7 @@ class WebSocketStreamingClient:
     """
     self.websocket = websocket
     self.stream_name = stream_name
-    self.logger = get_logger("ws/client")
+    self.logger = get_logger("ws/client", stream=stream_name)
 
     # Initialize session and components
     self.session = create_session(stream_name)
