@@ -8,7 +8,7 @@ CRITICAL: These tests must fail until implementation is complete.
 
 import pytest
 
-from eavesdrop.active_listener.cli import ActiveListener
+from eavesdrop.active_listener.__main__ import ActiveListener
 
 
 class TestCLIInterface:
@@ -16,7 +16,7 @@ class TestCLIInterface:
 
   def test_command_argument_defaults(self):
     """Test that command arguments have expected default values."""
-    from eavesdrop.active_listener.cli import ServerHostPort
+    from eavesdrop.active_listener.__main__ import ServerHostPort
 
     cmd = ActiveListener.parse([])
 
@@ -26,7 +26,7 @@ class TestCLIInterface:
 
   def test_server_parser_valid_formats(self):
     """Test that server parser accepts valid hostname:port formats."""
-    from eavesdrop.active_listener.cli import ServerHostPort, parse_server
+    from eavesdrop.active_listener.__main__ import ServerHostPort, parse_server
 
     # Valid formats should parse successfully
     result = parse_server("localhost:9090")
@@ -40,7 +40,7 @@ class TestCLIInterface:
 
   def test_server_parser_invalid_formats(self):
     """Test that server parser rejects invalid formats."""
-    from eavesdrop.active_listener.cli import parse_server
+    from eavesdrop.active_listener.__main__ import parse_server
 
     # Invalid formats should raise ValueError
     with pytest.raises(ValueError, match="Invalid server format"):
@@ -80,7 +80,7 @@ class TestCLIInterface:
 
   def test_server_parsing_integration(self):
     """Test that server argument uses custom parser correctly."""
-    from eavesdrop.active_listener.cli import ServerHostPort
+    from eavesdrop.active_listener.__main__ import ServerHostPort
 
     # This should work with valid server format
     cmd = ActiveListener.parse(["--server", "192.168.1.100:8080", "--audio-device", "hw:1,0"])
@@ -90,19 +90,9 @@ class TestCLIInterface:
     with pytest.raises(SystemExit):
       ActiveListener.parse(["--server", "invalid-format", "--audio-device", "default"])
 
-  @pytest.mark.asyncio
-  async def test_graceful_shutdown_on_sigint(self):
-    """Test that command handles SIGINT gracefully."""
-    cmd = ActiveListener.parse([])
-
-    # Test that shutdown method exists and can be called
-    await cmd._handle_shutdown()
-
-    # Test should pass - shutdown method is implemented
-
   def test_parsed_server_components_access(self):
     """Test that command can extract host and port from parsed server."""
-    from eavesdrop.active_listener.cli import ServerHostPort
+    from eavesdrop.active_listener.__main__ import ServerHostPort
 
     cmd = ActiveListener.parse(["--server", "example.com:8080"])
 

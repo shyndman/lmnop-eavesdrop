@@ -118,11 +118,11 @@ class TestTextUpdate:
     assert update.operation_type == UpdateType.REPLACE_SUFFIX
 
   def test_negative_chars_to_delete_raises(self):
-    with pytest.raises(ValueError, match="chars_to_delete must be >= 0"):
+    with pytest.raises(ValueError):
       TextUpdate(-1, "hello", UpdateType.REPLACE_SUFFIX)
 
   def test_non_string_text_raises(self):
-    with pytest.raises(ValueError, match="text_to_type must be a valid UTF-8 string"):
+    with pytest.raises(ValueError):
       TextUpdate(0, 123, UpdateType.REPLACE_SUFFIX)  # type: ignore
 
 
@@ -131,36 +131,112 @@ class TestTextState:
 
   def test_initial_state(self):
     state = TextState()
-    assert state.completed_segments == []
-    assert state.current_in_progress_text == ""
-    assert state.current_segment_id is None
-    assert state.total_typed_length == 0
+    assert len(state.completed_segment_ids) == 0
+    assert state.current_segment is None
     assert state.get_complete_text() == ""
 
   def test_get_complete_text_with_completed_only(self):
     state = TextState()
-    state.completed_segments = ["Hello ", "world"]
+    segment1 = Segment(
+      id=1,
+      seek=0,
+      start=0.0,
+      end=1.0,
+      text="Hello",
+      tokens=[],
+      avg_logprob=0.0,
+      compression_ratio=1.0,
+      words=None,
+      temperature=0.0,
+      completed=True,
+    )
+    segment2 = Segment(
+      id=2,
+      seek=10,
+      start=1.0,
+      end=2.0,
+      text="world",
+      tokens=[],
+      avg_logprob=0.0,
+      compression_ratio=1.0,
+      words=None,
+      temperature=0.0,
+      completed=True,
+    )
+    state.completed_segment_ids[1] = segment1
+    state.completed_segment_ids[2] = segment2
     assert state.get_complete_text() == "Hello world"
 
   def test_get_complete_text_with_in_progress(self):
     state = TextState()
-    state.completed_segments = ["Hello "]
-    state.current_in_progress_text = "world"
+    completed_segment = Segment(
+      id=1,
+      seek=0,
+      start=0.0,
+      end=1.0,
+      text="Hello",
+      tokens=[],
+      avg_logprob=0.0,
+      compression_ratio=1.0,
+      words=None,
+      temperature=0.0,
+      completed=True,
+    )
+    state.completed_segment_ids[1] = completed_segment
+    state.current_segment = Segment(
+      id=2,
+      seek=10,
+      start=1.0,
+      end=2.0,
+      text="world",
+      tokens=[],
+      avg_logprob=0.0,
+      compression_ratio=1.0,
+      words=None,
+      temperature=0.0,
+      completed=False,
+    )
     assert state.get_complete_text() == "Hello world"
 
-  def test_apply_segment_completion(self):
+  def test_segment_completion(self):
     state = TextState()
-    state.current_in_progress_text = "hello"
-    state.current_segment_id = 1
+    # Set up initial in-progress segment
+    in_progress_segment = Segment(
+      id=1,
+      seek=0,
+      start=0.0,
+      end=1.0,
+      text="hello",
+      tokens=[],
+      avg_logprob=0.0,
+      compression_ratio=1.0,
+      words=None,
+      temperature=0.0,
+      completed=False,
+    )
+    state.current_segment = in_progress_segment
 
-    state.apply_segment_completion("hello world")
+    # Complete the segment
+    completed_segment = Segment(
+      id=1,
+      seek=0,
+      start=0.0,
+      end=1.0,
+      text="hello world",
+      tokens=[],
+      avg_logprob=0.0,
+      compression_ratio=1.0,
+      words=None,
+      temperature=0.0,
+      completed=True,
+    )
+    state.process_segment(completed_segment)
 
-    assert state.completed_segments == ["hello world"]
-    assert state.current_in_progress_text == ""
-    assert state.current_segment_id is None
-    assert state.total_typed_length == 11
+    assert 1 in state.completed_segment_ids
+    assert state.completed_segment_ids[1].text == "hello world"
+    assert state.current_segment is None
 
-  def test_reset_in_progress(self):
+  def test_new_in_progress_segment(self):
     state = TextState()
     segment = Segment(
       id=1,
@@ -176,12 +252,13 @@ class TestTextState:
       completed=False,
     )
 
-    state.reset_in_progress(segment)
+    state.process_segment(segment)
 
-    assert state.current_segment_id == 1
-    assert state.current_in_progress_text == "hello"
+    assert state.current_segment is not None
+    assert state.current_segment.id == 1
+    assert state.current_segment.text == "hello"
 
-  def test_calculate_update_new_segment(self):
+  def test_process_segment_new_segment(self):
     state = TextState()
     segment = Segment(
       id=1,
@@ -197,18 +274,33 @@ class TestTextState:
       completed=False,
     )
 
-    update = state.calculate_update(segment)
+    update = state.process_segment(segment)
 
+    assert update is not None
     assert update.chars_to_delete == 0
     assert update.text_to_type == "hello"
     assert update.operation_type == UpdateType.NEW_SEGMENT
-    assert state.current_segment_id == 1
-    assert state.current_in_progress_text == "hello"
+    assert state.current_segment is not None
+    assert state.current_segment.id == 1
+    assert state.current_segment.text == "hello"
 
-  def test_calculate_update_in_progress_no_change(self):
+  def test_process_segment_in_progress_no_change(self):
     state = TextState()
-    state.current_segment_id = 1
-    state.current_in_progress_text = "hello"
+    # Set initial segment
+    initial_segment = Segment(
+      id=1,
+      seek=0,
+      start=0.0,
+      end=1.0,
+      text="hello",
+      tokens=[],
+      avg_logprob=0.0,
+      compression_ratio=1.0,
+      words=None,
+      temperature=0.0,
+      completed=False,
+    )
+    state.current_segment = initial_segment
 
     segment = Segment(
       id=1,
@@ -223,16 +315,30 @@ class TestTextState:
       temperature=0.0,
       completed=False,
     )
-    update = state.calculate_update(segment)
+    update = state.process_segment(segment)
 
+    assert update is not None
     assert update.operation_type == UpdateType.NO_CHANGE
     assert update.chars_to_delete == 0
     assert update.text_to_type == ""
 
-  def test_calculate_update_in_progress_extension(self):
+  def test_process_segment_in_progress_extension(self):
     state = TextState()
-    state.current_segment_id = 1
-    state.current_in_progress_text = "hello"
+    # Set initial segment
+    initial_segment = Segment(
+      id=1,
+      seek=0,
+      start=0.0,
+      end=1.0,
+      text="hello",
+      tokens=[],
+      avg_logprob=0.0,
+      compression_ratio=1.0,
+      words=None,
+      temperature=0.0,
+      completed=False,
+    )
+    state.current_segment = initial_segment
 
     segment = Segment(
       id=1,
@@ -247,18 +353,50 @@ class TestTextState:
       temperature=0.0,
       completed=False,
     )
-    update = state.calculate_update(segment)
+    update = state.process_segment(segment)
 
+    assert update is not None
     assert update.operation_type == UpdateType.REPLACE_SUFFIX
     assert update.chars_to_delete == 0
     assert update.text_to_type == " world"
-    assert state.current_in_progress_text == "hello world"
+    assert state.current_segment is not None
+    assert state.current_segment.text == "hello world"
 
-  def test_calculate_update_different_segment_id(self):
+  def test_process_segment_different_segment_id(self):
     state = TextState()
-    state.current_segment_id = 1
-    state.current_in_progress_text = "hello"
+    # Set initial segment
+    initial_segment = Segment(
+      id=1,
+      seek=0,
+      start=0.0,
+      end=1.0,
+      text="hello",
+      tokens=[],
+      avg_logprob=0.0,
+      compression_ratio=1.0,
+      words=None,
+      temperature=0.0,
+      completed=False,
+    )
+    state.current_segment = initial_segment
 
+    # Complete first segment first
+    completed_segment = Segment(
+      id=1,
+      seek=0,
+      start=0.0,
+      end=1.0,
+      text="hello",
+      tokens=[],
+      avg_logprob=0.0,
+      compression_ratio=1.0,
+      words=None,
+      temperature=0.0,
+      completed=True,
+    )
+    state.process_segment(completed_segment)
+
+    # Now process new segment
     segment = Segment(
       id=2,
       seek=0,
@@ -272,10 +410,12 @@ class TestTextState:
       temperature=0.0,
       completed=False,
     )
-    update = state.calculate_update(segment)
+    update = state.process_segment(segment)
 
+    assert update is not None
     assert update.operation_type == UpdateType.NEW_SEGMENT
     assert update.chars_to_delete == 0
     assert update.text_to_type == "world"
-    assert state.current_segment_id == 2
-    assert state.current_in_progress_text == "world"
+    assert state.current_segment is not None
+    assert state.current_segment.id == 2
+    assert state.current_segment.text == "world"

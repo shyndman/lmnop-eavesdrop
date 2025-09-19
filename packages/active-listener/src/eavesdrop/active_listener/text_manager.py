@@ -51,17 +51,6 @@ class TypingOperation:
   completed: bool  # Whether operation finished successfully
 
 
-@dataclass
-class ConnectionState:
-  """Tracks the health and status of the eavesdrop server connection."""
-
-  is_connected: bool = False  # Current WebSocket connection status
-  is_streaming: bool = False  # Whether audio streaming is active
-  last_message_time: float = 0.0  # Timestamp of last received message for health monitoring
-  reconnection_attempts: int = 0  # Count of connection retry attempts
-  error_message: str | None = None  # Last error encountered, if any
-
-
 logger = get_logger("txt")
 
 
@@ -100,6 +89,7 @@ class TextState:
       logger.warn("Updated in-progress")
       assert self.current_segment.id == segment.id
       update = calculate_text_update(from_segment=self.current_segment, to_segment=segment)
+      self.current_segment = segment  # Update to the new segment state
       return update
 
     # Case 4. We are receiving the first in-progress segment

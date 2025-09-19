@@ -41,7 +41,7 @@ dev = [
 ]
 
 [tool.pyright]
-include = ["src"]
+include = ["src", "tests"]
 ignore = ["**/.venv"]
 defineConstant = {DEBUG = true}
 reportMissingImports = "error"

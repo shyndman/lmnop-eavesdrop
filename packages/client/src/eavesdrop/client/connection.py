@@ -8,6 +8,7 @@ from collections.abc import Callable
 import websockets
 from websockets.asyncio.client import ClientConnection
 
+from eavesdrop.common import get_logger
 from eavesdrop.wire import (
   ClientType,
   ErrorMessage,
@@ -46,6 +47,8 @@ class WebSocketConnection:
     self.stream_names = stream_names or []
     self.on_transcription_message = on_transcription_message
 
+    self.logger = get_logger("conn", stream=stream_name)
+
     self.ws: ClientConnection | None = None
     self.connected = False
 
@@ -73,7 +76,6 @@ class WebSocketConnection:
       options = transcription_options or UserTranscriptionOptions(
         initial_prompt=None,
         hotwords=None,
-        beam_size=5,
         word_timestamps=False,
       )
 

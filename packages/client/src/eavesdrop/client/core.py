@@ -88,10 +88,10 @@ class EavesdropClient:
     host: str = "localhost",
     port: int = 8080,
     audio_device: str = "default",
-    beam_size: int = 5,
     word_timestamps: bool = False,
     initial_prompt: str | None = None,
     hotwords: list[str] | None = None,
+    send_last_n_segments: int = 3,
   ) -> "EavesdropClient":
     """
     Create a transcriber client for sending audio for transcription.
@@ -109,10 +109,10 @@ class EavesdropClient:
         Configured EavesdropClient in transcriber mode
     """
     transcription_options = UserTranscriptionOptions(
-      beam_size=beam_size,
       word_timestamps=word_timestamps,
       initial_prompt=initial_prompt,
       hotwords=hotwords,
+      send_last_n_segments=send_last_n_segments,
     )
 
     return cls(
@@ -346,4 +346,4 @@ class EavesdropClient:
     """Handle error callback."""
     # For now, just print error
     # In full implementation, could raise exceptions or call user error handlers
-    self.logger(f"EavesdropClient error: {error}")
+    logger.error(f"EavesdropClient error: {error}")

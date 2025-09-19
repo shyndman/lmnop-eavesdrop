@@ -52,15 +52,57 @@ class TestTextProcessingContracts:
   def test_text_state_get_complete_text(self):
     """Test that get_complete_text returns correct combined text."""
     state = TextState()
-    state.completed_segments = ["Hello ", "world "]
-    state.current_in_progress_text = "this is"
 
-    # This will fail until implementation
+    # Add completed segments using the actual data structure
+    segment1 = Segment(
+      id=1,
+      seek=0,
+      start=0.0,
+      end=1.0,
+      text="Hello",
+      tokens=[1],
+      avg_logprob=-0.5,
+      compression_ratio=1.0,
+      words=None,
+      temperature=None,
+      completed=True,
+    )
+    segment2 = Segment(
+      id=2,
+      seek=10,
+      start=1.0,
+      end=2.0,
+      text="world",
+      tokens=[2],
+      avg_logprob=-0.5,
+      compression_ratio=1.0,
+      words=None,
+      temperature=None,
+      completed=True,
+    )
+    state.completed_segment_ids[1] = segment1
+    state.completed_segment_ids[2] = segment2
+
+    # Set current in-progress segment
+    state.current_segment = Segment(
+      id=3,
+      seek=20,
+      start=2.0,
+      end=3.0,
+      text="this is",
+      tokens=[3],
+      avg_logprob=-0.5,
+      compression_ratio=1.0,
+      words=None,
+      temperature=None,
+      completed=False,
+    )
+
     result = state.get_complete_text()
     assert result == "Hello world this is"
 
-  def test_text_state_calculate_update_new_segment(self):
-    """Test calculate_update for new segment scenario."""
+  def test_text_state_process_segment_new_segment(self):
+    """Test process_segment for new segment scenario."""
     state = TextState()
 
     # Create segment with all required fields
@@ -78,21 +120,34 @@ class TestTextProcessingContracts:
       completed=False,
     )
 
-    # This will fail until implementation
-    update = state.calculate_update(segment)
+    update = state.process_segment(segment)
 
     assert isinstance(update, TextUpdate)
     assert update.operation_type == UpdateType.NEW_SEGMENT
     assert update.text_to_type == "Hello"
     assert update.chars_to_delete == 0
 
-  def test_text_state_calculate_update_in_progress_change(self):
-    """Test calculate_update for in-progress segment changes."""
+  def test_text_state_process_segment_in_progress_change(self):
+    """Test process_segment for in-progress segment changes."""
     state = TextState()
-    state.current_segment_id = 1
-    state.current_in_progress_text = "Hell"
 
-    # Create segment with all required fields
+    # Set up initial in-progress segment
+    initial_segment = Segment(
+      id=1,
+      seek=0,
+      start=0.0,
+      end=1.0,
+      text="Hell",
+      tokens=[1, 2, 3],
+      avg_logprob=-0.5,
+      compression_ratio=1.0,
+      words=None,
+      temperature=None,
+      completed=False,
+    )
+    state.current_segment = initial_segment
+
+    # Create updated segment with all required fields
     segment = Segment(
       id=1,
       seek=0,
@@ -106,29 +161,56 @@ class TestTextProcessingContracts:
       temperature=None,
       completed=False,
     )
-    update = state.calculate_update(segment)
+    update = state.process_segment(segment)
 
     assert isinstance(update, TextUpdate)
     assert update.operation_type in [UpdateType.REPLACE_SUFFIX, UpdateType.REPLACE_ALL]
     assert update.chars_to_delete >= 0
     assert len(update.text_to_type) > 0
 
-  def test_text_state_apply_segment_completion(self):
-    """Test apply_segment_completion moves text correctly."""
+  def test_text_state_segment_completion(self):
+    """Test segment completion moves text correctly."""
     state = TextState()
-    state.current_in_progress_text = "Hello world"
-    state.current_segment_id = 1
-    state.total_typed_length = 11
 
-    # This will fail until implementation
-    state.apply_segment_completion("Hello world")
+    # Set up initial in-progress segment
+    segment = Segment(
+      id=1,
+      seek=0,
+      start=0.0,
+      end=1.0,
+      text="Hello world",
+      tokens=[1, 2, 3],
+      avg_logprob=-0.5,
+      compression_ratio=1.0,
+      words=None,
+      temperature=None,
+      completed=False,
+    )
+    state.current_segment = segment
 
-    assert "Hello world" in state.completed_segments
-    assert state.current_in_progress_text == ""
-    assert state.current_segment_id is None
+    # Now complete the segment
+    completed_segment = Segment(
+      id=1,
+      seek=0,
+      start=0.0,
+      end=1.0,
+      text="Hello world",
+      tokens=[1, 2, 3],
+      avg_logprob=-0.5,
+      compression_ratio=1.0,
+      words=None,
+      temperature=None,
+      completed=True,
+    )
 
-  def test_text_state_reset_in_progress(self):
-    """Test reset_in_progress starts tracking new segment."""
+    state.process_segment(completed_segment)
+
+    assert 1 in state.completed_segment_ids
+    assert state.completed_segment_ids[1].text == "Hello world"
+    assert state.current_segment is None
+
+  def test_text_state_new_in_progress_segment(self):
+    """Test new in-progress segment tracking."""
     state = TextState()
 
     segment = Segment(
@@ -145,11 +227,13 @@ class TestTextProcessingContracts:
       completed=False,
     )
 
-    # This will fail until implementation
-    state.reset_in_progress(segment)
+    update = state.process_segment(segment)
 
-    assert state.current_segment_id == 2
-    assert state.current_in_progress_text == "New text"
+    assert state.current_segment is not None
+    assert state.current_segment.id == 2
+    assert state.current_segment.text == "New text"
+    assert update is not None
+    assert update.operation_type == UpdateType.NEW_SEGMENT
 
   def test_text_update_validation_rules(self):
     """Test TextUpdate validation rules from specification."""
@@ -189,11 +273,23 @@ class TestTextProcessingContracts:
 
   def test_unicode_handling(self):
     """Test that text processing handles Unicode characters correctly."""
-    # This will fail until Unicode support is implemented
-
     unicode_text = "Hello 世界 🌍"
     state = TextState()
-    state.current_in_progress_text = unicode_text
+
+    # Set current segment with Unicode text
+    state.current_segment = Segment(
+      id=1,
+      seek=0,
+      start=0.0,
+      end=1.0,
+      text=unicode_text,
+      tokens=[1],
+      avg_logprob=-0.5,
+      compression_ratio=1.0,
+      words=None,
+      temperature=None,
+      completed=False,
+    )
 
     result = state.get_complete_text()
     assert unicode_text in result

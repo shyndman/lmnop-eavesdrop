@@ -86,7 +86,7 @@ class UserTranscriptionOptions(BaseModel):
   """Transcription options that clients can specify."""
 
   # Transcription behavior
-  send_last_n_segments: int = Field(default=1, gt=0)
+  send_last_n_segments: int = Field(default=3, gt=0)
   """Number of most recent segments to send to the client."""
 
   initial_prompt: str | None = None

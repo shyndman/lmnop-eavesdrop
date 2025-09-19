@@ -6,11 +6,13 @@ client, text state management, and desktop typing operations.
 
 import asyncio
 
+from pydantic import TypeAdapter
+
 from eavesdrop.active_listener.client import EavesdropClientWrapper
 from eavesdrop.active_listener.text_manager import TextState, TextUpdate, TypingOperation
 from eavesdrop.active_listener.typist import YdoToolTypist
-from eavesdrop.common import get_logger
-from eavesdrop.wire import TranscriptionMessage
+from eavesdrop.common import Pretty, get_logger
+from eavesdrop.wire import Segment, TranscriptionMessage
 
 
 class App:
@@ -50,10 +52,14 @@ class App:
   async def _handle_transcription_message(self, message: TranscriptionMessage) -> None:
     """Handle incoming transcription messages from the server."""
     try:
-      # self.logger.debug("Received transcription message", segments=message.segments)
+      adapter = TypeAdapter(list[Segment])
+      self.logger.info(
+        "Received transcription message",
+        segments=Pretty(adapter.dump_python(message.segments, exclude={-1: {"tokens", "words"}})),
+      )
       # Process segments in the message
       for segment in message.segments:
-        self.logger.debug("Processing segment", segment=segment)
+        # self.logger.debug("Processing segment", segment=Pretty(segment))
         if update := self._text_state.process_segment(segment):
           # self.logger.debug("Text update generated", update=update)
           await self._execute_text_update(update)

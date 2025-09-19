@@ -13,12 +13,12 @@ from websockets.asyncio.server import ServerConnection
 
 from eavesdrop.common import get_logger
 from eavesdrop.server.config import TranscriptionConfig
-from eavesdrop.server.streaming.buffer import AudioStreamBuffer
-from eavesdrop.server.streaming.processor import StreamingTranscriptionProcessor
-from eavesdrop.server.streaming.websocket_adapters import (
+from eavesdrop.server.streaming.audio_flow import (
   WebSocketAudioSource,
   WebSocketTranscriptionSink,
 )
+from eavesdrop.server.streaming.buffer import AudioStreamBuffer
+from eavesdrop.server.streaming.processor import StreamingTranscriptionProcessor
 from eavesdrop.server.transcription.session import create_session
 
 

@@ -6,9 +6,21 @@ transcription message handling, and error recovery for real-time audio streaming
 
 import time
 
-from eavesdrop.active_listener.text_manager import ConnectionState
+from pydantic.dataclasses import dataclass
+
 from eavesdrop.client import EavesdropClient
 from eavesdrop.common import get_logger
+
+
+@dataclass
+class ConnectionState:
+  """Tracks the health and status of the eavesdrop server connection."""
+
+  is_connected: bool = False  # Current WebSocket connection status
+  is_streaming: bool = False  # Whether audio streaming is active
+  # TODO: Is this even a good metric for health? When did we discuss this?
+  last_message_time: float = 0.0  # Timestamp of last received message for health monitoring
+  reconnection_attempts: int = 0  # Count of connection retry attempts
 
 
 class EavesdropClientWrapper:
@@ -29,16 +41,12 @@ class EavesdropClientWrapper:
 
       self._client = self._create_client()
       await self._client.connect()
-
       self._connection_state.is_connected = True
+      # TODO: Why do we record last message time when we haven't received a message nearby?
       self._connection_state.last_message_time = time.time()
-      self._connection_state.error_message = None
-
       self.logger.info("Client initialized successfully")
-
-    except Exception as e:
+    except Exception:
       self._connection_state.is_connected = False
-      self._connection_state.error_message = str(e)
       self.logger.exception("Failed to initialize client")
       raise
 
@@ -66,9 +74,8 @@ class EavesdropClientWrapper:
       message = await self._client.__anext__()
       self.update_last_message_time()
       return message
-    except Exception as e:
+    except Exception:
       self._connection_state.is_connected = False
-      self._connection_state.error_message = str(e)
       self.logger.exception("Error receiving message")
       raise
 
@@ -105,10 +112,10 @@ class EavesdropClientWrapper:
     if not self._connection_state.is_connected:
       return False
 
-    # Check if we've received messages recently (within 30 seconds)
     current_time = time.time()
     time_since_last_message = current_time - self._connection_state.last_message_time
 
+    # Check if we've received messages recently (within 30 seconds)
     return time_since_last_message < 30.0
 
   def update_last_message_time(self) -> None:
@@ -127,17 +134,12 @@ class EavesdropClientWrapper:
       )
 
       await self._client.connect()
-
       self._connection_state.is_connected = True
-      self._connection_state.error_message = None
       self.update_last_message_time()
-
       self.logger.info("Reconnection successful")
       return True
-
-    except Exception as e:
+    except Exception:
       self._connection_state.is_connected = False
-      self._connection_state.error_message = str(e)
       self.logger.exception("Reconnection failed")
       return False
 
@@ -152,8 +154,6 @@ class EavesdropClientWrapper:
 
       self._connection_state.is_connected = False
       self._connection_state.is_streaming = False
-
       self.logger.info("Client shutdown complete")
-
     except Exception:
       self.logger.exception("Error during shutdown")

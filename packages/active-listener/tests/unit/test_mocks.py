@@ -4,7 +4,8 @@ import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 
-from eavesdrop.active_listener.text_manager import ConnectionState, TypingOperation
+from eavesdrop.active_listener.client import ConnectionState
+from eavesdrop.active_listener.text_manager import TypingOperation
 from eavesdrop.wire.transcription import Segment, UserTranscriptionOptions
 
 
