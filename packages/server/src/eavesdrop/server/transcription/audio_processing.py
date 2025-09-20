@@ -81,7 +81,8 @@ class AudioProcessor:
 
     # Apply VAD filtering if requested
     if vad_filter:
-      audio_chunks, _ = collect_chunks(audio, get_speech_timestamps(audio, vad_parameters))
+      speech_chunks: list[SpeechChunk] = get_speech_timestamps(audio, vad_parameters)
+      audio_chunks, _ = collect_chunks(audio, speech_chunks)
       processed_audio = np.concatenate(audio_chunks, axis=0)
       duration_after_vad = processed_audio.shape[0] / sampling_rate
       is_complete_silence = duration_after_vad <= _MINIMUM_AUDIO_DURATION

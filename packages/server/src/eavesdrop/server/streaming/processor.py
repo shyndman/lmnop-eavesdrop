@@ -291,6 +291,9 @@ class StreamingTranscriptionProcessor:
     """Transcribe an audio chunk and return results with timing information."""
     import time
 
+    # Debug audio capture (post-buffer)
+    self._capture_post_buffer_debug_audio(chunk)
+
     transcription_start = time.time()
     result, info, speech_chunks = await asyncio.to_thread(self._transcribe_audio, chunk)
     processing_time = time.time() - transcription_start
@@ -366,11 +369,16 @@ class StreamingTranscriptionProcessor:
       result_list = list(result) if result else None
 
       # Store VAD speech chunks for silence analysis
-      speech_chunks = getattr(info, "speech_chunks", None) if info else None
+      speech_chunks = info.speech_chunks if info else None
+
+      # TRACING: Audio characteristics analysis
+      sample_rate = 16000  # Standard Whisper sample rate
+      rms = np.sqrt(np.mean(chunk.data**2)) if len(chunk.data) > 0 else 0.0
+      peak = np.max(np.abs(chunk.data)) if len(chunk.data) > 0 else 0.0
+      zero_crossings = np.sum(np.diff(np.signbit(chunk.data))) if len(chunk.data) > 1 else 0
+      zcr = zero_crossings / len(chunk.data) * sample_rate if len(chunk.data) > 0 else 0
 
       # TRACING: VAD speech detection results
-      sample_rate = 16000  # Standard Whisper sample rate
-
       if speech_chunks:
         speech_ranges = [
           f"{chunk['start'] / sample_rate:.2f}-{chunk['end'] / sample_rate:.2f}s"
@@ -397,6 +405,9 @@ class StreamingTranscriptionProcessor:
           audio_duration=f"{chunk.duration:.2f}s",
           speech_ratio=f"{total_speech_duration / chunk.duration:.1%}",
           timeline=timeline_str,
+          audio_rms=f"{rms:.6f}",
+          audio_peak=f"{peak:.6f}",
+          audio_zcr=f"{zcr:.1f}",
         )
       else:
         tracing_logger.info(
@@ -407,6 +418,9 @@ class StreamingTranscriptionProcessor:
           audio_duration=f"{chunk.duration:.2f}s",
           speech_ratio="0.0%",
           timeline="~" * int(chunk.duration * 10),
+          audio_rms=f"{rms:.6f}",
+          audio_peak=f"{peak:.6f}",
+          audio_zcr=f"{zcr:.1f}",
         )
 
       return result_list, info, speech_chunks
@@ -748,3 +762,30 @@ class StreamingTranscriptionProcessor:
       "text": text,
       "completed": completed,
     }
+
+  def _capture_post_buffer_debug_audio(self, chunk: AudioChunk) -> None:
+    """Capture audio data after it's been dequeued from the buffer for debugging."""
+    if not self.config.debug_audio or not self.config.debug_audio.post_buffer:
+      return
+
+    import time
+
+    import soundfile as sf
+
+    # Create a unique filename for this chunk
+    timestamp = int(time.time())
+    chunk_id = f"{chunk.start_time:.3f}_{chunk.duration:.3f}"
+    path_prefix = str(self.config.debug_audio.post_buffer)
+    filename = f"{path_prefix}_{self.stream_name}_{timestamp}_{chunk_id}_post.wav"
+
+    # Ensure directory exists
+    os.makedirs(os.path.dirname(filename) if os.path.dirname(filename) else ".", exist_ok=True)
+
+    # Convert bytes back to numpy array for writing
+    audio_array = np.frombuffer(chunk.data, dtype=np.float32)
+
+    try:
+      sf.write(filename, audio_array, self.buffer.config.sample_rate)
+      self.logger.debug(f"Post-buffer debug audio saved: {filename}")
+    except Exception:
+      self.logger.exception(f"Error writing post-buffer debug audio to {filename}")

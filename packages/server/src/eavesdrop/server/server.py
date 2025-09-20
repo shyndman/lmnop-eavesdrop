@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+import soundfile as sf
 from websockets.asyncio.server import ServerConnection
 from websockets.exceptions import ConnectionClosed, InvalidMessage
 
@@ -114,26 +115,46 @@ class TranscriptionServer:
       frame_data = frame_data.encode()
     audio_array = np.frombuffer(frame_data, dtype=np.float32)
 
-    # Debug audio capture
-    if self.debug_audio_path and audio_array is not False:
-      self._capture_debug_audio(websocket, audio_array)
+    # Debug audio capture (pre-buffer)
+    if self.debug_audio_config and self.debug_audio_config.pre_buffer and audio_array is not False:
+      self._capture_pre_buffer_debug_audio(websocket, audio_array)
 
     return audio_array
 
-  def _capture_debug_audio(self, websocket: ServerConnection, audio_array: np.ndarray) -> None:
+  def _capture_pre_buffer_debug_audio(
+    self, websocket: ServerConnection, audio_array: np.ndarray
+  ) -> None:
+    """Capture audio data before it reaches the buffer for debugging."""
+    if not self.debug_audio_config or not self.debug_audio_config.pre_buffer:
+      return
+
+    path_prefix = str(self.debug_audio_config.pre_buffer)
+    self._write_debug_audio(websocket, audio_array, path_prefix, "pre")
+
+  def _capture_post_buffer_debug_audio(
+    self, websocket: ServerConnection, audio_array: np.ndarray
+  ) -> None:
+    """Capture audio data after it's been dequeued from the buffer for debugging."""
+    if not self.debug_audio_config or not self.debug_audio_config.post_buffer:
+      return
+
+    path_prefix = str(self.debug_audio_config.post_buffer)
+    self._write_debug_audio(websocket, audio_array, path_prefix, "post")
+
+  def _write_debug_audio(
+    self, websocket: ServerConnection, audio_array: np.ndarray, path_prefix: str, stage: str
+  ) -> None:
     """
     Captures audio data to debug .wav files for analysis.
     """
     import time
-
-    import soundfile as sf
 
     if websocket not in self.debug_audio_files:
       client = self.client_manager.get_client(websocket) if self.client_manager else None
       stream_name = client.stream_name if client else "unknown"
       timestamp = int(time.time())
 
-      filename = f"{self.debug_audio_path}_{stream_name}_{timestamp}.wav"
+      filename = f"{path_prefix}_{stream_name}_{timestamp}_{stage}.wav"
 
       os.makedirs(
         os.path.dirname(filename) if os.path.dirname(filename) else ".",
@@ -323,8 +344,9 @@ class TranscriptionServer:
       self.logger.error("Ensure the configuration file exists and is readable.")
       raise
 
-    self.debug_audio_path = self.transcription_config.debug_audio_path
-    self.debug_audio_files = {}  # websocket -> (file_handle, filename)
+    self.debug_audio_config = self.transcription_config.debug_audio
+    # websocket -> (file_handle, filename)
+    self.debug_audio_files: dict[ServerConnection, tuple[sf.SoundFile, str]] = {}
 
     self.client_manager = WebSocketClientManager()
 

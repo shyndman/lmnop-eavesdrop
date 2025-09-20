@@ -312,6 +312,7 @@ class WhisperModel:
       transcription_options=options,
       vad_options=vad_parameters,
       all_language_probs=all_language_probs,
+      speech_chunks=speech_chunks,
     )
 
     return segments, info

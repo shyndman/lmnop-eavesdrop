@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 import torch
 import yaml
@@ -63,6 +64,19 @@ class RTSPCacheConfig(BaseModel):
   )
 
 
+class DebugAudioConfig(BaseModel):
+  """Configuration for debug audio recording behavior."""
+
+  pre_buffer: Path | None = Field(
+    default=None, description="Path prefix for pre-buffer audio files. Records audio before buffer."
+  )
+
+  post_buffer: Path | None = Field(
+    default=None,
+    description="Path prefix for post-buffer audio files. Records audio after dequeuing.",
+  )
+
+
 class RTSPConfig(BaseModel):
   """Configuration for RTSP stream behavior."""
 
@@ -120,8 +134,8 @@ class TranscriptionConfig(BaseModel):
   silence_completion_threshold: float = Field(default=0.8, gt=0.0)
   """Seconds of silence after speech to mark segment as completed."""
 
-  debug_audio_path: str | None = None
-  """Path prefix for debug audio files. When set, received audio is saved as .wav files."""
+  debug_audio: DebugAudioConfig | None = None
+  """Debug audio recording configuration. When set, audio is saved at different pipeline stages."""
 
   @model_validator(mode="before")
   @classmethod
@@ -236,7 +250,6 @@ class EavesdropConfig(BaseModel):
     logger.info(f"  Same Output Threshold: {self.transcription.same_output_threshold}")
     silence_threshold = self.transcription.silence_completion_threshold
     logger.info(f"  Silence Completion Threshold: {silence_threshold}s")
-    logger.info(f"  Debug Audio Path: {self.transcription.debug_audio_path}")
     logger.info(f"  Num Workers: {self.transcription.num_workers}")
     logger.info(f"  Use VAD: {self.transcription.use_vad}")
 
@@ -259,6 +272,14 @@ class EavesdropConfig(BaseModel):
     logger.info(f"  Transcription Interval: {self.transcription.buffer.transcription_interval}s")
     logger.info(f"  Clip Audio: {self.transcription.buffer.clip_audio}")
     logger.info(f"  Max Stall Duration: {self.transcription.buffer.max_stall_duration}s")
+
+    # Debug audio settings
+    logger.info("DEBUG AUDIO SETTINGS:")
+    if self.transcription.debug_audio:
+      logger.info(f"  Pre-Buffer Path: {self.transcription.debug_audio.pre_buffer}")
+      logger.info(f"  Post-Buffer Path: {self.transcription.debug_audio.post_buffer}")
+    else:
+      logger.info("  Debug Audio: Disabled")
 
     # RTSP settings - all properties
     logger.info("RTSP SETTINGS:")

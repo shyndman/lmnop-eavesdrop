@@ -198,3 +198,4 @@ class TranscriptionInfo(NamedTuple):
   duration: float = 0.0
   duration_after_vad: float = 0.0
   all_language_probs: list[LanguageProbability] | None = None
+  speech_chunks: list[SpeechChunk] = []
