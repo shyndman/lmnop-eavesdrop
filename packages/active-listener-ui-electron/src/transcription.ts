@@ -38,6 +38,9 @@ export interface Segment {
   /** Average log probability across all tokens, indicating generation confidence. */
   readonly avg_logprob: number;
 
+  /** Return the segment probability by exponentiating the average log probability. */
+  readonly avg_probability: number;
+
   /** Ratio of text length to token count, used for hallucination detection. */
   readonly compression_ratio: number;
 
@@ -52,9 +55,6 @@ export interface Segment {
 
   /** Absolute time offset to convert relative segment times to stream timestamps. */
   readonly time_offset: number;
-
-  /** Return the segment probability by exponentiating the average log probability. */
-  readonly probability: number;
 
   /** Return the absolute start time in the audio stream. */
   readonly absolute_start_time: number;
