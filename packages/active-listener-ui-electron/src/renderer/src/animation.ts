@@ -12,6 +12,7 @@ export class AnimatedValue {
   private isAnimating: boolean = false;
   private animationStart: number = 0;
   private duration: number;
+  private delay: number;
   private easingFn: (t: number) => number;
   private onComplete?: () => void;
   private animation?: Animation<any>;
@@ -20,12 +21,14 @@ export class AnimatedValue {
     initialValue: number,
     duration: number = 300,
     easing: (t: number) => number = Easing.easeOut,
-    onComplete?: () => void
+    onComplete?: () => void,
+    delay: number = 0
   ) {
     this.current = initialValue;
     this.target = initialValue;
     this.startValue = initialValue;
     this.duration = duration;
+    this.delay = delay;
     this.easingFn = easing;
     this.onComplete = onComplete;
   }
@@ -44,13 +47,21 @@ export class AnimatedValue {
     }
   }
 
-  update(): number {
+  update(now: DOMHighResTimeStamp): number {
     if (!this.isAnimating) {
       return this.current;
     }
 
-    const elapsed = performance.now() - this.animationStart;
-    const progress = Math.min(elapsed / this.duration, 1);
+    const elapsed = now - this.animationStart;
+
+    // Still in delay period
+    if (elapsed < this.delay) {
+      return this.current;
+    }
+
+    // Animation phase
+    const animationElapsed = elapsed - this.delay;
+    const progress = Math.min(animationElapsed / this.duration, 1);
     const easedProgress = this.easingFn(progress);
 
     this.current = this.startValue + (this.target - this.startValue) * easedProgress;
@@ -155,7 +166,7 @@ export class Animation<T extends Record<string, AnimatedValue>> {
 
     const values = {} as { [K in keyof T]: number };
     for (const [name, animatedValue] of Object.entries(this.animatedValues)) {
-      (values as Record<string, number>)[name] = animatedValue.update();
+      (values as Record<string, number>)[name] = animatedValue.update(timestamp);
     }
 
     this.callback(values);
