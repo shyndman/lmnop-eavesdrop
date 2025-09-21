@@ -9,6 +9,12 @@ export class UIStateManager {
     }
 
     this.asrState = asrState;
+
+    // Add dev mode indicator to body
+    if (window.api.isDev) {
+      document.body.classList.add('dev-mode');
+    }
+
     this.setupMouseHover();
   }
 

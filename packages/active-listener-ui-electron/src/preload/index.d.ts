@@ -1,5 +1,9 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
 
+interface API {
+  isDev: boolean
+}
+
 interface MockAPI {
   ping: () => Promise<string>
 }
@@ -7,7 +11,7 @@ interface MockAPI {
 declare global {
   interface Window {
     electron: ElectronAPI
-    api: unknown
+    api: API
     _mock?: MockAPI
   }
 }

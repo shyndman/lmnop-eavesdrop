@@ -2,7 +2,9 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 
 // Custom APIs for renderer
-const api = {}
+const api = {
+  isDev: process.env.NODE_ENV === 'development'
+}
 
 // Dev-only APIs for testing and mocking
 const _mock = process.env.NODE_ENV === 'development' ? {
