@@ -26,7 +26,10 @@ function createWindow(screen: Display): BrowserWindow {
     },
     titleBarStyle: 'hidden'
   });
-  // mainWindow.setIgnoreMouseEvents(true);
+
+  if (!is.dev) {
+    mainWindow.setIgnoreMouseEvents(true, { forward: true });
+  }
 
   mainWindow.setAlwaysOnTop(true, 'status');
 
@@ -66,6 +69,37 @@ app.whenReady().then(() => {
 
   // IPC test
   ipcMain.on('ping', () => console.log('pong'));
+
+  // Dev-only mock handlers
+  if (is.dev) {
+    ipcMain.handle('mock.ping', () => {
+      console.log('ed: pong');
+      return 'pong';
+    });
+  }
+
+  // Set up stdin communication from Python
+  if (process.stdin.isTTY === false) {
+    process.stdin.setEncoding('utf8');
+
+    let buffer = '';
+    process.stdin.on('data', (chunk) => {
+      buffer += chunk;
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || ''; // Keep incomplete line in buffer
+
+      lines.forEach(line => {
+        if (line.trim()) {
+          try {
+            const data = JSON.parse(line);
+            mainWindow.webContents.send('python-data', data);
+          } catch (error) {
+            console.error('Failed to parse JSON from Python:', error, 'Line:', line);
+          }
+        }
+      });
+    });
+  }
 
   // Create a window that fills the screen's available work area.
   const primaryDisplay = screen.getPrimaryDisplay();

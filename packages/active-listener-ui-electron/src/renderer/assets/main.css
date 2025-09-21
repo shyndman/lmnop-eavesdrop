@@ -4,6 +4,9 @@
 div {
     display: revert; /* = block */
 }
+p {
+    display: revert; /* = block */
+}
 span {
     display: revert; /* = inline */
 }
@@ -17,8 +20,8 @@ html, body {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  font: 500 14.5px Ubuntu;
-  color: rgba(255, 255, 255, 0.93);
+  font: 400 14.8px Ubuntu;
+  color: rgba(255, 255, 255, 0.72);
 }
 
 #result-layer {
@@ -34,13 +37,26 @@ html, body {
   padding: 8px
 }
 
+.has-focus {
+  color: rgba(255, 255, 255, 0.92)
+}
+
+p {
+  text-wrap: stable;
+  transition: color 0.3s ease;
+}
+
 #transcription {
-  padding: 8px 8px 12px;
-  line-height: 1.6;
+  padding: 6px 12px 8px;
+  line-height: 1.7;
+}
+
+#transcription p + p {
+  margin-top: 8px;
 }
 
 #commands {
-  margin-top:4px;
+  margin-top:8px;
   padding: 8px;
   border: 2px solid rgba(255, 0, 0, 0.6);
   border-radius: 8px;
