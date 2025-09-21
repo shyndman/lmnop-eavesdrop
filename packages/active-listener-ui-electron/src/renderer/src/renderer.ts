@@ -1,4 +1,4 @@
-import { AnimatedValue, Easing } from './animation';
+import { AnimatedValue, Animation, Easing } from './animation';
 
 class Renderer {
   private canvas: HTMLCanvasElement;
@@ -6,14 +6,20 @@ class Renderer {
   private canvasWidth: number = 0;
   private canvasHeight: number = 0;
 
-  private heightAnimation: AnimatedValue;
+  private asrState: HTMLElement;
+  private frameLayer: HTMLElement;
+  private animation: Animation<{ height: AnimatedValue }>;
+  private resizeObserver: ResizeObserver;
 
   constructor(onAnimationComplete?: () => void) {
-    const canvas = document.querySelector<HTMLCanvasElement>('#frame-layer canvas');
+    const canvas = document.querySelector<HTMLCanvasElement>(
+      '#frame-layer canvas',
+    );
     const frameLayer = document.getElementById('frame-layer');
+    const asrState = document.getElementById('asr-state');
 
-    if (!canvas || !frameLayer) {
-      throw new Error('Canvas or frame-layer not found');
+    if (!canvas || !frameLayer || !asrState) {
+      throw new Error('Canvas, frame-layer, or asr-state not found');
     }
 
     const ctx = canvas.getContext('2d');
@@ -23,6 +29,8 @@ class Renderer {
 
     this.canvas = canvas;
     this.ctx = ctx;
+    this.frameLayer = frameLayer;
+    this.asrState = asrState;
 
     const dpr = window.devicePixelRatio || 1;
     const rect = frameLayer.getBoundingClientRect();
@@ -38,56 +46,51 @@ class Renderer {
 
     this.ctx.scale(dpr, dpr);
 
-    // Initialize height animation
-    const asrState = document.getElementById('asr-state');
-    const initialHeight = asrState ? asrState.getBoundingClientRect().height : 0;
-
-    this.heightAnimation = new AnimatedValue(
+    // Initialize animation system
+    const initialHeight = asrState.getBoundingClientRect().height;
+    const heightAnimation = new AnimatedValue(
       initialHeight,
       300,
       Easing.easeOut,
-      onAnimationComplete
+      onAnimationComplete,
     );
 
-    this.startRenderLoop();
+    this.animation = new Animation(
+      { height: heightAnimation },
+      ({ height: height }) => this.draw(height),
+    );
+
+    // Set up ResizeObserver to detect height changes
+    this.resizeObserver = new ResizeObserver(() => {
+      this.handleResize();
+    });
+    this.resizeObserver.observe(asrState);
+
+    // Initial render
+    this.draw(initialHeight);
   }
 
-  private drawFrame(): void {
+  private handleResize(): void {
+    const actualHeight = this.asrState.getBoundingClientRect().height;
+    this.animation.getAnimatedValue('height').setTarget(actualHeight);
+  }
+
+  private draw(height: number): void {
     if (!this.canvas || !this.ctx) return;
-
-    const asrState = document.getElementById('asr-state');
-    const frameLayer = document.getElementById('frame-layer');
-
-    if (!asrState || !frameLayer) return;
-
-    // Update height animation
-    const actualHeight = asrState.getBoundingClientRect().height;
-    this.heightAnimation.setTarget(actualHeight);
-    const currentHeight = this.heightAnimation.update();
 
     this.ctx.clearRect(0, 0, this.canvasWidth, this.canvasHeight);
 
-    const asrRect = asrState.getBoundingClientRect();
-    const frameRect = frameLayer.getBoundingClientRect();
+    const asrRect = this.asrState.getBoundingClientRect();
+    const frameRect = this.frameLayer.getBoundingClientRect();
 
     const x = asrRect.left - frameRect.left;
     const y = asrRect.top - frameRect.top;
     const width = asrRect.width;
-    const height = currentHeight;
 
     this.ctx.fillStyle = 'rgba(32, 32, 48, 0.8)';
     this.ctx.beginPath();
     this.ctx.roundRect(x, y, width, height, 12);
     this.ctx.fill();
-  }
-
-  private startRenderLoop(): void {
-    const render = (): void => {
-      this.drawFrame();
-      requestAnimationFrame(render);
-    };
-
-    requestAnimationFrame(render);
   }
 }
 

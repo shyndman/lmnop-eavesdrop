@@ -9,7 +9,7 @@ const WINDOW_H_INSET = 20
 
 function createWindow(screen: Display): BrowserWindow {
   // Create the browser window.
-  const { width, height } = screen.workAreaSize
+  const { height } = screen.workAreaSize
 
   const mainWindow = new BrowserWindow({
     width: WINDOW_WIDTH,
