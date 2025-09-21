@@ -133,7 +133,7 @@ export class Animation<T extends Record<string, AnimatedValue>> {
     }
 
     this.isRunning = true;
-    this.tick();
+    this.tick(performance.now());
   }
 
   private stop(): void {
@@ -148,7 +148,7 @@ export class Animation<T extends Record<string, AnimatedValue>> {
     }
   }
 
-  private tick = (): void => {
+  private tick = (timestamp: DOMHighResTimeStamp): void => {
     if (!this.isRunning || !this.callback) {
       return;
     }
