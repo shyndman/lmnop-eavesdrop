@@ -18,7 +18,7 @@ html, body {
   height: 100%;
   overflow: hidden;
   font: 500 14.5px Ubuntu;
-  color: white;
+  color: rgba(255, 255, 255, 0.93);
 }
 
 #result-layer {
@@ -30,9 +30,20 @@ html, body {
   z-index: 2;
 }
 
+#asr-state {
+  padding: 8px
+}
+
 #transcription {
-  padding: 16px;
+  padding: 8px 8px 12px;
   line-height: 1.6;
+}
+
+#commands {
+  margin-top:4px;
+  padding: 8px;
+  border: 2px solid rgba(255, 0, 0, 0.6);
+  border-radius: 8px;
 }
 
 #frame-layer {

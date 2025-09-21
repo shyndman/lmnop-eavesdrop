@@ -1,10 +1,14 @@
+import { AnimatedValue, Easing } from './animation';
+
 class Renderer {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
   private canvasWidth: number = 0;
   private canvasHeight: number = 0;
 
-  constructor() {
+  private heightAnimation: AnimatedValue;
+
+  constructor(onAnimationComplete?: () => void) {
     const canvas = document.querySelector<HTMLCanvasElement>('#frame-layer canvas');
     const frameLayer = document.getElementById('frame-layer');
 
@@ -34,6 +38,17 @@ class Renderer {
 
     this.ctx.scale(dpr, dpr);
 
+    // Initialize height animation
+    const asrState = document.getElementById('asr-state');
+    const initialHeight = asrState ? asrState.getBoundingClientRect().height : 0;
+
+    this.heightAnimation = new AnimatedValue(
+      initialHeight,
+      300,
+      Easing.easeOut,
+      onAnimationComplete
+    );
+
     this.startRenderLoop();
   }
 
@@ -45,6 +60,11 @@ class Renderer {
 
     if (!asrState || !frameLayer) return;
 
+    // Update height animation
+    const actualHeight = asrState.getBoundingClientRect().height;
+    this.heightAnimation.setTarget(actualHeight);
+    const currentHeight = this.heightAnimation.update();
+
     this.ctx.clearRect(0, 0, this.canvasWidth, this.canvasHeight);
 
     const asrRect = asrState.getBoundingClientRect();
@@ -53,13 +73,14 @@ class Renderer {
     const x = asrRect.left - frameRect.left;
     const y = asrRect.top - frameRect.top;
     const width = asrRect.width;
-    const height = asrRect.height;
+    const height = currentHeight;
 
     this.ctx.fillStyle = 'rgba(22, 25, 27, 0.87)';
     this.ctx.beginPath();
-    this.ctx.roundRect(x, y, width, height, 8);
+    this.ctx.roundRect(x, y, width, height, 12);
     this.ctx.fill();
   }
+
 
   private startRenderLoop(): void {
     const render = (): void => {
