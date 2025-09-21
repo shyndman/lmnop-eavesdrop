@@ -52,7 +52,7 @@ export interface AppendSegmentsMessage {
   readonly completed_segments: readonly Segment[];
 
   /** Current partial transcription text that may change on next update */
-  readonly in_progress_segment?: string;
+  readonly in_progress_segment: Segment;
 }
 
 /**
