@@ -75,12 +75,11 @@ class Renderer {
     const width = asrRect.width;
     const height = currentHeight;
 
-    this.ctx.fillStyle = 'rgba(22, 25, 27, 0.87)';
+    this.ctx.fillStyle = 'rgba(32, 32, 48, 0.8)';
     this.ctx.beginPath();
     this.ctx.roundRect(x, y, width, height, 12);
     this.ctx.fill();
   }
-
 
   private startRenderLoop(): void {
     const render = (): void => {
