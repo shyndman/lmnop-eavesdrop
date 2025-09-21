@@ -23,6 +23,15 @@ body {
   overflow: hidden;
   font: 400 14.8px Ubuntu;
   color: rgba(255, 255, 255, 0.72);
+  transition: opacity 0.14s ease-out;
+}
+
+body.mouse-is-over {
+  opacity: 0.02;
+}
+
+body.dev-mode.mouse-is-over {
+  opacity: 0.8;
 }
 
 #overlay-layer,
