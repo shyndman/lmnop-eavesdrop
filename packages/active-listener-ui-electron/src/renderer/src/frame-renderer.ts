@@ -87,10 +87,9 @@ export class FrameRenderer {
     const y = asrRect.top - frameRect.top;
     const width = asrRect.width;
 
-    this.ctx.fillStyle = 'rgba(32, 32, 48, 0.93)';
+    this.ctx.fillStyle = 'rgba(32, 32, 48, 0.7)';
     this.ctx.beginPath();
     this.ctx.roundRect(x, y, width, height, 12);
     this.ctx.fill();
   }
 }
-
