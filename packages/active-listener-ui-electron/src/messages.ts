@@ -26,7 +26,7 @@ export enum MessageType {
   CHANGE_MODE = 'change_mode',
   SET_SEGMENTS = 'set_segments',
   SET_STRING = 'set_string',
-  COMMAND_EXECUTED = 'command_executed',
+  COMMAND_EXECUTING = 'command_executing',
   COMMIT_OPERATION = 'commit_operation'
 }
 
@@ -116,11 +116,13 @@ export interface SetStringMessage {
  * processed. Fired when Python begins executing the recognized command, not
  * when the command completes.
  *
- * No additional data is needed as the command content is already displayed
- * in the #command element from previous transcription messages.
+ * The waiting_messages provide user feedback during command processing,
+ * displayed one at a time in a loop until command results arrive.
  */
-export interface CommandExecutedMessage {
-  readonly type: MessageType.COMMAND_EXECUTED;
+export interface CommandExecutingMessage {
+  readonly type: MessageType.COMMAND_EXECUTING;
+  // TODO: Document
+  readonly waiting_messages: string[];
 }
 
 /**
@@ -165,5 +167,5 @@ export type Message =
   | ChangeModeMessage
   | SetSegmentsMessage
   | SetStringMessage
-  | CommandExecutedMessage
+  | CommandExecutingMessage
   | CommitOperationMessage;

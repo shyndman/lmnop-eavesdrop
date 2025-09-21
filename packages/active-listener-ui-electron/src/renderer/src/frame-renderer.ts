@@ -1,6 +1,6 @@
 import { AnimatedValue, Animation, Easing } from './animation';
 
-class Renderer {
+export class FrameRenderer {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
   private canvasWidth: number = 0;
@@ -87,11 +87,10 @@ class Renderer {
     const y = asrRect.top - frameRect.top;
     const width = asrRect.width;
 
-    this.ctx.fillStyle = 'rgba(32, 32, 48, 0.8)';
+    this.ctx.fillStyle = 'rgba(32, 32, 48, 0.93)';
     this.ctx.beginPath();
     this.ctx.roundRect(x, y, width, height, 12);
     this.ctx.fill();
   }
 }
 
-new Renderer();

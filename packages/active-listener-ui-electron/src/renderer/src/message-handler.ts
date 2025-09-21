@@ -22,9 +22,9 @@ export function handleMessage(message: Message): void {
       console.log('set_string:', message);
       break;
 
-    case MessageType.COMMAND_EXECUTED:
+    case MessageType.COMMAND_EXECUTING:
       // TODO: Implement command execution visual feedback
-      console.log('command_executed:', message);
+      console.log('command_executing:', message);
       break;
 
     case MessageType.COMMIT_OPERATION:

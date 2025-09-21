@@ -3,7 +3,7 @@
 
 <head>
   <meta charset="UTF-8" />
-  <title>Active Listener</title>
+  <title></title>
   <!-- https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP -->
   <meta http-equiv="Content-Security-Policy"
     content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:" />
@@ -11,6 +11,9 @@
 </head>
 
 <body>
+  <div id="overlay-layer">
+    <ul id="command-waiting-messages"></ul>
+  </div>
   <div id="result-layer">
     <div id="asr-state" >
       <div id="transcription" class="has-focus">
@@ -24,7 +27,7 @@
           Chatsubo. Hardwired Shinjuku jack in SAS spacial silver fieldstrip bedslab.
         </p>
       </div>
-      <div id="commands">
+      <div id="command">
         Clean up text, and add paragraph breaks.
       </div>
     </div>
@@ -33,7 +36,7 @@
     <canvas></canvas>
   </div>
 
-  <script type="module" src="./src/renderer.ts"></script>
+  <script type="module" src="./src/main.ts"></script>
 </body>
 
 </html>
