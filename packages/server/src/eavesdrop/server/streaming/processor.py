@@ -17,7 +17,7 @@ from eavesdrop.server.config import TranscriptionConfig
 from eavesdrop.server.constants import CACHE_PATH, SINGLE_MODEL
 from eavesdrop.server.streaming.buffer import AudioStreamBuffer
 from eavesdrop.server.streaming.interfaces import TranscriptionResult, TranscriptionSink
-from eavesdrop.server.transcription.models import TranscriptionInfo
+from eavesdrop.server.transcription.models import SpeechChunk, TranscriptionInfo
 from eavesdrop.server.transcription.pipeline import WhisperModel
 from eavesdrop.server.transcription.session import TranscriptionSession
 from eavesdrop.wire import Segment
@@ -603,8 +603,8 @@ class StreamingTranscriptionProcessor:
         completed_dicts.append(
           {
             "id": str(seg.id),
-            "start": "{:.3f}".format(seg.absolute_start_time()),
-            "end": "{:.3f}".format(seg.absolute_end_time()),
+            "start": "{:.3f}".format(seg.absolute_start_time),
+            "end": "{:.3f}".format(seg.absolute_end_time),
             "text": seg.text,
             "completed": seg.completed,
           }
@@ -668,7 +668,7 @@ class StreamingTranscriptionProcessor:
 
   def _advance_buffer_by_completed_segments(
     self,
-    speech_chunks: list | None,
+    speech_chunks: list[SpeechChunk] | None,
     silence_threshold: float,
     audio_duration: float,
   ) -> None:
@@ -680,7 +680,7 @@ class StreamingTranscriptionProcessor:
       return
 
     # Calculate how far we can safely advance
-    completed_end_time = last_completed.absolute_end_time()
+    completed_end_time = last_completed.absolute_end_time
     current_processed_time = self.buffer.processed_up_to_time
 
     # Only advance if we're moving forward

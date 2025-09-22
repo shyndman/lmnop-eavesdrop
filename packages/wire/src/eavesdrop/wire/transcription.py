@@ -4,7 +4,9 @@ Transcription data types for wire protocol communication.
 Contains the core data structures used for transcription results and user configuration.
 """
 
-from pydantic import BaseModel, Field
+import math
+
+from pydantic import BaseModel, Field, computed_field
 
 
 def compute_segment_chain_id(previous_id: int, text: str) -> int:
@@ -28,33 +30,75 @@ class Word(BaseModel):
   requested."""
 
   start: float
+  """Start timestamp of the word in seconds within the audio segment."""
+
   end: float
+  """End timestamp of the word in seconds within the audio segment."""
+
   word: str
+  """The transcribed text content of the word."""
+
   probability: float
+  """Confidence score from forced alignment, ranging from 0.0 to 1.0."""
 
 
 class Segment(BaseModel):
   id: int
-  seek: int
-  start: float
-  end: float
-  text: str
-  tokens: list[int]
-  avg_logprob: float
-  compression_ratio: float
-  words: list[Word] | None
-  temperature: float | None
-  completed: bool = False
-  time_offset: float = 0.0
+  """Unique segment identifier computed using chain-based CRC64 hash."""
 
+  seek: int
+  """Frame position in audio features where segment processing started."""
+
+  start: float
+  """Segment start time in seconds relative to the current audio window."""
+
+  end: float
+  """Segment end time in seconds relative to the current audio window."""
+
+  text: str
+  """Transcribed text content of the audio segment."""
+
+  tokens: list[int]
+  """List of token IDs from the model's vocabulary used to generate this segment."""
+
+  avg_logprob: float
+  """Average log probability across all tokens, indicating generation confidence."""
+
+  compression_ratio: float
+  """Ratio of text length to token count, used for hallucination detection."""
+
+  words: list[Word] | None
+  """Word-level timing breakdown when word timestamps are enabled, None otherwise."""
+
+  temperature: float | None
+  """Generation temperature used when creating this segment, None if not tracked."""
+
+  completed: bool = False
+  """Whether the segment transcription has been finalized and assigned a chain ID."""
+
+  time_offset: float = 0.0
+  """Absolute time offset to convert relative segment times to stream timestamps."""
+
+  @computed_field
+  @property
+  def avg_probability(self) -> float:
+    """Return the segment probability by exponentiating the average log probability."""
+    return math.exp(self.avg_logprob)
+
+  @computed_field
+  @property
   def absolute_start_time(self) -> float:
     """Return the absolute start time in the audio stream."""
     return self.time_offset + self.start
 
+  @computed_field
+  @property
   def absolute_end_time(self) -> float:
     """Return the absolute end time in the audio stream."""
     return self.time_offset + self.end
 
+  @computed_field
+  @property
   def duration(self) -> float:
     """Return the duration of this segment in seconds."""
     return self.end - self.start
