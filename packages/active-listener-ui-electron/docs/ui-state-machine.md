@@ -127,12 +127,11 @@ Messages that don't affect the empty/non-empty content state:
 
 ### ChangeModeMessage
 1. **Immediately** update body class to `transcribe-active` or `command-active`
-2. Update visual focus indicators (`.has-focus` class)
-3. **Command element visibility**:
+2. **Command element visibility**: Apply conditional visibility logic based on mode and content state
    - If switching TO COMMAND: Immediately fade in command element (even if empty)
    - If switching FROM COMMAND: Fade out command element only if it's empty
-4. Redirect subsequent transcription messages to new `target_mode` element
-5. **Overall UI visibility**: No change (content remains in both modes)
+3. Redirect subsequent transcription messages to new `target_mode` element
+4. **Overall UI visibility**: No change (content remains in both modes)
 
 ### CommandExecutingMessage
 1. Clear existing `<li>` elements from `#command-waiting-messages`
@@ -259,7 +258,6 @@ The UIStateManager must track:
 
 #### Command Element Conditional Visibility
 - Command element independent fade transitions based on mode and content state
-- Focus class management (`.has-focus`) between transcription and command elements
 
 #### Segment-Based Content Rendering
 - `<span>` element creation with segment IDs and probability classes
