@@ -151,6 +151,19 @@ export class UIStateManager {
     } else {
       document.body.classList.remove('active');
     }
+
+    if (this.isCommandElementVisible()) {
+      document.body.classList.add('command-visible');
+    } else {
+      document.body.classList.remove('command-visible');
+    }
+  }
+
+  /**
+   * Check if command element should be visible based on mode and content
+   */
+  private isCommandElementVisible(): boolean {
+    return this.currentMode === Mode.COMMAND || !this.isCommandEmpty;
   }
 
   /**
@@ -337,7 +350,7 @@ export class UIStateManager {
    * Create a paragraph containing segment spans
    */
   private createSegmentParagraph(
-    completedSegments: Segment[],
+    completedSegments: readonly Segment[],
     inProgressSegment: Segment,
   ): HTMLParagraphElement {
     const paragraph = document.createElement('p');
@@ -371,7 +384,7 @@ export class UIStateManager {
    */
   async appendSegments(
     mode: Mode,
-    completedSegments: Segment[],
+    completedSegments: readonly Segment[],
     inProgressSegment: Segment,
   ): Promise<void> {
     if (this.contentSettingInProgress.has(mode)) {
@@ -428,10 +441,9 @@ export class UIStateManager {
   /**
    * Change the active mode and handle visual transitions
    */
-  async changeMode(mode: Mode): Promise<void> {
+  changeMode(mode: Mode): void {
     this.currentMode = mode;
     this.commitBodyClasses();
-    await this.updateCommandElementVisibility();
   }
 
   private setupMouseHover(): void {

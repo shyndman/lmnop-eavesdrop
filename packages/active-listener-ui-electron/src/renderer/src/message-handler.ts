@@ -15,8 +15,7 @@ export class MessageHandler {
         break;
 
       case MessageType.CHANGE_MODE:
-        // TODO: Implement mode switching logic
-        window.api.logger.info('change_mode:', message);
+        this.uiStateManager.changeMode(message.target_mode);
         break;
 
       case MessageType.SET_SEGMENTS:

@@ -248,20 +248,15 @@ The UIStateManager must track:
 
 #### Message Types
 - **SetStringMessage**: ✅ Fully implemented with animations and state management
-- **AppendSegmentsMessage**: ❌ Not implemented (needs segment span creation with staggered animations)
+- **AppendSegmentsMessage**: ✅ Fully implemented with segment span creation and staggered animations
 - **SetSegmentsMessage**: ❌ Not implemented (needs segment span creation with block animations)
-- **ChangeModeMessage**: ❌ Not implemented (needs focus class management and command element visibility)
+- **ChangeModeMessage**: ✅ Fully implemented with command element visibility logic and mode switching
 - **CommandExecutingMessage**: ❌ Not implemented (needs overlay layer and waiting message cycling)
 - **CommitOperationMessage**: ❌ Not implemented (needs session reset and commit feedback)
 
 ### ❌ Missing Features
 
-#### Command Element Conditional Visibility
-- Command element independent fade transitions based on mode and content state
-
 #### Segment-Based Content Rendering
-- `<span>` element creation with segment IDs and probability classes
-- Staggered fade-in animations for AppendSegments (50ms delays)
 - Simultaneous fade-in animations for SetSegments
 
 #### Command Execution Feedback
@@ -279,7 +274,6 @@ The UIStateManager must track:
 - Post-commit mode reset to `transcribe-active`
 
 ### Next Implementation Priorities
-1. **AppendSegmentsMessage**: Segment span creation with staggered animations
-2. **Command element conditional visibility**: Independent fade behavior
-3. **ChangeModeMessage**: Focus management and mode switching
-4. **SetSegmentsMessage**: Segment replacement with block animations
+1. **SetSegmentsMessage**: Segment replacement with block animations
+2. **CommandExecutingMessage**: Overlay layer and waiting message cycling
+3. **CommitOperationMessage**: Session reset and commit feedback

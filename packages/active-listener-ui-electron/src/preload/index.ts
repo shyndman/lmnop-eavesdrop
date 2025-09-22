@@ -32,6 +32,13 @@ const _mock = process.env.NODE_ENV === 'development' ? {
       completed_segments: completedSegments,
       in_progress_segment: inProgressSegment
     });
+  },
+  changeMode: (target_mode: 'TRANSCRIBE' | 'COMMAND') => {
+    const mappedMode = target_mode === 'TRANSCRIBE' ? Mode.TRANSCRIBE : Mode.COMMAND;
+    ipcRenderer.send('mock.python-data', {
+      type: 'change_mode',
+      target_mode: mappedMode
+    });
   }
 } : undefined
 
