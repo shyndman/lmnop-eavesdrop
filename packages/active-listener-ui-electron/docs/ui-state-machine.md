@@ -238,7 +238,7 @@ The UIStateManager must track:
 - **AppendSegmentsMessage**: ✅ Fully implemented with segment span creation and staggered animations
 - **ChangeModeMessage**: ✅ Fully implemented with command element visibility logic and mode switching
 - **CommandExecutingMessage**: ❌ Not implemented (needs overlay layer and waiting message cycling)
-- **CommitOperationMessage**: ❌ Not implemented (needs session reset and commit feedback)
+- **CommitOperationMessage**: ✅ Fully implemented with 4-phase timing (feedback → state update → fade-out → DOM clear + mode reset)
 
 ### ❌ Missing Features
 

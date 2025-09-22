@@ -446,6 +446,37 @@ export class UIStateManager {
     this.commitBodyClasses();
   }
 
+  /**
+   * Handle commit operation with visual feedback and session reset
+   */
+  async commitOperation(cancelled: boolean): Promise<void> {
+    // Phase 1: Show commit feedback for 1 second
+    document.body.classList.add('commit-active');
+    await new Promise(resolve => setTimeout(resolve, COMMIT_FEEDBACK_DURATION_MS));
+
+    // Phase 2: Clear content from both modes
+    const transcriptionElement = this.getElementForMode(Mode.TRANSCRIBE);
+    const commandElement = this.getElementForMode(Mode.COMMAND);
+
+    // Update content state tracking
+    this.isTranscriptionEmpty = true;
+    this.isCommandEmpty = true;
+
+    // Phase 3: Remove commit feedback class and trigger fade-out
+    document.body.classList.remove('commit-active');
+
+    // Since both modes are now empty, this will trigger fade-out
+    this.commitBodyClasses();
+
+    // Phase 4: After fade-out completes, reset to transcribe mode
+    setTimeout(() => {
+      transcriptionElement.innerHTML = '<p>&nbsp;</p>';
+      commandElement.innerHTML = '<p>&nbsp;</p>';
+      this.currentMode = Mode.TRANSCRIBE;
+      this.commitBodyClasses();
+    }, TRANSITION_DURATION_MS);
+  }
+
   private setupMouseHover(): void {
     // Mouse hover affordance - allows seeing content below window during active states
     this.asrState.addEventListener('mouseenter', () => {

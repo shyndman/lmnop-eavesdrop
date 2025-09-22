@@ -39,6 +39,12 @@ const _mock = process.env.NODE_ENV === 'development' ? {
       type: 'change_mode',
       target_mode: mappedMode
     });
+  },
+  commitOperation: (cancelled: boolean = false) => {
+    ipcRenderer.send('mock.python-data', {
+      type: 'commit_operation',
+      cancelled
+    });
   }
 } : undefined
 

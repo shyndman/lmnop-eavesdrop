@@ -29,8 +29,7 @@ export class MessageHandler {
         break;
 
       case MessageType.COMMIT_OPERATION:
-        // TODO: Implement operation commit and reset logic
-        window.api.logger.info('commit_operation:', message);
+        await this.uiStateManager.commitOperation(message.cancelled);
         break;
 
       default:
