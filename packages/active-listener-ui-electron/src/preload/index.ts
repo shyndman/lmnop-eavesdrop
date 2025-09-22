@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 import { Mode } from '../messages'
+import { happyPathScenario, perfectionistSpiralScenario } from './mock-scenarios'
 
 // Custom APIs for renderer
 const api = {
@@ -51,6 +52,48 @@ const _mock = process.env.NODE_ENV === 'development' ? {
       type: 'command_executing',
       waiting_messages: waitingMessages
     });
+  },
+
+  /**
+   * Runs a complete happy path scenario: transcribe → command → refine → commit
+   * Demonstrates normal user workflow with realistic timing and content
+   */
+  runHappyPath: async () => {
+    const scenario = happyPathScenario();
+    let step = scenario.next();
+
+    while (!step.done) {
+      const { delay, message } = step.value;
+
+      // Wait for the specified delay
+      await new Promise(resolve => setTimeout(resolve, delay));
+
+      // Send the message
+      ipcRenderer.send('mock.python-data', message);
+
+      step = scenario.next();
+    }
+  },
+
+  /**
+   * Runs the perfectionist spiral scenario: multiple refinements with undo operations
+   * Stress tests rapid mode switching and version history management
+   */
+  runPerfectionistSpiral: async () => {
+    const scenario = perfectionistSpiralScenario();
+    let step = scenario.next();
+
+    while (!step.done) {
+      const { delay, message } = step.value;
+
+      // Wait for the specified delay
+      await new Promise(resolve => setTimeout(resolve, delay));
+
+      // Send the message
+      ipcRenderer.send('mock.python-data', message);
+
+      step = scenario.next();
+    }
   }
 } : undefined
 
