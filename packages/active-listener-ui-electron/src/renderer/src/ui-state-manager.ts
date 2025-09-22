@@ -62,20 +62,20 @@ export class UIStateManager {
     this.contentSettingInProgress.add(mode);
     try {
       const container = this.getElementForMode(mode);
-      const contentIsEmpty = content.trim() === '';
+      const hasNewContent = content.trim() !== '';
       const wasActive = this.isActive();
-      const hadContent = this.hasExistingContent(mode);
+      const hasExistingContent = this.hasExistingContent(mode);
 
       // Determine animation strategy
-      if (contentIsEmpty) {
-        // Clearing content - fade out if there was content
-        if (hadContent) {
+      if (hasExistingContent) {
+        if (!hasNewContent) {
+          // Clearing content - fade out if there was content
           await this.fadeOutContent(mode);
+          container.innerHTML = '<p>&nbsp;</p>';
+        } else {
+          // Replacing existing content - smooth transition
+          await this.replaceContent(mode, content);
         }
-        container.innerHTML = '<p>&nbsp;</p>';
-      } else if (hadContent) {
-        // Replacing existing content - smooth transition
-        await this.replaceContent(mode, content);
       } else {
         // Adding content to empty mode - direct fade in
         await this.fadeInContent(mode, content);
@@ -83,22 +83,22 @@ export class UIStateManager {
 
       // Update content state tracking
       if (mode === Mode.TRANSCRIBE) {
-        this.isTranscriptionEmpty = contentIsEmpty;
+        this.isTranscriptionEmpty = !hasNewContent;
       } else {
-        this.isCommandEmpty = contentIsEmpty;
+        this.isCommandEmpty = !hasNewContent;
       }
 
       // Handle mode state: if transitioning from default to active, set the target mode
       const hasTransitionedToActive = !wasActive && this.isActive();
-      if (hasTransitionedToActive && !contentIsEmpty) {
-        this.setMode(mode);
+      if (hasTransitionedToActive && !hasNewContent) {
+        this.currentMode = mode;
       } else if (!this.isActive()) {
         // If no content anywhere, clear mode state
-        this.setMode(null);
+        this.currentMode = null;
       }
 
       // Handle visibility transitions
-      this.updateVisibility();
+      this.commitBodyClasses();
     } finally {
       this.contentSettingInProgress.delete(mode);
     }
@@ -127,25 +127,17 @@ export class UIStateManager {
   }
 
   /**
-   * Set the current active mode and update body classes
+   * Evaluates the the receiver's state, and adds or removes the corresponding CSS classes to the
+   * body element.
    */
-  private setMode(mode: Mode | null): void {
-    // Remove existing mode classes
+  private commitBodyClasses(): void {
     document.body.classList.remove('transcribe-active', 'command-active', 'command-executing');
-
-    this.currentMode = mode;
-
-    if (mode === Mode.TRANSCRIBE) {
+    if (this.currentMode === Mode.TRANSCRIBE) {
       document.body.classList.add('transcribe-active');
-    } else if (mode === Mode.COMMAND) {
+    } else if (this.currentMode === Mode.COMMAND) {
       document.body.classList.add('command-active');
     }
-  }
 
-  /**
-   * Update overall UI visibility based on content state
-   */
-  private updateVisibility(): void {
     if (this.isActive()) {
       document.body.classList.add('active');
     } else {
