@@ -1,4 +1,5 @@
 import { Animation, AnimatedValue, Easing } from './animation';
+import { Mode } from '../../messages';
 
 /**
  * Manages element animations with support for opacity transitions and staggered timing.
@@ -7,6 +8,9 @@ import { Animation, AnimatedValue, Easing } from './animation';
  * abstracting the complexity of coordinated transitions from the UI state layer.
  */
 export class AnimationManager {
+  // Mode-based animation tracking for concurrency protection
+  private modeAnimations = new Map<Mode, Animation<{ opacity: AnimatedValue }>>();
+
   constructor(
     private transitionDuration: number,
     private fadeOutEasing: (t: number) => number = Easing.easeOut,
@@ -70,5 +74,66 @@ export class AnimationManager {
     });
 
     await animation.getCompletionPromise();
+  }
+
+  /**
+   * Fade out content in a specific mode with concurrency protection
+   */
+  async fadeOutModeContent(mode: Mode, container: HTMLElement): Promise<void> {
+    const paragraphs = Array.from(container.querySelectorAll('p')) as HTMLElement[];
+
+    // Assert no animation is already running - concurrency protection
+    const existingAnimation = this.modeAnimations.get(mode);
+    if (existingAnimation) {
+      throw new Error(
+        `FATAL: Animation already running for mode ${mode}. Concurrency protection failed.`,
+      );
+    }
+
+    this.modeAnimations.set(
+      mode,
+      {} as Animation<{ opacity: AnimatedValue }>,
+    );
+    try {
+      await this.fadeElements(paragraphs, 1, 0, this.fadeOutEasing);
+    } finally {
+      this.modeAnimations.delete(mode);
+    }
+  }
+
+  /**
+   * Fade in content in a specific mode with concurrency protection
+   */
+  async fadeInModeContent(mode: Mode, container: HTMLElement, processedContent: string): Promise<void> {
+    // Set the new content first
+    container.innerHTML = processedContent;
+
+    const paragraphs = Array.from(container.querySelectorAll('p')) as HTMLElement[];
+
+    // Assert no animation is already running - concurrency protection
+    const existingAnimation = this.modeAnimations.get(mode);
+    if (existingAnimation) {
+      throw new Error(
+        `FATAL: Animation already running for mode ${mode}. Concurrency protection failed.`,
+      );
+    }
+
+    this.modeAnimations.set(
+      mode,
+      {} as Animation<{ opacity: AnimatedValue }>,
+    );
+    try {
+      await this.fadeElements(paragraphs, 0, 1, this.fadeInEasing);
+    } finally {
+      this.modeAnimations.delete(mode);
+    }
+  }
+
+  /**
+   * Replace content with smooth fade-out → fade-in transition
+   */
+  async replaceModeContent(mode: Mode, container: HTMLElement, processedContent: string): Promise<void> {
+    await this.fadeOutModeContent(mode, container);
+    await this.fadeInModeContent(mode, container, processedContent);
   }
 }

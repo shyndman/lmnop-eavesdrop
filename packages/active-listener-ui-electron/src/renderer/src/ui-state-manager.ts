@@ -1,8 +1,8 @@
 import { Mode } from '../../messages';
 import { Segment } from '../../transcription';
-import { Animation, AnimatedValue, Easing } from './animation';
-import { WaitingMessageManager } from './waiting-message-manager';
+import { Easing } from './animation';
 import { AnimationManager } from './animation-manager';
+import { WaitingMessageManager } from './waiting-message-manager';
 
 // Timing constants from spec
 const TRANSITION_DURATION_MS = 240;
@@ -30,12 +30,6 @@ export class UIStateManager {
   // Animation management
   private animationManager: AnimationManager;
 
-  // Animation state tracking
-  // Maps each mode to its active opacity animation (fade-in/fade-out transitions)
-  private elementAnimations = new Map<
-    Mode,
-    Animation<{ opacity: AnimatedValue }>
-  >();
   // Tracks which modes are currently having their content set
   private contentSettingInProgress = new Set<Mode>();
 
@@ -92,15 +86,17 @@ export class UIStateManager {
       if (hasExistingContent) {
         if (!hasNewContent) {
           // Clearing content - fade out if there was content
-          await this.fadeOutContent(mode);
+          await this.animationManager.fadeOutModeContent(mode, container);
           container.innerHTML = '<p>&nbsp;</p>';
         } else {
           // Replacing existing content - smooth transition
-          await this.replaceContent(mode, content);
+          const processedContent = this.ensureParagraphTags(content);
+          await this.animationManager.replaceModeContent(mode, container, processedContent);
         }
       } else {
         // Adding content to empty mode - direct fade in
-        await this.fadeInContent(mode, content);
+        const processedContent = this.ensureParagraphTags(content);
+        await this.animationManager.fadeInModeContent(mode, container, processedContent);
       }
 
       // Update content state tracking
@@ -168,71 +164,6 @@ export class UIStateManager {
     return this.currentMode === Mode.COMMAND || !this.isCommandEmpty;
   }
 
-
-  /**
-   * Animate opacity of paragraphs in the specified mode
-   */
-  private async animateOpacity(
-    mode: Mode,
-    fromOpacity: number,
-    toOpacity: number,
-    easing: (t: number) => number,
-  ): Promise<void> {
-    const container = this.getElementForMode(mode);
-    const paragraphs = Array.from(container.querySelectorAll('p')) as HTMLElement[];
-
-    // Assert no animation is already running - our concurrency protection should prevent this
-    const existingAnimation = this.elementAnimations.get(mode);
-    if (existingAnimation) {
-      throw new Error(
-        `FATAL: Animation already running for mode ${mode}. Concurrency protection failed.`,
-      );
-    }
-
-    this.elementAnimations.set(
-      mode,
-      {} as Animation<{ opacity: AnimatedValue }>,
-    );
-    try {
-      await this.animationManager.fadeElements(
-        paragraphs,
-        fromOpacity,
-        toOpacity,
-        easing,
-      );
-    } finally {
-      this.elementAnimations.delete(mode);
-    }
-  }
-
-  /**
-   * Fade out content in the specified mode
-   */
-  private fadeOutContent(mode: Mode): Promise<void> {
-    return this.animateOpacity(mode, 1, 0, FADE_OUT_EASING);
-  }
-
-  /**
-   * Fade in content in the specified mode
-   */
-  private fadeInContent(mode: Mode, content: string): Promise<void> {
-    const container = this.getElementForMode(mode);
-
-    // Set the new content, ensuring it's wrapped in paragraph tags
-    const processedContent = this.ensureParagraphTags(content);
-    container.innerHTML = processedContent;
-
-    return this.animateOpacity(mode, 0, 1, FADE_IN_EASING);
-  }
-
-  /**
-   * Replace content with smooth fade-out → fade-in transition
-   */
-  private async replaceContent(mode: Mode, newContent: string): Promise<void> {
-    await this.fadeOutContent(mode);
-    //
-    await this.fadeInContent(mode, newContent);
-  }
 
   /**
    * Ensure content is wrapped in paragraph tags
