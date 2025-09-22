@@ -2,10 +2,17 @@ import { ElectronAPI } from '@electron-toolkit/preload'
 
 interface API {
   isDev: boolean
+  logger: {
+    debug: (message: string, ...args: unknown[]) => void
+    info: (message: string, ...args: unknown[]) => void
+    warn: (message: string, ...args: unknown[]) => void
+    error: (message: string, ...args: unknown[]) => void
+  }
 }
 
 interface MockAPI {
   ping: () => Promise<string>
+  setString: (target_mode: 'TRANSCRIBE' | 'COMMAND', content: string) => void
 }
 
 declare global {

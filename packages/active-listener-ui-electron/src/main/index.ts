@@ -5,11 +5,11 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils';
 import icon from '../../resources/icon.png?asset';
 
 const WINDOW_WIDTH = 360;
-const WINDOW_H_INSET = 20
+const WINDOW_H_INSET = 20;
 
 function createWindow(screen: Display): BrowserWindow {
   // Create the browser window.
-  const { height } = screen.workAreaSize
+  const { height } = screen.workAreaSize;
 
   const mainWindow = new BrowserWindow({
     width: WINDOW_WIDTH,
@@ -70,11 +70,31 @@ app.whenReady().then(() => {
   // IPC test
   ipcMain.on('ping', () => console.log('pong'));
 
+  // Logger IPC handler - forward renderer logs to main process stderr
+  ipcMain.on('logger', (_event, level: string, message: string, ...args: unknown[]) => {
+    const timestamp = new Date().toISOString();
+    const formattedMessage = `[${timestamp}] [RNDR] [${level.toUpperCase()}] ${message}`;
+
+    if (args.length > 0) {
+      const argsString = args
+        .map((arg) => (typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)))
+        .join(' ');
+      process.stderr.write(`${formattedMessage} ${argsString}\n`);
+    } else {
+      process.stderr.write(`${formattedMessage}\n`);
+    }
+  });
+
   // Dev-only mock handlers
   if (is.dev) {
     ipcMain.handle('mock.ping', () => {
-      console.log('ed: pong');
+      console.log('_mock: pong');
       return 'pong';
+    });
+
+    ipcMain.on('mock.python-data', (_event, data) => {
+      console.log('_mock: sending python-data:', data);
+      mainWindow.webContents.send('python-data', data);
     });
   }
 
@@ -88,7 +108,7 @@ app.whenReady().then(() => {
       const lines = buffer.split('\n');
       buffer = lines.pop() || ''; // Keep incomplete line in buffer
 
-      lines.forEach(line => {
+      lines.forEach((line) => {
         if (line.trim()) {
           try {
             const data = JSON.parse(line);
@@ -104,7 +124,10 @@ app.whenReady().then(() => {
   // Create a window that fills the screen's available work area.
   const primaryDisplay = screen.getPrimaryDisplay();
   console.log('Primary display:', primaryDisplay.bounds);
-  console.log('All displays:', screen.getAllDisplays().map(d => ({ id: d.id, bounds: d.bounds })));
+  console.log(
+    'All displays:',
+    screen.getAllDisplays().map((d) => ({ id: d.id, bounds: d.bounds }))
+  );
 
   const mainWindow = createWindow(primaryDisplay);
 

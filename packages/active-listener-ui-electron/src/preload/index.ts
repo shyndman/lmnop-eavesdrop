@@ -1,14 +1,29 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
+import { Mode } from '../messages'
 
 // Custom APIs for renderer
 const api = {
-  isDev: process.env.NODE_ENV === 'development'
+  isDev: process.env.NODE_ENV === 'development',
+  logger: {
+    debug: (message: string, ...args: unknown[]) => ipcRenderer.send('logger', 'debug', message, ...args),
+    info: (message: string, ...args: unknown[]) => ipcRenderer.send('logger', 'info', message, ...args),
+    warn: (message: string, ...args: unknown[]) => ipcRenderer.send('logger', 'warn', message, ...args),
+    error: (message: string, ...args: unknown[]) => ipcRenderer.send('logger', 'error', message, ...args)
+  }
 }
 
 // Dev-only APIs for testing and mocking
 const _mock = process.env.NODE_ENV === 'development' ? {
-  ping: () => ipcRenderer.invoke('mock.ping')
+  ping: () => ipcRenderer.invoke('mock.ping'),
+  setString: (target_mode: 'TRANSCRIBE' | 'COMMAND', content: string) => {
+    const mappedMode = target_mode === 'TRANSCRIBE' ? Mode.TRANSCRIBE : Mode.COMMAND;
+    ipcRenderer.send('mock.python-data', {
+      type: 'set_string',
+      target_mode: mappedMode,
+      content
+    });
+  }
 } : undefined
 
 // Use `contextBridge` APIs to expose Electron APIs to
