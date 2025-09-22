@@ -24,8 +24,7 @@ export class MessageHandler {
         break;
 
       case MessageType.COMMAND_EXECUTING:
-        // TODO: Implement command execution visual feedback
-        window.api.logger.info('command_executing:', message);
+        this.uiStateManager.startCommandExecution(message.waiting_messages);
         break;
 
       case MessageType.COMMIT_OPERATION:

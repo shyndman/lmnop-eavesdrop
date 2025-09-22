@@ -45,6 +45,12 @@ const _mock = process.env.NODE_ENV === 'development' ? {
       type: 'commit_operation',
       cancelled
     });
+  },
+  commandExecuting: (waitingMessages: string[] = []) => {
+    ipcRenderer.send('mock.python-data', {
+      type: 'command_executing',
+      waiting_messages: waitingMessages
+    });
   }
 } : undefined
 

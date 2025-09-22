@@ -124,11 +124,11 @@ Messages that don't affect the empty/non-empty content state:
 4. **Overall UI visibility**: No change (content remains in both modes)
 
 ### CommandExecutingMessage
-1. Clear existing `<li>` elements from `#command-waiting-messages`
-2. Create new `<li>` elements for each string in `waiting_messages` (or "Generating..." if empty)
-3. Set body class to `command-executing`
-4. Start cycling through waiting messages (2 seconds each, looping indefinitely)
-5. **Visibility**: `#overlay-layer` becomes visible, no change to overall UI visibility
+1. **Start WaitingMessageManager**: Initialize cycling with provided `waiting_messages` array
+2. **Set command-executing state**: Body class triggers CSS overlay visibility
+3. **Message cycling**: 2-second rotation through messages (or "Generating..." if empty)
+4. **Encapsulated timer management**: Proper cleanup prevents memory leaks
+5. **Automatic exit**: Any content message (SetString, AppendSegments) stops execution
 
 ### CommitOperationMessage
 1. **Show commit feedback**: Set `commit-active` body class for 1 second visual acknowledgment
@@ -237,22 +237,23 @@ The UIStateManager must track:
 - **SetStringMessage**: ✅ Fully implemented with animations and state management
 - **AppendSegmentsMessage**: ✅ Fully implemented with segment span creation and staggered animations
 - **ChangeModeMessage**: ✅ Fully implemented with command element visibility logic and mode switching
-- **CommandExecutingMessage**: ❌ Not implemented (needs overlay layer and waiting message cycling)
+- **CommandExecutingMessage**: ✅ Fully implemented with WaitingMessageManager, overlay visibility, and 2-second cycling
 - **CommitOperationMessage**: ✅ Fully implemented with 4-phase timing (feedback → state update → fade-out → DOM clear + mode reset)
 
 ### ❌ Missing Features
 
 #### Segment-Based Content Rendering
 
-#### Command Execution Feedback
-- `#overlay-layer` visibility during command execution
-- `#command-waiting-messages` cycling with 2-second rotation
-- Integration with CommandExecutingMessage
 
 #### Content Preprocessing
 - Markdown → HTML transformation for SetStringMessage
 - Content validation and error handling
 
 
-### Next Implementation Priorities
-1. **CommandExecutingMessage**: Overlay layer and waiting message cycling
+### 🎉 All Core Message Types Completed!
+
+The transcription UI now has full message protocol support with:
+- **Complete state machine**: All visibility transitions working
+- **Sophisticated animations**: Staggered segments, smooth fades, timing coordination
+- **Robust command execution**: Encapsulated waiting message cycling with proper cleanup
+- **Development tooling**: Mock functions for all message types

@@ -1,6 +1,7 @@
 import { Mode } from '../../messages';
 import { Segment } from '../../transcription';
 import { Animation, AnimatedValue, Easing } from './animation';
+import { WaitingMessageManager } from './waiting-message-manager';
 
 // Timing constants from spec
 const TRANSITION_DURATION_MS = 240;
@@ -23,6 +24,9 @@ export class UIStateManager {
   // Mode state tracking - null when in default state (no content)
   private currentMode: Mode | null = null;
 
+  // Command execution state
+  private waitingMessageManager: WaitingMessageManager;
+
   // Animation state tracking
   // Maps each mode to its active opacity animation (fade-in/fade-out transitions)
   private elementAnimations = new Map<
@@ -42,6 +46,13 @@ export class UIStateManager {
 
     this.asrState = asrState;
 
+    // Initialize waiting message manager
+    const waitingMessageContainer = document.getElementById('command-waiting-messages');
+    if (!waitingMessageContainer) {
+      throw new Error('command-waiting-messages element not found');
+    }
+    this.waitingMessageManager = new WaitingMessageManager(waitingMessageContainer);
+
     // Add dev mode indicator to body
     if (window.api.isDev) {
       document.body.classList.add('dev-mode');
@@ -57,6 +68,9 @@ export class UIStateManager {
    * serialized calls from the message handler.
    */
   async setContent(mode: Mode, content: string): Promise<void> {
+    // Exit command execution state if currently active
+    this.stopCommandExecution();
+
     if (this.contentSettingInProgress.has(mode)) {
       throw new Error(
         `FATAL: setContent called concurrently for mode ${mode}. This violates the serialization assumption.`,
@@ -135,28 +149,12 @@ export class UIStateManager {
    * body element.
    */
   private commitBodyClasses(): void {
-    document.body.classList.remove(
-      'transcribe-active',
-      'command-active',
-      'command-executing',
-    );
-    if (this.currentMode === Mode.TRANSCRIBE) {
-      document.body.classList.add('transcribe-active');
-    } else if (this.currentMode === Mode.COMMAND) {
-      document.body.classList.add('command-active');
-    }
-
-    if (this.isActive()) {
-      document.body.classList.add('active');
-    } else {
-      document.body.classList.remove('active');
-    }
-
-    if (this.isCommandElementVisible()) {
-      document.body.classList.add('command-visible');
-    } else {
-      document.body.classList.remove('command-visible');
-    }
+    const isCommandExecuting = this.waitingMessageManager.isRunning();
+    document.body.classList.toggle('command-executing', isCommandExecuting);
+    document.body.classList.toggle('transcribe-active', !isCommandExecuting && this.currentMode === Mode.TRANSCRIBE);
+    document.body.classList.toggle('command-active', !isCommandExecuting && this.currentMode === Mode.COMMAND);
+    document.body.classList.toggle('active', this.isActive());
+    document.body.classList.toggle('command-visible', this.isCommandElementVisible());
   }
 
   /**
@@ -443,6 +441,22 @@ export class UIStateManager {
    */
   changeMode(mode: Mode): void {
     this.currentMode = mode;
+    this.commitBodyClasses();
+  }
+
+  /**
+   * Start command execution with waiting message cycling
+   */
+  startCommandExecution(waitingMessages: string[]): void {
+    this.waitingMessageManager.start(waitingMessages);
+    this.commitBodyClasses();
+  }
+
+  /**
+   * Stop command execution and hide overlay
+   */
+  stopCommandExecution(): void {
+    this.waitingMessageManager.stop();
     this.commitBodyClasses();
   }
 

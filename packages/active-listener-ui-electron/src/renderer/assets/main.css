@@ -61,6 +61,10 @@ body.active.mouse-is-over.dev-mode {
   z-index: 3;
 }
 
+.command-executing #overlay-layer {
+  display: block;
+}
+
 #result-layer {
   z-index: 2;
 }
