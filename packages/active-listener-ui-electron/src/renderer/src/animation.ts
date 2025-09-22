@@ -5,6 +5,8 @@ export const Easing = {
   linear: (t: number): number => t
 };
 
+// TODO: I want to alter this so it can produce more than numbers. Internally,
+// it will animate a float value, but will then map that onto another type.
 export class AnimatedValue {
   private current: number;
   private target: number;
