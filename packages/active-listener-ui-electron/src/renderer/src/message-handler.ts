@@ -18,10 +18,6 @@ export class MessageHandler {
         this.uiStateManager.changeMode(message.target_mode);
         break;
 
-      case MessageType.SET_SEGMENTS:
-        // TODO: Implement segments replacement logic
-        window.api.logger.info('set_segments:', message);
-        break;
 
       case MessageType.SET_STRING:
         await this.uiStateManager.setContent(message.target_mode, message.content);

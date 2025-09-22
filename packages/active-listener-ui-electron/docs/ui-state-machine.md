@@ -41,7 +41,7 @@ The transcription UI operates as an always-running overlay that transitions betw
 ### Active Mode Indication
 - Body element class indicates current mode: `transcribe-active`, `command-active`, or `command-executing`
 - **Default state**: No mode class (null) when UI is in default state (no content)
-- **Initial mode**: Set by first content-adding message (`SetStringMessage`, `AppendSegmentsMessage`, or `SetSegmentsMessage`) when transitioning from default to active
+- **Initial mode**: Set by first content-adding message (`SetStringMessage` or `AppendSegmentsMessage`) when transitioning from default to active
 - **Updates immediately** on `ChangeModeMessage` receipt
 - **Command execution state**: `command-executing` when processing commands with waiting feedback
 - **CommitOperationMessage exception**: Mode change to default state (no class) occurs after overall UI fade-out completes
@@ -51,7 +51,7 @@ The transcription UI operates as an always-running overlay that transitions betw
 - **Waiting messages**: Displayed in `#command-waiting-messages` as cycling `<li>` elements
 - **Message rotation**: Each message shows for 2 seconds, looping indefinitely
 - **Default message**: "Generating..." when `waiting_messages` array is empty
-- **Exit condition**: Cleared when `SetSegmentsMessage` or `SetStringMessage` arrives with results
+- **Exit condition**: Cleared when `SetStringMessage` arrives with results
 
 ## State Transitions
 
@@ -59,7 +59,6 @@ The transcription UI operates as an always-running overlay that transitions betw
 Content-adding messages that result in non-empty text display:
 
 - **`AppendSegmentsMessage`**: When `in_progress_segment` contains non-empty text OR `completed_segments` array contains segments
-- **`SetSegmentsMessage`**: When `segments` array contains non-empty segments
 - **`SetStringMessage`**: When `content` field contains non-empty string
 
 ### Active → Default Triggers
@@ -90,7 +89,6 @@ Messages that don't affect the empty/non-empty content state:
 
 ### Content Addition Behavior
 - **`AppendSegmentsMessage`**: Adds to existing content in specified `target_mode`
-- **`SetSegmentsMessage`**: Completely replaces content in specified `target_mode`
 - **`SetStringMessage`**: Completely replaces content in specified `target_mode`
 
 ## Message-Specific Implementation
@@ -106,14 +104,6 @@ Messages that don't affect the empty/non-empty content state:
    - Fade-in animation with appropriate delay after completed segments
 4. **Visibility**: Trigger fade-in if transitioning from both-modes-empty to any-content
 
-### SetSegmentsMessage
-1. **If currently in command-executing state**: Clear body class and hide `#overlay-layer`
-2. Clear all existing content from `target_mode` DOM element
-3. Create `<span>` elements for all `segments`:
-   - ID: `segment-${segment.id}`
-   - CSS class: `segment-prob-{rounded_avg_probability}` (avg_probability * 100, rounded to nearest 5)
-   - Block fade-in animation (all segments fade in simultaneously as a group)
-4. **Visibility**: Trigger fade-in if segments non-empty and transitioning from both-modes-empty
 
 ### SetStringMessage
 1. **If currently in command-executing state**: Clear body class and hide `#overlay-layer`
@@ -141,14 +131,11 @@ Messages that don't affect the empty/non-empty content state:
 5. **Visibility**: `#overlay-layer` becomes visible, no change to overall UI visibility
 
 ### CommitOperationMessage
-TODO: You know, we should do something special here, because it's a state transition that needs some acknowledgement.
-
-I think we should set a class on the body (commit-active?), which shows some visual representation of "committing", wait for 1 second for the user to notice, then allow the fade out transitions to take place.
-
-1. Clear content from BOTH `#transcription` and `#command` elements
-2. **Immediately** fade out command element (if visible)
-3. **Immediately** trigger overall UI fade-out (both modes now empty)
-4. **After fade-out completes**: Reset body class to `transcribe-active` mode
+1. **Show commit feedback**: Set `commit-active` body class for 1 second visual acknowledgment
+2. **Mark state as empty**: Update content tracking to trigger automatic fade-out
+3. **Remove feedback class**: Clean up commit visual state
+4. **Automatic fade-out**: UI fades out smoothly (240ms transition)
+5. **After fade completes**: Clear DOM content and reset mode to `transcribe-active`
 
 ## Technical Implementation
 
@@ -177,7 +164,7 @@ const SEGMENT_STAGGER_DELAY_MS = 50;
 ### Animation System
 - **Segment animations**: Use enhanced `AnimatedValue` class with delay support
 - **Staggered timing**: Each segment in `AppendSegments` delays by `index * SEGMENT_STAGGER_DELAY_MS`
-- **Simultaneous timing**: All segments in `SetSegments/SetString` start immediately (delay = 0)
+- **Simultaneous timing**: All segments in `SetString` start immediately (delay = 0)
 - **RAF integration**: Animations use `requestAnimationFrame` timestamp for frame-perfect timing
 - **State tracking**: `AnimatedValue.isRunning()` returns true during both delay and animation phases
 
@@ -249,7 +236,6 @@ The UIStateManager must track:
 #### Message Types
 - **SetStringMessage**: ✅ Fully implemented with animations and state management
 - **AppendSegmentsMessage**: ✅ Fully implemented with segment span creation and staggered animations
-- **SetSegmentsMessage**: ❌ Not implemented (needs segment span creation with block animations)
 - **ChangeModeMessage**: ✅ Fully implemented with command element visibility logic and mode switching
 - **CommandExecutingMessage**: ❌ Not implemented (needs overlay layer and waiting message cycling)
 - **CommitOperationMessage**: ❌ Not implemented (needs session reset and commit feedback)
@@ -257,7 +243,6 @@ The UIStateManager must track:
 ### ❌ Missing Features
 
 #### Segment-Based Content Rendering
-- Simultaneous fade-in animations for SetSegments
 
 #### Command Execution Feedback
 - `#overlay-layer` visibility during command execution
@@ -268,12 +253,6 @@ The UIStateManager must track:
 - Markdown → HTML transformation for SetStringMessage
 - Content validation and error handling
 
-#### Commit Operation Handling
-- Session reset clearing both modes
-- Commit feedback visual state with timing
-- Post-commit mode reset to `transcribe-active`
 
 ### Next Implementation Priorities
-1. **SetSegmentsMessage**: Segment replacement with block animations
-2. **CommandExecutingMessage**: Overlay layer and waiting message cycling
-3. **CommitOperationMessage**: Session reset and commit feedback
+1. **CommandExecutingMessage**: Overlay layer and waiting message cycling

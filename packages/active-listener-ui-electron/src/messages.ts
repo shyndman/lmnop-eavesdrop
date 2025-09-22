@@ -24,7 +24,6 @@ export enum Mode {
 export enum MessageType {
   APPEND_SEGMENTS = 'append_segments',
   CHANGE_MODE = 'change_mode',
-  SET_SEGMENTS = 'set_segments',
   SET_STRING = 'set_string',
   COMMAND_EXECUTING = 'command_executing',
   COMMIT_OPERATION = 'commit_operation'
@@ -72,22 +71,6 @@ export interface ChangeModeMessage {
   readonly target_mode: Mode;
 }
 
-/**
- * Completely replaces all existing transcription content with new segments.
- *
- * This provides a reset/correction mechanism, clearing the target element
- * and rendering the provided segments from scratch. Useful for handling
- * transcription corrections or state synchronization.
- */
-export interface SetSegmentsMessage {
-  readonly type: MessageType.SET_SEGMENTS;
-
-  /** Which mode/DOM element to update */
-  readonly target_mode: Mode;
-
-  /** Complete set of segments to display, replacing any existing content */
-  readonly segments: readonly Segment[];
-}
 
 /**
  * Completely replaces all existing content with a preprocessed string.
@@ -165,7 +148,6 @@ export interface CommitOperationMessage {
 export type Message =
   | AppendSegmentsMessage
   | ChangeModeMessage
-  | SetSegmentsMessage
   | SetStringMessage
   | CommandExecutingMessage
   | CommitOperationMessage;

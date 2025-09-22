@@ -30,7 +30,7 @@ stateDiagram-v2
     command_executing: Command Executing
 
     note right of inactive
-      AppendSegments/SetSegments/SetString triggers fade-in
+      AppendSegments/SetString triggers fade-in
     end note
     note left of inactive
       CommitOperation or content cleared
@@ -94,7 +94,7 @@ stateDiagram-v2
 
 ### Command Execution
 - **command_active → command_executing**: Only possible from command mode
-- **Exit**: Only via SetSegments/SetString with command results
+- **Exit**: Only via SetString with command results
 - **Determines return state**: Based on target_mode in result message
 
 ### Session End
