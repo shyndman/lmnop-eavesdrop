@@ -7,8 +7,11 @@ export class MessageHandler {
   async handleMessage(message: Message): Promise<void> {
     switch (message.type) {
       case MessageType.APPEND_SEGMENTS:
-        // TODO: Implement segment appending logic
-        window.api.logger.info('append_segments:', message);
+        await this.uiStateManager.appendSegments(
+          message.target_mode,
+          message.completed_segments,
+          message.in_progress_segment
+        );
         break;
 
       case MessageType.CHANGE_MODE:

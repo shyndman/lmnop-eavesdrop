@@ -1,4 +1,5 @@
 import { Mode } from '../../messages';
+import { Segment } from '../../transcription';
 import { Animation, AnimatedValue, Easing } from './animation';
 
 // Timing constants from spec
@@ -24,7 +25,10 @@ export class UIStateManager {
 
   // Animation state tracking
   // Maps each mode to its active opacity animation (fade-in/fade-out transitions)
-  private elementAnimations = new Map<Mode, Animation<{ opacity: AnimatedValue }>>();
+  private elementAnimations = new Map<
+    Mode,
+    Animation<{ opacity: AnimatedValue }>
+  >();
   // Queues content changes that should be applied after fade-out completes
   private pendingContentChanges = new Map<Mode, string>();
   // Tracks which modes are currently having their content set
@@ -55,7 +59,7 @@ export class UIStateManager {
   async setContent(mode: Mode, content: string): Promise<void> {
     if (this.contentSettingInProgress.has(mode)) {
       throw new Error(
-        `FATAL: setContent called concurrently for mode ${mode}. This violates the serialization assumption.`
+        `FATAL: setContent called concurrently for mode ${mode}. This violates the serialization assumption.`,
       );
     }
 
@@ -90,7 +94,7 @@ export class UIStateManager {
 
       // Handle mode state: if transitioning from default to active, set the target mode
       const hasTransitionedToActive = !wasActive && this.isActive();
-      if (hasTransitionedToActive && !hasNewContent) {
+      if (hasTransitionedToActive && hasNewContent) {
         this.currentMode = mode;
       } else if (!this.isActive()) {
         // If no content anywhere, clear mode state
@@ -131,7 +135,11 @@ export class UIStateManager {
    * body element.
    */
   private commitBodyClasses(): void {
-    document.body.classList.remove('transcribe-active', 'command-active', 'command-executing');
+    document.body.classList.remove(
+      'transcribe-active',
+      'command-active',
+      'command-executing',
+    );
     if (this.currentMode === Mode.TRANSCRIBE) {
       document.body.classList.add('transcribe-active');
     } else if (this.currentMode === Mode.COMMAND) {
@@ -146,46 +154,85 @@ export class UIStateManager {
   }
 
   /**
+   * Animate opacity of any set of elements with optional staggered delays
+   */
+  private async animateElementsOpacity(
+    elements: NodeListOf<Element> | HTMLElement[],
+    fromOpacity: number,
+    toOpacity: number,
+    easing: (t: number) => number,
+    interElementDelay: number = 0,
+  ): Promise<void> {
+    if (elements.length === 0) {
+      return;
+    }
+
+    // Set initial opacity
+    const elementsArray = Array.from(elements) as HTMLElement[];
+    elementsArray.forEach((element) => {
+      element.style.opacity = fromOpacity.toString();
+    });
+
+    // Staggered animation - create separate AnimatedValue for each element
+    const animatedValues: Record<string, AnimatedValue> = {};
+    elementsArray.forEach((element, index) => {
+      const delay = index * interElementDelay;
+      animatedValues[`element${index}`] = new AnimatedValue(
+        fromOpacity,
+        TRANSITION_DURATION_MS,
+        easing,
+        delay,
+      );
+    });
+
+    const animation = new Animation(animatedValues, (values) => {
+      elementsArray.forEach((element, index) => {
+        element.style.opacity = values[`element${index}`].toString();
+      });
+    });
+
+    // Start all animations
+    Object.values(animatedValues).forEach((value) => {
+      value.setTarget(toOpacity);
+    });
+
+    await animation.getCompletionPromise();
+  }
+
+  /**
    * Animate opacity of paragraphs in the specified mode
    */
   private async animateOpacity(
     mode: Mode,
     fromOpacity: number,
     toOpacity: number,
-    easing: (t: number) => number
+    easing: (t: number) => number,
   ): Promise<void> {
     const container = this.getElementForMode(mode);
     const paragraphs = container.querySelectorAll('p');
-
-    if (paragraphs.length === 0) {
-      return;
-    }
 
     // Assert no animation is already running - our concurrency protection should prevent this
     const existingAnimation = this.elementAnimations.get(mode);
     if (existingAnimation) {
       throw new Error(
-        `FATAL: Animation already running for mode ${mode}. Concurrency protection failed.`
+        `FATAL: Animation already running for mode ${mode}. Concurrency protection failed.`,
       );
     }
 
-    // Set initial opacity
-    paragraphs.forEach((p) => {
-      p.style.opacity = fromOpacity.toString();
-    });
-
-    const opacityValue = new AnimatedValue(fromOpacity, TRANSITION_DURATION_MS, easing);
-    const animation = new Animation({ opacity: opacityValue }, ({ opacity }) => {
-      paragraphs.forEach((p) => {
-        p.style.opacity = opacity.toString();
-      });
-    });
-
-    this.elementAnimations.set(mode, animation);
-    opacityValue.setTarget(toOpacity);
-
-    await animation.getCompletionPromise();
-    this.elementAnimations.delete(mode);
+    this.elementAnimations.set(
+      mode,
+      {} as Animation<{ opacity: AnimatedValue }>,
+    );
+    try {
+      await this.animateElementsOpacity(
+        paragraphs,
+        fromOpacity,
+        toOpacity,
+        easing,
+      );
+    } finally {
+      this.elementAnimations.delete(mode);
+    }
   }
 
   /**
@@ -258,6 +305,133 @@ export class UIStateManager {
       throw new Error(`${elementId} element not found`);
     }
     return element;
+  }
+
+  /**
+   * Calculate CSS probability class for a segment
+   */
+  private getSegmentProbabilityClass(segment: Segment): string {
+    const rounded = Math.round((segment.avg_probability * 100) / 5) * 5;
+    return `segment-prob-${rounded}`;
+  }
+
+  /**
+   * Remove the existing in-progress segment with animation (single segment invariant)
+   */
+  private async removeInProgressSegment(container: HTMLElement): Promise<void> {
+    const inProgressSpan = container.querySelector(
+      '.in-progress-segment',
+    ) as HTMLElement;
+    if (inProgressSpan) {
+      await this.animateElementsOpacity(
+        [inProgressSpan],
+        1,
+        0,
+        FADE_OUT_EASING,
+      );
+      inProgressSpan.remove();
+    }
+  }
+
+  /**
+   * Create a paragraph containing segment spans
+   */
+  private createSegmentParagraph(
+    completedSegments: Segment[],
+    inProgressSegment: Segment,
+  ): HTMLParagraphElement {
+    const paragraph = document.createElement('p');
+
+    // Create spans for completed segments
+    completedSegments.forEach((segment) => {
+      const span = document.createElement('span');
+      span.id = `segment-${segment.id}`;
+      span.className = this.getSegmentProbabilityClass(segment);
+      span.textContent = segment.text;
+      paragraph.appendChild(span);
+    });
+
+    // Create span for in-progress segment if it has text
+    if (inProgressSegment.text.trim() !== '') {
+      const span = document.createElement('span');
+      span.id = `segment-${inProgressSegment.id}`;
+      span.className = `in-progress-segment ${this.getSegmentProbabilityClass(inProgressSegment)}`;
+      span.textContent = inProgressSegment.text;
+      paragraph.appendChild(span);
+    }
+
+    return paragraph;
+  }
+
+  /**
+   * Append segments to a specific mode with staggered animations
+   *
+   * FATAL ERROR if called concurrently for the same mode. This method assumes
+   * serialized calls from the message handler.
+   */
+  async appendSegments(
+    mode: Mode,
+    completedSegments: Segment[],
+    inProgressSegment: Segment,
+  ): Promise<void> {
+    if (this.contentSettingInProgress.has(mode)) {
+      throw new Error(
+        `FATAL: appendSegments called concurrently for mode ${mode}. This violates the serialization assumption.`,
+      );
+    }
+
+    this.contentSettingInProgress.add(mode);
+    try {
+      const container = this.getElementForMode(mode);
+      const wasActive = this.isActive();
+      const hasExistingContent = this.hasExistingContent(mode);
+
+      // Remove existing in-progress segment with animation
+      await this.removeInProgressSegment(container);
+
+      // Create new paragraph with all segments
+      const paragraph = this.createSegmentParagraph(completedSegments, inProgressSegment);
+      const allSpans = Array.from(paragraph.querySelectorAll('span')) as HTMLSpanElement[];
+
+      // Determine if we have meaningful content
+      const hasNewContent = completedSegments.length > 0 || inProgressSegment.text.trim() !== '';
+
+      if (hasNewContent) {
+        // Add new paragraph alongside existing content
+        container.appendChild(paragraph);
+        await this.animateElementsOpacity(allSpans, 0, 1, FADE_IN_EASING, SEGMENT_STAGGER_DELAY_MS);
+      }
+
+      // Update content state tracking
+      if (mode === Mode.TRANSCRIBE) {
+        this.isTranscriptionEmpty = !hasNewContent;
+      } else {
+        this.isCommandEmpty = !hasNewContent;
+      }
+
+      // Handle mode state: if transitioning from default to active, set the target mode
+      const hasTransitionedToActive = !wasActive && this.isActive();
+      if (hasTransitionedToActive && hasNewContent) {
+        this.currentMode = mode;
+      } else if (!this.isActive()) {
+        // If no content anywhere, clear mode state
+        this.currentMode = null;
+      }
+
+      // Handle visibility transitions
+      this.commitBodyClasses();
+    } finally {
+      this.contentSettingInProgress.delete(mode);
+    }
+  }
+
+  /**
+   * Change the active mode and handle visual transitions
+   */
+  async changeMode(mode: Mode): Promise<void> {
+    this.currentMode = mode;
+    this.commitBodyClasses();
+    await this.updateCommandElementVisibility();
   }
 
   private setupMouseHover(): void {

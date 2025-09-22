@@ -13,6 +13,7 @@ interface API {
 interface MockAPI {
   ping: () => Promise<string>
   setString: (target_mode: 'TRANSCRIBE' | 'COMMAND', content: string) => void
+  appendSegments: (target_mode: 'TRANSCRIBE' | 'COMMAND', completedSegments: any[], inProgressSegment: any) => void
 }
 
 declare global {

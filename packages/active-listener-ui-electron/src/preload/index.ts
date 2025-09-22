@@ -23,6 +23,15 @@ const _mock = process.env.NODE_ENV === 'development' ? {
       target_mode: mappedMode,
       content
     });
+  },
+  appendSegments: (target_mode: 'TRANSCRIBE' | 'COMMAND', completedSegments: any[], inProgressSegment: any) => {
+    const mappedMode = target_mode === 'TRANSCRIBE' ? Mode.TRANSCRIBE : Mode.COMMAND;
+    ipcRenderer.send('mock.python-data', {
+      type: 'append_segments',
+      target_mode: mappedMode,
+      completed_segments: completedSegments,
+      in_progress_segment: inProgressSegment
+    });
   }
 } : undefined
 
