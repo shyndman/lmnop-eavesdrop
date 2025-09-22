@@ -8,14 +8,14 @@ The transcription UI operates as an always-running overlay that transitions betw
 
 ### Overall UI Visibility
 
-#### Inactive State
-- Body class: `inactive`
-- CSS sets `body.inactive { opacity: 0 }`
+#### Default State (No Content)
+- Body has no visibility class
+- CSS sets `body { opacity: 0 }`
 - Both `#transcription` and `#command` elements are empty of content
 - Default state when no transcription activity is occurring
 - Window remains positioned but provides no visual feedback
 
-#### Active State
+#### Active State (Has Content)
 - Body class: `active`
 - CSS sets `body.active { opacity: 1 }`
 - At least one of `#transcription` or `#command` contains non-empty content
@@ -40,10 +40,11 @@ The transcription UI operates as an always-running overlay that transitions betw
 
 ### Active Mode Indication
 - Body element class indicates current mode: `transcribe-active`, `command-active`, or `command-executing`
-- **Default state**: `transcribe-active`
+- **Default state**: No mode class (null) when UI is in default state (no content)
+- **Initial mode**: Set by first content-adding message (`SetStringMessage`, `AppendSegmentsMessage`, or `SetSegmentsMessage`) when transitioning from default to active
 - **Updates immediately** on `ChangeModeMessage` receipt
 - **Command execution state**: `command-executing` when processing commands with waiting feedback
-- **CommitOperationMessage exception**: Mode change to `transcribe-active` occurs after overall UI fade-out completes
+- **CommitOperationMessage exception**: Mode change to default state (no class) occurs after overall UI fade-out completes
 
 ### Command Execution Feedback
 - **Overlay visibility**: `#overlay-layer` becomes visible during command execution
@@ -54,14 +55,14 @@ The transcription UI operates as an always-running overlay that transitions betw
 
 ## State Transitions
 
-### Inactive → Active Triggers
+### Default → Active Triggers
 Content-adding messages that result in non-empty text display:
 
 - **`AppendSegmentsMessage`**: When `in_progress_segment` contains non-empty text OR `completed_segments` array contains segments
 - **`SetSegmentsMessage`**: When `segments` array contains non-empty segments
 - **`SetStringMessage`**: When `content` field contains non-empty string
 
-### Active → Inactive Triggers
+### Active → Default Triggers
 Content-clearing messages that result in both modes being empty:
 
 - **`SetStringMessage`**: When `content` is empty string, clearing the target mode, AND this leaves both transcription and command modes empty
@@ -119,7 +120,8 @@ Messages that don't affect the empty/non-empty content state:
 2. Clear all existing content from `target_mode` DOM element
 3. Process `content` string (markdown → HTML preprocessing)
 4. Render processed content with block fade-in animation
-5. **Visibility**:
+5. **Mode transition**: If transitioning from default state (no content) to active state with non-empty content, set mode to `target_mode` (e.g., `transcribe-active` or `command-active`)
+6. **Visibility**:
    - Trigger fade-in if content non-empty and transitioning from both-modes-empty
    - Trigger fade-out if content empty and this leaves both modes empty
 
@@ -154,11 +156,8 @@ I think we should set a class on the body (commit-active?), which shows some vis
 ### CSS Transitions
 ```css
 body {
-  transition: opacity 240ms ease-out;
-}
-
-body.inactive {
   opacity: 0;
+  transition: opacity 240ms ease-out;
 }
 
 body.active {
@@ -184,7 +183,7 @@ const SEGMENT_STAGGER_DELAY_MS = 50;
 - **State tracking**: `AnimatedValue.isRunning()` returns true during both delay and animation phases
 
 ### Visibility Management
-- Use body classes (`inactive`, `active`) to control overall UI visibility
+- Use body `active` class to control overall UI visibility
 - CSS handles opacity transitions with `transition: opacity 240ms ease-out`
 - Transition duration: `TRANSITION_DURATION_MS` (240ms)
 - Easing function: `ease-out`
@@ -194,7 +193,7 @@ const SEGMENT_STAGGER_DELAY_MS = 50;
 The UIStateManager must track:
 - Current content state of `#transcription` element (empty/non-empty)
 - Current content state of `#command` element (empty/non-empty)
-- Current overall visibility state (inactive/active)
+- Current overall visibility state (default/active)
 
 ### Edge Cases
 
@@ -212,3 +211,77 @@ The UIStateManager must track:
 - Additional content messages while already visible don't retrigger fade-in
 - Smooth content updates without flickering transitions
 - Only empty ↔ content boundaries trigger visibility transitions
+
+## Implementation Status
+
+### ✅ Completed Features
+
+#### Core Infrastructure
+- **UIStateManager class**: Central state management with content tracking outside DOM
+- **Timing constants**: All magic numbers replaced with named constants (`TRANSITION_DURATION_MS`, etc.)
+- **Easing constants**: Centralized easing function definitions (`FADE_OUT_EASING`, `FADE_IN_EASING`)
+- **MessageHandler class**: Type-safe message processing with enum-based exhaustive checking
+- **Mock API**: Development testing via `window._mock.setString()` for SetStringMessage
+
+#### Content State Management
+- **Independent mode tracking**: Separate boolean flags for transcription and command content state
+- **Mode state management**: Tracks current active mode (`transcribe-active`, `command-active`, or null)
+- **Overall visibility control**: Body `active` class based on content presence in any mode
+- **Initial mode setting**: First content-adding message sets the active mode when transitioning from default state
+
+#### Animation System
+- **Unified opacity animation**: Single `animateOpacity()` method handling fade-in/fade-out logic
+- **Paragraph-based animations**: Targets `<p>` elements for future segment/word support
+- **Smooth content transitions**: Fade-out → fade-in sequences for content replacement
+- **Animation assertions**: Fatal errors if animations overlap (concurrency protection)
+
+#### Concurrency Protection
+- **Explicit serialization tracking**: `contentSettingInProgress` Set prevents overlapping calls
+- **Fatal error on violations**: Throws descriptive errors if serialization assumption is violated
+- **Try/finally cleanup**: Ensures progress tracking is always cleared
+
+#### SetStringMessage Implementation
+- **Complete SetString handling**: All animation cases (empty→content, content→content, content→empty)
+- **Paragraph tag wrapping**: Ensures all content is wrapped in `<p>` tags for future extensibility
+- **Content preprocessing pipeline**: Ready for markdown → HTML transformation
+
+### 🚧 Partial Implementation
+
+#### Message Types
+- **SetStringMessage**: ✅ Fully implemented with animations and state management
+- **AppendSegmentsMessage**: ❌ Not implemented (needs segment span creation with staggered animations)
+- **SetSegmentsMessage**: ❌ Not implemented (needs segment span creation with block animations)
+- **ChangeModeMessage**: ❌ Not implemented (needs focus class management and command element visibility)
+- **CommandExecutingMessage**: ❌ Not implemented (needs overlay layer and waiting message cycling)
+- **CommitOperationMessage**: ❌ Not implemented (needs session reset and commit feedback)
+
+### ❌ Missing Features
+
+#### Command Element Conditional Visibility
+- Command element independent fade transitions based on mode and content state
+- Focus class management (`.has-focus`) between transcription and command elements
+
+#### Segment-Based Content Rendering
+- `<span>` element creation with segment IDs and probability classes
+- Staggered fade-in animations for AppendSegments (50ms delays)
+- Simultaneous fade-in animations for SetSegments
+
+#### Command Execution Feedback
+- `#overlay-layer` visibility during command execution
+- `#command-waiting-messages` cycling with 2-second rotation
+- Integration with CommandExecutingMessage
+
+#### Content Preprocessing
+- Markdown → HTML transformation for SetStringMessage
+- Content validation and error handling
+
+#### Commit Operation Handling
+- Session reset clearing both modes
+- Commit feedback visual state with timing
+- Post-commit mode reset to `transcribe-active`
+
+### Next Implementation Priorities
+1. **AppendSegmentsMessage**: Segment span creation with staggered animations
+2. **Command element conditional visibility**: Independent fade behavior
+3. **ChangeModeMessage**: Focus management and mode switching
+4. **SetSegmentsMessage**: Segment replacement with block animations
