@@ -2,6 +2,7 @@ import { Mode } from '../../messages';
 import { Segment } from '../../transcription';
 import { Animation, AnimatedValue, Easing } from './animation';
 import { WaitingMessageManager } from './waiting-message-manager';
+import { AnimationManager } from './animation-manager';
 
 // Timing constants from spec
 const TRANSITION_DURATION_MS = 240;
@@ -26,6 +27,9 @@ export class UIStateManager {
   // Command execution state
   private waitingMessageManager: WaitingMessageManager;
 
+  // Animation management
+  private animationManager: AnimationManager;
+
   // Animation state tracking
   // Maps each mode to its active opacity animation (fade-in/fade-out transitions)
   private elementAnimations = new Map<
@@ -49,6 +53,9 @@ export class UIStateManager {
       throw new Error('command-waiting-messages element not found');
     }
     this.waitingMessageManager = new WaitingMessageManager(waitingMessageContainer);
+
+    // Initialize animation manager
+    this.animationManager = new AnimationManager(TRANSITION_DURATION_MS, FADE_OUT_EASING, FADE_IN_EASING);
 
     // Add dev mode indicator to body
     if (window.api.isDev) {
@@ -161,51 +168,6 @@ export class UIStateManager {
     return this.currentMode === Mode.COMMAND || !this.isCommandEmpty;
   }
 
-  /**
-   * Animate opacity of any set of elements with optional staggered delays
-   */
-  private async animateElementsOpacity(
-    elements: NodeListOf<Element> | HTMLElement[],
-    fromOpacity: number,
-    toOpacity: number,
-    easing: (t: number) => number,
-    interElementDelay: number = 0,
-  ): Promise<void> {
-    if (elements.length === 0) {
-      return;
-    }
-
-    // Set initial opacity
-    const elementsArray = Array.from(elements) as HTMLElement[];
-    elementsArray.forEach((el) => {
-      el.style.opacity = fromOpacity.toString();
-    });
-
-    // Staggered animation - create separate AnimatedValue for each element
-    const animatedValues: Record<string, AnimatedValue> = {};
-    elementsArray.forEach((_element, index) => {
-      const delay = index * interElementDelay;
-      animatedValues[`element${index}`] = new AnimatedValue(
-        fromOpacity,
-        TRANSITION_DURATION_MS,
-        easing,
-        delay,
-      );
-    });
-
-    const animation = new Animation(animatedValues, (values) => {
-      elementsArray.forEach((element, index) => {
-        element.style.opacity = values[`element${index}`].toString();
-      });
-    });
-
-    // Start all animations
-    Object.values(animatedValues).forEach((value) => {
-      value.setTarget(toOpacity);
-    });
-
-    await animation.getCompletionPromise();
-  }
 
   /**
    * Animate opacity of paragraphs in the specified mode
@@ -217,7 +179,7 @@ export class UIStateManager {
     easing: (t: number) => number,
   ): Promise<void> {
     const container = this.getElementForMode(mode);
-    const paragraphs = container.querySelectorAll('p');
+    const paragraphs = Array.from(container.querySelectorAll('p')) as HTMLElement[];
 
     // Assert no animation is already running - our concurrency protection should prevent this
     const existingAnimation = this.elementAnimations.get(mode);
@@ -232,7 +194,7 @@ export class UIStateManager {
       {} as Animation<{ opacity: AnimatedValue }>,
     );
     try {
-      await this.animateElementsOpacity(
+      await this.animationManager.fadeElements(
         paragraphs,
         fromOpacity,
         toOpacity,
@@ -331,12 +293,7 @@ export class UIStateManager {
       '.in-progress-segment',
     ) as HTMLElement;
     if (inProgressSpan) {
-      await this.animateElementsOpacity(
-        [inProgressSpan],
-        1,
-        0,
-        FADE_OUT_EASING,
-      );
+      await this.animationManager.fadeOut([inProgressSpan]);
       inProgressSpan.remove();
     }
   }
@@ -406,7 +363,7 @@ export class UIStateManager {
       if (hasNewContent) {
         // Add new paragraph alongside existing content
         container.appendChild(paragraph);
-        await this.animateElementsOpacity(allSpans, 0, 1, FADE_IN_EASING, SEGMENT_STAGGER_DELAY_MS);
+        await this.animationManager.fadeIn(allSpans, SEGMENT_STAGGER_DELAY_MS);
       }
 
       // Update content state tracking
