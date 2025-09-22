@@ -21,16 +21,28 @@ body {
   width: 100%;
   height: 100%;
   overflow: hidden;
+}
+
+body {
   font: 400 14.8px Ubuntu;
   color: rgba(255, 255, 255, 0.72);
+  opacity: 0;
   transition: opacity 0.14s ease-out;
 }
 
-body.mouse-is-over {
+body.dev-mode {
+  opacity: 0.4;
+}
+
+body.active {
+  opacity: 1;
+}
+
+body.active.mouse-is-over {
   opacity: 0.02;
 }
 
-body.dev-mode.mouse-is-over {
+body.active.mouse-is-over.dev-mode {
   opacity: 0.8;
 }
 
