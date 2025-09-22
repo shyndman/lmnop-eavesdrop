@@ -16,14 +16,12 @@ export class AnimatedValue {
   private duration: number;
   private delay: number;
   private easingFn: (t: number) => number;
-  private onComplete?: () => void;
   private animation?: Animation<any>;
 
   constructor(
     initialValue: number,
     duration: number = 300,
     easing: (t: number) => number = Easing.easeOut,
-    onComplete?: () => void,
     delay: number = 0
   ) {
     this.current = initialValue;
@@ -32,7 +30,6 @@ export class AnimatedValue {
     this.duration = duration;
     this.delay = delay;
     this.easingFn = easing;
-    this.onComplete = onComplete;
   }
 
   setTarget(newTarget: number): void {
@@ -75,10 +72,6 @@ export class AnimatedValue {
       if (this.animation) {
         this.animation.onAnimatedValueSettled(this);
       }
-
-      if (this.onComplete) {
-        this.onComplete();
-      }
     }
 
     return this.current;
@@ -92,10 +85,6 @@ export class AnimatedValue {
     return this.isAnimating;
   }
 
-  setOnComplete(callback: () => void): void {
-    this.onComplete = callback;
-  }
-
   setAnimation(animation: Animation<any>): void {
     this.animation = animation;
   }
@@ -106,6 +95,8 @@ export class Animation<T extends Record<string, AnimatedValue>> {
   private animationId: number | null = null;
   private callback: (values: { [K in keyof T]: number }) => void;
   private animatedValues: T;
+  private completionPromise: Promise<void> | null = null;
+  private resolveCompletion: (() => void) | null = null;
 
   constructor(animatedValues: T, callback: (values: { [K in keyof T]: number }) => void) {
     this.animatedValues = animatedValues;
@@ -113,12 +104,6 @@ export class Animation<T extends Record<string, AnimatedValue>> {
 
     for (const value of Object.values(animatedValues)) {
       value.setAnimation(this);
-      const originalOnComplete = value['onComplete'];
-      value.setOnComplete(() => {
-        if (originalOnComplete) {
-          originalOnComplete();
-        }
-      });
     }
   }
 
@@ -134,6 +119,20 @@ export class Animation<T extends Record<string, AnimatedValue>> {
     if (!this.isRunning) {
       this.start();
     }
+  }
+
+  getCompletionPromise(): Promise<void> {
+    if (!this.isRunning) {
+      throw new Error('Cannot get completion promise: animation is not running');
+    }
+
+    if (!this.completionPromise) {
+      this.completionPromise = new Promise<void>((resolve) => {
+        this.resolveCompletion = resolve;
+      });
+    }
+
+    return this.completionPromise;
   }
 
   onAnimatedValueSettled(_value: AnimatedValue): void {
@@ -158,6 +157,12 @@ export class Animation<T extends Record<string, AnimatedValue>> {
     if (this.animationId !== null) {
       cancelAnimationFrame(this.animationId);
       this.animationId = null;
+    }
+
+    if (this.resolveCompletion) {
+      this.resolveCompletion();
+      this.resolveCompletion = null;
+      this.completionPromise = null;
     }
   }
 
