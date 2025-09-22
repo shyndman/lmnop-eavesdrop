@@ -11,7 +11,7 @@ export class FrameRenderer {
   private animation: Animation<{ height: AnimatedValue }>;
   private resizeObserver: ResizeObserver;
 
-  constructor(onAnimationComplete?: () => void) {
+  constructor() {
     const canvas = document.querySelector<HTMLCanvasElement>(
       '#frame-layer canvas',
     );
@@ -52,7 +52,6 @@ export class FrameRenderer {
       initialHeight,
       300,
       Easing.easeOut,
-      onAnimationComplete,
     );
 
     this.animation = new Animation(

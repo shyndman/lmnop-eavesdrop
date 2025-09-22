@@ -6,7 +6,6 @@ import { WaitingMessageManager } from './waiting-message-manager';
 // Timing constants from spec
 const TRANSITION_DURATION_MS = 240;
 const COMMIT_FEEDBACK_DURATION_MS = 1000;
-const WAITING_MESSAGE_DURATION_MS = 2000;
 const SEGMENT_STAGGER_DELAY_MS = 50;
 
 // Easing function constants
@@ -33,8 +32,6 @@ export class UIStateManager {
     Mode,
     Animation<{ opacity: AnimatedValue }>
   >();
-  // Queues content changes that should be applied after fade-out completes
-  private pendingContentChanges = new Map<Mode, string>();
   // Tracks which modes are currently having their content set
   private contentSettingInProgress = new Set<Mode>();
 
@@ -180,13 +177,13 @@ export class UIStateManager {
 
     // Set initial opacity
     const elementsArray = Array.from(elements) as HTMLElement[];
-    elementsArray.forEach((element) => {
-      element.style.opacity = fromOpacity.toString();
+    elementsArray.forEach((el) => {
+      el.style.opacity = fromOpacity.toString();
     });
 
     // Staggered animation - create separate AnimatedValue for each element
     const animatedValues: Record<string, AnimatedValue> = {};
-    elementsArray.forEach((element, index) => {
+    elementsArray.forEach((_element, index) => {
       const delay = index * interElementDelay;
       animatedValues[`element${index}`] = new AnimatedValue(
         fromOpacity,
@@ -395,7 +392,6 @@ export class UIStateManager {
     try {
       const container = this.getElementForMode(mode);
       const wasActive = this.isActive();
-      const hasExistingContent = this.hasExistingContent(mode);
 
       // Remove existing in-progress segment with animation
       await this.removeInProgressSegment(container);
@@ -463,7 +459,7 @@ export class UIStateManager {
   /**
    * Handle commit operation with visual feedback and session reset
    */
-  async commitOperation(cancelled: boolean): Promise<void> {
+  async commitOperation(_cancelled: boolean): Promise<void> {
     // Phase 1: Show commit feedback for 1 second
     document.body.classList.add('commit-active');
     await new Promise(resolve => setTimeout(resolve, COMMIT_FEEDBACK_DURATION_MS));
