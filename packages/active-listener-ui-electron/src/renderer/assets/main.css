@@ -77,25 +77,11 @@ body.active.mouse-is-over.dev-mode {
   padding: 6px;
 }
 
-.has-focus {
-  color: rgba(255, 255, 255, 0.92);
-}
-
 #transcription {
   padding: 4px 12px 8px;
   line-height: 1.7;
   background: rgba(10, 10, 25, 0.1);
   border-radius: 8px;
-}
-
-#transcription p,
-#command p {
-  text-wrap: stable;
-  transition: color 0.3s ease;
-}
-
-#transcription p + p {
-  margin-top: 8px;
 }
 
 #command {
@@ -104,6 +90,26 @@ body.active.mouse-is-over.dev-mode {
   border: 2px solid rgba(120, 30, 30, 0.6);
   background: rgba(#241f2f, 0.8);
   border-radius: 8px;
+  display: none;
+}
+
+.transcribe-active #transcription,
+.command-active #command {
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.command-active #command {
+  display: block;
+}
+
+#transcription p,
+#command p {
+  text-wrap: stable;
+  transition: color 0.3s ease;
+}
+
+#transcription p+p {
+  margin-top: 8px;
 }
 
 #frame-layer canvas {
