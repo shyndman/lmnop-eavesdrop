@@ -2,7 +2,7 @@ import { defineConfig } from 'eslint/config';
 import tseslint from '@electron-toolkit/eslint-config-ts';
 import eslintConfigPrettier from '@electron-toolkit/eslint-config-prettier';
 
-const config = defineConfig(
+export default defineConfig(
   { ignores: ['**/node_modules', '**/dist', '**/out'] },
   {},
   tseslint.configs.recommended,
@@ -26,5 +26,3 @@ const config = defineConfig(
     },
   },
 );
-console.log(config);
-export default config;
