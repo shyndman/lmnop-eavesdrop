@@ -41,7 +41,7 @@ export class StateManager {
 
     // Add dev mode indicator to body
     if (window.api.isDev) {
-      // document.body.classList.add('dev-mode');
+      document.body.classList.add('dev-mode');
     }
 
     this.setupMouseHover();

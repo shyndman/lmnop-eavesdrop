@@ -1,7 +1,14 @@
 import { app, shell, BrowserWindow, ipcMain, Display } from 'electron';
 import { screen } from 'electron';
 import { join } from 'path';
-import { electronApp, optimizer, is } from '@electron-toolkit/utils';
+import { electronApp, optimizer } from '@electron-toolkit/utils';
+import { env } from 'process';
+
+console.log('App starting');
+console.log('Env');
+console.log(env);
+
+const isDevMode = process.env.NODE_ENV === 'development';
 
 const WINDOW_WIDTH = 390;
 const WINDOW_H_INSET = 20;
@@ -28,16 +35,12 @@ function createWindow(screen: Display): BrowserWindow {
       sandbox: false,
     },
   });
-
-  if (!is.dev) {
-    mainWindow.setIgnoreMouseEvents(true, { forward: true });
-  }
-
+  mainWindow.setIgnoreMouseEvents(true, { forward: true });
   mainWindow.setAlwaysOnTop(true, 'status');
 
   mainWindow.on('ready-to-show', () => {
     mainWindow.show();
-    if (is.dev) {
+    if (isDevMode) {
       mainWindow.webContents.openDevTools();
     }
   });
@@ -49,7 +52,7 @@ function createWindow(screen: Display): BrowserWindow {
 
   // HMR for renderer base on electron-vite cli.
   // Load the remote URL for development or the local html file for production.
-  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+  if (isDevMode && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL']);
   } else {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'));
@@ -62,6 +65,8 @@ function createWindow(screen: Display): BrowserWindow {
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
 app.whenReady().then(() => {
+  console.log('App is ready');
+
   // Set app user model id for windows
   electronApp.setAppUserModelId('com.electron');
 
@@ -91,7 +96,7 @@ app.whenReady().then(() => {
   });
 
   // Dev-only mock handlers
-  if (is.dev) {
+  if (isDevMode) {
     ipcMain.handle('mock.ping', () => {
       console.log('_mock: pong');
       return 'pong';
