@@ -2,6 +2,11 @@ import { Channel } from 'queueable';
 import { Message, MessageType } from '../../messages';
 import { StateManager } from './state-manager';
 
+/**
+ * Indicates to the hosting process that we are ready to start receiving messages.
+ */
+const READY_SIGNAL = 'ACTIVE_LISTENER_UI_READY';
+
 export class MessageHandler {
   private channel: Channel<Message> = new Channel();
 
@@ -52,5 +57,6 @@ export class MessageHandler {
         window.api.logger.error('Error handling message:', error, 'Data:', msg);
       }
     });
+    window.api.logger.info(READY_SIGNAL);
   }
 }

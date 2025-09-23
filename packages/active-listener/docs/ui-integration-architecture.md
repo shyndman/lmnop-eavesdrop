@@ -126,7 +126,7 @@ class App:
 
 **Responsibilities**:
 - Launch UI subprocess with validated executable path
-- Monitor UI ready signal ("ACTIVE_LISTENER_UI_READY" on stdout)
+- Monitor UI ready signal ("ACTIVE_LISTENER_UI_READY" on stderr)
 - Send JSON-line messages to UI stdin
 - Monitor UI stderr and log errors
 - Handle broken pipe detection and fatal error signaling
@@ -246,7 +246,7 @@ UIChannel detects process failure
    - Capture stdin, stdout, stderr
 
 2. **Ready Detection**:
-   - Monitor stdout for exact string "ACTIVE_LISTENER_UI_READY"
+   - Monitor stderr for exact string "ACTIVE_LISTENER_UI_READY"
    - Wait indefinitely but log warnings after reasonable timeout
    - Fatal error if process exits before ready signal
 
@@ -324,11 +324,26 @@ JSON Lines format: `{"type": "message_type", ...}\n`
 - `App.create()` method returns `pass` instead of actual implementation (skeleton only)
 - All skeleton methods contain only `pass` statements
 
-### Phase 2: Process Management
-1. Implement UI subprocess launch and ready signal detection
-2. Implement JSON-line message sending
-3. Implement error detection and fatal error handling
-4. Add signal handler migration from ActiveListener to App
+### Phase 2: Process Management ✅ COMPLETED
+1. ✅ Implement UI subprocess launch and ready signal detection
+2. ✅ Implement JSON-line message sending
+3. ✅ Implement error detection and fatal error handling
+4. ✅ Add signal handler migration from ActiveListener to App
+
+**Status**: All critical process management functionality implemented. UIChannel handles complete subprocess lifecycle with robust error handling. App class provides full application lifecycle management with signal handling and cleanup.
+
+**Files Modified**:
+- `src/eavesdrop/active_listener/ui_channel.py` - Complete implementation with subprocess management
+- `src/eavesdrop/active_listener/app.py` - Factory method, signal handlers, and lifecycle management
+
+**Key Features Implemented**:
+- Subprocess launch with working directory and environment inheritance
+- Ready signal detection with timeout warnings and fatal error handling
+- JSON-line message protocol with broken pipe detection
+- Health monitoring and graceful/forced termination
+- Signal handler migration from CLI to App class
+- Complete component wiring and factory method
+- Comprehensive cleanup and error handling
 
 ### Phase 3: Message Processing
 1. Implement transcription message processing in workspace
