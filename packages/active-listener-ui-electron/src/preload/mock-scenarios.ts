@@ -7,8 +7,8 @@ import { Mode, MessageType, type Message } from '../messages';
 import { type Segment } from '../transcription';
 
 // Timing constants to match real transcription behavior
-const TRANSCRIPTION_INTERVAL_MS = 2000; // Whisper segments arrive every 2 seconds
-const COMMAND_PROCESSING_MS = 3000; // Typical LLM response time
+const TRANSCRIPTION_INTERVAL_MS = 1000; // Whisper segments arrive every 2 seconds
+const COMMAND_PROCESSING_MS = 8000; // Typical LLM response time
 const UNDO_PROCESSING_MS = 500; // Instant revert
 const USER_PAUSE_MS = 1000; // User thinking time
 
@@ -28,22 +28,11 @@ function createSegment(
   confidence: number = 0.85,
   completed: boolean = false,
 ): Segment {
-  const tokens = Array.from({ length: Math.ceil(text.length / 4) }, (_, i) => 1000 + i);
-
   return {
     id,
-    seek: Math.floor(startTime * 100), // Frame position
-    start: startTime,
-    end: endTime,
     text,
-    tokens,
-    avg_logprob: Math.log(confidence),
     avg_probability: confidence,
-    compression_ratio: text.length / tokens.length,
-    words: null, // Not using word-level timing for these scenarios
-    temperature: null,
     completed,
-    time_offset: 0,
     absolute_start_time: startTime,
     absolute_end_time: endTime,
     duration: endTime - startTime,

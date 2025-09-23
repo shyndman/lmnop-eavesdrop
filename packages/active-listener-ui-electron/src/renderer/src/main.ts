@@ -1,9 +1,13 @@
 import { FrameRenderer } from './frame-renderer';
-import { UIStateManager } from './ui-state-manager';
+import { StateManager } from './state-manager';
 import { MessageHandler } from './message-handler';
+import { AnimationManager } from './animation-manager';
+import { DomManager } from './dom';
 
 // Initialize all renderer components
 new FrameRenderer();
-const uiStateManager = new UIStateManager();
+const domManager = new DomManager(new AnimationManager());
+const uiStateManager = new StateManager(domManager);
 const messageHandler = new MessageHandler(uiStateManager);
 messageHandler.setupIPC();
+await messageHandler.beginProcessingMessages();

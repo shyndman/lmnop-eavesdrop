@@ -1,17 +1,26 @@
 * {
   all: unset;
+  box-sizing: border-box;
 }
+
 div {
-  display: revert; /* = block */
+  display: revert;
+  /* = block */
 }
+
 p {
-  display: revert; /* = block */
+  display: revert;
+  /* = block */
 }
+
 span {
-  display: revert; /* = inline */
+  display: revert;
+  /* = inline */
 }
+
 table {
-  display: revert; /* = table */
+  display: revert;
+  /* = table */
 }
 
 html,
@@ -24,8 +33,7 @@ body {
 }
 
 body {
-  font: 400 14.8px Ubuntu;
-  color: rgba(255, 255, 255, 0.72);
+  font: 400 16.4px Ubuntu;
   opacity: 0;
   transition: opacity 0.14s ease-out;
 }
@@ -57,12 +65,34 @@ body.active.mouse-is-over.dev-mode {
 }
 
 #overlay-layer {
-  display: none;
   z-index: 3;
+  transition:
+    opacity 160ms ease 100ms,
+    display 100ms allow-discrete;
+  display: none;
+  opacity: 0;
 }
 
 .command-executing #overlay-layer {
   display: block;
+  opacity: 1;
+}
+
+@starting-style {
+  .command-executing #overlay-layer {
+    display: block;
+    opacity: 0;
+  }
+}
+
+#transcription-overlay {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font: 400 18px Ubuntu;
+  color: rgba(255, 255, 255, 0.92);
+  background-color: rgba(0, 0, 25, 0.7);
+  border-radius: 8px;
 }
 
 #result-layer {
@@ -73,24 +103,72 @@ body.active.mouse-is-over.dev-mode {
   z-index: 1;
 }
 
-#asr-state {
-  padding: 6px;
+#asr-state,
+#overlay-layer {
+  padding: 8px;
+}
+
+#transcription,
+#command {
+  color: rgba(255, 255, 255, 0.5);
 }
 
 #transcription {
-  padding: 4px 12px 8px;
-  line-height: 1.7;
-  background: rgba(10, 10, 25, 0.1);
+  padding: 4px 12px 4px;
+  line-height: 1.8;
+  background: rgba(10, 10, 25, 0.2);
   border-radius: 8px;
+  transition: color 160ms;
 }
 
 #command {
-  margin-top: 8px;
-  padding: 8px;
-  border: 2px solid rgba(120, 30, 30, 0.6);
-  background: rgba(#241f2f, 0.8);
+  font: 200 0.9em / 1.6 'Ubuntu';
+  margin-top: 14px;
+  padding: 8px 12px 7px;
   border-radius: 8px;
+
+  transition:
+    opacity 160ms ease 100ms,
+    display 100ms,
+    color 160ms,
+    border-color 160ms;
+  transition-behavior: allow-discrete;
   display: none;
+  opacity: 0;
+}
+
+.command-visible #command {
+  display: block;
+  opacity: 1;
+}
+
+@starting-style {
+  .command-visible #command {
+    display: block;
+    opacity: 0;
+  }
+}
+
+// Flashing cursor, mimicking Sublime Text's phase, which I always liked
+.transcribe-active #transcription>p:empty::before,
+.command-active #command>p:empty::before {
+  content: ' ';
+  display: inline-block;
+  vertical-align: bottom;
+  width: 1px;
+  height: 1.4em;
+  background: white;
+  animation: sine-fade 1.3s cubic-bezier(0.445, 0.05, 0.55, 0.95) infinite;
+}
+
+@keyframes sine-fade {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+#transcription>p:empty::after,
+#command>p:empty::after {
+  content: '\00a0';
 }
 
 .transcribe-active #transcription,
@@ -99,7 +177,7 @@ body.active.mouse-is-over.dev-mode {
 }
 
 .command-active #command {
-  display: block;
+  border-color: rgba(160, 30, 30, 0.8);
 }
 
 #transcription p,
@@ -108,8 +186,12 @@ body.active.mouse-is-over.dev-mode {
   transition: color 0.3s ease;
 }
 
-#transcription p + p {
+#transcription p+p {
   margin-top: 8px;
+}
+
+.segment + .segment::before {
+  content:' ';
 }
 
 #frame-layer canvas {

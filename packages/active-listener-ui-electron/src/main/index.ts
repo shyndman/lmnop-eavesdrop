@@ -2,9 +2,8 @@ import { app, shell, BrowserWindow, ipcMain, Display } from 'electron';
 import { screen } from 'electron';
 import { join } from 'path';
 import { electronApp, optimizer, is } from '@electron-toolkit/utils';
-import icon from '../../resources/icon.png?asset';
 
-const WINDOW_WIDTH = 360;
+const WINDOW_WIDTH = 390;
 const WINDOW_H_INSET = 20;
 
 function createWindow(screen: Display): BrowserWindow {
@@ -14,17 +13,20 @@ function createWindow(screen: Display): BrowserWindow {
   const mainWindow = new BrowserWindow({
     width: WINDOW_WIDTH,
     height: height - 200,
-    show: false,
     autoHideMenuBar: true,
-    transparent: true,
-    frame: false,
     center: false,
-    ...(process.platform === 'linux' ? { icon } : {}),
+    focusable: false,
+    frame: false,
+    movable: false,
+    resizable: false,
+    show: false,
+    skipTaskbar: true,
+    titleBarStyle: 'hidden',
+    transparent: true,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
     },
-    titleBarStyle: 'hidden',
   });
 
   if (!is.dev) {
@@ -125,22 +127,24 @@ app.whenReady().then(() => {
   }
 
   // Create a window that fills the screen's available work area.
-  const primaryDisplay = screen.getPrimaryDisplay();
-  console.log('Primary display:', primaryDisplay.bounds);
-  console.log(
-    'All displays:',
-    screen.getAllDisplays().map((d) => ({ id: d.id, bounds: d.bounds })),
-  );
+  const mainWindow: BrowserWindow = repositionDisplay();
+  screen.addListener('display-metrics-changed', () => {
+    repositionDisplay(mainWindow);
+  });
 
-  const mainWindow = createWindow(primaryDisplay);
+  function repositionDisplay(window: BrowserWindow | null = null): BrowserWindow {
+    const primaryDisplay = screen.getPrimaryDisplay();
+    const mainWindow = window || createWindow(primaryDisplay);
 
-  // Force the window to appear on the primary display
-  const { x: displayX, y: displayY } = primaryDisplay.bounds;
-  const { width } = primaryDisplay.workAreaSize;
-  const x = displayX + width - WINDOW_WIDTH - WINDOW_H_INSET;
-  const y = displayY + 100;
+    // Force the window to appear on the primary display
+    const { x: displayX, y: displayY } = primaryDisplay.bounds;
+    const { width } = primaryDisplay.workAreaSize;
+    const x = displayX + width - WINDOW_WIDTH - WINDOW_H_INSET;
+    const y = displayY + 100;
+    mainWindow.setPosition(x, y);
 
-  mainWindow.setPosition(x, y);
+    return mainWindow;
+  }
 });
 
 // Quit when all windows are closed, except on macOS. There, it's common

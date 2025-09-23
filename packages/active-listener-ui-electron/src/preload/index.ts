@@ -8,14 +8,22 @@ import { Segment } from '../transcription';
 const api = {
   isDev: process.env.NODE_ENV === 'development',
   logger: {
-    debug: (message: string, ...args: unknown[]) =>
-      ipcRenderer.send('logger', 'debug', message, ...args),
-    info: (message: string, ...args: unknown[]) =>
-      ipcRenderer.send('logger', 'info', message, ...args),
-    warn: (message: string, ...args: unknown[]) =>
-      ipcRenderer.send('logger', 'warn', message, ...args),
-    error: (message: string, ...args: unknown[]) =>
-      ipcRenderer.send('logger', 'error', message, ...args),
+    debug: (message: string, ...args: unknown[]) => {
+      console.debug(message, ...args);
+      ipcRenderer.send('logger', 'debug', message, ...args);
+    },
+    info: (message: string, ...args: unknown[]) => {
+      console.info(message, ...args);
+      ipcRenderer.send('logger', 'info', message, ...args);
+    },
+    warn: (message: string, ...args: unknown[]) => {
+      console.warn(message, ...args);
+      ipcRenderer.send('logger', 'warn', message, ...args);
+    },
+    error: (message: string, ...args: unknown[]) => {
+      console.error(message, ...args);
+      ipcRenderer.send('logger', 'error', message, ...args);
+    },
   },
 };
 

@@ -1,14 +1,13 @@
 import { Mode } from '../../messages';
 import { Segment } from '../../transcription';
-import { AnimationManager } from './animation-manager';
+import { DomManager } from './dom';
 import { WaitingMessageManager } from './waiting-message-manager';
 
 // Timing constants from spec
-const TRANSITION_DURATION_MS = 240;
-const COMMIT_FEEDBACK_DURATION_MS = 1000;
-const SEGMENT_STAGGER_DELAY_MS = 50;
+export const TRANSITION_DURATION_MS = 240;
+export const COMMIT_FEEDBACK_DURATION_MS = 1000;
 
-export class UIStateManager {
+export class StateManager {
   // asrState's bounding box most closely resembles the shape of the window the user sees on screen
   private asrState: HTMLElement;
 
@@ -17,18 +16,15 @@ export class UIStateManager {
   private isCommandEmpty: boolean = true;
 
   // Mode state tracking - null when in default state (no content)
-  private currentMode: Mode | null = null;
+  private currentMode: Mode = Mode.TRANSCRIBE;
 
   // Command execution state
   private waitingMessageManager: WaitingMessageManager;
 
-  // Animation management
-  private animationManager: AnimationManager;
-
   // Tracks which modes are currently having their content set
   private contentSettingInProgress = new Set<Mode>();
 
-  constructor() {
+  constructor(private dom: DomManager) {
     const asrState = document.getElementById('asr-state');
     if (!asrState) {
       throw new Error('asr-state element not found');
@@ -43,12 +39,9 @@ export class UIStateManager {
     }
     this.waitingMessageManager = new WaitingMessageManager(waitingMessageContainer);
 
-    // Initialize animation manager
-    this.animationManager = new AnimationManager();
-
     // Add dev mode indicator to body
     if (window.api.isDev) {
-      document.body.classList.add('dev-mode');
+      // document.body.classList.add('dev-mode');
     }
 
     this.setupMouseHover();
@@ -60,7 +53,7 @@ export class UIStateManager {
    * FATAL ERROR if called concurrently for the same mode. This method assumes
    * serialized calls from the message handler.
    */
-  async setStrings(mode: Mode, content: string): Promise<void> {
+  async setString(mode: Mode, content: string): Promise<void> {
     // Exit command execution state if currently active
     this.stopCommandExecution();
 
@@ -72,7 +65,6 @@ export class UIStateManager {
 
     this.contentSettingInProgress.add(mode);
     try {
-      const container = this.getElementForMode(mode);
       const hasNewContent = content.trim() !== '';
       const wasActive = this.isActive();
       const hasExistingContent = this.hasExistingContent(mode);
@@ -81,17 +73,14 @@ export class UIStateManager {
       if (hasExistingContent) {
         if (!hasNewContent) {
           // Clearing content - fade out if there was content
-          await this.animationManager.fadeOutModeContent(mode, container);
-          container.innerHTML = '<p>&nbsp;</p>';
+          await this.dom.clearModeContent(mode);
         } else {
           // Replacing existing content - smooth transition
-          const processedContent = this.ensureParagraphTags(content);
-          await this.animationManager.replaceModeContent(mode, container, processedContent);
+          await this.dom.replaceModeContent(mode, content);
         }
       } else {
         // Adding content to empty mode - direct fade in
-        const processedContent = this.ensureParagraphTags(content);
-        await this.animationManager.fadeInModeContent(mode, container, processedContent);
+        await this.dom.addModeContent(mode, content);
       }
 
       // Update content state tracking
@@ -107,11 +96,11 @@ export class UIStateManager {
         this.currentMode = mode;
       } else if (!this.isActive()) {
         // If no content anywhere, clear mode state
-        this.currentMode = null;
+        this.currentMode = Mode.TRANSCRIBE;
       }
 
       // Handle visibility transitions
-      this.commitBodyClasses();
+      this.applyStateToDom();
     } finally {
       this.contentSettingInProgress.delete(mode);
     }
@@ -143,19 +132,13 @@ export class UIStateManager {
    * Evaluates the the receiver's state, and adds or removes the corresponding CSS classes to the
    * body element.
    */
-  private commitBodyClasses(): void {
-    const isCommandExecuting = this.waitingMessageManager.isRunning();
-    document.body.classList.toggle('command-executing', isCommandExecuting);
-    document.body.classList.toggle(
-      'transcribe-active',
-      !isCommandExecuting && this.currentMode === Mode.TRANSCRIBE,
-    );
-    document.body.classList.toggle(
-      'command-active',
-      !isCommandExecuting && this.currentMode === Mode.COMMAND,
-    );
-    document.body.classList.toggle('active', this.isActive());
-    document.body.classList.toggle('command-visible', this.isCommandElementVisible());
+  private applyStateToDom(): void {
+    this.dom.commitBodyClasses({
+      isCommandExecuting: this.waitingMessageManager.isRunning(),
+      currentMode: this.currentMode,
+      isActive: this.isActive(),
+      commandElementVisible: this.isCommandElementVisible(),
+    });
   }
 
   /**
@@ -163,98 +146,6 @@ export class UIStateManager {
    */
   private isCommandElementVisible(): boolean {
     return this.currentMode === Mode.COMMAND || !this.isCommandEmpty;
-  }
-
-  /**
-   * Ensure content is wrapped in paragraph tags
-   */
-  private ensureParagraphTags(content: string): string {
-    const trimmed = content.trim();
-
-    if (trimmed === '') {
-      return '<p>&nbsp;</p>';
-    }
-
-    // If content already has paragraph tags, return as-is
-    if (trimmed.startsWith('<p>') && trimmed.endsWith('</p>')) {
-      return trimmed;
-    }
-
-    // Wrap content in paragraph tags
-    return `<p>${trimmed}</p>`;
-  }
-
-  /**
-   * Get the DOM element for a specific mode
-   */
-  private getElementForMode(mode: Mode): HTMLElement {
-    let elementId: string;
-    switch (mode) {
-      case Mode.TRANSCRIBE:
-        elementId = 'transcription';
-        break;
-      case Mode.COMMAND:
-        elementId = 'command';
-        break;
-      default:
-        const _exhaustive: never = mode;
-        throw new Error(`Unknown mode: ${_exhaustive}`);
-    }
-
-    const element = document.getElementById(elementId);
-    if (!element) {
-      throw new Error(`${elementId} element not found`);
-    }
-    return element;
-  }
-
-  /**
-   * Calculate CSS probability class for a segment
-   */
-  private getSegmentProbabilityClass(segment: Segment): string {
-    const rounded = Math.round((segment.avg_probability * 100) / 5) * 5;
-    return `segment-prob-${rounded}`;
-  }
-
-  /**
-   * Remove the existing in-progress segment with animation (single segment invariant)
-   */
-  private async removeInProgressSegment(container: HTMLElement): Promise<void> {
-    const inProgressSpan = container.querySelector('.in-progress-segment') as HTMLElement;
-    if (inProgressSpan) {
-      await this.animationManager.fadeOut([inProgressSpan]);
-      inProgressSpan.remove();
-    }
-  }
-
-  /**
-   * Create a paragraph containing segment spans
-   */
-  private createSegmentParagraph(
-    completedSegments: readonly Segment[],
-    inProgressSegment: Segment,
-  ): HTMLParagraphElement {
-    const paragraph = document.createElement('p');
-
-    // Create spans for completed segments
-    completedSegments.forEach((segment) => {
-      const span = document.createElement('span');
-      span.id = `segment-${segment.id}`;
-      span.className = this.getSegmentProbabilityClass(segment);
-      span.textContent = segment.text;
-      paragraph.appendChild(span);
-    });
-
-    // Create span for in-progress segment if it has text
-    if (inProgressSegment.text.trim() !== '') {
-      const span = document.createElement('span');
-      span.id = `segment-${inProgressSegment.id}`;
-      span.className = `in-progress-segment ${this.getSegmentProbabilityClass(inProgressSegment)}`;
-      span.textContent = inProgressSegment.text;
-      paragraph.appendChild(span);
-    }
-
-    return paragraph;
   }
 
   /**
@@ -276,24 +167,11 @@ export class UIStateManager {
 
     this.contentSettingInProgress.add(mode);
     try {
-      const container = this.getElementForMode(mode);
       const wasActive = this.isActive();
-
-      // Remove existing in-progress segment with animation
-      await this.removeInProgressSegment(container);
-
-      // Create new paragraph with all segments
-      const paragraph = this.createSegmentParagraph(completedSegments, inProgressSegment);
-      const allSpans = Array.from(paragraph.querySelectorAll('span')) as HTMLSpanElement[];
-
-      // Determine if we have meaningful content
       const hasNewContent = completedSegments.length > 0 || inProgressSegment.text.trim() !== '';
 
-      if (hasNewContent) {
-        // Add new paragraph alongside existing content
-        container.appendChild(paragraph);
-        await this.animationManager.fadeIn(allSpans, SEGMENT_STAGGER_DELAY_MS);
-      }
+      // Remove existing in-progress segment with animation
+      await this.dom.updateModeDomSegments(this.currentMode!, completedSegments, inProgressSegment);
 
       // Update content state tracking
       if (mode === Mode.TRANSCRIBE) {
@@ -308,11 +186,11 @@ export class UIStateManager {
         this.currentMode = mode;
       } else if (!this.isActive()) {
         // If no content anywhere, clear mode state
-        this.currentMode = null;
+        this.currentMode = Mode.TRANSCRIBE;
       }
 
       // Handle visibility transitions
-      this.commitBodyClasses();
+      this.applyStateToDom();
     } finally {
       this.contentSettingInProgress.delete(mode);
     }
@@ -323,7 +201,7 @@ export class UIStateManager {
    */
   changeMode(mode: Mode): void {
     this.currentMode = mode;
-    this.commitBodyClasses();
+    this.applyStateToDom();
   }
 
   /**
@@ -331,7 +209,7 @@ export class UIStateManager {
    */
   startCommandExecution(waitingMessages: string[]): void {
     this.waitingMessageManager.start(waitingMessages);
-    this.commitBodyClasses();
+    this.applyStateToDom();
   }
 
   /**
@@ -339,38 +217,29 @@ export class UIStateManager {
    */
   stopCommandExecution(): void {
     this.waitingMessageManager.stop();
-    this.commitBodyClasses();
+    this.dom.clearModeContent(Mode.COMMAND);
+    this.applyStateToDom();
   }
 
   /**
    * Handle commit operation with visual feedback and session reset
    */
   async commitOperation(_cancelled: boolean): Promise<void> {
-    // Phase 1: Show commit feedback for 1 second
-    document.body.classList.add('commit-active');
-    await new Promise((resolve) => setTimeout(resolve, COMMIT_FEEDBACK_DURATION_MS));
+    await this.dom.whileCommitActive(async () => {
+      // Phase 1: Show commit feedback for 1 second
+      await new Promise((resolve) => setTimeout(resolve, COMMIT_FEEDBACK_DURATION_MS));
 
-    // Phase 2: Clear content from both modes
-    const transcriptionElement = this.getElementForMode(Mode.TRANSCRIBE);
-    const commandElement = this.getElementForMode(Mode.COMMAND);
+      // Phase 2: Update content state tracking
+      this.isTranscriptionEmpty = true;
+      this.isCommandEmpty = true;
 
-    // Update content state tracking
-    this.isTranscriptionEmpty = true;
-    this.isCommandEmpty = true;
-
-    // Phase 3: Remove commit feedback class and trigger fade-out
-    document.body.classList.remove('commit-active');
+      // Phase 3: Remove commit feedback class and trigger fade-out
+      await this.dom.clearAllContent();
+    });
 
     // Since both modes are now empty, this will trigger fade-out
-    this.commitBodyClasses();
-
-    // Phase 4: After fade-out completes, reset to transcribe mode
-    setTimeout(() => {
-      transcriptionElement.innerHTML = '<p>&nbsp;</p>';
-      commandElement.innerHTML = '<p>&nbsp;</p>';
-      this.currentMode = Mode.TRANSCRIBE;
-      this.commitBodyClasses();
-    }, TRANSITION_DURATION_MS);
+    this.currentMode = Mode.TRANSCRIBE;
+    this.applyStateToDom();
   }
 
   private setupMouseHover(): void {

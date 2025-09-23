@@ -25,7 +25,3 @@ repos:
         name: eslint
         entry: bash -c "cd packages/active-listener-ui-electron && pnpm run lint"
         language: node
-      - id: prettier
-        name: prettier
-        entry: bash -c "cd packages/active-listener-ui-electron && pnpm run format"
-        language: node

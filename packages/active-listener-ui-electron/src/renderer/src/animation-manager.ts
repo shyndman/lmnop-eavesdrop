@@ -5,7 +5,7 @@ import { Mode } from '../../messages';
 const FADE_OUT_EASING = Easing.easeOut;
 const FADE_IN_EASING = Easing.easeIn;
 const FADE_IN_DURATION = 200;
-const FADE_OUT_DURATION = 150;
+const FADE_OUT_DURATION = 120;
 
 /**
  * Manages element animations with support for opacity transitions and staggered timing.
