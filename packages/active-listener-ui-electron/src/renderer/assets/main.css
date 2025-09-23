@@ -108,7 +108,7 @@ body.active.mouse-is-over.dev-mode {
   transition: color 0.3s ease;
 }
 
-#transcription p+p {
+#transcription p + p {
   margin-top: 8px;
 }
 

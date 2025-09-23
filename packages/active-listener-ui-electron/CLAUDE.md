@@ -37,6 +37,7 @@ The Python client spawns Electron and communicates via stdin using JSON messages
 - `commit_operation`: End session and reset to TRANSCRIBE mode
 
 **Message Processing Flow:**
+
 1. Python writes JSON messages to Electron's stdin
 2. Main process parses JSON and forwards via `python-data` IPC channel
 3. Renderer receives messages and updates appropriate DOM elements
@@ -45,15 +46,18 @@ The Python client spawns Electron and communicates via stdin using JSON messages
 ### Real-time Transcription System
 
 **Two-Mode Operation:**
+
 - **TRANSCRIBE mode**: Updates `#transcription` element (primary speech-to-text)
 - **COMMAND mode**: Updates `#commands` element (voice command recognition)
 
 **Segment Handling:**
+
 - `completed_segments`: Finalized transcription text that won't change
 - `in_progress_segment`: Current partial text that updates in real-time
 - Processing removes previous in-progress elements before appending new content
 
 **TypeScript Data Models:**
+
 - `Segment` interface (`src/transcription.ts`): Complete transcription metadata including timestamps, confidence, tokens
 - `Word` interface: Word-level timing for detailed analysis
 - `Message` union type: Type-safe discriminated union for all communication
@@ -61,32 +65,34 @@ The Python client spawns Electron and communicates via stdin using JSON messages
 ### Visual System
 
 **Canvas Animation** (`src/renderer/src/animation.ts`, `src/renderer/src/renderer.ts`):
+
 - Animated background rounded rectangle that smoothly follows content height changes
 - `AnimatedValue` class with configurable easing functions (easeOut, easeIn, easeInOut, linear)
 - 60fps render loop with `requestAnimationFrame`
 - High-DPI display support with device pixel ratio scaling
 
 **Window Positioning:**
+
 - Always-on-top overlay positioned on right edge of primary display
 - Transparent, frameless window (360px wide, screen height - 200px)
 - Mouse events ignored in production for non-intrusive overlay behavior
 - Development mode allows mouse interaction for debugging
 
 **DOM Structure:**
+
 ```html
-#result-layer (content)
-  #asr-state (container)
-    #transcription.has-focus (speech-to-text content)
-    #commands (voice command content)
-#frame-layer (animated background canvas)
+#result-layer (content) #asr-state (container) #transcription.has-focus (speech-to-text content)
+#commands (voice command content) #frame-layer (animated background canvas)
 ```
 
 ## Development Workflow
 
 ### Package Manager & Build System
+
 Uses **pnpm** for package management and **electron-vite** for build tooling.
 
 ### Key Commands
+
 ```bash
 # Development
 pnpm dev                    # Start development server with hot reload
@@ -107,12 +113,15 @@ pnpm build:linux            # Build Linux package
 ```
 
 ### TypeScript Configuration
+
 Dual TypeScript configs for different execution environments:
+
 - `tsconfig.node.json`: Main process + preload (Node.js environment)
 - `tsconfig.web.json`: Renderer process (browser environment)
 - Both extend `@electron-toolkit` base configs for best practices
 
 ### Development Tools
+
 - **ESLint**: `@electron-toolkit/eslint-config-ts` + Prettier integration
 - **VSCode**: Preconfigured launch targets for debugging main + renderer processes
 - **Hot Reload**: Electron-vite provides instant refresh during development
@@ -123,6 +132,7 @@ Dual TypeScript configs for different execution environments:
 ## Key Files Reference
 
 ### Core Application Logic
+
 - `src/messages.ts` - Message type definitions and communication protocol
 - `src/transcription.ts` - Transcription data models (Segment, Word interfaces)
 - `src/main/index.ts` - Main process window management + stdin handling
@@ -130,12 +140,14 @@ Dual TypeScript configs for different execution environments:
 - `src/mock-scenarios.ts` - Generator functions for realistic testing scenarios with proper Whisper-style timing and segment completion behavior
 
 ### UI & Rendering
+
 - `src/renderer/index.html` - Main UI structure
 - `src/renderer/assets/main.css` - Styling for overlay appearance
 - `src/renderer/src/renderer.ts` - Canvas rendering + animation orchestration
 - `src/renderer/src/animation.ts` - Animation value system with easing
 
 ### Configuration
+
 - `package.json` - Dependencies + build scripts
 - `electron.vite.config.ts` - Build configuration
 - `eslint.config.mjs` - Code quality rules
@@ -143,6 +155,7 @@ Dual TypeScript configs for different execution environments:
 ## Current Implementation Status
 
 ### ✅ Implemented
+
 - Window creation and positioning system
 - Stdin JSON message parsing and IPC forwarding
 - Type-safe message definitions for Python communication
@@ -151,6 +164,7 @@ Dual TypeScript configs for different execution environments:
 - Development tooling and build pipeline
 
 ### ⚠️ Missing Implementation
+
 - **Message Handler in Renderer**: No IPC listener for `python-data` messages in renderer process
 - **DOM Update Logic**: No implementation of segment appending/replacement based on message types
 - **Mode Switching**: Visual transitions between TRANSCRIBE/COMMAND modes not implemented
@@ -158,6 +172,7 @@ Dual TypeScript configs for different execution environments:
 - **Error Handling**: No error boundaries or communication failure handling
 
 ### Development Notes
+
 - The app currently shows static placeholder content for both transcription and command elements
 - Python client integration depends on implementing the missing renderer message handlers
 - Canvas animation works independently and smoothly follows content height changes
@@ -166,6 +181,7 @@ Dual TypeScript configs for different execution environments:
 ## Testing Strategy
 
 ### Development Testing
+
 - Use `window._mock.ping()` to verify preload IPC bridge functionality
 - **Scenario Testing**: Run complete workflows with `await window._mock.runHappyPath()` (normal usage) or `await window._mock.runPerfectionistSpiral()` (stress testing with rapid edits and undo operations)
 - **Individual Testing**: Use specific mock functions like `_mock.setString()`, `_mock.appendSegments()` for targeted feature testing
@@ -173,6 +189,7 @@ Dual TypeScript configs for different execution environments:
 - Test window positioning across multiple displays
 
 ### Integration Testing
+
 - Validate JSON message parsing with malformed input
 - Test real-time performance with high-frequency segment updates
 - Verify mode switching doesn't break animation states
@@ -181,13 +198,17 @@ Dual TypeScript configs for different execution environments:
 ## Architectural Decisions
 
 ### Why Canvas Animation vs CSS Transitions?
+
 Canvas provides frame-perfect control over the background animation and integrates smoothly with the transparent overlay requirements. CSS transitions could interfere with the precise positioning needed for the overlay.
 
 ### Why stdin Communication vs HTTP/WebSocket?
+
 stdin/stdout provides the simplest integration pattern for a Python client spawning Electron. No port management, authentication, or network error handling required.
 
 ### Why Dual TypeScript Configs?
+
 Main and renderer processes operate in fundamentally different environments (Node.js vs Chromium). Separate configs ensure proper type checking for each context's available APIs.
 
 ### Why Two-Mode DOM Structure?
+
 Separate elements allow independent styling and transitions between transcription and command modes without complex state management in a single container.

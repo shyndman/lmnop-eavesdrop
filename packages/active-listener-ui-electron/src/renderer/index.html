@@ -1,32 +1,30 @@
 <!doctype html>
 <html>
+  <head>
+    <meta charset="UTF-8" />
+    <title></title>
+    <!-- https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+    />
+    <link href="./assets/main.css" type="text/css" rel="stylesheet" />
+  </head>
 
-<head>
-  <meta charset="UTF-8" />
-  <title></title>
-  <!-- https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP -->
-  <meta http-equiv="Content-Security-Policy"
-    content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:" />
-  <link href="./assets/main.css" type="text/css" rel="stylesheet" />
-</head>
-
-<body>
-  <div id="overlay-layer">
-    <ul id="command-waiting-messages"></ul>
-  </div>
-  <div id="result-layer">
-    <div id="asr-state" >
-      <div id="transcription">
-      </div>
-      <div id="command">
+  <body>
+    <div id="overlay-layer">
+      <ul id="command-waiting-messages"></ul>
+    </div>
+    <div id="result-layer">
+      <div id="asr-state">
+        <div id="transcription"></div>
+        <div id="command"></div>
       </div>
     </div>
-  </div>
-  <div id="frame-layer">
-    <canvas></canvas>
-  </div>
+    <div id="frame-layer">
+      <canvas></canvas>
+    </div>
 
-  <script type="module" src="./src/main.ts"></script>
-</body>
-
+    <script type="module" src="./src/main.ts"></script>
+  </body>
 </html>

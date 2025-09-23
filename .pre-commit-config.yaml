@@ -1,6 +1,6 @@
 repos:
   - repo: https://github.com/shyndman/unroot-llm-files-pre-commit
-    rev: v0.0.8 
+    rev: v0.0.8
     hooks:
       - id: setup-managed-symlinks
       - id: check-managed-symlinks
@@ -19,3 +19,13 @@ repos:
     rev: 0.8.4
     hooks:
       - id: uv-lock
+  - repo: local
+    hooks:
+      - id: eslint
+        name: eslint
+        entry: bash -c "cd packages/active-listener-ui-electron && pnpm run lint"
+        language: node
+      - id: prettier
+        name: prettier
+        entry: bash -c "cd packages/active-listener-ui-electron && pnpm run format"
+        language: node
