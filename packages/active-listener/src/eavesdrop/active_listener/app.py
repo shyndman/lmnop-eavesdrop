@@ -1,97 +1,127 @@
-"""Core application logic for eavesdrop active listener.
+"""Core application controller for eavesdrop active listener.
 
-Handles the main transcription processing loop, coordinating between
-client, text state management, and desktop typing operations.
+Manages the application lifecycle, component coordination, and UI integration
+for the voice-driven text workspace system.
 """
 
 import asyncio
-
-from pydantic import TypeAdapter
+from pathlib import Path
 
 from eavesdrop.active_listener.client import EavesdropClientWrapper
-from eavesdrop.active_listener.text_manager import TextState, TextUpdate, TypingOperation
 from eavesdrop.active_listener.typist import YdoToolTypist
-from eavesdrop.common import Pretty, get_logger
-from eavesdrop.wire import Segment, TranscriptionMessage
+from eavesdrop.active_listener.ui_channel import UIChannel
+from eavesdrop.active_listener.workspace import TextTranscriptionWorkspace
+from eavesdrop.common import get_logger
+from eavesdrop.wire import TranscriptionMessage
 
 
 class App:
-  """Core application that manages the transcription processing loop."""
+  """Application controller for voice-driven text workspace.
 
-  def __init__(self, client: EavesdropClientWrapper, typist: YdoToolTypist):
+  Manages the complete application lifecycle including component creation,
+  UI subprocess management, signal handling, and transcription processing.
+
+  :param client: Eavesdrop server client wrapper
+  :type client: EavesdropClientWrapper
+  :param ui_channel: UI subprocess communication channel
+  :type ui_channel: UIChannel
+  :param workspace: Text transcription workspace manager
+  :type workspace: TextTranscriptionWorkspace
+  :param typist: Desktop typing automation component
+  :type typist: YdoToolTypist
+  """
+
+  def __init__(
+    self,
+    client: EavesdropClientWrapper,
+    ui_channel: UIChannel,
+    workspace: TextTranscriptionWorkspace,
+    typist: YdoToolTypist,
+  ) -> None:
+    """Initialize application with pre-configured components.
+
+    :param client: Connected eavesdrop client for server communication
+    :type client: EavesdropClientWrapper
+    :param ui_channel: Active UI communication channel
+    :type ui_channel: UIChannel
+    :param workspace: Configured text workspace manager
+    :type workspace: TextTranscriptionWorkspace
+    :param typist: Desktop typing automation component
+    :type typist: YdoToolTypist
+    """
     self._client = client
+    self._ui_channel = ui_channel
+    self._workspace = workspace
     self._typist = typist
-    self._text_state = TextState()
     self._shutdown_event = asyncio.Event()
     self.logger = get_logger("app")
 
-  async def start(self) -> None:
-    """Start the main transcription processing loop."""
-    self.logger.info("Starting transcription loop")
+  @classmethod
+  def create(
+    cls, server_host: str, server_port: int, audio_device: str, ui_bin_path: Path
+  ) -> "App":
+    """Create and configure complete application with all components.
 
-    try:
-      # Start audio streaming
-      await self._client.start_streaming()
+    Factory method that creates all necessary components and wires them together
+    for a fully functional application instance.
 
-      # Main message processing loop
-      try:
-        async for message in self._client:
-          if self._shutdown_event.is_set():
-            break
+    :param server_host: Eavesdrop server hostname
+    :type server_host: str
+    :param server_port: Eavesdrop server port number
+    :type server_port: int
+    :param audio_device: Audio input device name or identifier
+    :type audio_device: str
+    :param ui_bin_path: Path to UI executable binary
+    :type ui_bin_path: Path
+    :return: Fully configured application instance
+    :rtype: App
+    :raises RuntimeError: If component creation or wiring fails
+    """
+    pass
 
-          await self._handle_transcription_message(message)
+  async def run(self) -> None:
+    """Main application entry point with complete lifecycle management.
 
-      except Exception:
-        self.logger.exception("Error in transcription loop")
-        raise
-    finally:
-      # Ensure proper cleanup on exit
-      await self._cleanup()
+    Initializes all components, sets up signal handlers, starts the UI subprocess,
+    and runs the main transcription processing loop until shutdown.
+
+    :raises RuntimeError: If any critical component fails during startup or operation
+    """
+    pass
 
   def shutdown(self) -> None:
-    """Signal the application to shutdown gracefully."""
-    self.logger.info("Shutdown requested")
-    self._shutdown_event.set()
+    """Signal the application to shutdown gracefully.
+
+    Sets shutdown event to stop the main processing loop and initiate cleanup.
+    """
+    pass
+
+  async def _setup_signal_handlers(self) -> None:
+    """Setup signal handlers for graceful shutdown.
+
+    Configures SIGINT and SIGTERM handlers to trigger application shutdown
+    when the process receives termination signals.
+    """
+    pass
 
   async def _cleanup(self) -> None:
-    """Perform cleanup operations."""
-    self.logger.info("Performing cleanup")
-    try:
-      await self._client.shutdown()
-      self.logger.info("Client shutdown complete")
-    except Exception:
-      self.logger.exception("Error during cleanup")
+    """Perform comprehensive cleanup of all components.
+
+    Shuts down UI subprocess, client connection, and other resources in
+    proper order to ensure clean application termination.
+
+    :raises RuntimeError: If cleanup operations fail
+    """
+    pass
 
   async def _handle_transcription_message(self, message: TranscriptionMessage) -> None:
-    """Handle incoming transcription messages from the server."""
-    try:
-      adapter = TypeAdapter(list[Segment])
-      self.logger.info(
-        "Received transcription message",
-        segments=Pretty(adapter.dump_python(message.segments, exclude={-1: {"tokens", "words"}})),
-      )
-      # Process segments in the message
-      for segment in message.segments:
-        # self.logger.debug("Processing segment", segment=Pretty(segment))
-        if update := self._text_state.process_segment(segment):
-          # self.logger.debug("Text update generated", update=update)
-          await self._execute_text_update(update)
+    """Handle incoming transcription messages from the server.
 
-    except Exception:
-      self.logger.exception("Error handling transcription message")
-      raise
+    Delegates message processing to the text workspace and logs activity
+    for debugging and monitoring purposes.
 
-  async def _execute_text_update(self, text_update: TextUpdate) -> None:
-    """Execute a text update by creating and running a typing operation."""
-    operation = TypingOperation(
-      operation_id=f"op-{asyncio.get_event_loop().time()}",
-      chars_to_delete=text_update.chars_to_delete,
-      text_to_type=text_update.text_to_type,
-      timestamp=asyncio.get_event_loop().time(),
-      completed=False,
-    )
-
-    # Execute with retry
-    success = self._typist.execute_with_retry(operation)
-    if not success:
-      self.logger.error("Failed to execute typing operation", operation_id=operation.operation_id)
+    :param message: Transcription message from eavesdrop server
+    :type message: TranscriptionMessage
+    :raises RuntimeError: If message processing fails
+    """
+    pass

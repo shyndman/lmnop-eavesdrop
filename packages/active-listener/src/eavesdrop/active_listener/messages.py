@@ -18,7 +18,7 @@ class Mode(StrEnum):
   """Application modes that determine which DOM element receives transcription updates.
 
   - TRANSCRIBE: Normal speech-to-text mode, updates #transcription element
-  - COMMAND: Voice command recognition mode, updates #command element
+  - COMMAND: Voice command dictation mode, updates #command element
   """
 
   TRANSCRIBE = "TRANSCRIBE"
@@ -74,7 +74,7 @@ class ChangeModeMessage:
   """Switches between transcription buffer and command input modes.
 
   TRANSCRIBE mode: Speech is transcribed into a text buffer for eventual typing.
-  COMMAND mode: Speech is transcribed as commands to edit the transcription buffer.
+  COMMAND mode: Speech is transcribed as commands to describing edits to the transcription buffer.
 
   This message instructs the UI to switch between these semantic modes, affecting
   where subsequent transcription updates are displayed and how they're interpreted.

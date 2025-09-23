@@ -1,8 +1,6 @@
 """Main entry point for eavesdrop active listener application."""
 
-import asyncio
 import os
-import signal
 import sys
 from pathlib import Path
 from typing import NamedTuple, TypedDict
@@ -11,8 +9,6 @@ import sounddevice as sd
 from clypi import Command, arg
 
 from eavesdrop.active_listener.app import App
-from eavesdrop.active_listener.client import EavesdropClientWrapper
-from eavesdrop.active_listener.typist import YdoToolTypist
 from eavesdrop.common import get_logger, setup_logging_from_env
 
 
@@ -173,39 +169,16 @@ class ActiveListener(Command):
     super().__init__(**kwargs)
     self.logger = get_logger("cli")
     self._ui_bin_path = self.ui_bin
-    self._client = EavesdropClientWrapper(
-      host=self.server.host, port=self.server.port, audio_device=self.audio_device
-    )
-    self._typist = YdoToolTypist()
-    self._app = App(client=self._client, typist=self._typist)
 
   async def run(self) -> None:
     """Main entry point for the command."""
-    await self._client.initialize()
-    await self._setup_signal_handlers()
-    await self._app.start()
-
-  async def _setup_signal_handlers(self) -> None:
-    """Setup graceful shutdown signal handlers."""
-
-    def signal_handler(signum, _frame):
-      self.logger.info("Received shutdown signal", signal=signum)
-      self._app.shutdown()
-      # Create a task to force client shutdown asynchronously
-      asyncio.create_task(self._force_shutdown())
-
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-
-  async def _force_shutdown(self) -> None:
-    """Force shutdown of client to break blocking operations."""
-    try:
-      # Give the app a moment to shutdown gracefully
-      await asyncio.sleep(0.1)
-      # If still running, force client disconnect to break async iteration
-      await self._client.shutdown()
-    except Exception:
-      self.logger.exception("Error during forced shutdown")
+    app = App.create(
+      server_host=self.server.host,
+      server_port=self.server.port,
+      audio_device=self.audio_device,
+      ui_bin_path=self._ui_bin_path,
+    )
+    await app.run()
 
 
 def main() -> None:
