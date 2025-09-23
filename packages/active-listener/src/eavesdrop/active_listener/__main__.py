@@ -1,8 +1,10 @@
 """Main entry point for eavesdrop active listener application."""
 
 import asyncio
+import os
 import signal
 import sys
+from pathlib import Path
 from typing import NamedTuple, TypedDict
 
 import sounddevice as sd
@@ -33,6 +35,45 @@ class ServerHostPort(NamedTuple):
 
   host: str
   port: int
+
+
+def parse_ui_binary(value: str | list[str]) -> Path:
+  """Parse and validate UI binary path.
+
+  Validates that the path exists, is a file, and has executable permissions.
+  The path points to the active-listener-ui unpacked binary that will be
+  used for the user interface application.
+
+  :param value: Path to the UI binary executable
+  :type value: str
+  :return: Validated absolute path to the executable
+  :rtype: Path
+  :raises ValueError: If path doesn't exist, isn't executable, or is invalid
+  """
+  assert isinstance(value, str), "UI binary path must be a string"
+
+  if not isinstance(value, str):
+    raise ValueError("--ui-bin must be a string")
+
+  if not value.strip():
+    raise ValueError("--ui-bin cannot be empty")
+
+  # Resolve to absolute path
+  ui_path = Path(value).resolve()
+
+  # Check if path exists
+  if not ui_path.exists():
+    raise ValueError(f"--ui-bin does not exist: {ui_path}")
+
+  # Check if it's a file (not a directory)
+  if not ui_path.is_file():
+    raise ValueError(f"--ui-bin is not a file: {ui_path}")
+
+  # Check if it's executable
+  if not os.access(ui_path, os.X_OK):
+    raise ValueError(f"--ui-bin is not executable: {ui_path}")
+
+  return ui_path
 
 
 def parse_server(value: str | list[str]) -> ServerHostPort:
@@ -126,10 +167,12 @@ class ActiveListener(Command):
 
   server: ServerHostPort = arg(default=ServerHostPort("localhost", 9090), parser=parse_server)
   audio_device: str = arg(default="default")
+  ui_bin: Path = arg(parser=parse_ui_binary)
 
   def __init__(self, **kwargs):
     super().__init__(**kwargs)
     self.logger = get_logger("cli")
+    self._ui_bin_path = self.ui_bin
     self._client = EavesdropClientWrapper(
       host=self.server.host, port=self.server.port, audio_device=self.audio_device
     )
