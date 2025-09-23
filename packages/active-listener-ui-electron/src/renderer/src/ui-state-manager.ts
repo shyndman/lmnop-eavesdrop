@@ -1,6 +1,5 @@
 import { Mode } from '../../messages';
 import { Segment } from '../../transcription';
-import { Easing } from './animation';
 import { AnimationManager } from './animation-manager';
 import { WaitingMessageManager } from './waiting-message-manager';
 
@@ -8,10 +7,6 @@ import { WaitingMessageManager } from './waiting-message-manager';
 const TRANSITION_DURATION_MS = 240;
 const COMMIT_FEEDBACK_DURATION_MS = 1000;
 const SEGMENT_STAGGER_DELAY_MS = 50;
-
-// Easing function constants
-const FADE_OUT_EASING = Easing.easeOut;
-const FADE_IN_EASING = Easing.easeIn;
 
 export class UIStateManager {
   // asrState's bounding box most closely resembles the shape of the window the user sees on screen
@@ -49,7 +44,7 @@ export class UIStateManager {
     this.waitingMessageManager = new WaitingMessageManager(waitingMessageContainer);
 
     // Initialize animation manager
-    this.animationManager = new AnimationManager(TRANSITION_DURATION_MS, FADE_OUT_EASING, FADE_IN_EASING);
+    this.animationManager = new AnimationManager();
 
     // Add dev mode indicator to body
     if (window.api.isDev) {
@@ -151,8 +146,14 @@ export class UIStateManager {
   private commitBodyClasses(): void {
     const isCommandExecuting = this.waitingMessageManager.isRunning();
     document.body.classList.toggle('command-executing', isCommandExecuting);
-    document.body.classList.toggle('transcribe-active', !isCommandExecuting && this.currentMode === Mode.TRANSCRIBE);
-    document.body.classList.toggle('command-active', !isCommandExecuting && this.currentMode === Mode.COMMAND);
+    document.body.classList.toggle(
+      'transcribe-active',
+      !isCommandExecuting && this.currentMode === Mode.TRANSCRIBE,
+    );
+    document.body.classList.toggle(
+      'command-active',
+      !isCommandExecuting && this.currentMode === Mode.COMMAND,
+    );
     document.body.classList.toggle('active', this.isActive());
     document.body.classList.toggle('command-visible', this.isCommandElementVisible());
   }
@@ -163,7 +164,6 @@ export class UIStateManager {
   private isCommandElementVisible(): boolean {
     return this.currentMode === Mode.COMMAND || !this.isCommandEmpty;
   }
-
 
   /**
    * Ensure content is wrapped in paragraph tags
@@ -220,9 +220,7 @@ export class UIStateManager {
    * Remove the existing in-progress segment with animation (single segment invariant)
    */
   private async removeInProgressSegment(container: HTMLElement): Promise<void> {
-    const inProgressSpan = container.querySelector(
-      '.in-progress-segment',
-    ) as HTMLElement;
+    const inProgressSpan = container.querySelector('.in-progress-segment') as HTMLElement;
     if (inProgressSpan) {
       await this.animationManager.fadeOut([inProgressSpan]);
       inProgressSpan.remove();
@@ -350,7 +348,7 @@ export class UIStateManager {
   async commitOperation(_cancelled: boolean): Promise<void> {
     // Phase 1: Show commit feedback for 1 second
     document.body.classList.add('commit-active');
-    await new Promise(resolve => setTimeout(resolve, COMMIT_FEEDBACK_DURATION_MS));
+    await new Promise((resolve) => setTimeout(resolve, COMMIT_FEEDBACK_DURATION_MS));
 
     // Phase 2: Clear content from both modes
     const transcriptionElement = this.getElementForMode(Mode.TRANSCRIBE);

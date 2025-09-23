@@ -22,9 +22,9 @@ function createWindow(screen: Display): BrowserWindow {
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
-      sandbox: false
+      sandbox: false,
     },
-    titleBarStyle: 'hidden'
+    titleBarStyle: 'hidden',
   });
 
   if (!is.dev) {
@@ -129,7 +129,7 @@ app.whenReady().then(() => {
   console.log('Primary display:', primaryDisplay.bounds);
   console.log(
     'All displays:',
-    screen.getAllDisplays().map((d) => ({ id: d.id, bounds: d.bounds }))
+    screen.getAllDisplays().map((d) => ({ id: d.id, bounds: d.bounds })),
   );
 
   const mainWindow = createWindow(primaryDisplay);

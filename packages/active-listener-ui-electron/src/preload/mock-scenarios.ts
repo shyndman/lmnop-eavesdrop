@@ -26,7 +26,7 @@ function createSegment(
   startTime: number,
   endTime: number,
   confidence: number = 0.85,
-  completed: boolean = false
+  completed: boolean = false,
 ): Segment {
   const tokens = Array.from({ length: Math.ceil(text.length / 4) }, (_, i) => 1000 + i);
 
@@ -46,7 +46,7 @@ function createSegment(
     time_offset: 0,
     absolute_start_time: startTime,
     absolute_end_time: endTime,
-    duration: endTime - startTime
+    duration: endTime - startTime,
   };
 }
 
@@ -67,8 +67,15 @@ export function* happyPathScenario(): Generator<TimedMessage> {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.TRANSCRIBE,
       completed_segments: [],
-      in_progress_segment: createSegment(segmentId, "So I've been thinking about", currentTime, currentTime + 1.2, 0.9, false)
-    }
+      in_progress_segment: createSegment(
+        segmentId,
+        "So I've been thinking about",
+        currentTime,
+        currentTime + 1.2,
+        0.9,
+        false,
+      ),
+    },
   };
 
   currentTime += 2;
@@ -78,8 +85,15 @@ export function* happyPathScenario(): Generator<TimedMessage> {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.TRANSCRIBE,
       completed_segments: [],
-      in_progress_segment: createSegment(segmentId, "So I've been thinking about the caching strategy we discussed, um,", currentTime, currentTime + 3.1, 0.87, false)
-    }
+      in_progress_segment: createSegment(
+        segmentId,
+        "So I've been thinking about the caching strategy we discussed, um,",
+        currentTime,
+        currentTime + 3.1,
+        0.87,
+        false,
+      ),
+    },
   };
 
   currentTime += 2;
@@ -89,8 +103,15 @@ export function* happyPathScenario(): Generator<TimedMessage> {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.TRANSCRIBE,
       completed_segments: [],
-      in_progress_segment: createSegment(segmentId, "So I've been thinking about the caching strategy we discussed, um, and I think there's a few different", currentTime, currentTime + 4.8, 0.89, false)
-    }
+      in_progress_segment: createSegment(
+        segmentId,
+        "So I've been thinking about the caching strategy we discussed, um, and I think there's a few different",
+        currentTime,
+        currentTime + 4.8,
+        0.89,
+        false,
+      ),
+    },
   };
 
   currentTime += 2;
@@ -100,8 +121,15 @@ export function* happyPathScenario(): Generator<TimedMessage> {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.TRANSCRIBE,
       completed_segments: [],
-      in_progress_segment: createSegment(segmentId, "So I've been thinking about the caching strategy we discussed, um, and I think there's a few different approaches we could take here.", currentTime, currentTime + 6.2, 0.88, false)
-    }
+      in_progress_segment: createSegment(
+        segmentId,
+        "So I've been thinking about the caching strategy we discussed, um, and I think there's a few different approaches we could take here.",
+        currentTime,
+        currentTime + 6.2,
+        0.88,
+        false,
+      ),
+    },
   };
 
   // Natural pause - segment completes
@@ -112,9 +140,24 @@ export function* happyPathScenario(): Generator<TimedMessage> {
     message: {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.TRANSCRIBE,
-      completed_segments: [createSegment(segmentId - 1, "So I've been thinking about the caching strategy we discussed, um, and I think there's a few different approaches we could take here.", 0, 6.2, 0.88, true)],
-      in_progress_segment: createSegment(segmentId, "Like, we could do the simple approach", currentTime, currentTime + 1.7, 0.91)
-    }
+      completed_segments: [
+        createSegment(
+          segmentId - 1,
+          "So I've been thinking about the caching strategy we discussed, um, and I think there's a few different approaches we could take here.",
+          0,
+          6.2,
+          0.88,
+          true,
+        ),
+      ],
+      in_progress_segment: createSegment(
+        segmentId,
+        'Like, we could do the simple approach',
+        currentTime,
+        currentTime + 1.7,
+        0.91,
+      ),
+    },
   };
 
   currentTime += 2;
@@ -124,8 +167,14 @@ export function* happyPathScenario(): Generator<TimedMessage> {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.TRANSCRIBE,
       completed_segments: [],
-      in_progress_segment: createSegment(segmentId, "Like, we could do the simple approach where we just cache everything for", currentTime, currentTime + 3.1, 0.92)
-    }
+      in_progress_segment: createSegment(
+        segmentId,
+        'Like, we could do the simple approach where we just cache everything for',
+        currentTime,
+        currentTime + 3.1,
+        0.92,
+      ),
+    },
   };
 
   currentTime += 2;
@@ -135,10 +184,16 @@ export function* happyPathScenario(): Generator<TimedMessage> {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.TRANSCRIBE,
       completed_segments: [],
-      in_progress_segment: createSegment(segmentId, "Like, we could do the simple approach where we just cache everything for like 5 minutes or", currentTime, currentTime + 4.5, 0.91, false)
-    }
+      in_progress_segment: createSegment(
+        segmentId,
+        'Like, we could do the simple approach where we just cache everything for like 5 minutes or',
+        currentTime,
+        currentTime + 4.5,
+        0.91,
+        false,
+      ),
+    },
   };
-
 
   // Pause after "or" - natural thinking moment, segment completes
   currentTime += 2.5; // Longer pause after "or"
@@ -148,9 +203,25 @@ export function* happyPathScenario(): Generator<TimedMessage> {
     message: {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.TRANSCRIBE,
-      completed_segments: [createSegment(segmentId, "Like, we could do the simple approach where we just cache everything for like 5 minutes or", 6.5, 11.0, 0.91, true)],
-      in_progress_segment: createSegment(segmentId, "however, but that might not be optimal", currentTime, currentTime + 1.8, 0.76, false) // Lower confidence on "however"
-    }
+      completed_segments: [
+        createSegment(
+          segmentId,
+          'Like, we could do the simple approach where we just cache everything for like 5 minutes or',
+          6.5,
+          11.0,
+          0.91,
+          true,
+        ),
+      ],
+      in_progress_segment: createSegment(
+        segmentId,
+        'however, but that might not be optimal',
+        currentTime,
+        currentTime + 1.8,
+        0.76,
+        false,
+      ), // Lower confidence on "however"
+    },
   };
 
   currentTime += 2;
@@ -160,8 +231,15 @@ export function* happyPathScenario(): Generator<TimedMessage> {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.TRANSCRIBE,
       completed_segments: [],
-      in_progress_segment: createSegment(segmentId, "however, but that might not be optimal because some data changes more frequently", currentTime, currentTime + 4.2, 0.89, false)
-    }
+      in_progress_segment: createSegment(
+        segmentId,
+        'however, but that might not be optimal because some data changes more frequently',
+        currentTime,
+        currentTime + 4.2,
+        0.89,
+        false,
+      ),
+    },
   };
 
   currentTime += 2;
@@ -171,8 +249,15 @@ export function* happyPathScenario(): Generator<TimedMessage> {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.TRANSCRIBE,
       completed_segments: [],
-      in_progress_segment: createSegment(segmentId, "however, but that might not be optimal because some data changes more frequently than others.", currentTime, currentTime + 5.1, 0.92, false)
-    }
+      in_progress_segment: createSegment(
+        segmentId,
+        'however, but that might not be optimal because some data changes more frequently than others.',
+        currentTime,
+        currentTime + 5.1,
+        0.92,
+        false,
+      ),
+    },
   };
 
   // Final pause - last segment completes
@@ -183,9 +268,18 @@ export function* happyPathScenario(): Generator<TimedMessage> {
     message: {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.TRANSCRIBE,
-      completed_segments: [createSegment(segmentId - 1, "however, but that might not be optimal because some data changes more frequently than others.", 13.5, 18.6, 0.92, true)],
-      in_progress_segment: createSegment(segmentId, "", currentTime, currentTime, 0.0, false) // Empty to signal end
-    }
+      completed_segments: [
+        createSegment(
+          segmentId - 1,
+          'however, but that might not be optimal because some data changes more frequently than others.',
+          13.5,
+          18.6,
+          0.92,
+          true,
+        ),
+      ],
+      in_progress_segment: createSegment(segmentId, '', currentTime, currentTime, 0.0, false), // Empty to signal end
+    },
   };
 
   // Phase 2: User switches to command mode to clean up the text
@@ -193,8 +287,8 @@ export function* happyPathScenario(): Generator<TimedMessage> {
     delay: USER_PAUSE_MS,
     message: {
       type: MessageType.CHANGE_MODE,
-      target_mode: Mode.COMMAND
-    }
+      target_mode: Mode.COMMAND,
+    },
   };
 
   // User dictates cleanup command in one continuous utterance
@@ -204,8 +298,8 @@ export function* happyPathScenario(): Generator<TimedMessage> {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.COMMAND,
       completed_segments: [],
-      in_progress_segment: createSegment(segmentId, "Clean up the filler words and", 0, 1.2, 0.91)
-    }
+      in_progress_segment: createSegment(segmentId, 'Clean up the filler words and', 0, 1.2, 0.91),
+    },
   };
 
   yield {
@@ -214,8 +308,14 @@ export function* happyPathScenario(): Generator<TimedMessage> {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.COMMAND,
       completed_segments: [],
-      in_progress_segment: createSegment(segmentId, "Clean up the filler words and improve the grammar, but keep", 0, 2.4, 0.89)
-    }
+      in_progress_segment: createSegment(
+        segmentId,
+        'Clean up the filler words and improve the grammar, but keep',
+        0,
+        2.4,
+        0.89,
+      ),
+    },
   };
 
   yield {
@@ -224,8 +324,14 @@ export function* happyPathScenario(): Generator<TimedMessage> {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.COMMAND,
       completed_segments: [],
-      in_progress_segment: createSegment(segmentId, "Clean up the filler words and improve the grammar, but keep all the original ideas intact.", 0, 3.6, 0.91)
-    }
+      in_progress_segment: createSegment(
+        segmentId,
+        'Clean up the filler words and improve the grammar, but keep all the original ideas intact.',
+        0,
+        3.6,
+        0.91,
+      ),
+    },
   };
 
   // Natural pause - command segment completes
@@ -234,9 +340,18 @@ export function* happyPathScenario(): Generator<TimedMessage> {
     message: {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.COMMAND,
-      completed_segments: [createSegment(segmentId++, "Clean up the filler words and improve the grammar, but keep all the original ideas intact.", 0, 3.6, 0.91, true)],
-      in_progress_segment: createSegment(segmentId, "", 3.6, 3.6, 0.0)
-    }
+      completed_segments: [
+        createSegment(
+          segmentId++,
+          'Clean up the filler words and improve the grammar, but keep all the original ideas intact.',
+          0,
+          3.6,
+          0.91,
+          true,
+        ),
+      ],
+      in_progress_segment: createSegment(segmentId, '', 3.6, 3.6, 0.0),
+    },
   };
 
   // Command execution begins
@@ -245,12 +360,12 @@ export function* happyPathScenario(): Generator<TimedMessage> {
     message: {
       type: MessageType.COMMAND_EXECUTING,
       waiting_messages: [
-        "Analyzing text structure...",
-        "Identifying filler words...",
-        "Improving grammar...",
-        "Preserving original meaning..."
-      ]
-    }
+        'Analyzing text structure...',
+        'Identifying filler words...',
+        'Improving grammar...',
+        'Preserving original meaning...',
+      ],
+    },
   };
 
   // Command completes with cleaned up result
@@ -259,8 +374,9 @@ export function* happyPathScenario(): Generator<TimedMessage> {
     message: {
       type: MessageType.SET_STRING,
       target_mode: Mode.TRANSCRIBE,
-      content: "I've been thinking about the caching strategy we discussed, and I think there are several different approaches we could take. We could use a simple approach where we cache everything for 5 minutes, but that might not be optimal because some data changes more frequently than others."
-    }
+      content:
+        "I've been thinking about the caching strategy we discussed, and I think there are several different approaches we could take. We could use a simple approach where we cache everything for 5 minutes, but that might not be optimal because some data changes more frequently than others.",
+    },
   };
 
   // User reviews, decides to make one more small adjustment
@@ -268,8 +384,8 @@ export function* happyPathScenario(): Generator<TimedMessage> {
     delay: 2000, // User reads and thinks
     message: {
       type: MessageType.CHANGE_MODE,
-      target_mode: Mode.COMMAND
-    }
+      target_mode: Mode.COMMAND,
+    },
   };
 
   yield {
@@ -278,8 +394,8 @@ export function* happyPathScenario(): Generator<TimedMessage> {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.COMMAND,
       completed_segments: [],
-      in_progress_segment: createSegment(segmentId, "Make the last part more", 0, 1.0, 0.88)
-    }
+      in_progress_segment: createSegment(segmentId, 'Make the last part more', 0, 1.0, 0.88),
+    },
   };
 
   yield {
@@ -288,8 +404,14 @@ export function* happyPathScenario(): Generator<TimedMessage> {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.COMMAND,
       completed_segments: [],
-      in_progress_segment: createSegment(segmentId, "Make the last part more decisive and suggest a solution.", 0, 2.3, 0.90)
-    }
+      in_progress_segment: createSegment(
+        segmentId,
+        'Make the last part more decisive and suggest a solution.',
+        0,
+        2.3,
+        0.9,
+      ),
+    },
   };
 
   // Natural pause - command segment completes
@@ -298,9 +420,18 @@ export function* happyPathScenario(): Generator<TimedMessage> {
     message: {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.COMMAND,
-      completed_segments: [createSegment(segmentId++, "Make the last part more decisive and suggest a solution.", 0, 2.3, 0.90, true)],
-      in_progress_segment: createSegment(segmentId, "", 2.3, 2.3, 0.0)
-    }
+      completed_segments: [
+        createSegment(
+          segmentId++,
+          'Make the last part more decisive and suggest a solution.',
+          0,
+          2.3,
+          0.9,
+          true,
+        ),
+      ],
+      in_progress_segment: createSegment(segmentId, '', 2.3, 2.3, 0.0),
+    },
   };
 
   yield {
@@ -308,11 +439,11 @@ export function* happyPathScenario(): Generator<TimedMessage> {
     message: {
       type: MessageType.COMMAND_EXECUTING,
       waiting_messages: [
-        "Strengthening conclusion...",
-        "Adding solution...",
-        "Making it more decisive..."
-      ]
-    }
+        'Strengthening conclusion...',
+        'Adding solution...',
+        'Making it more decisive...',
+      ],
+    },
   };
 
   yield {
@@ -320,8 +451,9 @@ export function* happyPathScenario(): Generator<TimedMessage> {
     message: {
       type: MessageType.SET_STRING,
       target_mode: Mode.TRANSCRIBE,
-      content: "I've been thinking about the caching strategy we discussed, and I think there are several different approaches we could take. We could use a simple approach where we cache everything for 5 minutes, but that might not be optimal because some data changes more frequently than others. Instead, we should implement a tiered TTL system with different cache durations based on data volatility."
-    }
+      content:
+        "I've been thinking about the caching strategy we discussed, and I think there are several different approaches we could take. We could use a simple approach where we cache everything for 5 minutes, but that might not be optimal because some data changes more frequently than others. Instead, we should implement a tiered TTL system with different cache durations based on data volatility.",
+    },
   };
 
   // User is satisfied and commits
@@ -329,8 +461,8 @@ export function* happyPathScenario(): Generator<TimedMessage> {
     delay: 3000, // User reviews final result
     message: {
       type: MessageType.COMMIT_OPERATION,
-      cancelled: false
-    }
+      cancelled: false,
+    },
   };
 }
 
@@ -351,8 +483,14 @@ export function* perfectionistSpiralScenario(): Generator<TimedMessage> {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.TRANSCRIBE,
       completed_segments: [],
-      in_progress_segment: createSegment(segmentId, "I think we should probably", currentTime, currentTime + 1.1, 0.88)
-    }
+      in_progress_segment: createSegment(
+        segmentId,
+        'I think we should probably',
+        currentTime,
+        currentTime + 1.1,
+        0.88,
+      ),
+    },
   };
 
   currentTime += 2;
@@ -362,8 +500,14 @@ export function* perfectionistSpiralScenario(): Generator<TimedMessage> {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.TRANSCRIBE,
       completed_segments: [],
-      in_progress_segment: createSegment(segmentId, "I think we should probably go with the microservices approach", currentTime, currentTime + 2.7, 0.89)
-    }
+      in_progress_segment: createSegment(
+        segmentId,
+        'I think we should probably go with the microservices approach',
+        currentTime,
+        currentTime + 2.7,
+        0.89,
+      ),
+    },
   };
 
   currentTime += 2;
@@ -373,8 +517,14 @@ export function* perfectionistSpiralScenario(): Generator<TimedMessage> {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.TRANSCRIBE,
       completed_segments: [],
-      in_progress_segment: createSegment(segmentId, "I think we should probably go with the microservices approach for this project, even though", currentTime, currentTime + 4.0, 0.88)
-    }
+      in_progress_segment: createSegment(
+        segmentId,
+        'I think we should probably go with the microservices approach for this project, even though',
+        currentTime,
+        currentTime + 4.0,
+        0.88,
+      ),
+    },
   };
 
   currentTime += 2;
@@ -384,8 +534,14 @@ export function* perfectionistSpiralScenario(): Generator<TimedMessage> {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.TRANSCRIBE,
       completed_segments: [],
-      in_progress_segment: createSegment(segmentId, "I think we should probably go with the microservices approach for this project, even though it might be overkill for our", currentTime, currentTime + 5.4, 0.90)
-    }
+      in_progress_segment: createSegment(
+        segmentId,
+        'I think we should probably go with the microservices approach for this project, even though it might be overkill for our',
+        currentTime,
+        currentTime + 5.4,
+        0.9,
+      ),
+    },
   };
 
   currentTime += 2;
@@ -395,8 +551,14 @@ export function* perfectionistSpiralScenario(): Generator<TimedMessage> {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.TRANSCRIBE,
       completed_segments: [],
-      in_progress_segment: createSegment(segmentId, "I think we should probably go with the microservices approach for this project, even though it might be overkill for our current scale, but I think", currentTime, currentTime + 6.6, 0.89)
-    }
+      in_progress_segment: createSegment(
+        segmentId,
+        'I think we should probably go with the microservices approach for this project, even though it might be overkill for our current scale, but I think',
+        currentTime,
+        currentTime + 6.6,
+        0.89,
+      ),
+    },
   };
 
   currentTime += 2;
@@ -406,8 +568,14 @@ export function* perfectionistSpiralScenario(): Generator<TimedMessage> {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.TRANSCRIBE,
       completed_segments: [],
-      in_progress_segment: createSegment(segmentId, "I think we should probably go with the microservices approach for this project, even though it might be overkill for our current scale, but I think it'll help us in the long run.", currentTime, currentTime + 8.1, 0.87)
-    }
+      in_progress_segment: createSegment(
+        segmentId,
+        "I think we should probably go with the microservices approach for this project, even though it might be overkill for our current scale, but I think it'll help us in the long run.",
+        currentTime,
+        currentTime + 8.1,
+        0.87,
+      ),
+    },
   };
 
   // Natural pause - segment completes
@@ -418,21 +586,31 @@ export function* perfectionistSpiralScenario(): Generator<TimedMessage> {
     message: {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.TRANSCRIBE,
-      completed_segments: [createSegment(segmentId - 1, "I think we should probably go with the microservices approach for this project, even though it might be overkill for our current scale, but I think it'll help us in the long run.", 0, 8.1, 0.87, true)],
-      in_progress_segment: createSegment(segmentId, "", currentTime, currentTime, 0.0)
-    }
+      completed_segments: [
+        createSegment(
+          segmentId - 1,
+          "I think we should probably go with the microservices approach for this project, even though it might be overkill for our current scale, but I think it'll help us in the long run.",
+          0,
+          8.1,
+          0.87,
+          true,
+        ),
+      ],
+      in_progress_segment: createSegment(segmentId, '', currentTime, currentTime, 0.0),
+    },
   };
 
   // Store the original text for undo operations
-  const originalText = "I think we should probably go with the microservices approach for this project, even though it might be overkill for our current scale, but I think it'll help us in the long run.";
+  const originalText =
+    "I think we should probably go with the microservices approach for this project, even though it might be overkill for our current scale, but I think it'll help us in the long run.";
 
   // Phase 2: First refinement attempt - make it more concise
   yield {
     delay: USER_PAUSE_MS,
     message: {
       type: MessageType.CHANGE_MODE,
-      target_mode: Mode.COMMAND
-    }
+      target_mode: Mode.COMMAND,
+    },
   };
 
   yield {
@@ -441,8 +619,15 @@ export function* perfectionistSpiralScenario(): Generator<TimedMessage> {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.COMMAND,
       completed_segments: [],
-      in_progress_segment: createSegment(segmentId++, "Make this more concise", 0, 1.0, 0.94, false)
-    }
+      in_progress_segment: createSegment(
+        segmentId++,
+        'Make this more concise',
+        0,
+        1.0,
+        0.94,
+        false,
+      ),
+    },
   };
 
   yield {
@@ -450,17 +635,19 @@ export function* perfectionistSpiralScenario(): Generator<TimedMessage> {
     message: {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.COMMAND,
-      completed_segments: [createSegment(segmentId - 1, "Make this more concise", 0, 1.0, 0.94, true)],
-      in_progress_segment: createSegment(segmentId++, "", 1.0, 1.0, 0.0, false)
-    }
+      completed_segments: [
+        createSegment(segmentId - 1, 'Make this more concise', 0, 1.0, 0.94, true),
+      ],
+      in_progress_segment: createSegment(segmentId++, '', 1.0, 1.0, 0.0, false),
+    },
   };
 
   yield {
     delay: 500,
     message: {
       type: MessageType.COMMAND_EXECUTING,
-      waiting_messages: ["Condensing text...", "Removing redundancy...", "Shortening sentences..."]
-    }
+      waiting_messages: ['Condensing text...', 'Removing redundancy...', 'Shortening sentences...'],
+    },
   };
 
   yield {
@@ -468,8 +655,8 @@ export function* perfectionistSpiralScenario(): Generator<TimedMessage> {
     message: {
       type: MessageType.SET_STRING,
       target_mode: Mode.TRANSCRIBE,
-      content: "We should use microservices for long-term scalability."
-    }
+      content: 'We should use microservices for long-term scalability.',
+    },
   };
 
   // Phase 3: User doesn't like it, undoes
@@ -477,8 +664,8 @@ export function* perfectionistSpiralScenario(): Generator<TimedMessage> {
     delay: 1500, // User reads and dislikes
     message: {
       type: MessageType.CHANGE_MODE,
-      target_mode: Mode.COMMAND
-    }
+      target_mode: Mode.COMMAND,
+    },
   };
 
   yield {
@@ -487,8 +674,8 @@ export function* perfectionistSpiralScenario(): Generator<TimedMessage> {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.COMMAND,
       completed_segments: [],
-      in_progress_segment: createSegment(segmentId++, "Undo", 0, 0.3, 0.97, false)
-    }
+      in_progress_segment: createSegment(segmentId++, 'Undo', 0, 0.3, 0.97, false),
+    },
   };
 
   yield {
@@ -496,9 +683,9 @@ export function* perfectionistSpiralScenario(): Generator<TimedMessage> {
     message: {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.COMMAND,
-      completed_segments: [createSegment(segmentId - 1, "Undo", 0, 0.3, 0.97, true)],
-      in_progress_segment: createSegment(segmentId++, "", 0.3, 0.3, 0.0, false)
-    }
+      completed_segments: [createSegment(segmentId - 1, 'Undo', 0, 0.3, 0.97, true)],
+      in_progress_segment: createSegment(segmentId++, '', 0.3, 0.3, 0.0, false),
+    },
   };
 
   // Instant undo - revert to original
@@ -507,8 +694,8 @@ export function* perfectionistSpiralScenario(): Generator<TimedMessage> {
     message: {
       type: MessageType.SET_STRING,
       target_mode: Mode.TRANSCRIBE,
-      content: originalText
-    }
+      content: originalText,
+    },
   };
 
   // Phase 4: Try making it more detailed instead
@@ -516,8 +703,8 @@ export function* perfectionistSpiralScenario(): Generator<TimedMessage> {
     delay: 800,
     message: {
       type: MessageType.CHANGE_MODE,
-      target_mode: Mode.COMMAND
-    }
+      target_mode: Mode.COMMAND,
+    },
   };
 
   yield {
@@ -526,8 +713,8 @@ export function* perfectionistSpiralScenario(): Generator<TimedMessage> {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.COMMAND,
       completed_segments: [],
-      in_progress_segment: createSegment(segmentId, "Make it more detailed and", 0, 1.1, 0.90)
-    }
+      in_progress_segment: createSegment(segmentId, 'Make it more detailed and', 0, 1.1, 0.9),
+    },
   };
 
   yield {
@@ -536,8 +723,14 @@ export function* perfectionistSpiralScenario(): Generator<TimedMessage> {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.COMMAND,
       completed_segments: [],
-      in_progress_segment: createSegment(segmentId, "Make it more detailed and add specific technical benefits.", 0, 2.4, 0.89)
-    }
+      in_progress_segment: createSegment(
+        segmentId,
+        'Make it more detailed and add specific technical benefits.',
+        0,
+        2.4,
+        0.89,
+      ),
+    },
   };
 
   // Natural pause - command segment completes
@@ -546,28 +739,42 @@ export function* perfectionistSpiralScenario(): Generator<TimedMessage> {
     message: {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.COMMAND,
-      completed_segments: [createSegment(segmentId++, "Make it more detailed and add specific technical benefits.", 0, 2.4, 0.89, true)],
-      in_progress_segment: createSegment(segmentId, "", 2.4, 2.4, 0.0)
-    }
+      completed_segments: [
+        createSegment(
+          segmentId++,
+          'Make it more detailed and add specific technical benefits.',
+          0,
+          2.4,
+          0.89,
+          true,
+        ),
+      ],
+      in_progress_segment: createSegment(segmentId, '', 2.4, 2.4, 0.0),
+    },
   };
 
   yield {
     delay: 500,
     message: {
       type: MessageType.COMMAND_EXECUTING,
-      waiting_messages: ["Adding technical details...", "Expanding benefits...", "Providing specifics..."]
-    }
+      waiting_messages: [
+        'Adding technical details...',
+        'Expanding benefits...',
+        'Providing specifics...',
+      ],
+    },
   };
 
-  const detailedText = "I think we should adopt a microservices architecture for this project. While it may seem like overkill for our current scale, microservices will provide us with better fault isolation, independent deployment capabilities, technology diversity, and improved scalability. The initial complexity will pay dividends as our system grows and our team expands.";
+  const detailedText =
+    'I think we should adopt a microservices architecture for this project. While it may seem like overkill for our current scale, microservices will provide us with better fault isolation, independent deployment capabilities, technology diversity, and improved scalability. The initial complexity will pay dividends as our system grows and our team expands.';
 
   yield {
     delay: COMMAND_PROCESSING_MS,
     message: {
       type: MessageType.SET_STRING,
       target_mode: Mode.TRANSCRIBE,
-      content: detailedText
-    }
+      content: detailedText,
+    },
   };
 
   // Phase 5: Still not satisfied, undo again
@@ -575,8 +782,8 @@ export function* perfectionistSpiralScenario(): Generator<TimedMessage> {
     delay: 2000,
     message: {
       type: MessageType.CHANGE_MODE,
-      target_mode: Mode.COMMAND
-    }
+      target_mode: Mode.COMMAND,
+    },
   };
 
   yield {
@@ -585,8 +792,8 @@ export function* perfectionistSpiralScenario(): Generator<TimedMessage> {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.COMMAND,
       completed_segments: [],
-      in_progress_segment: createSegment(segmentId++, "Undo", 0, 0.3, 0.97, false)
-    }
+      in_progress_segment: createSegment(segmentId++, 'Undo', 0, 0.3, 0.97, false),
+    },
   };
 
   yield {
@@ -594,9 +801,9 @@ export function* perfectionistSpiralScenario(): Generator<TimedMessage> {
     message: {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.COMMAND,
-      completed_segments: [createSegment(segmentId - 1, "Undo", 0, 0.3, 0.97, true)],
-      in_progress_segment: createSegment(segmentId++, "", 0.3, 0.3, 0.0, false)
-    }
+      completed_segments: [createSegment(segmentId - 1, 'Undo', 0, 0.3, 0.97, true)],
+      in_progress_segment: createSegment(segmentId++, '', 0.3, 0.3, 0.0, false),
+    },
   };
 
   yield {
@@ -604,8 +811,8 @@ export function* perfectionistSpiralScenario(): Generator<TimedMessage> {
     message: {
       type: MessageType.SET_STRING,
       target_mode: Mode.TRANSCRIBE,
-      content: originalText
-    }
+      content: originalText,
+    },
   };
 
   // Phase 6: Try removing jargon
@@ -613,8 +820,8 @@ export function* perfectionistSpiralScenario(): Generator<TimedMessage> {
     delay: 1000,
     message: {
       type: MessageType.CHANGE_MODE,
-      target_mode: Mode.COMMAND
-    }
+      target_mode: Mode.COMMAND,
+    },
   };
 
   yield {
@@ -623,8 +830,15 @@ export function* perfectionistSpiralScenario(): Generator<TimedMessage> {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.COMMAND,
       completed_segments: [],
-      in_progress_segment: createSegment(segmentId++, "Remove the jargon and make", 0, 1.2, 0.89, false)
-    }
+      in_progress_segment: createSegment(
+        segmentId++,
+        'Remove the jargon and make',
+        0,
+        1.2,
+        0.89,
+        false,
+      ),
+    },
   };
 
   yield {
@@ -632,9 +846,18 @@ export function* perfectionistSpiralScenario(): Generator<TimedMessage> {
     message: {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.COMMAND,
-      completed_segments: [createSegment(segmentId - 1, "Remove the jargon and make", 0, 1.2, 0.89, true)],
-      in_progress_segment: createSegment(segmentId++, "it accessible to non-engineers.", 1.2, 2.5, 0.91, false)
-    }
+      completed_segments: [
+        createSegment(segmentId - 1, 'Remove the jargon and make', 0, 1.2, 0.89, true),
+      ],
+      in_progress_segment: createSegment(
+        segmentId++,
+        'it accessible to non-engineers.',
+        1.2,
+        2.5,
+        0.91,
+        false,
+      ),
+    },
   };
 
   yield {
@@ -642,17 +865,23 @@ export function* perfectionistSpiralScenario(): Generator<TimedMessage> {
     message: {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.COMMAND,
-      completed_segments: [createSegment(segmentId - 1, "it accessible to non-engineers.", 1.2, 2.5, 0.91, true)],
-      in_progress_segment: createSegment(segmentId++, "", 2.5, 2.5, 0.0, false)
-    }
+      completed_segments: [
+        createSegment(segmentId - 1, 'it accessible to non-engineers.', 1.2, 2.5, 0.91, true),
+      ],
+      in_progress_segment: createSegment(segmentId++, '', 2.5, 2.5, 0.0, false),
+    },
   };
 
   yield {
     delay: 500,
     message: {
       type: MessageType.COMMAND_EXECUTING,
-      waiting_messages: ["Simplifying language...", "Removing technical terms...", "Making it accessible..."]
-    }
+      waiting_messages: [
+        'Simplifying language...',
+        'Removing technical terms...',
+        'Making it accessible...',
+      ],
+    },
   };
 
   yield {
@@ -660,8 +889,9 @@ export function* perfectionistSpiralScenario(): Generator<TimedMessage> {
     message: {
       type: MessageType.SET_STRING,
       target_mode: Mode.TRANSCRIBE,
-      content: "I think we should break our application into smaller, independent services. It might seem like too much for what we have now, but it will make things easier to manage and scale as we grow."
-    }
+      content:
+        'I think we should break our application into smaller, independent services. It might seem like too much for what we have now, but it will make things easier to manage and scale as we grow.',
+    },
   };
 
   // Phase 7: Getting frustrated, wants the tone more confident
@@ -669,8 +899,8 @@ export function* perfectionistSpiralScenario(): Generator<TimedMessage> {
     delay: 1800,
     message: {
       type: MessageType.CHANGE_MODE,
-      target_mode: Mode.COMMAND
-    }
+      target_mode: Mode.COMMAND,
+    },
   };
 
   yield {
@@ -679,8 +909,8 @@ export function* perfectionistSpiralScenario(): Generator<TimedMessage> {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.COMMAND,
       completed_segments: [],
-      in_progress_segment: createSegment(segmentId, "Make the tone more confident", 0, 1.3, 0.92)
-    }
+      in_progress_segment: createSegment(segmentId, 'Make the tone more confident', 0, 1.3, 0.92),
+    },
   };
 
   yield {
@@ -689,8 +919,14 @@ export function* perfectionistSpiralScenario(): Generator<TimedMessage> {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.COMMAND,
       completed_segments: [],
-      in_progress_segment: createSegment(segmentId, "Make the tone more confident and decisive.", 0, 1.9, 0.93)
-    }
+      in_progress_segment: createSegment(
+        segmentId,
+        'Make the tone more confident and decisive.',
+        0,
+        1.9,
+        0.93,
+      ),
+    },
   };
 
   // Natural pause - command segment completes
@@ -699,17 +935,26 @@ export function* perfectionistSpiralScenario(): Generator<TimedMessage> {
     message: {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.COMMAND,
-      completed_segments: [createSegment(segmentId++, "Make the tone more confident and decisive.", 0, 1.9, 0.93, true)],
-      in_progress_segment: createSegment(segmentId, "", 1.9, 1.9, 0.0)
-    }
+      completed_segments: [
+        createSegment(
+          segmentId++,
+          'Make the tone more confident and decisive.',
+          0,
+          1.9,
+          0.93,
+          true,
+        ),
+      ],
+      in_progress_segment: createSegment(segmentId, '', 1.9, 1.9, 0.0),
+    },
   };
 
   yield {
     delay: 500,
     message: {
       type: MessageType.COMMAND_EXECUTING,
-      waiting_messages: ["Strengthening tone...", "Making it decisive...", "Adding confidence..."]
-    }
+      waiting_messages: ['Strengthening tone...', 'Making it decisive...', 'Adding confidence...'],
+    },
   };
 
   yield {
@@ -717,8 +962,9 @@ export function* perfectionistSpiralScenario(): Generator<TimedMessage> {
     message: {
       type: MessageType.SET_STRING,
       target_mode: Mode.TRANSCRIBE,
-      content: "We should definitely break our application into smaller, independent services. This approach will provide superior scalability and maintainability as we grow."
-    }
+      content:
+        'We should definitely break our application into smaller, independent services. This approach will provide superior scalability and maintainability as we grow.',
+    },
   };
 
   // Phase 8: Second thoughts, wants to soften it
@@ -726,8 +972,8 @@ export function* perfectionistSpiralScenario(): Generator<TimedMessage> {
     delay: 1500,
     message: {
       type: MessageType.CHANGE_MODE,
-      target_mode: Mode.COMMAND
-    }
+      target_mode: Mode.COMMAND,
+    },
   };
 
   yield {
@@ -736,8 +982,8 @@ export function* perfectionistSpiralScenario(): Generator<TimedMessage> {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.COMMAND,
       completed_segments: [],
-      in_progress_segment: createSegment(segmentId, "Actually, soften the tone", 0, 1.1, 0.88)
-    }
+      in_progress_segment: createSegment(segmentId, 'Actually, soften the tone', 0, 1.1, 0.88),
+    },
   };
 
   yield {
@@ -746,8 +992,14 @@ export function* perfectionistSpiralScenario(): Generator<TimedMessage> {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.COMMAND,
       completed_segments: [],
-      in_progress_segment: createSegment(segmentId, "Actually, soften the tone and add some uncertainty.", 0, 2.2, 0.89)
-    }
+      in_progress_segment: createSegment(
+        segmentId,
+        'Actually, soften the tone and add some uncertainty.',
+        0,
+        2.2,
+        0.89,
+      ),
+    },
   };
 
   // Natural pause - command segment completes
@@ -756,17 +1008,26 @@ export function* perfectionistSpiralScenario(): Generator<TimedMessage> {
     message: {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.COMMAND,
-      completed_segments: [createSegment(segmentId++, "Actually, soften the tone and add some uncertainty.", 0, 2.2, 0.89, true)],
-      in_progress_segment: createSegment(segmentId, "", 2.2, 2.2, 0.0)
-    }
+      completed_segments: [
+        createSegment(
+          segmentId++,
+          'Actually, soften the tone and add some uncertainty.',
+          0,
+          2.2,
+          0.89,
+          true,
+        ),
+      ],
+      in_progress_segment: createSegment(segmentId, '', 2.2, 2.2, 0.0),
+    },
   };
 
   yield {
     delay: 500,
     message: {
       type: MessageType.COMMAND_EXECUTING,
-      waiting_messages: ["Softening tone...", "Adding nuance...", "Balancing confidence..."]
-    }
+      waiting_messages: ['Softening tone...', 'Adding nuance...', 'Balancing confidence...'],
+    },
   };
 
   yield {
@@ -774,8 +1035,9 @@ export function* perfectionistSpiralScenario(): Generator<TimedMessage> {
     message: {
       type: MessageType.SET_STRING,
       target_mode: Mode.TRANSCRIBE,
-      content: "I'm leaning towards breaking our application into smaller, independent services. While there might be some added complexity initially, it could provide better scalability and maintainability as we grow."
-    }
+      content:
+        "I'm leaning towards breaking our application into smaller, independent services. While there might be some added complexity initially, it could provide better scalability and maintainability as we grow.",
+    },
   };
 
   // Phase 9: User finally gives up and commits whatever is there
@@ -783,7 +1045,7 @@ export function* perfectionistSpiralScenario(): Generator<TimedMessage> {
     delay: 4000, // Long pause - user is exhausted
     message: {
       type: MessageType.COMMIT_OPERATION,
-      cancelled: false
-    }
+      cancelled: false,
+    },
   };
 }

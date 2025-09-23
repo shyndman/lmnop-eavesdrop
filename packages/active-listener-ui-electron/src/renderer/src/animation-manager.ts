@@ -1,6 +1,12 @@
 import { Animation, AnimatedValue, Easing } from './animation';
 import { Mode } from '../../messages';
 
+// Easing function constants
+const FADE_OUT_EASING = Easing.easeOut;
+const FADE_IN_EASING = Easing.easeIn;
+const FADE_IN_DURATION = 200;
+const FADE_OUT_DURATION = 150;
+
 /**
  * Manages element animations with support for opacity transitions and staggered timing.
  *
@@ -11,24 +17,18 @@ export class AnimationManager {
   // Mode-based animation tracking for concurrency protection
   private modeAnimations = new Map<Mode, Animation<{ opacity: AnimatedValue }>>();
 
-  constructor(
-    private transitionDuration: number,
-    private fadeOutEasing: (t: number) => number = Easing.easeOut,
-    private fadeInEasing: (t: number) => number = Easing.easeIn,
-  ) {}
+  /**
+   * Fade elements in (opacity 0 → 1) with optional staggered timing
+   */
+  async fadeIn(elements: HTMLElement[], stagger: number = 0): Promise<void> {
+    return this.fadeElements(elements, 0, 1, FADE_IN_DURATION, FADE_IN_EASING, stagger);
+  }
 
   /**
    * Fade elements out (opacity 1 → 0)
    */
   async fadeOut(elements: HTMLElement[]): Promise<void> {
-    return this.fadeElements(elements, 1, 0, this.fadeOutEasing);
-  }
-
-  /**
-   * Fade elements in (opacity 0 → 1) with optional staggered timing
-   */
-  async fadeIn(elements: HTMLElement[], stagger: number = 0): Promise<void> {
-    return this.fadeElements(elements, 0, 1, this.fadeInEasing, stagger);
+    return this.fadeElements(elements, 1, 0, FADE_OUT_DURATION, FADE_OUT_EASING);
   }
 
   /**
@@ -38,6 +38,7 @@ export class AnimationManager {
     elements: HTMLElement[],
     fromOpacity: number,
     toOpacity: number,
+    duration: number,
     easing: (t: number) => number,
     interElementDelay: number = 0,
   ): Promise<void> {
@@ -54,12 +55,7 @@ export class AnimationManager {
     const animatedValues: Record<string, AnimatedValue> = {};
     elements.forEach((_element, index) => {
       const delay = index * interElementDelay;
-      animatedValues[`element${index}`] = new AnimatedValue(
-        fromOpacity,
-        this.transitionDuration,
-        easing,
-        delay,
-      );
+      animatedValues[`element${index}`] = new AnimatedValue(fromOpacity, duration, easing, delay);
     });
 
     const animation = new Animation(animatedValues, (values) => {
@@ -90,12 +86,9 @@ export class AnimationManager {
       );
     }
 
-    this.modeAnimations.set(
-      mode,
-      {} as Animation<{ opacity: AnimatedValue }>,
-    );
+    this.modeAnimations.set(mode, {} as Animation<{ opacity: AnimatedValue }>);
     try {
-      await this.fadeElements(paragraphs, 1, 0, this.fadeOutEasing);
+      await this.fadeElements(paragraphs, 1, 0, FADE_OUT_DURATION, FADE_OUT_EASING);
     } finally {
       this.modeAnimations.delete(mode);
     }
@@ -104,7 +97,11 @@ export class AnimationManager {
   /**
    * Fade in content in a specific mode with concurrency protection
    */
-  async fadeInModeContent(mode: Mode, container: HTMLElement, processedContent: string): Promise<void> {
+  async fadeInModeContent(
+    mode: Mode,
+    container: HTMLElement,
+    processedContent: string,
+  ): Promise<void> {
     // Set the new content first
     container.innerHTML = processedContent;
 
@@ -118,12 +115,9 @@ export class AnimationManager {
       );
     }
 
-    this.modeAnimations.set(
-      mode,
-      {} as Animation<{ opacity: AnimatedValue }>,
-    );
+    this.modeAnimations.set(mode, {} as Animation<{ opacity: AnimatedValue }>);
     try {
-      await this.fadeElements(paragraphs, 0, 1, this.fadeInEasing);
+      await this.fadeElements(paragraphs, 0, 1, FADE_IN_DURATION, FADE_IN_EASING);
     } finally {
       this.modeAnimations.delete(mode);
     }
@@ -132,7 +126,11 @@ export class AnimationManager {
   /**
    * Replace content with smooth fade-out → fade-in transition
    */
-  async replaceModeContent(mode: Mode, container: HTMLElement, processedContent: string): Promise<void> {
+  async replaceModeContent(
+    mode: Mode,
+    container: HTMLElement,
+    processedContent: string,
+  ): Promise<void> {
     await this.fadeOutModeContent(mode, container);
     await this.fadeInModeContent(mode, container, processedContent);
   }

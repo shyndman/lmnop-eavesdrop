@@ -12,9 +12,7 @@ export class FrameRenderer {
   private resizeObserver: ResizeObserver;
 
   constructor() {
-    const canvas = document.querySelector<HTMLCanvasElement>(
-      '#frame-layer canvas',
-    );
+    const canvas = document.querySelector<HTMLCanvasElement>('#frame-layer canvas');
     const frameLayer = document.getElementById('frame-layer');
     const asrState = document.getElementById('asr-state');
 
@@ -48,15 +46,10 @@ export class FrameRenderer {
 
     // Initialize animation system
     const initialHeight = asrState.getBoundingClientRect().height;
-    const heightAnimation = new AnimatedValue(
-      initialHeight,
-      300,
-      Easing.easeOut,
-    );
+    const heightAnimation = new AnimatedValue(initialHeight, 300, Easing.easeOut);
 
-    this.animation = new Animation(
-      { height: heightAnimation },
-      ({ height: height }) => this.draw(height),
+    this.animation = new Animation({ height: heightAnimation }, ({ height: height }) =>
+      this.draw(height),
     );
 
     // Set up ResizeObserver to detect height changes

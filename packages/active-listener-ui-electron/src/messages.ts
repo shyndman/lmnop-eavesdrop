@@ -15,7 +15,7 @@ import { Segment } from './transcription';
  */
 export enum Mode {
   TRANSCRIBE = 'TRANSCRIBE',
-  COMMAND = 'COMMAND'
+  COMMAND = 'COMMAND',
 }
 
 /**
@@ -26,7 +26,7 @@ export enum MessageType {
   CHANGE_MODE = 'change_mode',
   SET_STRING = 'set_string',
   COMMAND_EXECUTING = 'command_executing',
-  COMMIT_OPERATION = 'commit_operation'
+  COMMIT_OPERATION = 'commit_operation',
 }
 
 /**
@@ -70,7 +70,6 @@ export interface ChangeModeMessage {
   /** The mode to switch to */
   readonly target_mode: Mode;
 }
-
 
 /**
  * Completely replaces all existing content with a preprocessed string.

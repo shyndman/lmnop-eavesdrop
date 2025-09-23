@@ -10,14 +10,13 @@ export class MessageHandler {
         await this.uiStateManager.appendSegments(
           message.target_mode,
           message.completed_segments,
-          message.in_progress_segment
+          message.in_progress_segment,
         );
         break;
 
       case MessageType.CHANGE_MODE:
         this.uiStateManager.changeMode(message.target_mode);
         break;
-
 
       case MessageType.SET_STRING:
         await this.uiStateManager.setStrings(message.target_mode, message.content);

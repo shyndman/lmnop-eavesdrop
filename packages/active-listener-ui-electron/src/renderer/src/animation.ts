@@ -2,7 +2,7 @@ export const Easing = {
   easeOut: (t: number): number => 1 - Math.pow(1 - t, 3),
   easeIn: (t: number): number => Math.pow(t, 3),
   easeInOut: (t: number): number => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2),
-  linear: (t: number): number => t
+  linear: (t: number): number => t,
 };
 
 // TODO: I want to alter this so it can produce more than numbers. Internally,
@@ -16,13 +16,14 @@ export class AnimatedValue {
   private duration: number;
   private delay: number;
   private easingFn: (t: number) => number;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private animation?: Animation<any>;
 
   constructor(
     initialValue: number,
     duration: number = 300,
     easing: (t: number) => number = Easing.easeOut,
-    delay: number = 0
+    delay: number = 0,
   ) {
     this.current = initialValue;
     this.target = initialValue;
@@ -85,6 +86,7 @@ export class AnimatedValue {
     return this.isAnimating;
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   setAnimation(animation: Animation<any>): void {
     this.animation = animation;
   }
@@ -182,7 +184,7 @@ export class Animation<T extends Record<string, AnimatedValue>> {
 
   private checkAndStopIfComplete(): void {
     const hasRunningAnimations = Object.values(this.animatedValues).some((value) =>
-      value.isRunning()
+      value.isRunning(),
     );
 
     if (!hasRunningAnimations && this.isRunning) {
