@@ -65,13 +65,13 @@ export class UIStateManager {
    * FATAL ERROR if called concurrently for the same mode. This method assumes
    * serialized calls from the message handler.
    */
-  async setContent(mode: Mode, content: string): Promise<void> {
+  async setStrings(mode: Mode, content: string): Promise<void> {
     // Exit command execution state if currently active
     this.stopCommandExecution();
 
     if (this.contentSettingInProgress.has(mode)) {
       throw new Error(
-        `FATAL: setContent called concurrently for mode ${mode}. This violates the serialization assumption.`,
+        `FATAL: setString called concurrently for mode ${mode}. This violates the serialization assumption.`,
       );
     }
 

@@ -20,7 +20,7 @@ export class MessageHandler {
 
 
       case MessageType.SET_STRING:
-        await this.uiStateManager.setContent(message.target_mode, message.content);
+        await this.uiStateManager.setStrings(message.target_mode, message.content);
         break;
 
       case MessageType.COMMAND_EXECUTING:
