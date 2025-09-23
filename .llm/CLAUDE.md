@@ -1,6 +1,6 @@
-# CLAUDE.md
-
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+The rules in @CODE_STYLE.md are an imperative. Failure to follow them will represent a failure in your ability to do your job.
 
 ## Project Overview
 
@@ -9,42 +9,6 @@ Eavesdrop is a real-time audio transcription system with WebSocket-based speech-
 - **eavesdrop-server** - Core transcription server with WebSocket handling and model management
 - **eavesdrop-client** - Python client library for streaming transcription 
 - **eavesdrop-wire** - Shared message types and protocol definitions
-
-## Commands
-
-### Development Setup
-```bash
-# Install dependencies for each package
-cd packages/server && uv sync
-cd packages/client && uv sync  
-cd packages/wire && uv sync
-```
-
-### Code Quality (run from any package directory)
-```bash
-# Linting and formatting
-ruff check            # Check for linting issues
-ruff check --fix      # Auto-fix linting issues
-ruff format          # Format code
-
-# Type checking
-pyright              # Type checking with strict settings
-```
-
-### Running the Server
-```bash
-cd packages/server
-# Copy and edit config file first
-cp config.sample.yaml config.yaml
-# Run server (requires config file)
-eavesdrop-server --config config.yaml --port 9090
-```
-
-### Testing
-```bash
-# Run tests (from package directories with test suites)
-cd packages/server && pytest
-```
 
 ## Architecture
 
