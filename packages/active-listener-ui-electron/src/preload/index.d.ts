@@ -11,6 +11,7 @@ interface API {
 }
 
 interface MockAPI {
+  _isPaused: boolean
   ping: () => Promise<string>
   setString: (target_mode: 'TRANSCRIBE' | 'COMMAND', content: string) => void
   appendSegments: (target_mode: 'TRANSCRIBE' | 'COMMAND', completedSegments: any[], inProgressSegment: any) => void
@@ -27,6 +28,6 @@ declare global {
   interface Window {
     electron: ElectronAPI
     api: API
-    _mock?: MockAPI
+    _mock: MockAPI
   }
 }

@@ -15,7 +15,12 @@ const api = {
 }
 
 // Dev-only APIs for testing and mocking
-const _mock = process.env.NODE_ENV === 'development' ? {
+
+let _mock;
+_mock = process.env.NODE_ENV === 'development' ? {
+  // Pause state for scenario execution
+  _isPaused: false,
+
   ping: () => ipcRenderer.invoke('mock.ping'),
   setString: (target_mode: 'TRANSCRIBE' | 'COMMAND', content: string) => {
     const mappedMode = target_mode === 'TRANSCRIBE' ? Mode.TRANSCRIBE : Mode.COMMAND;
@@ -55,12 +60,20 @@ const _mock = process.env.NODE_ENV === 'development' ? {
   },
 
   /**
-   * Runs a complete happy path scenario: transcribe → command → refine → commit
-   * Demonstrates normal user workflow with realistic timing and content
+   * Toggles pause state for currently running scenario.
+   * When paused, execution stops between steps allowing DOM inspection.
    */
-  runHappyPath: async () => {
-    const scenario = happyPathScenario();
-    let step = scenario.next();
+  togglePauseScenario: () => {
+    _mock._isPaused = !_mock._isPaused;
+    console.log(_mock._isPaused ? 'Scenario paused - call togglePauseScenario() to resume' : 'Scenario resumed');
+  },
+
+  /**
+   * Shared execution logic for all scenario generators.
+   * Handles timing, pause state, and message sending.
+   */
+  runScenario: async (scenarioGenerator: Generator<{ delay: number; message: any }>) => {
+    let step = scenarioGenerator.next();
 
     while (!step.done) {
       const { delay, message } = step.value;
@@ -68,11 +81,24 @@ const _mock = process.env.NODE_ENV === 'development' ? {
       // Wait for the specified delay
       await new Promise(resolve => setTimeout(resolve, delay));
 
+      // Check for pause state before sending message
+      while (_mock._isPaused) {
+        await new Promise(resolve => setTimeout(resolve, 100)); // Check every 100ms
+      }
+
       // Send the message
       ipcRenderer.send('mock.python-data', message);
 
-      step = scenario.next();
+      step = scenarioGenerator.next();
     }
+  },
+
+  /**
+   * Runs a complete happy path scenario: transcribe → command → refine → commit
+   * Demonstrates normal user workflow with realistic timing and content
+   */
+  runHappyPath: async () => {
+    return _mock.runScenario(happyPathScenario());
   },
 
   /**
@@ -80,20 +106,7 @@ const _mock = process.env.NODE_ENV === 'development' ? {
    * Stress tests rapid mode switching and version history management
    */
   runPerfectionistSpiral: async () => {
-    const scenario = perfectionistSpiralScenario();
-    let step = scenario.next();
-
-    while (!step.done) {
-      const { delay, message } = step.value;
-
-      // Wait for the specified delay
-      await new Promise(resolve => setTimeout(resolve, delay));
-
-      // Send the message
-      ipcRenderer.send('mock.python-data', message);
-
-      step = scenario.next();
-    }
+    return _mock.runScenario(perfectionistSpiralScenario());
   }
 } : undefined
 

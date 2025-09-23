@@ -104,8 +104,6 @@ export function* happyPathScenario(): Generator<TimedMessage> {
     }
   };
 
-  const completedSegment1 = createSegment(segmentId - 1, "So I've been thinking about the caching strategy we discussed, um, and I think there's a few different approaches we could take here.", 0, 6.2, 0.88, true);
-
   // Natural pause - segment completes
   currentTime += 3; // Longer pause
   segmentId++;
@@ -114,7 +112,7 @@ export function* happyPathScenario(): Generator<TimedMessage> {
     message: {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.TRANSCRIBE,
-      completed_segments: [completedSegment1],
+      completed_segments: [createSegment(segmentId - 1, "So I've been thinking about the caching strategy we discussed, um, and I think there's a few different approaches we could take here.", 0, 6.2, 0.88, true)],
       in_progress_segment: createSegment(segmentId, "Like, we could do the simple approach", currentTime, currentTime + 1.7, 0.91)
     }
   };
@@ -125,7 +123,7 @@ export function* happyPathScenario(): Generator<TimedMessage> {
     message: {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.TRANSCRIBE,
-      completed_segments: [completedSegment1],
+      completed_segments: [],
       in_progress_segment: createSegment(segmentId, "Like, we could do the simple approach where we just cache everything for", currentTime, currentTime + 3.1, 0.92)
     }
   };
@@ -136,12 +134,11 @@ export function* happyPathScenario(): Generator<TimedMessage> {
     message: {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.TRANSCRIBE,
-      completed_segments: [completedSegment1],
+      completed_segments: [],
       in_progress_segment: createSegment(segmentId, "Like, we could do the simple approach where we just cache everything for like 5 minutes or", currentTime, currentTime + 4.5, 0.91, false)
     }
   };
 
-  const completedSegment2 = createSegment(segmentId, "Like, we could do the simple approach where we just cache everything for like 5 minutes or", 6.5, 11.0, 0.91, true)
 
   // Pause after "or" - natural thinking moment, segment completes
   currentTime += 2.5; // Longer pause after "or"
@@ -151,8 +148,7 @@ export function* happyPathScenario(): Generator<TimedMessage> {
     message: {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.TRANSCRIBE,
-      completed_segments: [completedSegment1,
-      completedSegment2],
+      completed_segments: [createSegment(segmentId, "Like, we could do the simple approach where we just cache everything for like 5 minutes or", 6.5, 11.0, 0.91, true)],
       in_progress_segment: createSegment(segmentId, "however, but that might not be optimal", currentTime, currentTime + 1.8, 0.76, false) // Lower confidence on "however"
     }
   };
@@ -163,8 +159,7 @@ export function* happyPathScenario(): Generator<TimedMessage> {
     message: {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.TRANSCRIBE,
-      completed_segments: [completedSegment1,
-      completedSegment2],
+      completed_segments: [],
       in_progress_segment: createSegment(segmentId, "however, but that might not be optimal because some data changes more frequently", currentTime, currentTime + 4.2, 0.89, false)
     }
   };
@@ -175,8 +170,7 @@ export function* happyPathScenario(): Generator<TimedMessage> {
     message: {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.TRANSCRIBE,
-      completed_segments: [completedSegment1,
-      completedSegment2],
+      completed_segments: [],
       in_progress_segment: createSegment(segmentId, "however, but that might not be optimal because some data changes more frequently than others.", currentTime, currentTime + 5.1, 0.92, false)
     }
   };
@@ -189,9 +183,7 @@ export function* happyPathScenario(): Generator<TimedMessage> {
     message: {
       type: MessageType.APPEND_SEGMENTS,
       target_mode: Mode.TRANSCRIBE,
-      completed_segments: [completedSegment1,
-      completedSegment2,
-      createSegment(segmentId - 1, "however, but that might not be optimal because some data changes more frequently than others.", 13.5, 18.6, 0.92, true)],
+      completed_segments: [createSegment(segmentId - 1, "however, but that might not be optimal because some data changes more frequently than others.", 13.5, 18.6, 0.92, true)],
       in_progress_segment: createSegment(segmentId, "", currentTime, currentTime, 0.0, false) // Empty to signal end
     }
   };
