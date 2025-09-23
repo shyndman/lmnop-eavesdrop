@@ -15,6 +15,12 @@ interface MockAPI {
   setString: (target_mode: 'TRANSCRIBE' | 'COMMAND', content: string) => void
   appendSegments: (target_mode: 'TRANSCRIBE' | 'COMMAND', completedSegments: any[], inProgressSegment: any) => void
   changeMode: (target_mode: 'TRANSCRIBE' | 'COMMAND') => void
+  commitOperation: (cancelled?: boolean) => void
+  commandExecuting: (waitingMessages?: string[]) => void
+  togglePauseScenario: () => void
+  runScenario: (scenarioGenerator: Generator<{ delay: number; message: any }>) => Promise<void>
+  runHappyPath: () => Promise<void>
+  runPerfectionistSpiral: () => Promise<void>
 }
 
 declare global {
