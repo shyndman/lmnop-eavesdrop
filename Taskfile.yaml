@@ -1,0 +1,36 @@
+version: '3'
+
+tasks:
+  # TODO: Make sure we have the easyeffects Pulse Audio source (and on that
+  # note, we should dump the config here)
+  # TODO: Ensure that ydotool is running
+  run-client:
+    deps: [prepare-client, build-client-ui]
+    dir: packages/active-listener
+    cmds:
+      - uv run al --audio-device default --ui-bin ./../active-listener-ui-electron/dist/linux-unpacked/active-listener-ui
+
+  prepare-client:
+    dir: packages/active-listener
+    cmds:
+      - uv sync --all-extras --all-groups
+
+  build-client-ui:
+    dir: packages/active-listener-ui-electron
+    sources:
+      - resources/*.*
+      - src/**/*.ts
+      - src/**/*.css
+      - src/**/*.html
+      - electron-builder.yml
+      - electron.vite.config.ts
+      - pnpm-lock.yaml
+      - tsconfig.json
+      - tsconfig.*.json
+    generates:
+      - dist/linux-unpacked/*
+      - dist/linux-unpacked/*.pak
+      - dist/linux-unpacked/*.so
+    cmds:
+      - pnpm install
+      - pnpm run build:linux:dev
