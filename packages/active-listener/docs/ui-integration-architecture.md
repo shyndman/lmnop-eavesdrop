@@ -345,11 +345,29 @@ JSON Lines format: `{"type": "message_type", ...}\n`
 - Complete component wiring and factory method
 - Comprehensive cleanup and error handling
 
-### Phase 3: Message Processing
-1. Implement transcription message processing in workspace
-2. Implement UI message generation and sending
-3. Implement segment state tracking
-4. Add mode switching API
+### Phase 3: Message Processing ✅ COMPLETED
+1. ✅ Implement three-stage processing pipeline in workspace
+2. ✅ Implement segment extraction logic (_extract_segment_changes)
+3. ✅ Implement core text processing (_update_workspace_text)
+4. ✅ Implement UI notification as side effect (_notify_ui)
+5. ✅ Add mode switching API (set_mode/get_mode)
+6. ✅ Add SegmentChanges dataclass for clean abstraction
+
+**Status**: Complete message processing pipeline implemented with proper separation of concerns. Workspace now serves as the authoritative text state manager with UI notifications as side effects.
+
+**Files Modified**:
+- `src/eavesdrop/active_listener/workspace.py` - Complete implementation with three-stage pipeline
+
+**Key Features Implemented**:
+- **SegmentChanges dataclass**: Clean abstraction separating "what changed" from "what to do about it"
+- **Three-stage processing**: Extract changes → Update text state → Notify UI as side effect
+- **Authoritative text state**: Workspace maintains `_current_text` as single source of truth
+- **Segment deduplication**: Tracks completed segments to avoid sending duplicates to UI
+- **Error isolation**: UI communication failures don't break core text processing
+- **Mode switching**: Complete API for TRANSCRIBE/COMMAND mode management
+- **Extension ready**: Clear extension points for keyword detection and text transformations
+
+**Architecture Achievement**: Workspace is now the core of the application - it owns text state, processes transcription changes, and happens to notify UI. This enables future features like voice commands, text editing, and advanced processing.
 
 ### Phase 4: Integration
 1. Wire workspace into App's message processing flow
