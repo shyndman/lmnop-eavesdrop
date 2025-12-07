@@ -10,6 +10,10 @@ import pytest
 
 from eavesdrop.active_listener.__main__ import ActiveListener
 
+# Use /bin/true as a dummy executable for --ui-bin in tests.
+# It exists on all Linux systems and passes the executable validation.
+REQUIRED_ARGS = ["--ui-bin", "/bin/true"]
+
 
 class TestCLIInterface:
   """Test CLI command interface contracts."""
@@ -18,7 +22,7 @@ class TestCLIInterface:
     """Test that command arguments have expected default values."""
     from eavesdrop.active_listener.__main__ import ServerHostPort
 
-    cmd = ActiveListener.parse([])
+    cmd = ActiveListener.parse([*REQUIRED_ARGS])
 
     # Default values from specification
     assert cmd.server == ServerHostPort(host="localhost", port=9090)
@@ -65,11 +69,11 @@ class TestCLIInterface:
     """Test that empty server value is rejected."""
     # This should fail until validation is implemented
     with pytest.raises(SystemExit):
-      ActiveListener.parse(["--server", "", "--audio-device", "default"])
+      ActiveListener.parse([*REQUIRED_ARGS, "--server", "", "--audio-device", "default"])
 
   def test_command_help_text(self):
     """Test that command provides help text for arguments."""
-    cmd = ActiveListener.parse([])
+    cmd = ActiveListener.parse([*REQUIRED_ARGS])
 
     # Should have docstring or help attributes
     # This will fail until implementation
@@ -83,18 +87,22 @@ class TestCLIInterface:
     from eavesdrop.active_listener.__main__ import ServerHostPort
 
     # This should work with valid server format
-    cmd = ActiveListener.parse(["--server", "192.168.1.100:8080", "--audio-device", "hw:1,0"])
+    cmd = ActiveListener.parse(
+      [*REQUIRED_ARGS, "--server", "192.168.1.100:8080", "--audio-device", "hw:1,0"]
+    )
     assert cmd.server == ServerHostPort(host="192.168.1.100", port=8080)
 
     # This should fail with invalid format (Clypi exits on parser error)
     with pytest.raises(SystemExit):
-      ActiveListener.parse(["--server", "invalid-format", "--audio-device", "default"])
+      ActiveListener.parse(
+        [*REQUIRED_ARGS, "--server", "invalid-format", "--audio-device", "default"]
+      )
 
   def test_parsed_server_components_access(self):
     """Test that command can extract host and port from parsed server."""
     from eavesdrop.active_listener.__main__ import ServerHostPort
 
-    cmd = ActiveListener.parse(["--server", "example.com:8080"])
+    cmd = ActiveListener.parse([*REQUIRED_ARGS, "--server", "example.com:8080"])
 
     # Server should be a ServerHostPort with direct access to host and port
     assert cmd.server == ServerHostPort(host="example.com", port=8080)
