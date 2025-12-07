@@ -12,6 +12,7 @@ from websockets.asyncio.server import ServerConnection
 from eavesdrop.common import get_logger
 from eavesdrop.wire import (
   ErrorMessage,
+  Segment,
   StreamStatusMessage,
   TranscriptionMessage,
   serialize_message,
@@ -177,7 +178,7 @@ class RTSPSubscriberManager:
     )
 
   async def send_transcription(
-    self, stream_name: str, segments: list, language: str | None = None
+    self, stream_name: str, segments: list[Segment], language: str | None = None
   ) -> None:
     """
     Send transcription result to subscribers.

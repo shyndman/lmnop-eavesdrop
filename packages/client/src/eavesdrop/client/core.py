@@ -8,7 +8,6 @@ and context manager protocols for streaming transcription results.
 import asyncio
 import secrets
 from collections.abc import AsyncIterator
-from typing import Any
 
 from eavesdrop.client.audio import AudioCapture
 from eavesdrop.client.connection import WebSocketConnection
@@ -65,7 +64,7 @@ class EavesdropClient:
     self._connected = False
     self._streaming = False
     self._message_queue: asyncio.Queue[TranscriptionMessage] = asyncio.Queue()
-    self._background_tasks: set[asyncio.Task[Any]] = set()
+    self._background_tasks: set[asyncio.Task[None]] = set()
 
     # Validate configuration
     self._validate_configuration()

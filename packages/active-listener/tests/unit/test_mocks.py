@@ -1,8 +1,7 @@
 """Mock implementations for testing active listener components."""
 
 import asyncio
-from collections.abc import AsyncIterator
-from typing import Any
+from collections.abc import AsyncIterator, Callable
 
 from eavesdrop.active_listener.client import ConnectionState
 from eavesdrop.wire.transcription import Segment, UserTranscriptionOptions
@@ -19,8 +18,8 @@ class MockEavesdropClient:
     self._connected = False
     self._streaming = False
     self.connection_state = ConnectionState()
-    self.message_queue: list[Any] = []
-    self.on_message_callback: Any = None
+    self.message_queue: list["MockTranscriptionMessage"] = []
+    self.on_message_callback: Callable[["MockTranscriptionMessage"], None] | None = None
 
   async def connect(self) -> None:
     if self.host == "invalid" or self.port == 0:
@@ -50,11 +49,11 @@ class MockEavesdropClient:
   def is_streaming(self) -> bool:
     return self._streaming
 
-  def add_mock_message(self, message: Any) -> None:
+  def add_mock_message(self, message: "MockTranscriptionMessage") -> None:
     """Add a message to be yielded by the async iterator."""
     self.message_queue.append(message)
 
-  async def __aiter__(self) -> AsyncIterator[Any]:
+  async def __aiter__(self) -> AsyncIterator["MockTranscriptionMessage"]:
     """Async iterator that yields mock messages."""
     while self.message_queue:
       message = self.message_queue.pop(0)
@@ -104,11 +103,11 @@ class MockEavesdropClientWrapper:
     except Exception:
       return False
 
-  def add_mock_message(self, message: Any) -> None:
+  def add_mock_message(self, message: "MockTranscriptionMessage") -> None:
     """Add a message to be yielded by the async iterator."""
     self._client.add_mock_message(message)
 
-  async def __aiter__(self) -> AsyncIterator[Any]:
+  async def __aiter__(self) -> AsyncIterator["MockTranscriptionMessage"]:
     """Delegate to the underlying client's async iterator."""
     async for message in self._client:
       yield message

@@ -42,7 +42,7 @@ class ChunkTranscriptionResult:
   info: TranscriptionInfo | None
   processing_time: float
   audio_duration: float
-  speech_chunks: list | None = None
+  speech_chunks: list[SpeechChunk] | None = None
 
 
 class StreamingTranscriptionProcessor:
@@ -342,7 +342,7 @@ class StreamingTranscriptionProcessor:
 
   def _transcribe_audio(
     self, chunk: AudioChunk
-  ) -> tuple[list[Segment] | None, TranscriptionInfo | None, list | None]:
+  ) -> tuple[list[Segment] | None, TranscriptionInfo | None, list[SpeechChunk] | None]:
     """Transcribe audio sample using the Faster Whisper model."""
     if not self.transcriber:
       raise RuntimeError("Transcriber not initialized")
@@ -449,7 +449,7 @@ class StreamingTranscriptionProcessor:
       await self.sink.send_language_detection(info.language, info.language_probability)
 
   async def _handle_transcription_output(
-    self, result: list[Segment], duration: float, speech_chunks: list | None = None
+    self, result: list[Segment], duration: float, speech_chunks: list[SpeechChunk] | None = None
   ) -> None:
     """Handle transcription output and send to client."""
     result_count = len(result) if result else 0
@@ -624,7 +624,7 @@ class StreamingTranscriptionProcessor:
   def _should_complete_segment_by_silence(
     self,
     segment: Segment,
-    speech_chunks: list | None,
+    speech_chunks: list[SpeechChunk] | None,
     silence_threshold: float,
     audio_duration: float,
   ) -> bool:
@@ -719,7 +719,7 @@ class StreamingTranscriptionProcessor:
 
   def _create_synthetic_incomplete_segment(
     self,
-    speech_chunks: list | None,
+    speech_chunks: list[SpeechChunk] | None,
     silence_threshold: float,
     duration: float,
   ) -> Segment:
