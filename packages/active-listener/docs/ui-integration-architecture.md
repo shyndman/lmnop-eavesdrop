@@ -41,8 +41,7 @@ ActiveListener (CLI)
   └── App (Application Controller)
       ├── EavesdropClientWrapper (Existing)
       ├── UIChannel (New - UI Process Communication)
-      ├── TextTranscriptionWorkspace (New - Core Logic)
-      └── YdoToolTypist (Existing - Desktop Typing)
+      └── TextTranscriptionWorkspace (New - Core Logic)
 ```
 
 ### Key Principles
@@ -369,11 +368,11 @@ JSON Lines format: `{"type": "message_type", ...}\n`
 
 **Architecture Achievement**: Workspace is now the core of the application - it owns text state, processes transcription changes, and happens to notify UI. This enables future features like voice commands, text editing, and advanced processing.
 
-### Phase 4: Integration
-1. Wire workspace into App's message processing flow
-2. Remove existing text manager integration (temporarily)
-3. Test end-to-end message flow
-4. Add error handling and edge cases
+### Phase 4: Integration ✅ COMPLETED
+1. ✅ Wire workspace into App's message processing flow
+2. ✅ Remove text_manager.py (replaced by workspace.py)
+3. ✅ Remove typist.py (replaced by output.py with clipboard-based commit)
+4. ✅ Add output.py for clipboard copy + ydotool paste
 
 ## Required Reading for Implementation
 
@@ -387,11 +386,8 @@ JSON Lines format: `{"type": "message_type", ...}\n`
 - `packages/wire/src/eavesdrop/wire/transcription.py` - Segment and transcription data structures
 - `packages/active-listener/src/eavesdrop/active_listener/messages.py` - UI message types to implement
 
-### State Management Files
-- `packages/active-listener/src/eavesdrop/active_listener/text_manager.py` - Current text state management (being replaced)
-
 ### Support Files
-- `packages/active-listener/src/eavesdrop/active_listener/typist.py` - Desktop typing implementation (remains)
+- `packages/active-listener/src/eavesdrop/active_listener/output.py` - Clipboard-based text output (copy + paste)
 - `packages/common/src/eavesdrop/common/__init__.py` - Logging utilities
 
 ### Configuration Files

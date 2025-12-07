@@ -42,6 +42,7 @@ Python ──stdin JSON messages──► Electron
 | `ui_channel.py` | Subprocess lifecycle, IPC, ready signal detection |
 | `ui_messages.py` | Pydantic message types for Python→Electron |
 | `client.py` | WebSocket client wrapper for Eavesdrop server |
+| `output.py` | Clipboard-based text output (copy + paste via ydotool) |
 
 ### Message Types
 
@@ -78,6 +79,4 @@ python -m eavesdrop.active_listener --ui-bin /path/to/electron --server localhos
 
 ## Known Issues
 
-See `/ISSUES.md` for tracked issues. Notable:
-- Issue #3: JSON serialization in `ui_channel.py` uses `json.dumps()` on Pydantic dataclasses (needs `serialize_ui_message()`)
-- Issues #12, #17, #19, #28: Dead code from incomplete refactor (`text_manager.py`, `typist.py`)
+See `/ISSUES.md` for tracked issues.

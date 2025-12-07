@@ -9,7 +9,6 @@ import signal
 from pathlib import Path
 
 from eavesdrop.active_listener.client import EavesdropClientWrapper
-from eavesdrop.active_listener.typist import YdoToolTypist
 from eavesdrop.active_listener.ui_channel import UIChannel
 from eavesdrop.active_listener.workspace import TextTranscriptionWorkspace
 from eavesdrop.common import get_logger
@@ -28,8 +27,6 @@ class App:
   :type ui_channel: UIChannel
   :param workspace: Text transcription workspace manager
   :type workspace: TextTranscriptionWorkspace
-  :param typist: Desktop typing automation component
-  :type typist: YdoToolTypist
   """
 
   def __init__(
@@ -37,7 +34,6 @@ class App:
     client: EavesdropClientWrapper,
     ui_channel: UIChannel,
     workspace: TextTranscriptionWorkspace,
-    typist: YdoToolTypist,
   ) -> None:
     """Initialize application with pre-configured components.
 
@@ -47,13 +43,10 @@ class App:
     :type ui_channel: UIChannel
     :param workspace: Configured text workspace manager
     :type workspace: TextTranscriptionWorkspace
-    :param typist: Desktop typing automation component
-    :type typist: YdoToolTypist
     """
     self._client = client
     self._ui_channel = ui_channel
     self._workspace = workspace
-    self._typist = typist
     self._shutdown_event = asyncio.Event()
     self.logger = get_logger("app")
 
@@ -88,11 +81,8 @@ class App:
       # Create text transcription workspace with UI channel dependency
       workspace = TextTranscriptionWorkspace(ui_channel=ui_channel)
 
-      # Create desktop typing component
-      typist = YdoToolTypist()
-
       # Wire all components together in the App instance
-      return cls(client=client, ui_channel=ui_channel, workspace=workspace, typist=typist)
+      return cls(client=client, ui_channel=ui_channel, workspace=workspace)
 
     except Exception as e:
       raise RuntimeError(f"Failed to create application components: {e}")

@@ -5,81 +5,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from eavesdrop.active_listener.client import ConnectionState
-from eavesdrop.active_listener.text_manager import TypingOperation
 from eavesdrop.wire.transcription import Segment, UserTranscriptionOptions
-
-
-class MockYdoToolTypist:
-  """Mock implementation of YdoToolTypist for testing."""
-
-  def __init__(self, available: bool = True, should_fail: bool = False):
-    self._available = available
-    self._initialized = available
-    self._should_fail = should_fail
-    self.typed_operations: list[TypingOperation] = []
-    self.typed_text_history: list[str] = []
-    self.deleted_chars_history: list[int] = []
-
-  def is_available(self) -> bool:
-    return self._available
-
-  def initialize(self) -> None:
-    if self._should_fail:
-      raise Exception("Mock initialization failed")
-    self._initialized = True
-    self._available = True
-
-  def type_text(self, text: str) -> None:
-    if not self._available:
-      raise Exception("ydotool is not available")
-    if self._should_fail:
-      raise Exception("Mock typing failed")
-    self.typed_text_history.append(text)
-
-  def delete_characters(self, count: int) -> None:
-    if not self._available:
-      raise Exception("pydotool is not available")
-    if self._should_fail:
-      raise Exception("Mock delete failed")
-    self.deleted_chars_history.append(count)
-
-  def execute_typing_operation(self, operation: TypingOperation) -> bool:
-    if not self._available or self._should_fail:
-      operation.completed = False
-      return False
-
-    self.typed_operations.append(operation)
-    if operation.chars_to_delete > 0:
-      self.delete_characters(operation.chars_to_delete)
-    if operation.text_to_type:
-      self.type_text(operation.text_to_type)
-
-    operation.completed = True
-    return True
-
-  def execute_with_retry(self, operation: TypingOperation, max_attempts: int = 3) -> bool:
-    return self.execute_typing_operation(operation)
-
-  def check_permissions(self) -> bool:
-    return self._available
-
-  def get_permission_error_message(self) -> str:
-    return "Mock permission error message"
-
-  def clear_history(self) -> None:
-    """Clear all recorded history for test isolation."""
-    self.typed_operations.clear()
-    self.typed_text_history.clear()
-    self.deleted_chars_history.clear()
-
-  def set_available(self, available: bool) -> None:
-    """Change availability for testing failure scenarios."""
-    self._available = available
-    self._initialized = available
-
-  def set_should_fail(self, should_fail: bool) -> None:
-    """Control whether operations should fail for testing."""
-    self._should_fail = should_fail
 
 
 class MockEavesdropClient:
@@ -232,7 +158,7 @@ class MockStructlogLogger:
   """Mock logger for testing that captures log calls."""
 
   def __init__(self):
-    self.log_calls: list[tuple[str, dict]] = []
+    self.log_calls: list[tuple[str, dict[str, str]]] = []
 
   def bind(self, **kwargs) -> "MockStructlogLogger":
     """Return self for method chaining."""
@@ -257,6 +183,6 @@ class MockStructlogLogger:
     """Clear all captured log calls."""
     self.log_calls.clear()
 
-  def get_logs_by_level(self, level: str) -> list[dict]:
+  def get_logs_by_level(self, level: str) -> list[dict[str, str]]:
     """Get all log calls for a specific level."""
     return [call[1] for call in self.log_calls if call[0] == level]
