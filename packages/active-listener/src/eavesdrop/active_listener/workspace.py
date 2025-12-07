@@ -5,10 +5,16 @@ through voice transcription and command modes.
 """
 
 from collections import OrderedDict
-from dataclasses import dataclass
+from io import StringIO
 
-from eavesdrop.active_listener.messages import Mode
+from pydantic.dataclasses import dataclass
+
 from eavesdrop.active_listener.ui_channel import UIChannel
+from eavesdrop.active_listener.ui_messages import (
+  AppendSegmentsMessage,
+  ChangeModeMessage,
+  Mode,
+)
 from eavesdrop.common import get_logger
 from eavesdrop.wire import TranscriptionMessage
 from eavesdrop.wire.transcription import Segment
@@ -25,7 +31,7 @@ class SegmentChanges:
   newly_completed: list[Segment]
   """Segments that transitioned from in-progress to completed"""
 
-  in_progress: Segment | None
+  in_progress: Segment
   """Current incomplete segment being transcribed (if any)"""
 
 
@@ -47,14 +53,23 @@ class TextTranscriptionWorkspace:
     :type ui_channel: UIChannel
     """
     self._ui_channel = ui_channel
-    self._current_text: str = ""
+
     self._current_mode: Mode = Mode.TRANSCRIBE
+    self._text_by_mode: dict[Mode, StringIO] = {
+      Mode.TRANSCRIBE: StringIO(),
+      Mode.COMMAND: StringIO(),
+    }
 
-    # Segment state tracking for UI synchronization
-    self._completed_segments_sent: OrderedDict[int, Segment] = OrderedDict()
-    """Track completed segments that have been sent to UI to avoid duplication"""
+    self._completed_by_mode: dict[Mode, OrderedDict[int, Segment]] = {
+      Mode.TRANSCRIBE: OrderedDict(),
+      Mode.COMMAND: OrderedDict(),
+    }
+    """Track completed segments per mode to avoid duplication and cross-mode contamination"""
 
-    self._current_in_progress_segment: Segment | None = None
+    self._in_progress_start_pos: dict[Mode, int] = {}
+    """Track where in-progress segment starts in each buffer for efficient replacement"""
+
+    self._in_progress: Segment | None = None
     """Track the current incomplete segment being processed"""
 
     self.logger = get_logger("workspace")
@@ -86,7 +101,7 @@ class TextTranscriptionWorkspace:
 
     except Exception as e:
       self.logger.exception("Error processing transcription message")
-      raise RuntimeError(f"Failed to process transcription message: {e}")
+      raise RuntimeError(f"Failed to process transcription message: {e}") from e
 
   def _extract_segment_changes(self, message: TranscriptionMessage) -> SegmentChanges:
     """Extract semantic changes from transcription message.
@@ -103,29 +118,12 @@ class TextTranscriptionWorkspace:
     :return: Structured changes detected in the message
     :rtype: SegmentChanges
     """
-    newly_completed = []
-    in_progress = None
-
-    for segment in message.segments:
-      if segment.completed:
-        # Check if this is a newly completed segment
-        if segment.id not in self._completed_segments_sent:
-          newly_completed.append(segment)
-          self.logger.debug(
-            "Detected newly completed segment", segment_id=segment.id, text=segment.text
-          )
-      else:
-        # This is an in-progress segment - there should only be one
-        if in_progress is not None:
-          self.logger.warning(
-            "Multiple in-progress segments in message",
-            first_id=in_progress.id,
-            second_id=segment.id,
-          )
-        in_progress = segment
-        self.logger.debug("Detected in-progress segment", segment_id=segment.id, text=segment.text)
-
-    return SegmentChanges(newly_completed=newly_completed, in_progress=in_progress)
+    newly_completed = [
+      s
+      for s in message.segments
+      if s.completed and s.id not in self._completed_by_mode[self._current_mode]
+    ]
+    return SegmentChanges(newly_completed=newly_completed, in_progress=message.segments[-1])
 
   def _update_workspace_text(self, changes: SegmentChanges) -> None:
     """Update the authoritative text representation with extracted changes.
@@ -138,35 +136,35 @@ class TextTranscriptionWorkspace:
     :type changes: SegmentChanges
     """
     # Update completed segments tracking
-    for segment in changes.newly_completed:
-      self._completed_segments_sent[segment.id] = segment
-      self.logger.debug("Added completed segment to workspace", segment_id=segment.id)
+    completed = self._completed_by_mode[self._current_mode]
+    for s in changes.newly_completed:
+      completed[s.id] = s
+      self.logger.debug("Added completed segment to workspace", segment_id=s.id)
 
     # Update current in-progress segment
-    if changes.in_progress:
-      if (
-        self._current_in_progress_segment
-        and changes.in_progress.id != self._current_in_progress_segment.id
-      ):
-        self.logger.debug(
-          "In-progress segment changed",
-          old_id=self._current_in_progress_segment.id,
-          new_id=changes.in_progress.id,
-        )
-      self._current_in_progress_segment = changes.in_progress
-    elif self._current_in_progress_segment:
-      # No in-progress segment in message, but we had one - it might have completed
-      self.logger.debug("No in-progress segment in message, clearing current")
-      self._current_in_progress_segment = None
+    previous_id = self._in_progress.id if self._in_progress is not None else None
+    if changes.in_progress.id != previous_id:
+      self.logger.debug(
+        "In-progress segment changed",
+        old_id=previous_id,
+        new_id=changes.in_progress.id,
+      )
+    self._in_progress = changes.in_progress
 
-    # Rebuild complete text from segments
-    completed_text = " ".join([segment.text for segment in self._completed_segments_sent.values()])
-    if self._current_in_progress_segment:
-      self._current_text = f"{completed_text} {self._current_in_progress_segment.text}".strip()
+    # Rebuild complete text from segments and write to current mode buffer
+    completed_text = " ".join([segment.text for segment in completed.values()])
+    if self._in_progress:
+      current_text = f"{completed_text} {self._in_progress.text}".strip()
     else:
-      self._current_text = completed_text.strip()
+      current_text = completed_text.strip()
 
-    self.logger.debug("Updated workspace text", text_length=len(self._current_text))
+    # Write to the StringIO buffer for the current mode
+    current_buffer = self._text_by_mode[self._current_mode]
+    current_buffer.seek(0)
+    current_buffer.truncate()
+    current_buffer.write(current_text)
+
+    self.logger.debug("Updated workspace text", mode=self._current_mode, text=current_text)
 
   def _notify_ui(self, changes: SegmentChanges) -> None:
     """Notify UI of workspace changes as a side effect.
@@ -192,13 +190,16 @@ class TextTranscriptionWorkspace:
     :type in_progress: Segment | None
     """
 
-    # Create the message with appropriate fallback for in_progress
-    message_data = {
-      "type": "append_segments",
-      "target_mode": self._current_mode,
-      "completed_segments": newly_completed,
-      "in_progress_segment": in_progress
-      or Segment(
+    # Don't send message if there's no in-progress segment and no newly completed segments
+    if not newly_completed and in_progress is None:
+      self.logger.debug("No changes to send to UI, skipping message")
+      return
+
+    # The protocol requires in_progress_segment to be non-null, but this is a design flaw
+    # For now, we have to provide a fallback, but this should be fixed in the protocol
+    if in_progress is None:
+      self.logger.warning("No in-progress segment but protocol requires one - using empty segment")
+      in_progress = Segment(
         id=0,
         seek=0,
         start=0.0,
@@ -209,15 +210,21 @@ class TextTranscriptionWorkspace:
         compression_ratio=0.0,
         words=None,
         temperature=None,
-      ),
-    }
+      )
+
+    message = AppendSegmentsMessage(
+      target_mode=self._current_mode,
+      completed_segments=newly_completed,
+      in_progress_segment=in_progress,
+    )
 
     try:
-      self._ui_channel.send_message(message_data)
+      # TODO The channel should be typed to take in Message. Perform the serialization internally.
+      self._ui_channel.send_message(message)
       self.logger.debug(
         "Sent UI update",
         newly_completed_count=len(newly_completed),
-        has_in_progress=in_progress is not None,
+        has_in_progress=in_progress.text != "",
       )
     except Exception as e:
       self.logger.error("Failed to send UI message", error=str(e))
@@ -245,13 +252,13 @@ class TextTranscriptionWorkspace:
     # Notify UI of mode change as side effect
     self._send_mode_change_message(mode)
 
-  def get_current_text(self) -> str:
+  def get_text(self) -> str:
     """Get the current text content of the workspace buffer.
 
     :return: Complete text content currently in the workspace
     :rtype: str
     """
-    return self._current_text
+    return self._text_by_mode[self._current_mode].getvalue()
 
   def get_mode(self) -> Mode:
     """Get the current operating mode of the workspace.
@@ -267,10 +274,9 @@ class TextTranscriptionWorkspace:
     :param mode: New mode to send to UI
     :type mode: Mode
     """
-    message_data = {"type": "change_mode", "target_mode": mode}
-
     try:
-      self._ui_channel.send_message(message_data)
+      # TODO The channel should be typed to take in Message. Perform the serialization internally.
+      self._ui_channel.send_message(ChangeModeMessage(target_mode=mode))
       self.logger.debug("Sent mode change to UI", mode=mode)
     except Exception as e:
       self.logger.error("Failed to send mode change message", error=str(e))

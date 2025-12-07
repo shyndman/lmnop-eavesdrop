@@ -39,8 +39,9 @@ class EavesdropClientWrapper:
     try:
       self.logger.info("Initializing eavesdrop client", host=self._host, port=self._port)
 
-      self._client = self._create_client()
-      await self._client.connect()
+      client = self._create_client()
+      await client.connect()
+      self._client = client
       self._connection_state.is_connected = True
       # TODO: Why do we record last message time when we haven't received a message nearby?
       self._connection_state.last_message_time = time.time()

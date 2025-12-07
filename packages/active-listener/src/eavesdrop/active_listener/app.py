@@ -187,7 +187,7 @@ class App:
       await self._client.shutdown()
       self.logger.info("Client shutdown complete")
 
-      # Shutdown UI subprocess first
+      # Shutdown UI subprocess
       await self._ui_channel.shutdown()
       self.logger.info("UI channel shutdown complete")
 

@@ -5,10 +5,9 @@ including process lifecycle management, message sending, and error detection.
 """
 
 import asyncio
-import json
 from pathlib import Path
-from typing import Any
 
+from eavesdrop.active_listener.ui_messages import UIMessage, serialize_ui_message
 from eavesdrop.common import get_logger
 
 
@@ -38,6 +37,18 @@ class UIChannel:
     self._ready_signal_received = False
     self.logger = get_logger("ui_channel")
 
+  def is_healthy(self) -> bool:
+    """Check if the UI subprocess is running and responsive.
+
+    :return: True if subprocess is running, False if crashed or terminated
+    :rtype: bool
+    """
+    if not self._process:
+      return False
+
+    # Check if process is still running (None means still running)
+    return self._process.returncode is None
+
   async def start(self) -> None:
     """Launch the UI subprocess and wait for ready signal.
 
@@ -54,22 +65,19 @@ class UIChannel:
 
     try:
       # Launch the UI subprocess with pipes for communication
+      # stdout is DEVNULL because Textual apps render terminal UI to stdout
       self._process = await asyncio.create_subprocess_exec(
         str(self._ui_bin_path),
         stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
         cwd=self._working_dir,
       )
 
       self.logger.info("UI subprocess launched", pid=self._process.pid)
 
-      # Start monitoring stdout for ready signal and stderr for errors
-      await asyncio.gather(
-        self._monitor_ready_signal(),
-        self._monitor_stderr(),
-        return_exceptions=False,  # Let exceptions bubble up
-      )
+      # Wait for ready signal, then continue monitoring stderr in background
+      await self._monitor_ready_signal()
 
     except FileNotFoundError:
       self.logger.exception("UI executable not found", path=self._ui_bin_path)
@@ -82,7 +90,11 @@ class UIChannel:
       raise RuntimeError(f"Failed to start UI subprocess: {e}")
 
   async def _monitor_ready_signal(self) -> None:
-    """Monitor UI subprocess stdout for ready signal.
+    """Monitor UI subprocess stderr for ready signal.
+
+    Textual apps render to stdout, so the ready signal comes via stderr.
+    After receiving the ready signal, this method continues monitoring
+    stderr for debug/error output.
 
     :raises RuntimeError: If process exits before ready signal received
     """
@@ -100,19 +112,21 @@ class UIChannel:
         )
 
       try:
-        # Read stdout line with timeout
+        # Read stderr line with timeout
         line_bytes = await asyncio.wait_for(self._process.stderr.readline(), timeout=1.0)
 
-        if not line_bytes:  # EOF - process closed stdout
-          raise RuntimeError("UI subprocess closed stdout before sending ready signal")
+        if not line_bytes:  # EOF - process closed stderr
+          raise RuntimeError("UI subprocess closed stderr before sending ready signal")
 
         line = line_bytes.decode().strip()
-        self.logger.debug("UI subprocess stdout", line=line)
+        self.logger.debug("UI subprocess stderr", line=line)
 
         # Check for ready signal
         if "ACTIVE_LISTENER_UI_READY" in line:
           self.logger.info("UI subprocess ready signal received")
           self._ready_signal_received = True
+          # Continue monitoring stderr in background after ready signal
+          asyncio.create_task(self._monitor_stderr())
           return
 
       except asyncio.TimeoutError:
@@ -126,9 +140,10 @@ class UIChannel:
         continue
 
   async def _monitor_stderr(self) -> None:
-    """Monitor UI subprocess stderr and log any output.
+    """Monitor UI subprocess stderr for debug/error output.
 
-    Runs continuously to capture and log stderr output for debugging.
+    Called after ready signal is received. Runs continuously in background
+    to capture and log stderr output for debugging.
     """
     if not self._process or not self._process.stderr:
       return
@@ -141,21 +156,20 @@ class UIChannel:
 
         line = line_bytes.decode().strip()
         if line:  # Only log non-empty lines
-          self.logger.info("UI subprocess stderr", line=line)
+          self.logger.debug("UI subprocess stderr", line=line)
 
     except Exception:
       # Stderr monitoring is non-critical, don't let errors break the flow
       self.logger.debug("Error monitoring UI subprocess stderr")
-      pass
 
-  def send_message(self, message: dict[str, Any]) -> None:
+  def send_message(self, message: UIMessage) -> None:
     """Send a JSON-line message to the UI subprocess stdin.
 
     Serializes the message as JSON and sends it to the UI process with
     newline termination. This is a fire-and-forget operation.
 
     :param message: Dictionary message to send to UI
-    :type message: dict[str, Any]
+    :type message: Message
     :raises BrokenPipeError: If UI subprocess stdin pipe is broken
     :raises RuntimeError: If UI subprocess is not running
     """
@@ -167,13 +181,13 @@ class UIChannel:
 
     try:
       # Serialize message as JSON with newline termination
-      json_line = json.dumps(message) + "\n"
+      json_line = serialize_ui_message(message) + "\n"
       json_bytes = json_line.encode("utf-8")
 
       # Write to subprocess stdin
       self._process.stdin.write(json_bytes)
 
-      self.logger.debug("Sent message to UI", message_type=message.get("type", "unknown"))
+      self.logger.debug("Sent message to UI", message_type=type(message).__name__)
 
     except BrokenPipeError:
       self.logger.exception("UI subprocess stdin pipe is broken")
@@ -221,15 +235,3 @@ class UIChannel:
       process.kill()
       await process.wait()
       self.logger.info("UI subprocess force terminated", exit_code=process.returncode)
-
-  def is_healthy(self) -> bool:
-    """Check if the UI subprocess is running and responsive.
-
-    :return: True if subprocess is running, False if crashed or terminated
-    :rtype: bool
-    """
-    if not self._process:
-      return False
-
-    # Check if process is still running (None means still running)
-    return self._process.returncode is None

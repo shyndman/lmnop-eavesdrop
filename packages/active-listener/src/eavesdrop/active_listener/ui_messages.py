@@ -1,36 +1,39 @@
 """
-Message types for Python <-> Electron communication via stdin/stdout.
+Message types for Python -> Electron communication via stdin/stdout.
 
-These messages handle real-time transcription display, mode switching between
-transcription and command recognition, and operation lifecycle management.
+These messages send workspace state updates to the UI for display purposes only.
+The workspace maintains authoritative state; the UI is purely a view that reflects
+workspace data without any bidirectional communication or state management.
 """
 
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import Field
+from pydantic import BaseModel, Field, TypeAdapter
 from pydantic.dataclasses import dataclass
 
 from eavesdrop.wire.transcription import Segment
 
 
 class Mode(StrEnum):
-  """Application modes that determine which DOM element receives transcription updates.
+  """Workspace operation modes that determine the purpose of voice input.
 
-  - TRANSCRIBE: Normal speech-to-text mode, updates #transcription element
-  - COMMAND: Voice command dictation mode, updates #command element
+  - TRANSCRIBE: Voice builds up a text buffer for composition and content creation
+  - COMMAND: Voice provides transformation instructions to an agent for processing the transcribed
+    content
+
+  Each mode maintains its own separate text buffer in the workspace.
   """
 
   TRANSCRIBE = "TRANSCRIBE"
   COMMAND = "COMMAND"
 
 
-class MessageType(StrEnum):
+class UIMessageType(StrEnum):
   """Message type discriminator enum for type-safe message handling."""
 
   APPEND_SEGMENTS = "append_segments"
   CHANGE_MODE = "change_mode"
-  SET_SEGMENTS = "set_segments"
   SET_STRING = "set_string"
   COMMAND_EXECUTING = "command_executing"
   COMMIT_OPERATION = "commit_operation"
@@ -38,14 +41,14 @@ class MessageType(StrEnum):
 
 @dataclass(kw_only=True)
 class AppendSegmentsMessage:
-  """Sends real-time transcription updates to the Electron UI.
+  """Sends workspace transcription state updates to the UI for display.
 
-  This message incrementally updates the transcription display with new completed
-  segments and the current in-progress segment. Used for high-frequency updates
-  as speech is being processed and transcribed.
+  Notifies the UI to display new completed segments and the current in-progress segment
+  from the workspace's authoritative state. The UI renders this data without maintaining
+  any state of its own.
 
-  The target_mode determines whether segments are displayed in the transcription
-  buffer (TRANSCRIBE mode) or as command input (COMMAND mode).
+  The target_mode indicates which workspace buffer (TRANSCRIBE or COMMAND) these
+  segments belong to, determining which UI element should display them.
 
   :param type: Message type discriminator
   :type type: Literal["append_segments"]
@@ -71,13 +74,13 @@ class AppendSegmentsMessage:
 
 @dataclass(kw_only=True)
 class ChangeModeMessage:
-  """Switches between transcription buffer and command input modes.
+  """Notifies the UI that the workspace has switched operation modes.
 
-  TRANSCRIBE mode: Speech is transcribed into a text buffer for eventual typing.
-  COMMAND mode: Speech is transcribed as commands to describing edits to the transcription buffer.
+  TRANSCRIBE mode: Speech builds up a text buffer for composition and content creation.
+  COMMAND mode: Speech provides transformation instructions to an agent.
 
-  This message instructs the UI to switch between these semantic modes, affecting
-  where subsequent transcription updates are displayed and how they're interpreted.
+  This message informs the UI to update its display to reflect the workspace's
+  current mode, affecting which UI element will receive subsequent updates.
 
   :param type: Message type discriminator
   :type type: Literal["change_mode"]
@@ -155,3 +158,46 @@ class CommitOperationMessage:
   cancelled: bool = Field(
     description="True if the operation was cancelled, false if completed normally"
   )
+
+
+# Union type for all UI messages
+UIMessage = (
+  AppendSegmentsMessage
+  | ChangeModeMessage
+  | SetStringMessage
+  | CommandExecutingMessage
+  | CommitOperationMessage
+)
+
+
+class _UIMessageCodec(BaseModel):
+  """Private message wrapper type for deserializing the discriminated union of UI message types."""
+
+  message: UIMessage = Field(discriminator="type")
+
+
+def serialize_ui_message(message: UIMessage) -> str:
+  """Serialize a UI message to JSON string.
+
+  :param message: Any UI message instance
+  :type message: UIMessage
+  :return: JSON string representation of the message
+  :rtype: str
+  """
+  message_type = type(message)
+  adapter = TypeAdapter(message_type)
+  return adapter.dump_json(message).decode("utf-8")
+
+
+def deserialize_ui_message(json_str: str) -> UIMessage:
+  """Deserialize a JSON string to UI message.
+
+  :param json_str: JSON string containing the message
+  :type json_str: str
+  :return: Deserialized message instance of the appropriate type
+  :rtype: UIMessage
+  """
+  # Wrap the incoming message in the expected MessageCodec structure
+  wrapped_json = f'{{"message": {json_str}}}'
+  codec = _UIMessageCodec.model_validate_json(wrapped_json)
+  return codec.message

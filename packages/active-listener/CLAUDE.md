@@ -49,7 +49,7 @@ Defined in `ui_messages.py`, must stay in sync with `active-listener-ui-electron
 
 - `append_segments` — Real-time transcription updates (completed + in-progress)
 - `change_mode` — Switch between TRANSCRIBE/COMMAND modes
-- `set_segments` — Complete content replacement
+- `set_string` — Replace content with transformed text
 - `command_executing` — Visual feedback for command recognition
 - `commit_operation` — End session, reset to TRANSCRIBE
 
