@@ -46,8 +46,6 @@ def parse_ui_binary(value: str | list[str]) -> Path:
   :rtype: Path
   :raises ValueError: If path doesn't exist, isn't executable, or is invalid
   """
-  assert isinstance(value, str), "UI binary path must be a string"
-
   if not isinstance(value, str):
     raise ValueError("--ui-bin must be a string")
 
@@ -73,11 +71,9 @@ def parse_ui_binary(value: str | list[str]) -> Path:
 
 
 def parse_server(value: str | list[str]) -> ServerHostPort:
-  assert isinstance(value, str), "Server must be a string in hostname:port format"
-
   """Parse server argument in hostname:port format."""
   if not isinstance(value, str):
-    raise ValueError("Server must be a string")
+    raise ValueError("Server must be a string in hostname:port format")
 
   if not value:
     raise ValueError("Invalid server format: cannot be empty")
@@ -182,10 +178,9 @@ class ActiveListener(Command):
 
 
 def main() -> None:
+  """Main entry point for active-listener command."""
   setup_logging_from_env()
   logger = get_logger("main")
-
-  """Main entry point for active-listener command."""
   try:
     cli = ActiveListener.parse()
     cli.start()
