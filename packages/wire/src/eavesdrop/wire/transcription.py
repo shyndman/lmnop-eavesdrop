@@ -73,11 +73,16 @@ class Segment(BaseModel):
   temperature: float | None
   """Generation temperature used when creating this segment, None if not tracked."""
 
+  time_offset: float = 0.0
+  """Absolute time offset to convert relative segment times to stream timestamps."""
+
   completed: bool = False
   """Whether the segment transcription has been finalized and assigned a chain ID."""
 
-  time_offset: float = 0.0
-  """Absolute time offset to convert relative segment times to stream timestamps."""
+  @property
+  def in_progress(self) -> bool:
+    """Whether the segment is still being processed and not yet finalized."""
+    return not self.completed
 
   @computed_field
   @property
