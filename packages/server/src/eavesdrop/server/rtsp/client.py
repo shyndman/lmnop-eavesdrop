@@ -452,6 +452,9 @@ class RTSPTranscriptionClient(RTSPClient):
           # Create new session for this connection attempt
           session = create_session(self.stream_name)
 
+          # Reset buffer to clear stale timestamps/audio from previous connection
+          self.stream_buffer.reset()
+
           # Create processor with session for this connection
           self.processor = StreamingTranscriptionProcessor(
             buffer=self.stream_buffer,
