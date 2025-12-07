@@ -7,7 +7,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from io import StringIO
-from typing import Any
+from typing import Any, cast
 
 import structlog
 from structlog.dev import (
@@ -376,10 +376,12 @@ def setup_logging(
 
 
 def get_logger(
-  name: str | None = None, *args: list[Any], **initial_values: Any
+  name: str | None = None, *args: list[object], **initial_values: Any
 ) -> structlog.stdlib.BoundLogger:
   """Get a structured logger instance."""
-  return structlog.get_logger(*([name] + list(args)), **initial_values)
+  return cast(
+    structlog.stdlib.BoundLogger, structlog.get_logger(*([name] + list(args)), **initial_values)
+  )
 
 
 def setup_logging_from_env() -> None:

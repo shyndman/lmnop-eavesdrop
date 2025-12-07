@@ -19,8 +19,8 @@ class Mode(StrEnum):
   """Workspace operation modes that determine the purpose of voice input.
 
   - TRANSCRIBE: Voice builds up a text buffer for composition and content creation
-  - COMMAND: Voice provides transformation instructions to an agent for processing the transcribed
-    content
+  - COMMAND: Voice provides transformation instructions to an agent for processing the
+    transcribed content
 
   Each mode maintains its own separate text buffer in the workspace.
   """

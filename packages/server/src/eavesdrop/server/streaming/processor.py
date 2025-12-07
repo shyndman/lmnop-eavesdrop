@@ -781,8 +781,8 @@ class StreamingTranscriptionProcessor:
     # Ensure directory exists
     os.makedirs(os.path.dirname(filename) if os.path.dirname(filename) else ".", exist_ok=True)
 
-    # Convert bytes back to numpy array for writing
-    audio_array = np.frombuffer(chunk.data, dtype=np.float32)
+    # chunk.data is already a numpy array
+    audio_array = chunk.data
 
     try:
       sf.write(filename, audio_array, self.buffer.config.sample_rate)

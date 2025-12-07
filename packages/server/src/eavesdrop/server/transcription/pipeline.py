@@ -537,9 +537,6 @@ class _TranscribeContext:
   total_duration: float = field(init=False)
   """Total duration of audio in seconds."""
 
-  anomaly_detector: AnomalyDetector = field(init=False)
-  """Detector for hallucination filtering."""
-
   # Loop state
 
   seek: int = field(default=0, init=False)
@@ -582,7 +579,6 @@ class _TranscribeContext:
   def __post_init__(self):
     self.total_frames = self.features.shape[-1] - 1
     self.total_duration = self.total_frames * self.time_per_frame
-    self.anomaly_detector = AnomalyDetector(_PUNCTUATION)
     self.all_tokens = self.initial_tokens.copy()
 
   def advance(self) -> bool:

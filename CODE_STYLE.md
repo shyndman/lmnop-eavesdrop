@@ -1,7 +1,7 @@
 READ THE ENTIRE GUIDE.
 
-And after you do, internalize this: We use types ALL the type. Because we do, we ALWAYS
-trust the compiler, and never write ridiculous amateurish dynamic type testing code. Tat
+And after you do, internalize this: We use types ALL the time. Because we do, we ALWAYS
+trust the compiler, and never write ridiculous amateurish dynamic type testing code. That
 kind of coding is STRICTLY forbidden.
 
 # Code Style

@@ -1,11 +1,16 @@
 import asyncio
 import time
 from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING
 
+from structlog.stdlib import BoundLogger
 from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosed, InvalidMessage
 
 from eavesdrop.common import get_logger
+
+if TYPE_CHECKING:
+  from eavesdrop.server.streaming.client import WebSocketStreamingClient
 
 
 class WebSocketClientManager:
@@ -13,11 +18,11 @@ class WebSocketClientManager:
     """
     Initializes the WebSocketClientManager for tracking client connections.
     """
-    self.clients = {}
+    self.clients: dict[ServerConnection, WebSocketStreamingClient] = {}
     self.start_times = {}
-    self.logger = get_logger("ws/mgr")
+    self.logger: BoundLogger = get_logger("ws/mgr")
 
-  def add_client(self, websocket, client):
+  def add_client(self, websocket: ServerConnection, client):
     """
     Adds a client and their connection start time to the tracking dictionaries.
 
@@ -29,16 +34,15 @@ class WebSocketClientManager:
     self.start_times[websocket] = time.time()
     self.logger.debug(f"Client {client.stream_name} added. Total clients: {len(self.clients)}")
 
-  def get_client(self, websocket):
-    """
-    Retrieves a client associated with the given websocket.
+  def get_client(self, websocket: ServerConnection) -> WebSocketStreamingClient | None:
+    """Retrieve a client associated with the given websocket.
 
     :param websocket: The websocket associated with the client to retrieve.
-    :returns: The client object if found, False otherwise.
+    :type websocket: ServerConnection
+    :returns: The client object if found, None otherwise.
+    :rtype: WebSocketStreamingClient | None
     """
-    if websocket in self.clients:
-      return self.clients[websocket]
-    return False
+    return self.clients.get(websocket)
 
   def remove_client(self, websocket):
     """

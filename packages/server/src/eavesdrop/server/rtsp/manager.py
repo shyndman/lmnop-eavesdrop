@@ -70,7 +70,7 @@ class RTSPClientManager:
     self.subscriber_manager = subscriber_manager
     self.transcription_cache = transcription_cache
     self.clients: dict[str, RTSPTranscriptionClient] = {}
-    self.tasks: dict[str, asyncio.Task] = {}
+    self.tasks: dict[str, asyncio.Task[None]] = {}
     self.logger = get_logger("rtsp/mgr")
 
     # Statistics

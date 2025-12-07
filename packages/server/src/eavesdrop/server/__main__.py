@@ -1,3 +1,5 @@
+# pyright: reportUnusedCallResult=false
+
 import argparse
 import asyncio
 import os
@@ -5,7 +7,9 @@ import os
 from eavesdrop.common import get_logger, setup_logging
 
 
-def get_env_or_default(env_var, default, var_type: type = str):
+def get_env_or_default(
+  env_var: str, default: str | int | bool | None, var_type: type = str
+) -> str | int | bool | None:
   """Get environment variable with type conversion and default fallback."""
   value = os.getenv(env_var)
   if value is None:
@@ -23,7 +27,7 @@ def get_env_or_default(env_var, default, var_type: type = str):
     return value
 
 
-async def main():
+async def main() -> None:
   parser = argparse.ArgumentParser()
   parser.add_argument(
     "--port",

@@ -239,4 +239,5 @@ class AudioStreamBuffer:
   @property
   def processed_duration(self) -> float:
     """Duration of audio that has been processed in seconds."""
-    return self.processed_up_to_time - self.buffer_start_time
+    with self.lock:
+      return self.processed_up_to_time - self.buffer_start_time

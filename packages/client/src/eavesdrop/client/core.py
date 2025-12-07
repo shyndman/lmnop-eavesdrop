@@ -302,21 +302,17 @@ class EavesdropClient:
 
   async def __anext__(self) -> TranscriptionMessage:
     """Get next transcription message."""
-    if not self._connected:
-      raise StopAsyncIteration
-
-    try:
-      # Wait for next message from queue with timeout to allow interruption
-      message = await asyncio.wait_for(self._message_queue.get(), timeout=0.5)
-      return message
-    except asyncio.TimeoutError:
-      # Check if still connected, continue loop if so
-      if self._connected:
-        return await self.__anext__()
-      else:
-        raise StopAsyncIteration
-    except Exception:
-      raise StopAsyncIteration
+    while self._connected:
+      try:
+        # Wait for next message from queue with timeout to allow interruption
+        message = await asyncio.wait_for(self._message_queue.get(), timeout=0.5)
+        return message
+      except asyncio.TimeoutError:
+        # Timeout allows periodic connection check; continue if still connected
+        continue
+      except Exception:
+        break
+    raise StopAsyncIteration
 
   # Async context manager protocol
   async def __aenter__(self) -> "EavesdropClient":
