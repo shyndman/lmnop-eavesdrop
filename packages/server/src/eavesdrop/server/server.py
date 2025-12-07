@@ -205,10 +205,9 @@ class TranscriptionServer:
   async def _handle_health_check(
     self, websocket: ServerConnection, message: HealthCheckRequest
   ) -> None:
-    """Handle traditional transcriber client connections."""
+    """Handle health check requests by logging and closing the connection."""
     self.logger.info("Health check successful", websocket_id=websocket.id)
-    self._send_error_and_close
-    return None
+    await websocket.close()
 
   async def _handle_transcriber_connection(
     self, websocket: ServerConnection, message: TranscriptionSetupMessage
