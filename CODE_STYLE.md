@@ -1,3 +1,11 @@
+READ THE ENTIRE GUIDE.
+
+And after you do, internalize this: We use types ALL the type. Because we do, we ALWAYS
+trust the compiler, and never write ridiculous amateurish dynamic type testing code. Tat
+kind of coding is STRICTLY forbidden.
+
+# Code Style
+
 ## Tooling (These run automatically on every commit, so make sure everything passes)
 
 **Static Type Checking**:
@@ -70,7 +78,7 @@ def process_items_old(
 - If you need dynamic attribute access, redesign with proper types (TypedDict, dataclass, etc.)
 - If you truly need dynamic attribute access, it requires a discussion and a sign off
 
-#### Testing Type Safety (THESE WILL GET YOUR PR REJECTED)
+#### Testing Type Safety (THESE WILL GET YOUR CODE REJECTED)
 
 - If I find a single test that interrogates the shape of an object, heads will roll
 - NO tests that check for attribute existence with `hasattr()` or `getattr()`

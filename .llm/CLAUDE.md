@@ -4,166 +4,65 @@ The rules in @CODE_STYLE.md are an imperative. Failure to follow them will repre
 
 ## Project Overview
 
-Eavesdrop is a real-time audio transcription system with WebSocket-based speech-to-text services using Whisper models. It's designed as a monorepo with three interconnected packages:
+Eavesdrop is a real-time audio transcription system using Whisper models. Monorepo with five packages:
 
-- **eavesdrop-server** - Core transcription server with WebSocket handling and model management
-- **eavesdrop-client** - Python client library for streaming transcription 
-- **eavesdrop-wire** - Shared message types and protocol definitions
+| Package | Description |
+|---------|-------------|
+| `server` | Core transcription server (WebSocket, RTSP, Whisper integration) |
+| `client` | Python client library for streaming transcription |
+| `wire` | Shared Pydantic message types and protocol definitions |
+| `active-listener` | Python orchestrator spawning Electron UI for voice transcription |
+| `active-listener-ui-electron` | Transparent floating overlay displaying transcription |
 
-## Architecture
+See package-level CLAUDE.md files for detailed architecture.
 
-### Package Structure
-- **packages/server/src/eavesdrop/server/** - Main server implementation
-  - `server.py` - TranscriptionServer orchestrator
-  - `streaming/` - Audio streaming and transcription processing
-  - `rtsp/` - RTSP stream management and caching
-  - `transcription/` - Whisper model integration
-  - `config.py` - Pydantic-based configuration system
-  
-- **packages/client/src/eavesdrop/client/** - Client library
-  - `core.py` - Main client components
-  - `connection.py` - WebSocket connection handling
-  - `audio.py` - Audio capture and processing
-  
-- **packages/wire/src/eavesdrop/wire/** - Protocol definitions
-  - `messages.py` - Pydantic message types for WebSocket communication
-  - `transcription.py` - Transcription data structures
-  - `codec.py` - Message serialization utilities
+## Type Safety
 
-### Core Components
-- **TranscriptionServer** - Main orchestrator managing WebSocket connections and RTSP streams
-- **WebSocketStreamingClient** - Protocol-based streaming client combining audio input, buffering, and transcription
-- **StreamingTranscriptionProcessor** - Core transcription engine with Faster Whisper integration
-- **AudioStreamBuffer** - Intelligent audio frame buffering with configurable cleanup
-- **RTSPClientManager** - Manages multiple RTSP streams with centralized model sharing
+- **NEVER use `Any` type** — all code must be fully typed
+- Use `str | None` not `Optional[str]`
+- Handle `Iterable` to `list` conversions explicitly (critical for Whisper results)
 
-### Protocol-Based Design
-Uses Protocol interfaces for extensibility:
-- **AudioSource** - Audio input abstraction (WebSocket, RTSP, etc.)
-- **TranscriptionSink** - Output destination abstraction (WebSocket, file, etc.)
+## Documentation
 
-## Type Safety Requirements
-
-This codebase enforces strict typing standards:
-
-- **NEVER use `Any` type** - All code must be fully typed
-- Use modern union syntax: `str | None` instead of `Optional[str]`
-- All class attributes and method parameters must have explicit type annotations
-- Protocol implementations must be explicit when implementing interfaces
-- Handle `Iterable` to `list` conversions explicitly (critical for Whisper transcriber results)
-
-## Documentation Standards
-
-This project uses **reStructuredText format** for all function and method docstrings:
-
-### Docstring Format Requirements
-
-- **Parameter documentation**: Use `:param parameter_name: description` and `:type parameter_name: type_annotation`
-- **Return documentation**: Use `:returns: description` and `:rtype: return_type`
-- **Exception documentation**: Use `:raises ExceptionType: description`
-- **Line length**: Keep docstring lines under 100 characters, wrap when necessary
-
-### Example Docstring Format
+Use **reStructuredText** docstrings:
 
 ```python
-def process_audio(
-    self,
-    audio: np.ndarray,
-    sample_rate: int = 16000,
-    apply_vad: bool = True,
-) -> AudioResult:
-    """Process audio data with optional voice activity detection.
+def process_audio(self, audio: np.ndarray, sample_rate: int = 16000) -> AudioResult:
+    """Process audio data with optional VAD.
 
-    :param audio: Input audio waveform as numpy array.
+    :param audio: Input audio waveform.
     :type audio: np.ndarray
     :param sample_rate: Audio sample rate in Hz.
     :type sample_rate: int
-    :param apply_vad: Whether to apply voice activity detection filtering.
-    :type apply_vad: bool
-    :returns: Processed audio result with metadata.
+    :returns: Processed audio result.
     :rtype: AudioResult
     :raises ValueError: If audio format is invalid.
     """
 ```
 
-### Migration from Google-style
+## Key Practices
 
-- Convert `Args:` sections to `:param`/`:type` pairs
-- Convert `Returns:` sections to `:returns:`/`:rtype` pairs  
-- Convert `Raises:` sections to `:raises` entries
-- Maintain all original description content
+- **Protocol-based architecture** — AudioSource, TranscriptionSink interfaces
+- **Resource management** — Cancel and await async tasks during cleanup
+- **Error handling** — Use `.exception()` for stack traces, fail fast on critical errors
+- **Thread safety** — asyncio.Lock for async contexts
 
-## Configuration
+## Transcription Algorithm
 
-- **YAML-based configuration** via EavesdropConfig (Pydantic models)
-- **Required**: `--config` parameter or `EAVESDROP_CONFIG` environment variable
-- **Environment variables**: `EAVESDROP_PORT`, `JSON_LOGS`, `LOG_LEVEL`, `CORRELATION_ID`
-- Configuration includes transcription, RTSP, buffer management, and VAD settings
+Silence-based segment completion:
+- `silence_completion_threshold` (default 0.8s) controls when segments complete
+- VAD's `min_silence_duration_ms` auto-derived from threshold
+- All segments except last marked complete; last completes on silence detection
+- Always maintains incomplete segment at tail (client state machine invariant)
 
-## Docker Support
+## Testing
 
 ```bash
-# Build with GPU support (AMD ROCm)
-docker build --build-arg GFX_ARCH=gfx1030 -f docker/Dockerfile .
+# Type checking
+uv run pyright
 
-# Run with GPU access
-docker run --device /dev/kfd --device /dev/dri --publish 9090:9090 eavesdrop
+# Linting
+uv run ruff check
 ```
 
-## Key Development Practices
-
-- **Protocol-based architecture** - Use AudioSource and TranscriptionSink protocols for new components
-- **Resource management** - Always cancel and await async tasks during cleanup
-- **Error handling** - Use `.exception()` for proper stack traces, fail fast on critical errors
-- **Thread safety** - Use appropriate lock types (asyncio.Lock for async contexts)
-- **Memory management** - Implement proper buffer cleanup and model sharing
-- **Single model mode** - Shared Whisper model resources across clients for efficiency
-
-## Model and GPU Support
-
-- **Whisper models** - All standard models supported (tiny to large-v3, distil variants, turbo)
-- **GPU acceleration** - CUDA/ROCm with automatic precision selection, CPU fallback
-- **Model caching** - Automatic HuggingFace to CTranslate2 conversion and local caching
-- **Voice Activity Detection** - ONNX-based VAD with configurable parameters
-
-## Transcription Algorithm (Updated Architecture)
-
-### Silence-Based Segment Completion
-The transcription system uses a **silence-based completion algorithm** instead of repetition detection:
-
-- **`silence_completion_threshold`** - Single configurable parameter (default: 0.8s) that controls when segments are marked complete
-- **VAD Integration** - Uses Voice Activity Detection to analyze speech vs silence patterns in real-time
-- **Automatic VAD Alignment** - VAD's `min_silence_duration_ms` is automatically set from `silence_completion_threshold * 1000` to ensure consistent behavior
-
-### Key Algorithm Components
-
-1. **Segment Completion Logic**:
-   - All segments except the last are marked complete (explicit rule)
-   - Last segment can complete early based on silence analysis
-   - If VAD detects sufficient silence after speech, mark segment complete immediately
-
-2. **Buffer Pointer Management**:
-   - Buffer advances based on completed segment boundaries
-   - Additional advancement through confirmed silence periods  
-   - Prevents buffer bloat from unprocessed silence
-
-3. **Client State Machine Invariant**:
-   - Always maintains an incomplete segment at tail position
-   - Creates synthetic zero-length incomplete segments when needed
-   - Ensures client state machines never break
-
-4. **Tracing and Debugging**:
-   - Six key tracing points: audio chunk processing, VAD analysis, Whisper output, completion decisions, buffer advancement, client output
-   - Use `tracing_logger = get_logger("tracing")` for pipeline visibility
-   - Structured logging with timeline visualization for VAD results
-
-### Configuration Validation
-- **`min_silence_duration_ms`** - Cannot be manually configured; automatically derived from `silence_completion_threshold`
-- **Validation errors** - Clear error messages prevent conflicting silence duration settings
-- **Single source of truth** - Eliminates logical inconsistencies between VAD segmentation and completion logic
-
-## Testing and Validation
-
-- Configure test framework by examining existing test files and dependencies
-- Never assume specific test commands - check package configuration
-- Run type checking (`pyright`) and linting (`ruff check`) before testing
+Check package configuration for test commands — don't assume.
