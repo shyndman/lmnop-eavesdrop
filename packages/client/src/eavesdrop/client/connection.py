@@ -99,19 +99,21 @@ class WebSocketConnection:
       return
 
     try:
-      async for message in self.ws:
+      async for m in self.ws:
         # Convert bytes to string if necessary
-        if isinstance(message, str):
-          message_str = message
-        elif isinstance(message, bytes):
-          message_str = message.decode("utf-8")
+        if isinstance(m, str):
+          message = m
+        elif isinstance(m, bytes):
+          message = m.decode("utf-8")
         else:
           # Handle memoryview or other buffer types
-          message_str = bytes(message).decode("utf-8")
-        await self._process_message(message_str)
+          message = bytes(m).decode("utf-8")
+
+        await self._process_message(message)
     except Exception as e:
       self.on_error(f"Message handling error: {e}")
 
+  # TODO This is UG-LY. Needs a refactor.
   async def _process_message(self, message_json: str):
     """Process individual WebSocket message."""
     try:
