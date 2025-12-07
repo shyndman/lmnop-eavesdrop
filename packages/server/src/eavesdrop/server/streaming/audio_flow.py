@@ -191,7 +191,7 @@ class WebSocketTranscriptionSink(TranscriptionSink):
   async def disconnect(self) -> None:
     """Send disconnect notification and clean up resources."""
     try:
-      if self._closed or not self.websocket:
+      if not self._closed and self.websocket:
         await self.send_message(DisconnectMessage(stream=self.stream_name))
     finally:
       self._closed = True
