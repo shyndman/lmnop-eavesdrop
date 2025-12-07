@@ -515,7 +515,8 @@ class RTSPTranscriptionClient(RTSPClient):
   async def _streaming_processor_task(self) -> None:
     """New task to run the streaming transcription processor"""
     try:
-      assert self.processor is not None, "Processor must be initialized"
+      if self.processor is None:
+        raise RuntimeError("Processor not created — _streaming_processor_task called before run()")
       await self.processor.initialize()
       await self.processor.start_processing()
     except Exception:
@@ -531,7 +532,8 @@ class RTSPTranscriptionClient(RTSPClient):
           break
 
         if len(audio_array) > 0:
-          assert self.processor is not None, "Processor must be initialized"
+          if self.processor is None:
+            raise RuntimeError("Processor not created — _feed_audio_to_buffer called before run()")
           self.processor.add_audio_frames(audio_array)
 
     except Exception:

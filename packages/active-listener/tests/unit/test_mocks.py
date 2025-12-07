@@ -23,7 +23,7 @@ class MockEavesdropClient:
 
   async def connect(self) -> None:
     if self.host == "invalid" or self.port == 0:
-      raise Exception("Mock connection failed")
+      raise ConnectionError("Mock connection failed")
     self._connected = True
     self.connection_state.is_connected = True
 
@@ -35,7 +35,7 @@ class MockEavesdropClient:
 
   async def start_streaming(self) -> None:
     if not self._connected:
-      raise Exception("Not connected")
+      raise RuntimeError("Not connected")
     self._streaming = True
     self.connection_state.is_streaming = True
 
@@ -84,7 +84,7 @@ class MockEavesdropClientWrapper:
 
   async def start_streaming(self) -> None:
     if not self._initialized:
-      raise Exception("Client not initialized")
+      raise RuntimeError("Client not initialized")
     await self._client.start_streaming()
 
   async def shutdown(self) -> None:
@@ -144,8 +144,7 @@ def create_mock_transcription_message(
 ) -> MockTranscriptionMessage:
   """Create a mock transcription message with segments.
 
-  Args:
-      segments: List of tuples (id, text, completed)
+  :param segments: List of tuples (id, text, completed)
   """
   mock_segments = [
     create_mock_segment(seg_id, text, completed) for seg_id, text, completed in segments

@@ -63,7 +63,7 @@ class EavesdropClientWrapper:
   def __aiter__(self):
     """Make wrapper itself async iterable."""
     if not self._client:
-      raise Exception("Client not initialized")
+      raise RuntimeError("Client not initialized")
     return self._client.__aiter__()
 
   async def __anext__(self):
@@ -83,7 +83,7 @@ class EavesdropClientWrapper:
   async def start_streaming(self) -> None:
     """Start audio streaming from the configured device."""
     if not self._client:
-      raise Exception("Client not initialized")
+      raise RuntimeError("Client not initialized")
 
     try:
       await self._client.start_streaming()

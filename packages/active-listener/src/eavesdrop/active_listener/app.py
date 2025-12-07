@@ -145,8 +145,9 @@ class App:
     def signal_handler(signum, _frame):
       self.logger.info("Received shutdown signal", signal=signum)
       self.shutdown()
-      # Create a task to force client shutdown asynchronously
-      asyncio.create_task(self._force_shutdown())
+      # Safely schedule force shutdown from signal handler context
+      loop = asyncio.get_running_loop()
+      loop.call_soon_threadsafe(lambda: asyncio.create_task(self._force_shutdown()))
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)

@@ -5,7 +5,7 @@ Handles WebSocket clients that subscribe to transcription results from named RTS
 rather than sending audio for transcription.
 """
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from websockets.asyncio.server import ServerConnection
 
@@ -159,7 +159,10 @@ class RTSPSubscriberManager:
       await self.unsubscribe_client(websocket)
 
   async def send_stream_status(
-    self, stream_name: str, status: str, message: str | None = None
+    self,
+    stream_name: str,
+    status: Literal["online", "offline", "error"],
+    message: str | None = None,
   ) -> None:
     """
     Send stream status update to subscribers.
@@ -172,7 +175,7 @@ class RTSPSubscriberManager:
       stream_name,
       StreamStatusMessage(
         stream=stream_name,
-        status=status,  # type: ignore
+        status=status,
         message=message,
       ),
     )

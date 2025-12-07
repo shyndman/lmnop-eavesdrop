@@ -33,10 +33,7 @@ class AudioCapture:
     if self.recording:
       # Convert to float32 and queue for transmission
       audio_data = indata.copy().astype(DTYPE)
-      try:
-        self.audio_queue.put_nowait(audio_data.tobytes())
-      except asyncio.QueueFull:
-        pass  # Drop frame if queue is full
+      self.audio_queue.put_nowait(audio_data.tobytes())
 
   def start_recording(self):
     """Start audio capture from microphone."""

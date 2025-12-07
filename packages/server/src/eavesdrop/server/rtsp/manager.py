@@ -275,15 +275,14 @@ class RTSPClientManager:
         "reconnect_count": client.reconnect_count,
         "chunks_read": client.chunks_read,
         "total_bytes": client.total_bytes,
-        "transcriptions_completed": getattr(client, "transcriptions_completed", 0),
-        "transcription_errors": getattr(client, "transcription_errors", 0),
+        "transcriptions_completed": client.transcriptions_completed,
+        "transcription_errors": client.transcription_errors,
         "task_running": task is not None and not task.done(),
         "stopped": client.stopped,
         "buffer_duration": client.stream_buffer.total_duration,
         "processed_duration": client.stream_buffer.processed_duration,
         "available_duration": client.stream_buffer.available_duration,
         "processor_active": client.processor is not None and not client.processor.exit,
-        "segments_processed": getattr(client.processor, "segments_processed", 0),
       }
 
     return status

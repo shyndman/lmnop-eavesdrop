@@ -160,7 +160,7 @@ class UIChannel:
 
     except Exception:
       # Stderr monitoring is non-critical, don't let errors break the flow
-      self.logger.debug("Error monitoring UI subprocess stderr")
+      self.logger.exception("Error monitoring UI subprocess stderr")
 
   def send_message(self, message: UIMessage) -> None:
     """Send a JSON-line message to the UI subprocess stdin.

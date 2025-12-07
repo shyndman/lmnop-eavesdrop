@@ -33,21 +33,19 @@ class EavesdropClient:
     self,
     client_type: ClientType,
     host: str = "localhost",
-    port: int = 8080,
+    port: int = 9090,
     stream_names: list[str] | None = None,
     audio_device: str | None = None,
     transcription_options: UserTranscriptionOptions | None = None,
   ):
-    """
-    Initialize EavesdropClient.
+    """Initialize EavesdropClient.
 
-    Args:
-        host: Server hostname
-        port: Server port
-        client_type: Type of client (TRANSCRIBER or RTSP_SUBSCRIBER)
-        stream_names: For subscriber mode, list of stream names to subscribe to
-        audio_device: For transcriber mode, audio device to use
-        transcription_options: Transcription configuration options
+    :param client_type: Type of client (TRANSCRIBER or RTSP_SUBSCRIBER)
+    :param host: Server hostname
+    :param port: Server port
+    :param stream_names: For subscriber mode, list of stream names to subscribe to
+    :param audio_device: For transcriber mode, audio device to use
+    :param transcription_options: Transcription configuration options
     """
     self._host = host
     self._port = port
@@ -85,27 +83,23 @@ class EavesdropClient:
   def transcriber(
     cls,
     host: str = "localhost",
-    port: int = 8080,
+    port: int = 9090,
     audio_device: str = "default",
     word_timestamps: bool = False,
     initial_prompt: str | None = None,
     hotwords: list[str] | None = None,
     send_last_n_segments: int = 3,
   ) -> "EavesdropClient":
-    """
-    Create a transcriber client for sending audio for transcription.
+    """Create a transcriber client for sending audio for transcription.
 
-    Args:
-        host: Server hostname
-        port: Server port
-        audio_device: Audio device to capture from
-        beam_size: Beam search size for transcription
-        word_timestamps: Enable word-level timestamps
-        initial_prompt: Initial prompt for transcription context
-        hotwords: Comma-separated hotwords for improved recognition
-
-    Returns:
-        Configured EavesdropClient in transcriber mode
+    :param host: Server hostname
+    :param port: Server port
+    :param audio_device: Audio device to capture from
+    :param word_timestamps: Enable word-level timestamps
+    :param initial_prompt: Initial prompt for transcription context
+    :param hotwords: Hotwords for improved recognition
+    :param send_last_n_segments: Number of recent segments to include
+    :returns: Configured EavesdropClient in transcriber mode
     """
     transcription_options = UserTranscriptionOptions(
       word_timestamps=word_timestamps,
@@ -127,18 +121,14 @@ class EavesdropClient:
     cls,
     stream_names: list[str],
     host: str = "localhost",
-    port: int = 8080,
+    port: int = 9090,
   ) -> "EavesdropClient":
-    """
-    Create a subscriber client for receiving RTSP stream transcriptions.
+    """Create a subscriber client for receiving RTSP stream transcriptions.
 
-    Args:
-        host: Server hostname
-        port: Server port
-        stream_names: List of RTSP stream names to subscribe to
-
-    Returns:
-        Configured EavesdropClient in subscriber mode
+    :param stream_names: List of RTSP stream names to subscribe to
+    :param host: Server hostname
+    :param port: Server port
+    :returns: Configured EavesdropClient in subscriber mode
     """
     if not stream_names:
       raise ValueError("stream_names cannot be empty")
@@ -331,11 +321,7 @@ class EavesdropClient:
 
   def _on_transcription_message(self, message: TranscriptionMessage) -> None:
     """Handle full TranscriptionMessage from connection."""
-    try:
-      self._message_queue.put_nowait(message)
-    except asyncio.QueueFull:
-      # Drop message if queue is full
-      pass
+    self._message_queue.put_nowait(message)
 
   def _on_transcription_text(self, text: str) -> None:
     """Handle legacy transcription text callback from existing connection."""

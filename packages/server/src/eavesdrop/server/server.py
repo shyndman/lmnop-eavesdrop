@@ -271,7 +271,8 @@ class TranscriptionServer:
           await self._handle_subscriber_lifecycle(websocket)
 
         case TranscriberConnection(client):
-          assert client._completion_task is not None
+          if client._completion_task is None:
+            raise RuntimeError("TranscriberConnection missing completion task — client not started")
           await client._completion_task
     except (ConnectionClosed, InvalidMessage):
       self.logger.info("Connection closed by client")
