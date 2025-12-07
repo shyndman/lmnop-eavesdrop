@@ -443,6 +443,9 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2" },
 ]
 
+[package.metadata.requires-dev]
+dev = [{ name = "basedpyright", specifier = ">=1.35.0" }]
+
 [[package]]
 name = "evaluate"
 version = "0.4.5"

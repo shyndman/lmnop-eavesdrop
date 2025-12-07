@@ -4,7 +4,6 @@ Streaming transcription processor with integrated Faster Whisper transcriber.
 
 import asyncio
 import os
-import threading
 from dataclasses import dataclass
 
 import ctranslate2
@@ -54,9 +53,8 @@ class StreamingTranscriptionProcessor:
   model management.
   """
 
-  # Class variables for single model mode
+  # Class variable for single model mode
   SINGLE_MODEL: WhisperModel | None = None
-  SINGLE_MODEL_LOCK = threading.Lock()
 
   def __init__(
     self,
@@ -139,14 +137,13 @@ class StreamingTranscriptionProcessor:
 
     if SINGLE_MODEL:
       self.logger.debug("Using single model mode", stream=self.stream_name)
-      with StreamingTranscriptionProcessor.SINGLE_MODEL_LOCK:
-        if StreamingTranscriptionProcessor.SINGLE_MODEL is None:
-          self.logger.debug("Creating new single model instance")
-          self._create_model_instance(device, self.config.model_path)
-          StreamingTranscriptionProcessor.SINGLE_MODEL = self.transcriber
-        else:
-          self.logger.debug("Reusing existing single model instance")
-          self.transcriber = StreamingTranscriptionProcessor.SINGLE_MODEL
+      if StreamingTranscriptionProcessor.SINGLE_MODEL is None:
+        self.logger.debug("Creating new single model instance")
+        self._create_model_instance(device, self.config.model_path)
+        StreamingTranscriptionProcessor.SINGLE_MODEL = self.transcriber
+      else:
+        self.logger.debug("Reusing existing single model instance")
+        self.transcriber = StreamingTranscriptionProcessor.SINGLE_MODEL
     else:
       self.logger.debug("Creating dedicated model", stream=self.stream_name)
       self._create_model_instance(device, self.config.model_path)
@@ -350,86 +347,75 @@ class StreamingTranscriptionProcessor:
     shape = chunk.data.shape
     self.logger.debug("Transcribing audio sample", shape=shape, start_time=chunk.start_time)
 
-    # if SINGLE_MODEL:
-    #   self.logger.debug("Acquiring single model lock")
-    #   StreamingTranscriptionProcessor.SINGLE_MODEL_LOCK.acquire()
+    result, info = self.transcriber.transcribe(
+      chunk.data,
+      initial_prompt=self.config.initial_prompt,
+      language=self.language,
+      vad_filter=self.config.use_vad,
+      vad_parameters=self.vad_parameters,
+      absolute_stream_start=chunk.start_time,
+      hotwords=" ".join(self.config.hotwords) if self.config.hotwords else None,
+      session=self.session,
+      start_offset=self.buffer.processed_up_to_time,
+    )
+    result_list = list(result) if result else None
 
-    try:
-      result, info = self.transcriber.transcribe(
-        chunk.data,
-        initial_prompt=self.config.initial_prompt,
-        language=self.language,
-        vad_filter=self.config.use_vad,
-        vad_parameters=self.vad_parameters,
-        absolute_stream_start=chunk.start_time,
-        hotwords=" ".join(self.config.hotwords) if self.config.hotwords else None,
-        session=self.session,
-        start_offset=self.buffer.processed_up_to_time,
+    # Store VAD speech chunks for silence analysis
+    speech_chunks = info.speech_chunks if info else None
+
+    # TRACING: Audio characteristics analysis
+    sample_rate = 16000  # Standard Whisper sample rate
+    rms = np.sqrt(np.mean(chunk.data**2)) if len(chunk.data) > 0 else 0.0
+    peak = np.max(np.abs(chunk.data)) if len(chunk.data) > 0 else 0.0
+    zero_crossings = np.sum(np.diff(np.signbit(chunk.data))) if len(chunk.data) > 1 else 0
+    zcr = zero_crossings / len(chunk.data) * sample_rate if len(chunk.data) > 0 else 0
+
+    # TRACING: VAD speech detection results
+    if speech_chunks:
+      speech_ranges = [
+        f"{chunk['start'] / sample_rate:.2f}-{chunk['end'] / sample_rate:.2f}s"
+        for chunk in speech_chunks
+      ]
+      total_speech_duration = sum(
+        (chunk["end"] - chunk["start"]) / sample_rate for chunk in speech_chunks
       )
-      result_list = list(result) if result else None
 
-      # Store VAD speech chunks for silence analysis
-      speech_chunks = info.speech_chunks if info else None
+      # Build timeline showing speech vs silence (S=speech, ~=silence)
+      timeline = ["~"] * int(chunk.duration * 10)  # 100ms resolution
+      for speech_chunk in speech_chunks:
+        start_idx = int((speech_chunk["start"] / sample_rate) * 10)
+        end_idx = int((speech_chunk["end"] / sample_rate) * 10)
+        for i in range(start_idx, min(end_idx, len(timeline))):
+          timeline[i] = "S"
+      timeline_str = "".join(timeline)
 
-      # TRACING: Audio characteristics analysis
-      sample_rate = 16000  # Standard Whisper sample rate
-      rms = np.sqrt(np.mean(chunk.data**2)) if len(chunk.data) > 0 else 0.0
-      peak = np.max(np.abs(chunk.data)) if len(chunk.data) > 0 else 0.0
-      zero_crossings = np.sum(np.diff(np.signbit(chunk.data))) if len(chunk.data) > 1 else 0
-      zcr = zero_crossings / len(chunk.data) * sample_rate if len(chunk.data) > 0 else 0
+      tracing_logger.info(
+        "VAD analysis",
+        speech_ranges=speech_ranges,
+        speech_duration=f"{total_speech_duration:.2f}s",
+        silence_duration=f"{chunk.duration - total_speech_duration:.2f}s",
+        audio_duration=f"{chunk.duration:.2f}s",
+        speech_ratio=f"{total_speech_duration / chunk.duration:.1%}",
+        timeline=timeline_str,
+        audio_rms=f"{rms:.6f}",
+        audio_peak=f"{peak:.6f}",
+        audio_zcr=f"{zcr:.1f}",
+      )
+    else:
+      tracing_logger.info(
+        "VAD analysis",
+        speech_ranges=[],
+        speech_duration="0.00s",
+        silence_duration=f"{chunk.duration:.2f}s",
+        audio_duration=f"{chunk.duration:.2f}s",
+        speech_ratio="0.0%",
+        timeline="~" * int(chunk.duration * 10),
+        audio_rms=f"{rms:.6f}",
+        audio_peak=f"{peak:.6f}",
+        audio_zcr=f"{zcr:.1f}",
+      )
 
-      # TRACING: VAD speech detection results
-      if speech_chunks:
-        speech_ranges = [
-          f"{chunk['start'] / sample_rate:.2f}-{chunk['end'] / sample_rate:.2f}s"
-          for chunk in speech_chunks
-        ]
-        total_speech_duration = sum(
-          (chunk["end"] - chunk["start"]) / sample_rate for chunk in speech_chunks
-        )
-
-        # Build timeline showing speech vs silence (S=speech, ~=silence)
-        timeline = ["~"] * int(chunk.duration * 10)  # 100ms resolution
-        for speech_chunk in speech_chunks:
-          start_idx = int((speech_chunk["start"] / sample_rate) * 10)
-          end_idx = int((speech_chunk["end"] / sample_rate) * 10)
-          for i in range(start_idx, min(end_idx, len(timeline))):
-            timeline[i] = "S"
-        timeline_str = "".join(timeline)
-
-        tracing_logger.info(
-          "VAD analysis",
-          speech_ranges=speech_ranges,
-          speech_duration=f"{total_speech_duration:.2f}s",
-          silence_duration=f"{chunk.duration - total_speech_duration:.2f}s",
-          audio_duration=f"{chunk.duration:.2f}s",
-          speech_ratio=f"{total_speech_duration / chunk.duration:.1%}",
-          timeline=timeline_str,
-          audio_rms=f"{rms:.6f}",
-          audio_peak=f"{peak:.6f}",
-          audio_zcr=f"{zcr:.1f}",
-        )
-      else:
-        tracing_logger.info(
-          "VAD analysis",
-          speech_ranges=[],
-          speech_duration="0.00s",
-          silence_duration=f"{chunk.duration:.2f}s",
-          audio_duration=f"{chunk.duration:.2f}s",
-          speech_ratio="0.0%",
-          timeline="~" * int(chunk.duration * 10),
-          audio_rms=f"{rms:.6f}",
-          audio_peak=f"{peak:.6f}",
-          audio_zcr=f"{zcr:.1f}",
-        )
-
-      return result_list, info, speech_chunks
-
-    finally:
-      pass
-      # if SINGLE_MODEL:
-      #   self.logger.debug("Releasing single model lock")
-      #   StreamingTranscriptionProcessor.SINGLE_MODEL_LOCK.release()
+    return result_list, info, speech_chunks
 
   async def _set_language(self, info: TranscriptionInfo) -> None:
     """Update language based on detection info."""
