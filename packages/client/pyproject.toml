@@ -34,6 +34,7 @@ eavesdrop-common = { path = "../common", editable = true }
 [tool.pyright]
 include = ["src"]
 ignore = ["**/.venv"]
+extraPaths = ["../wire/src", "../common/src"]
 defineConstant = {DEBUG = true}
 reportMissingImports = "error"
 deprecateTypingAliases = true

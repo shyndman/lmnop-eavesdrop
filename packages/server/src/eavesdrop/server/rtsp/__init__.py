@@ -9,8 +9,10 @@ from eavesdrop.server.rtsp.client import (
   RTSPClient,
   RTSPTranscriptionClient,
 )
+from eavesdrop.server.rtsp.coordinator import RTSPStreamCoordinator
 
 __all__ = [
+  "RTSPStreamCoordinator",
   "RTSPTranscriptionCache",
   "RTSPAudioSource",
   "RTSPClient",

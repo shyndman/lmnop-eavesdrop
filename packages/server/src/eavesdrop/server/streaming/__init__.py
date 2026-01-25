@@ -12,6 +12,7 @@ from eavesdrop.server.streaming.audio_flow import (
 )
 from eavesdrop.server.streaming.buffer import AudioStreamBuffer
 from eavesdrop.server.streaming.client import WebSocketStreamingClient
+from eavesdrop.server.streaming.debug_capture import AudioDebugCapture
 from eavesdrop.server.streaming.interfaces import (
   AudioSource,
   TranscriptionResult,
@@ -20,6 +21,7 @@ from eavesdrop.server.streaming.interfaces import (
 from eavesdrop.server.streaming.processor import StreamingTranscriptionProcessor
 
 __all__ = [
+  "AudioDebugCapture",
   "AudioStreamBuffer",
   "AudioSource",
   "TranscriptionResult",

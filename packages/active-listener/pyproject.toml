@@ -44,6 +44,7 @@ dev = [
 [tool.pyright]
 include = ["src", "tests"]
 ignore = ["**/.venv"]
+extraPaths = ["../client/src", "../wire/src", "../common/src"]
 defineConstant = {DEBUG = true}
 reportMissingImports = "error"
 deprecateTypingAliases = true

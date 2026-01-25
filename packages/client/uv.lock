@@ -108,6 +108,9 @@ requires-dist = [
     { name = "structlog", specifier = ">=25.4.0" },
 ]
 
+[package.metadata.requires-dev]
+dev = [{ name = "basedpyright", specifier = ">=1.35.0" }]
+
 [[package]]
 name = "eavesdrop-wire"
 version = "0.0.0"
@@ -122,6 +125,9 @@ requires-dist = [
     { name = "fastcrc", specifier = ">=0.3.2" },
     { name = "pydantic", specifier = ">=2" },
 ]
+
+[package.metadata.requires-dev]
+dev = [{ name = "basedpyright", specifier = ">=1.35.0" }]
 
 [[package]]
 name = "fastcrc"

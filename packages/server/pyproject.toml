@@ -51,6 +51,7 @@ dev = [
     "basedpyright>=1.35.0",
     "pyfakefs>=5.9.3",
     "pytest>=8.3.5",
+    "pytest-asyncio>=0.24.0",
 ]
 type_checkable = [
   "torch==2.6.0",
@@ -59,14 +60,24 @@ type_checkable = [
   "pytorch-triton-rocm==3.2.0",
 ]
 
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
 [tool.pyright]
 include = ["src", "tests"]
 ignore = ["**/.venv"]
+extraPaths = ["../wire/src", "../common/src"]
 defineConstant = {DEBUG = true}
-reportMissingImports = "error"
-deprecateTypingAliases = true
-reportDeprecated = "information"
 pythonPlatform = "Linux"
+deprecateTypingAliases = true
+
+# Diagnostic rules — explicitly configured based on project review
+reportMissingImports = "error"
+reportDeprecated = "information"
+reportUnknownMemberType = "error"           # Keep: catches type info loss from untyped libs
+reportUnannotatedClassAttribute = "error"   # Keep: requires explicit types on class attributes
+reportUnknownVariableType = "error"         # Keep: fix via local stubs + typed Pydantic validators
 
 [tool.ruff]
 line-length = 100

@@ -5,6 +5,7 @@ Streaming transcription processor with integrated Faster Whisper transcriber.
 import asyncio
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 import ctranslate2
 import numpy as np
@@ -15,6 +16,7 @@ from eavesdrop.common import Pretty, Range, Seconds, get_logger
 from eavesdrop.server.config import TranscriptionConfig
 from eavesdrop.server.constants import CACHE_PATH, SINGLE_MODEL
 from eavesdrop.server.streaming.buffer import AudioStreamBuffer
+from eavesdrop.server.streaming.debug_capture import AudioDebugCapture
 from eavesdrop.server.streaming.interfaces import TranscriptionResult, TranscriptionSink
 from eavesdrop.server.transcription.models import SpeechChunk, TranscriptionInfo
 from eavesdrop.server.transcription.pipeline import WhisperModel
@@ -100,6 +102,15 @@ class StreamingTranscriptionProcessor:
       "turbo",
     ]
     self.vad_parameters = config.vad_parameters
+
+    # Initialize debug capture if configured
+    self._debug_capture: AudioDebugCapture | None = None
+    if config.debug_audio and config.debug_audio.post_buffer:
+      self._debug_capture = AudioDebugCapture(
+        output_path=Path(str(config.debug_audio.post_buffer)),
+        stream_name=stream_name,
+        sample_rate=buffer.config.sample_rate,
+      )
 
   async def initialize(self) -> None:
     """Initialize the transcriber model."""
@@ -289,7 +300,8 @@ class StreamingTranscriptionProcessor:
     import time
 
     # Debug audio capture (post-buffer)
-    self._capture_post_buffer_debug_audio(chunk)
+    if self._debug_capture:
+      self._debug_capture.capture(chunk)
 
     transcription_start = time.time()
     result, info, speech_chunks = await asyncio.to_thread(self._transcribe_audio, chunk)
@@ -748,30 +760,3 @@ class StreamingTranscriptionProcessor:
       "text": text,
       "completed": completed,
     }
-
-  def _capture_post_buffer_debug_audio(self, chunk: AudioChunk) -> None:
-    """Capture audio data after it's been dequeued from the buffer for debugging."""
-    if not self.config.debug_audio or not self.config.debug_audio.post_buffer:
-      return
-
-    import time
-
-    import soundfile as sf
-
-    # Create a unique filename for this chunk
-    timestamp = int(time.time())
-    chunk_id = f"{chunk.start_time:.3f}_{chunk.duration:.3f}"
-    path_prefix = str(self.config.debug_audio.post_buffer)
-    filename = f"{path_prefix}_{self.stream_name}_{timestamp}_{chunk_id}_post.wav"
-
-    # Ensure directory exists
-    os.makedirs(os.path.dirname(filename) if os.path.dirname(filename) else ".", exist_ok=True)
-
-    # chunk.data is already a numpy array
-    audio_array = chunk.data
-
-    try:
-      sf.write(filename, audio_array, self.buffer.config.sample_rate)
-      self.logger.debug(f"Post-buffer debug audio saved: {filename}")
-    except Exception:
-      self.logger.exception(f"Error writing post-buffer debug audio to {filename}")
