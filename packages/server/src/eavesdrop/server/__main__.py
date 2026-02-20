@@ -27,7 +27,7 @@ def get_env_or_default(
     return value
 
 
-async def main() -> None:
+async def _async_main() -> None:
   parser = argparse.ArgumentParser()
   parser.add_argument(
     "--port",
@@ -55,6 +55,16 @@ async def main() -> None:
     default=get_env_or_default("CORRELATION_ID", None),
     help="Correlation ID for log tracing. (Env: CORRELATION_ID)",
   )
+  parser.add_argument(
+    "--log_namespace",
+    type=str,
+    default=get_env_or_default("LOG_NAMESPACE", None),
+    help=(
+      "Restrict output to a logger namespace. "
+      "Provide prefixes like 'tracing' to debug specific subsystems. "
+      "(Env: LOG_NAMESPACE)"
+    ),
+  )
   args = parser.parse_args()
 
   # Validate required config path
@@ -69,7 +79,7 @@ async def main() -> None:
     level=log_level,
     json_output=args.json_logs,
     correlation_id=args.correlation_id,
-    filter_to_logger="tracing",
+    filter_to_logger=args.log_namespace,
   )
   logger = get_logger("main")
 
@@ -89,8 +99,12 @@ async def main() -> None:
   )
 
 
-if __name__ == "__main__":
+def main() -> None:
   try:
-    asyncio.run(main())
+    asyncio.run(_async_main())
   except KeyboardInterrupt:
     pass
+
+
+if __name__ == "__main__":
+  main()
