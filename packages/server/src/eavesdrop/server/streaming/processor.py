@@ -369,6 +369,8 @@ class StreamingTranscriptionProcessor:
       hotwords=" ".join(self.config.hotwords) if self.config.hotwords else None,
       session=self.session,
       start_offset=self.buffer.processed_up_to_time,
+      beam_size=self.config.beam_size,
+      word_timestamps=self.config.word_timestamps,
     )
     result_list = list(result) if result else None
 

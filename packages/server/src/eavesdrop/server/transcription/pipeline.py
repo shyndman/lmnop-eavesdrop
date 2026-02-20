@@ -161,6 +161,8 @@ class WhisperModel:
     multilingual: bool = False,
     start_offset: float = 0.0,
     absolute_stream_start: float = 0.0,
+    beam_size: int | None = None,
+    word_timestamps: bool | None = None,
   ) -> tuple[Iterable[Segment], TranscriptionInfo]:
     """Transcribes audio data for live transcription.
 
@@ -185,6 +187,10 @@ class WhisperModel:
     :type hotwords: str | None
     :param start_offset: Start time offset in seconds from stream/connection start.
     :type start_offset: float
+    :param beam_size: Optional override for beam search width during deterministic decoding.
+    :type beam_size: int | None
+    :param word_timestamps: Whether to compute detailed word-level timestamps.
+    :type word_timestamps: bool | None
     :returns: A tuple with:
 
         - a generator over transcribed segments
@@ -214,6 +220,8 @@ class WhisperModel:
         hotwords=hotwords,
         multilingual=multilingual,
         absolute_stream_start=absolute_stream_start,
+        beam_size=beam_size,
+        word_timestamps=word_timestamps,
       )
 
   def _transcribe(
@@ -227,7 +235,15 @@ class WhisperModel:
     hotwords: str | None = None,
     multilingual: bool = False,
     absolute_stream_start: float = 0.0,
+    beam_size: int | None = None,
+    word_timestamps: bool | None = None,
   ) -> tuple[Iterable[Segment], TranscriptionInfo]:
+    default_options = TranscriptionOptions()
+    resolved_beam_size = beam_size if beam_size is not None else default_options.beam_size
+    resolved_word_timestamps = (
+      word_timestamps if word_timestamps is not None else default_options.word_timestamps
+    )
+
     # Use our new audio processing module for validation and VAD
     with session.trace_vad_stage() as tracer:
       audio, duration, duration_after_vad, speech_chunks, will_be_complete_silence = (
@@ -244,6 +260,8 @@ class WhisperModel:
         transcription_options=TranscriptionOptions(
           multilingual=multilingual,
           initial_prompt=initial_prompt,
+          beam_size=resolved_beam_size,
+          word_timestamps=resolved_word_timestamps,
         ),
         vad_options=vad_parameters,
         duration=duration,
@@ -258,6 +276,8 @@ class WhisperModel:
         transcription_options=TranscriptionOptions(
           multilingual=multilingual,
           initial_prompt=initial_prompt,
+          beam_size=resolved_beam_size,
+          word_timestamps=resolved_word_timestamps,
         ),
         vad_options=vad_parameters,
       )
@@ -286,6 +306,8 @@ class WhisperModel:
             multilingual=multilingual,
             initial_prompt=initial_prompt,
             hotwords=hotwords,
+            beam_size=resolved_beam_size,
+            word_timestamps=resolved_word_timestamps,
             suppress_tokens=get_suppressed_tokens(tokenizer, [-1, 0]),
           )
         ),

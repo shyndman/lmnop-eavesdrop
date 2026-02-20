@@ -85,10 +85,11 @@ class EavesdropClient:
     host: str = "localhost",
     port: int = 9090,
     audio_device: str = "default",
-    word_timestamps: bool = False,
+    word_timestamps: bool | None = None,
     initial_prompt: str | None = None,
     hotwords: list[str] | None = None,
-    send_last_n_segments: int = 3,
+    send_last_n_segments: int | None = None,
+    beam_size: int | None = None,
   ) -> "EavesdropClient":
     """Create a transcriber client for sending audio for transcription.
 
@@ -99,6 +100,7 @@ class EavesdropClient:
     :param initial_prompt: Initial prompt for transcription context
     :param hotwords: Hotwords for improved recognition
     :param send_last_n_segments: Number of recent segments to include
+    :param beam_size: Override beam search width for deterministic decoding
     :returns: Configured EavesdropClient in transcriber mode
     """
     transcription_options = UserTranscriptionOptions(
@@ -106,6 +108,7 @@ class EavesdropClient:
       initial_prompt=initial_prompt,
       hotwords=hotwords,
       send_last_n_segments=send_last_n_segments,
+      beam_size=beam_size,
     )
 
     return cls(

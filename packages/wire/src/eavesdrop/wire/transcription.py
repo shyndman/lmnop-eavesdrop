@@ -135,7 +135,7 @@ class UserTranscriptionOptions(BaseModel):
   """Transcription options that clients can specify."""
 
   # Transcription behavior
-  send_last_n_segments: int = Field(default=3, gt=0)
+  send_last_n_segments: int | None = Field(default=None, gt=0)
   """Number of most recent segments to send to the client."""
 
   initial_prompt: str | None = None
@@ -144,5 +144,8 @@ class UserTranscriptionOptions(BaseModel):
   hotwords: list[str] | None = None
   """List of hotwords for whisper inference to improve recognition of specific terms."""
 
-  word_timestamps: bool = False
+  word_timestamps: bool | None = None
   """Whether to include word timestamps in the transcription output."""
+
+  beam_size: int | None = Field(default=None, gt=0)
+  """Optional override for beam search width when temperature is zero."""

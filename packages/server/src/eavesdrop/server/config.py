@@ -110,6 +110,9 @@ class TranscriptionConfig(BaseModel):
   hotwords: list[str] = Field(default_factory=list)
   """Hotwords for whisper inference to improve recognition of specific terms."""
 
+  word_timestamps: bool = False
+  """Whether to emit detailed word-level timestamps in transcription output."""
+
   gpu_name: str | None = None
   """GPU device name to use (device_index computed from this)."""
 
@@ -130,6 +133,9 @@ class TranscriptionConfig(BaseModel):
 
   same_output_threshold: int = Field(default=10, gt=0)
   """Number of repeated outputs before considering it as a valid segment."""
+
+  beam_size: int = Field(default=5, gt=0)
+  """Beam search width to use during deterministic decoding (temperature 0)."""
 
   silence_completion_threshold: float = Field(default=0.8, gt=0.0)
   """Seconds of silence after speech to mark segment as completed."""
@@ -246,8 +252,10 @@ class EavesdropConfig(BaseModel):
     logger.info(f"  Language: {self.transcription.language}")
     logger.info(f"  Initial Prompt: {self.transcription.initial_prompt}")
     logger.info(f"  Hotwords: {self.transcription.hotwords}")
+    logger.info(f"  Word Timestamps: {self.transcription.word_timestamps}")
     logger.info(f"  Send Last N Segments: {self.transcription.send_last_n_segments}")
     logger.info(f"  Same Output Threshold: {self.transcription.same_output_threshold}")
+    logger.info(f"  Beam Size: {self.transcription.beam_size}")
     silence_threshold = self.transcription.silence_completion_threshold
     logger.info(f"  Silence Completion Threshold: {silence_threshold}s")
     logger.info(f"  Num Workers: {self.transcription.num_workers}")

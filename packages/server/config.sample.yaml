@@ -25,6 +25,9 @@ transcription:
   hotwords: []
     # Example: ["OpenAI", "ChatGPT", "artificial intelligence"]
 
+  # Emit word-level timestamps (higher latency due to alignment work).
+  word_timestamps: false
+
   # Enable Voice Activity Detection to filter out silence and background noise.
   # Improves transcription quality by focusing on speech segments.
   use_vad: true
@@ -40,6 +43,9 @@ transcription:
   # Number of consecutive identical outputs before marking a segment as completed.
   # Helps stabilize transcription output by waiting for consistency.
   same_output_threshold: 10
+
+  # Beam search width to use when decoding with deterministic temperature=0 passes.
+  beam_size: 5
 
   # Duration of silence (in seconds) after speech to automatically mark segments as completed.
   # Lower values complete segments faster but may cut off slow speech patterns.

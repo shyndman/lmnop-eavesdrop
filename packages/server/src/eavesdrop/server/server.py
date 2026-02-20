@@ -39,7 +39,7 @@ class TranscriptionServer:
     # Use config transcription settings as defaults, allow client overrides
     # Parse and validate client options using wire protocol data structure
     user_options = msg.options
-    client_overrides = dict(user_options)
+    client_overrides = user_options.model_dump(exclude_none=True)
 
     # Create configuration for the streaming client with client overrides
     transcription_config = self.transcription_config.model_copy(update=client_overrides)

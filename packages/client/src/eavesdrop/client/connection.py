@@ -73,11 +73,7 @@ class WebSocketConnection:
 
     # Send client configuration for transcriber mode
     if self.client_type == ClientType.TRANSCRIBER:
-      options = transcription_options or UserTranscriptionOptions(
-        initial_prompt=None,
-        hotwords=None,
-        word_timestamps=False,
-      )
+      options = transcription_options or UserTranscriptionOptions()
 
       config_message = TranscriptionSetupMessage(
         stream=self.stream_name,
