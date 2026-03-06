@@ -53,4 +53,5 @@ line-ending = "auto"
 [dependency-groups]
 dev = [
     "basedpyright>=1.35.0",
+    "pytest>=8.3.5",
 ]

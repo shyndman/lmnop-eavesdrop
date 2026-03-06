@@ -446,7 +446,10 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-dev = [{ name = "basedpyright", specifier = ">=1.35.0" }]
+dev = [
+    { name = "basedpyright", specifier = ">=1.35.0" },
+    { name = "pytest", specifier = ">=8.3.5" },
+]
 
 [[package]]
 name = "evaluate"
