@@ -171,7 +171,11 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-dev = [{ name = "basedpyright", specifier = ">=1.35.0" }]
+dev = [
+    { name = "basedpyright", specifier = ">=1.35.0" },
+    { name = "pytest", specifier = ">=8.3.5" },
+    { name = "pytest-asyncio", specifier = ">=0.24.0" },
+]
 
 [[package]]
 name = "eavesdrop-common"
@@ -211,7 +215,10 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-dev = [{ name = "basedpyright", specifier = ">=1.35.0" }]
+dev = [
+    { name = "basedpyright", specifier = ">=1.35.0" },
+    { name = "pytest", specifier = ">=8.3.5" },
+]
 
 [[package]]
 name = "fastcrc"
