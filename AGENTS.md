@@ -59,7 +59,7 @@ Silence-based segment completion:
 
 ```bash
 # Type checking
-uv run pyright
+uv run basedpyright
 
 # Linting
 uv run ruff check

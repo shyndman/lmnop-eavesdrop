@@ -64,7 +64,7 @@ type_checkable = [
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 
-[tool.pyright]
+[tool.basedpyright]
 include = ["src", "tests"]
 ignore = ["**/.venv"]
 extraPaths = ["../wire/src", "../common/src"]

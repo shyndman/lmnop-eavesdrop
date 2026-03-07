@@ -31,7 +31,7 @@ packages = ["src/eavesdrop"]
 eavesdrop-wire = {path = "../wire", editable = true}
 eavesdrop-common = { path = "../common", editable = true }
 
-[tool.pyright]
+[tool.basedpyright]
 include = ["src"]
 ignore = ["**/.venv"]
 extraPaths = ["../wire/src", "../common/src"]

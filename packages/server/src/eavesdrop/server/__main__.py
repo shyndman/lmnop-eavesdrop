@@ -1,4 +1,4 @@
-# pyright: reportUnusedCallResult=false
+# basedpyright: reportUnusedCallResult=false
 
 import argparse
 import asyncio

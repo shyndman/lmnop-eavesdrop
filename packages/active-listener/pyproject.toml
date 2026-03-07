@@ -41,7 +41,7 @@ dev = [
     "pytest-mock>=3.15.0",
 ]
 
-[tool.pyright]
+[tool.basedpyright]
 include = ["src", "tests"]
 ignore = ["**/.venv"]
 extraPaths = ["../client/src", "../wire/src", "../common/src"]

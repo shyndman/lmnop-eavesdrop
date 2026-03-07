@@ -22,7 +22,7 @@ repository = "https://github.com/shyndman/eavesdrop"
 [tool.hatch.build.targets.wheel]
 packages = ["src/eavesdrop"]
 
-[tool.pyright]
+[tool.basedpyright]
 include = ["src", "tests"]
 ignore = ["**/.venv"]
 defineConstant = {DEBUG = true}

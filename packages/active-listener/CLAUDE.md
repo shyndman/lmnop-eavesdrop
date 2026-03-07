@@ -68,7 +68,7 @@ Each mode maintains independent segment tracking via `_completed_by_mode` dict.
 uv sync
 
 # Type checking
-uv run pyright
+uv run basedpyright
 
 # Linting
 uv run ruff check

@@ -11,7 +11,7 @@ kind of coding is STRICTLY forbidden.
 **Static Type Checking**:
 
 ```sh
-pyright
+basedpyright
 ```
 
 **Formatting**:

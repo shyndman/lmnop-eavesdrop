@@ -97,7 +97,7 @@ cd packages/active-listener && uv sync
 
 # Code quality (run from any package directory)
 ruff check && ruff format
-pyright
+basedpyright
 
 # Testing (where applicable)
 pytest
@@ -107,7 +107,7 @@ pytest
 
 - **uv** - Fast Python package manager and environment management
 - **ruff** - Fast Python linter and formatter
-- **pyright** - Static type checker for Python
+- **basedpyright** - Static type checker for Python
 - **pytest** - Testing framework
 - **watchexec** - File watching and auto-restarting during development
 
