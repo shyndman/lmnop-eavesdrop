@@ -75,6 +75,7 @@ class StreamingTranscriptionProcessor:
 
     # Transcription state
     self.exit: bool = False
+    self._source_exhausted: bool = False
     self.language: str | None = config.language
     self.text: list[str] = []
 
@@ -239,6 +240,10 @@ class StreamingTranscriptionProcessor:
     self.exit = True
     await self.sink.disconnect()
 
+  def mark_source_exhausted(self) -> None:
+    """Mark that no additional audio will arrive for this session."""
+    self._source_exhausted = True
+
   def add_audio_frames(self, frames: np.ndarray) -> None:
     """Add audio frames to the buffer for processing."""
     self.buffer.add_frames(frames)
@@ -249,6 +254,8 @@ class StreamingTranscriptionProcessor:
       try:
         audio_chunk = await self._get_next_audio_chunk()
         if audio_chunk is None:
+          if self._source_exhausted and self.buffer.available_duration <= 0:
+            break
           continue
 
         transcription_result = await self._transcribe_chunk(audio_chunk)
@@ -278,6 +285,8 @@ class StreamingTranscriptionProcessor:
     )
 
     if duration < self.buffer.config.min_chunk_duration:
+      if self._source_exhausted and duration > 0:
+        return AudioChunk(data=input_bytes, duration=duration, start_time=start_time)
       await asyncio.sleep(self.buffer.config.min_chunk_duration - duration)
       return None
 

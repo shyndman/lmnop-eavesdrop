@@ -112,4 +112,6 @@ class TranscriptionSetupMessage(BaseMessage):
 
   type: Literal["setup"] = "setup"
   stream: str = Field(description="Stream name or client identifier")
-  options: UserTranscriptionOptions = Field(description="User-specified transcription options")
+  options: UserTranscriptionOptions = Field(
+    description="User-specified transcription options, including source_mode routing intent"
+  )

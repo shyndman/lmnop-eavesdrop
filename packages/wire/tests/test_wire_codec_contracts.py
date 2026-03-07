@@ -20,7 +20,12 @@ from eavesdrop.wire.messages import (
   TranscriptionMessage,
   TranscriptionSetupMessage,
 )
-from eavesdrop.wire.transcription import Segment, UserTranscriptionOptions, Word
+from eavesdrop.wire.transcription import (
+  Segment,
+  TranscriptionSourceMode,
+  UserTranscriptionOptions,
+  Word,
+)
 
 
 def _build_contract_segment() -> Segment:
@@ -83,6 +88,7 @@ def _build_contract_segment() -> Segment:
       timestamp=1_700_000_000.8,
       stream="stream-a",
       options=UserTranscriptionOptions(
+        source_mode=TranscriptionSourceMode.FILE,
         send_last_n_segments=5,
         initial_prompt="keep names exact",
         hotwords=["Alpha", "Bravo"],
@@ -129,6 +135,7 @@ def test_decode_preserves_control_message_metadata_fields() -> None:
       timestamp=1_700_000_002.0,
       stream="stream-2",
       options=UserTranscriptionOptions(
+        source_mode=TranscriptionSourceMode.LIVE,
         send_last_n_segments=2,
         initial_prompt="spell hospital names correctly",
         hotwords=["General", "Memorial"],
@@ -144,6 +151,7 @@ def test_decode_preserves_control_message_metadata_fields() -> None:
   assert decoded.timestamp == 1_700_000_002.0
   assert decoded.stream == "stream-2"
   assert decoded.options.send_last_n_segments == 2
+  assert decoded.options.source_mode == TranscriptionSourceMode.LIVE
   assert decoded.options.initial_prompt == "spell hospital names correctly"
   assert decoded.options.hotwords == ["General", "Memorial"]
   assert decoded.options.word_timestamps is True
@@ -166,3 +174,15 @@ def test_deserialize_rejects_non_string_discriminator_type() -> None:
     deserialize_message(payload)
 
   assert "type" in str(exc_info.value)
+
+
+def test_setup_options_default_source_mode_to_live_when_field_omitted() -> None:
+  payload = (
+    '{"type":"setup","timestamp":1700000005.0,"stream":"stream-3",'
+    '"options":{"send_last_n_segments":1}}'
+  )
+
+  decoded = deserialize_message(payload)
+
+  assert decoded.type == "setup"
+  assert decoded.options.source_mode == TranscriptionSourceMode.LIVE

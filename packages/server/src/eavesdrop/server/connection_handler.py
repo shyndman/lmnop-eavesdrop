@@ -17,6 +17,7 @@ from eavesdrop.wire import (
   ClientType,
   ErrorMessage,
   TranscriptionSetupMessage,
+  TranscriptionSourceMode,
   WebSocketHeaders,
   deserialize_message,
   serialize_message,
@@ -34,6 +35,7 @@ class TranscriberConnection:
   """Result of a successful transcriber connection."""
 
   client: "WebSocketStreamingClient"
+  source_mode: TranscriptionSourceMode
 
 
 @dataclass
@@ -109,7 +111,9 @@ class WebSocketConnectionHandler:
       match (client_type, message):
         case (ClientType.TRANSCRIBER, TranscriptionSetupMessage()):
           client = await self._handle_transcriber_connection(websocket, message)
-          return TranscriberConnection(client) if client else None
+          if not client:
+            return None
+          return TranscriberConnection(client=client, source_mode=message.options.source_mode)
 
         case (ClientType.HEALTH_CHECK, HealthCheckRequest()):
           await self._handle_health_check(websocket, message)

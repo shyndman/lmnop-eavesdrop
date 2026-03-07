@@ -11,6 +11,7 @@ from websockets.asyncio.client import ClientConnection
 from eavesdrop.common import get_logger
 from eavesdrop.wire import (
   ClientType,
+  DisconnectMessage,
   ErrorMessage,
   ServerReadyMessage,
   TranscriptionMessage,
@@ -20,6 +21,8 @@ from eavesdrop.wire import (
   deserialize_message,
   serialize_message,
 )
+
+FILE_UPLOAD_CHUNK_BYTES = 64 * 1024
 
 
 class WebSocketConnection:
@@ -36,6 +39,7 @@ class WebSocketConnection:
     client_type: ClientType = ClientType.TRANSCRIBER,
     stream_names: list[str] | None = None,
     on_transcription_message: Callable[[TranscriptionMessage], None] | None = None,
+    on_disconnect: Callable[[str | None], None] | None = None,
   ):
     self.host = host
     self.port = port
@@ -46,6 +50,7 @@ class WebSocketConnection:
     self.client_type = client_type
     self.stream_names = stream_names or []
     self.on_transcription_message = on_transcription_message
+    self.on_disconnect = on_disconnect
 
     self.logger = get_logger("conn", stream=stream_name)
 
@@ -151,6 +156,12 @@ class WebSocketConnection:
           if error.stream == self.stream_name or error.stream is None:
             self.on_error(error.message)
 
+        case DisconnectMessage() as disconnect:
+          if disconnect.stream == self.stream_name:
+            self.session_end_received = True
+            if self.on_disconnect:
+              self.on_disconnect(disconnect.message)
+
         case _:
           # Handle unexpected message types
           self.on_error(f"Received unexpected message: {type(message)}")
@@ -182,6 +193,32 @@ class WebSocketConnection:
       await self.ws.send(b"END_OF_AUDIO")
     except Exception as e:
       self.on_error(f"Error sending END_OF_AUDIO: {e}")
+
+  async def send_file_bytes(
+    self,
+    file_bytes: bytes,
+    chunk_size: int = FILE_UPLOAD_CHUNK_BYTES,
+  ) -> None:
+    """Upload file payload bytes over websocket in deterministic chunk sizes.
+
+    :param file_bytes: Raw bytes from the local transcription input file.
+    :type file_bytes: bytes
+    :param chunk_size: Chunk size used for websocket sends.
+    :type chunk_size: int
+    """
+    if not self.ws or not self.connected:
+      return
+
+    if chunk_size <= 0:
+      raise ValueError(f"chunk_size must be positive, got {chunk_size}")
+
+    try:
+      for offset in range(0, len(file_bytes), chunk_size):
+        chunk = file_bytes[offset : offset + chunk_size]
+        await self.ws.send(chunk)
+    except Exception as e:
+      self.on_error(f"Error sending file bytes: {e}")
+      raise
 
   def reset_session_tracking(self):
     """Reset session tracking variables."""

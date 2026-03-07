@@ -6,6 +6,7 @@ RUN --mount=type=cache,target=/var/cache/apt \
     --mount=type=cache,target=/var/lib/apt \
     apt-get update \
     && apt-get install -y --no-install-recommends \
+      # ffmpeg is required for RTSP ingest and file-source transcription decode.
       ffmpeg portaudio19-dev \
     && apt-get clean
 

@@ -8,17 +8,31 @@ and context manager protocols for streaming transcription results.
 import asyncio
 import secrets
 from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
+from pathlib import Path
 
 from eavesdrop.client.audio import AudioCapture
 from eavesdrop.client.connection import WebSocketConnection
 from eavesdrop.common import get_logger
 from eavesdrop.wire import (
   ClientType,
+  Segment,
   TranscriptionMessage,
+  TranscriptionSourceMode,
   UserTranscriptionOptions,
 )
 
 logger = get_logger("cli")
+
+
+@dataclass(frozen=True)
+class FileTranscriptionResult:
+  """Deterministic result envelope returned by ``EavesdropClient.transcribe_file``."""
+
+  segments: list[Segment]
+  text: str
+  language: str | None
+  warnings: list[str] = field(default_factory=list)
 
 
 class EavesdropClient:
@@ -63,6 +77,10 @@ class EavesdropClient:
     self._streaming = False
     self._message_queue: asyncio.Queue[TranscriptionMessage] = asyncio.Queue()
     self._background_tasks: set[asyncio.Task[None]] = set()
+    self._message_task: asyncio.Task[None] | None = None
+    self._operation_lock = asyncio.Lock()
+    self._disconnect_event = asyncio.Event()
+    self._disconnect_reason: str | None = None
 
     # Validate configuration
     self._validate_configuration()
@@ -143,20 +161,26 @@ class EavesdropClient:
       stream_names=stream_names,
     )
 
-  async def connect(self) -> None:
-    """Establish WebSocket connection to server."""
+  async def connect(self, setup_options: UserTranscriptionOptions | None = None) -> None:
+    """Establish WebSocket connection to server.
+
+    :param setup_options: Optional setup message override for this connection.
+    :type setup_options: UserTranscriptionOptions | None
+    """
     if self._connected:
       return
 
     # Create connection based on client type
     if self._client_type == ClientType.TRANSCRIBER:
-      await self._connect_transcriber()
+      await self._connect_transcriber(setup_options)
     else:
       await self._connect_subscriber()
 
     self._connected = True
 
-  async def _connect_transcriber(self) -> None:
+  async def _connect_transcriber(
+    self, setup_options: UserTranscriptionOptions | None = None
+  ) -> None:
     """Connect in transcriber mode."""
     # Initialize audio capture for transcriber mode
     self._audio_capture = AudioCapture(on_error=self._on_error, audio_device=self._audio_device)
@@ -171,14 +195,17 @@ class EavesdropClient:
       on_error=self._on_error,
       client_type=ClientType.TRANSCRIBER,
       on_transcription_message=self._on_transcription_message,
+      on_disconnect=self._on_disconnect,
     )
 
-    await self._connection.connect(self._transcription_options)
+    options = setup_options or self._transcription_options
+    await self._connection.connect(options)
 
     # Start message handling task
     task = asyncio.create_task(self._connection.handle_messages())
     self._background_tasks.add(task)
     task.add_done_callback(self._background_tasks.discard)
+    self._message_task = task
 
   async def _connect_subscriber(self) -> None:
     """Connect in subscriber mode."""
@@ -201,6 +228,7 @@ class EavesdropClient:
     task = asyncio.create_task(self._connection.handle_messages())
     self._background_tasks.add(task)
     task.add_done_callback(self._background_tasks.discard)
+    self._message_task = task
 
   async def disconnect(self) -> None:
     """Close WebSocket connection and cleanup resources."""
@@ -219,6 +247,7 @@ class EavesdropClient:
     if self._connection:
       await self._connection.disconnect()
       self._connection = None
+      self._message_task = None
 
     # Cancel background tasks
     for task in self._background_tasks:
@@ -227,6 +256,8 @@ class EavesdropClient:
     if self._background_tasks:
       await asyncio.gather(*self._background_tasks, return_exceptions=True)
     self._background_tasks.clear()
+    self._disconnect_event.clear()
+    self._disconnect_reason = None
 
   async def start_streaming(self) -> None:
     """Start audio streaming (transcriber mode only)."""
@@ -263,6 +294,153 @@ class EavesdropClient:
 
     if self._audio_capture:
       self._audio_capture.stop_recording()
+
+  async def transcribe_file(
+    self,
+    file_path: str,
+    timeout_s: float | None = None,
+  ) -> FileTranscriptionResult:
+    """Transcribe a finite local audio file in one non-reentrant operation.
+
+    :param file_path: Path to the local audio file to upload.
+    :type file_path: str
+    :param timeout_s: Optional per-call timeout in seconds.
+    :type timeout_s: float | None
+    :returns: Final reduced transcription result for the file.
+    :rtype: FileTranscriptionResult
+    :raises RuntimeError: If called in non-transcriber mode or another operation is active.
+    :raises TimeoutError: If the operation exceeds ``timeout_s``.
+    """
+    if self._client_type != ClientType.TRANSCRIBER:
+      raise RuntimeError("transcribe_file() only supported in transcriber mode")
+
+    if self._streaming or self._connected:
+      raise RuntimeError("transcribe_file() requires an idle client instance")
+
+    if self._operation_lock.locked():
+      raise RuntimeError("transcribe_file() operation already in progress")
+
+    target_path = Path(file_path)
+    file_bytes = target_path.read_bytes()
+
+    async with self._operation_lock:
+      operation = self._transcribe_file_operation(file_bytes=file_bytes)
+
+      try:
+        if timeout_s is None:
+          return await operation
+        return await asyncio.wait_for(operation, timeout=timeout_s)
+      except asyncio.TimeoutError as exc:
+        raise TimeoutError(f"transcribe_file() timed out after {timeout_s}s") from exc
+      except asyncio.CancelledError:
+        raise
+      except Exception:
+        logger.exception("transcribe_file() failed", file_path=file_path)
+        raise
+      finally:
+        await self.disconnect()
+
+  async def _transcribe_file_operation(self, file_bytes: bytes) -> FileTranscriptionResult:
+    """Execute connect/upload/reduce/finalize steps for one finite-file transcription."""
+    self._clear_message_queue()
+    self._disconnect_event.clear()
+    self._disconnect_reason = None
+
+    setup_options = self._transcription_options.model_copy(
+      update={"source_mode": TranscriptionSourceMode.FILE}
+    )
+    await self.connect(setup_options=setup_options)
+
+    if not self._connection:
+      raise RuntimeError("Connection not initialized for transcribe_file operation")
+
+    await self._connection.send_file_bytes(file_bytes)
+    await self._connection.send_end_of_audio()
+
+    return await self._collect_file_result()
+
+  async def _collect_file_result(self) -> FileTranscriptionResult:
+    """Collect transcription windows until disconnect or socket-close terminal state."""
+    reduced_segments: list[Segment] = []
+    warnings: list[str] = []
+    language: str | None = None
+    last_committed_id: int | None = None
+
+    while True:
+      if self._disconnect_event.is_set():
+        break
+
+      if self._message_task and self._message_task.done() and self._message_queue.empty():
+        break
+
+      try:
+        message = await asyncio.wait_for(self._message_queue.get(), timeout=0.1)
+      except asyncio.TimeoutError:
+        continue
+
+      if message.language is not None:
+        language = message.language
+
+      last_committed_id = self._reduce_windowed_segments(
+        message=message,
+        reduced_segments=reduced_segments,
+        last_committed_id=last_committed_id,
+        warnings=warnings,
+      )
+
+    text = " ".join(segment.text.strip() for segment in reduced_segments if segment.text.strip())
+    return FileTranscriptionResult(
+      segments=reduced_segments,
+      text=text,
+      language=language,
+      warnings=warnings,
+    )
+
+  def _reduce_windowed_segments(
+    self,
+    message: TranscriptionMessage,
+    reduced_segments: list[Segment],
+    last_committed_id: int | None,
+    warnings: list[str],
+  ) -> int | None:
+    """Reduce completed-window emissions to new committed segments only."""
+    if not message.segments:
+      return last_committed_id
+
+    completed_segments = message.segments[:-1]
+    if not completed_segments:
+      return last_committed_id
+
+    if last_committed_id is None:
+      new_segments = completed_segments
+    else:
+      sentinel_index: int | None = None
+      for idx in range(len(completed_segments) - 1, -1, -1):
+        if completed_segments[idx].id == last_committed_id:
+          sentinel_index = idx
+          break
+
+      if sentinel_index is None:
+        warning = (
+          f"Reducer sentinel missing for stream={message.stream}: "
+          f"last_committed_id={last_committed_id}"
+        )
+        warnings.append(warning)
+        logger.warning(warning)
+        new_segments = completed_segments
+      else:
+        new_segments = completed_segments[sentinel_index + 1 :]
+
+    if not new_segments:
+      return last_committed_id
+
+    reduced_segments.extend(new_segments)
+    return new_segments[-1].id
+
+  def _clear_message_queue(self) -> None:
+    """Drain stale buffered messages before starting a one-shot file operation."""
+    while not self._message_queue.empty():
+      self._message_queue.get_nowait()
 
   async def _audio_streaming_loop(self) -> None:
     """Background task to stream audio data to server."""
@@ -331,6 +509,11 @@ class EavesdropClient:
     # This is primarily for backward compatibility
     # The main message flow now uses _on_transcription_message
     pass
+
+  def _on_disconnect(self, reason: str | None) -> None:
+    """Handle terminal disconnect signaling from the server."""
+    self._disconnect_reason = reason
+    self._disconnect_event.set()
 
   def _on_error(self, error: str) -> None:
     """Handle error callback."""

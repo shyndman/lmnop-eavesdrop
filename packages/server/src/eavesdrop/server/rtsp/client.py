@@ -26,6 +26,10 @@ class RTSPClient:
 
   The client handles automatic reconnection with a 30-second delay between attempts,
   comprehensive error logging, and graceful shutdown capabilities.
+
+  Runtime dependency note:
+  - `ffmpeg` must be available on PATH for RTSP ingest.
+  - The server also relies on the same `ffmpeg` dependency for file-source decode.
   """
 
   def __init__(self, stream_name: str, rtsp_url: str, audio_queue: asyncio.Queue[bytes]):

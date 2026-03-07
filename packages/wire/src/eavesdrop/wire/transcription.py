@@ -5,8 +5,16 @@ Contains the core data structures used for transcription results and user config
 """
 
 import math
+from enum import StrEnum
 
 from pydantic import BaseModel, Field, computed_field
+
+
+class TranscriptionSourceMode(StrEnum):
+  """Declares how a transcriber session sources audio for server routing decisions."""
+
+  LIVE = "live"
+  FILE = "file"
 
 
 def compute_segment_chain_id(previous_id: int, text: str) -> int:
@@ -133,6 +141,9 @@ class Segment(BaseModel):
 
 class UserTranscriptionOptions(BaseModel):
   """Transcription options that clients can specify."""
+
+  source_mode: TranscriptionSourceMode = TranscriptionSourceMode.LIVE
+  """Declares live-stream versus finite-file source intent for this session."""
 
   # Transcription behavior
   send_last_n_segments: int | None = Field(default=None, gt=0)

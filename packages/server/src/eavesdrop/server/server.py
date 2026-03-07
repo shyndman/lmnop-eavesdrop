@@ -40,6 +40,8 @@ class TranscriptionServer:
     # Parse and validate client options using wire protocol data structure
     user_options = msg.options
     client_overrides = user_options.model_dump(exclude_none=True)
+    source_mode = user_options.source_mode
+    client_overrides.pop("source_mode", None)
 
     # Create configuration for the streaming client with client overrides
     transcription_config = self.transcription_config.model_copy(update=client_overrides)
@@ -56,6 +58,7 @@ class TranscriptionServer:
       use_vad=transcription_config.use_vad,
       num_workers=transcription_config.num_workers,
       send_last_n_segments=transcription_config.send_last_n_segments,
+      source_mode=source_mode,
       same_output_threshold=transcription_config.same_output_threshold,
       initial_prompt=transcription_config.initial_prompt,
       hotwords=transcription_config.hotwords,
@@ -67,6 +70,7 @@ class TranscriptionServer:
       stream_name=msg.stream,
       get_audio_func=self.get_audio_from_websocket,
       transcription_config=transcription_config,
+      source_mode=source_mode,
     )
 
     # Start the client and get the completion task
@@ -107,7 +111,12 @@ class TranscriptionServer:
         case SubscriberConnection():
           await self._handle_subscriber_lifecycle(websocket)
 
-        case TranscriberConnection(client):
+        case TranscriberConnection(client, source_mode):
+          self.logger.info(
+            "Handling transcriber lifecycle",
+            stream=client.stream_name,
+            source_mode=source_mode,
+          )
           if client._completion_task is None:
             raise RuntimeError("TranscriberConnection missing completion task — client not started")
           await client._completion_task

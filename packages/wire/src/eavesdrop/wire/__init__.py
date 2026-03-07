@@ -18,7 +18,7 @@ from .messages import (
   TranscriptionSetupMessage,
   WebSocketHeaders,
 )
-from .transcription import Segment, UserTranscriptionOptions, Word
+from .transcription import Segment, TranscriptionSourceMode, UserTranscriptionOptions, Word
 
 __all__ = [
   "BaseMessage",
@@ -30,6 +30,7 @@ __all__ = [
   "ServerReadyMessage",
   "StreamStatusMessage",
   "TranscriptionMessage",
+  "TranscriptionSourceMode",
   "TranscriptionSetupMessage",
   "UserTranscriptionOptions",
   "WebSocketHeaders",
