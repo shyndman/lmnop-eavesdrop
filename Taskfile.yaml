@@ -1,5 +1,9 @@
 version: '3'
 
+vars:
+  SERVER_IMAGE: '{{default "ghcr.io/shyndman/lmnop-eavesdrop:latest" .SERVER_IMAGE}}'
+  GFX_ARCH: '{{default "gfx1100" .GFX_ARCH}}'
+
 tasks:
   # TODO: Make sure we have the easyeffects Pulse Audio source (and on that
   # note, we should dump the config here)
@@ -34,3 +38,29 @@ tasks:
     cmds:
       - pnpm install
       - pnpm run build:linux:dev
+
+  prepare-server:
+    desc: Install server dependencies
+    dir: packages/server
+    cmds:
+      - uv sync --all-extras --all-groups
+
+  run-server:
+    desc: Start the transcription server with local config
+    deps: [prepare-server]
+    dir: packages/server
+    cmds:
+      - uv run eavesdrop-server --config config.yaml
+
+  build-server-image:
+    desc: Build the server Docker image
+    dir: packages
+    cmds:
+      - docker build --progress=plain -f server/docker/Dockerfile -t {{.SERVER_IMAGE}} --build-arg GFX_ARCH={{.GFX_ARCH}} .
+
+  run-server-image:
+    desc: Run the server Docker image with GPU and port mapping
+    deps: [build-server-image]
+    dir: packages
+    cmds:
+      - docker run --device /dev/kfd --device /dev/dri --security-opt seccomp=unconfined --rm --publish '9090:9090' --name eavesdrop --volume ~/.cache/lmnop/eavesdrop:/app/.cache/eavesdrop/ --volume $PWD/server/config.yaml:/app/server/config.yaml:ro --env EAVESDROP_CONFIG=/app/server/config.yaml {{.SERVER_IMAGE}}
