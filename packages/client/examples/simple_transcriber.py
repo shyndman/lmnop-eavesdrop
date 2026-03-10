@@ -13,12 +13,18 @@ import sys
 from eavesdrop.client import EavesdropClient
 
 
-async def test_transcriber(host: str, port: int, audio_device: str = "default"):
+async def test_transcriber(
+  host: str,
+  port: int,
+  audio_device: str = "default",
+  model: str = "distil-small.en",
+):
   """Test the transcriber client with a real server."""
   print("Creating transcriber client...")
   print(f"  Host: {host}")
   print(f"  Port: {port}")
   print(f"  Audio device: {audio_device}")
+  print(f"  Model: {model}")
 
   try:
     # Create transcriber client
@@ -26,6 +32,7 @@ async def test_transcriber(host: str, port: int, audio_device: str = "default"):
       host=host,
       port=port,
       audio_device=audio_device,
+      model=model,
       beam_size=5,
       word_timestamps=True,
       initial_prompt="Test transcription session",
@@ -97,6 +104,11 @@ def main():
   parser.add_argument(
     "--audio-device", default="default", help="Audio device to use (default: default)"
   )
+  parser.add_argument(
+    "--model",
+    default="distil-small.en",
+    help="Whisper model alias to use (default: distil-small.en)",
+  )
 
   args = parser.parse_args()
 
@@ -113,7 +125,7 @@ def main():
     return 1
 
   try:
-    return asyncio.run(test_transcriber(host, port, args.audio_device))
+    return asyncio.run(test_transcriber(host, port, args.audio_device, args.model))
   except KeyboardInterrupt:
     print("\nExiting...")
     return 0

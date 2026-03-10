@@ -108,6 +108,7 @@ class EavesdropClient:
     hotwords: list[str] | None = None,
     send_last_n_segments: int | None = None,
     beam_size: int | None = None,
+    model: str | None = None,
   ) -> "EavesdropClient":
     """Create a transcriber client for sending audio for transcription.
 
@@ -119,6 +120,7 @@ class EavesdropClient:
     :param hotwords: Hotwords for improved recognition
     :param send_last_n_segments: Number of recent segments to include
     :param beam_size: Override beam search width for deterministic decoding
+    :param model: Whisper model alias override for this client session
     :returns: Configured EavesdropClient in transcriber mode
     """
     transcription_options = UserTranscriptionOptions(
@@ -127,6 +129,7 @@ class EavesdropClient:
       hotwords=hotwords,
       send_last_n_segments=send_last_n_segments,
       beam_size=beam_size,
+      model=model,
     )
 
     return cls(

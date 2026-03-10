@@ -94,6 +94,7 @@ def _build_contract_segment() -> Segment:
         hotwords=["Alpha", "Bravo"],
         word_timestamps=True,
         beam_size=3,
+        model="distil-small.en",
       ),
     ),
   ],
@@ -141,6 +142,7 @@ def test_decode_preserves_control_message_metadata_fields() -> None:
         hotwords=["General", "Memorial"],
         word_timestamps=True,
         beam_size=2,
+        model="distil-small.en",
       ),
     )
   )
@@ -156,6 +158,7 @@ def test_decode_preserves_control_message_metadata_fields() -> None:
   assert decoded.options.hotwords == ["General", "Memorial"]
   assert decoded.options.word_timestamps is True
   assert decoded.options.beam_size == 2
+  assert decoded.options.model == "distil-small.en"
 
 
 def test_deserialize_rejects_unknown_discriminator_type() -> None:

@@ -160,3 +160,6 @@ class UserTranscriptionOptions(BaseModel):
 
   beam_size: int | None = Field(default=None, gt=0)
   """Optional override for beam search width when temperature is zero."""
+
+  model: str | None = None
+  """Optional whisper model alias override for this transcription session."""

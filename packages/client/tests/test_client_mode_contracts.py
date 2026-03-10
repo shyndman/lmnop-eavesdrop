@@ -107,6 +107,7 @@ async def test_transcriber_factory_options_reach_setup_payload(
     hotwords=["orion", "apollo"],
     send_last_n_segments=3,
     beam_size=5,
+    model="distil-small.en",
   )
 
   await client.connect()
@@ -125,6 +126,7 @@ async def test_transcriber_factory_options_reach_setup_payload(
   assert setup_message.options.hotwords == ["orion", "apollo"]
   assert setup_message.options.send_last_n_segments == 3
   assert setup_message.options.beam_size == 5
+  assert setup_message.options.model == "distil-small.en"
 
   await client.disconnect()
   assert fake_ws.closed is True
