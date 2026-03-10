@@ -1,9 +1,5 @@
 version: '3'
 
-vars:
-  SERVER_IMAGE: '{{default "ghcr.io/shyndman/lmnop-eavesdrop:latest" .SERVER_IMAGE}}'
-  GFX_ARCH: '{{default "gfx1100" .GFX_ARCH}}'
-
 tasks:
   # TODO: Make sure we have the easyeffects Pulse Audio source (and on that
   # note, we should dump the config here)
@@ -18,6 +14,35 @@ tasks:
     dir: packages/active-listener
     cmds:
       - uv sync --all-extras --all-groups
+
+  prepare-client-lib:
+    desc: Install client library dependencies
+    dir: packages/client
+    cmds:
+      - uv sync --all-extras --all-groups
+
+  transcribe-file:
+    desc: Transcribe a local audio file (set audio_file=/path/to/audio.wav)
+    deps: [prepare-client-lib]
+    dir: packages/client
+    vars:
+      host: '{{default "localhost" .host}}'
+      port: '{{default "9090" .port}}'
+    requires:
+      vars: [audio_file]
+    cmds:
+      - uv run python -m eavesdrop.client.transcribe_file_cli --audio-file "{{.audio_file}}" --host "{{.host}}" --port {{.port}} {{.CLI_ARGS}}
+
+  run-mic-client:
+    desc: Start microphone transcription client
+    deps: [prepare-client-lib]
+    dir: packages/client
+    vars:
+      host: '{{default "localhost" .host}}'
+      port: '{{default "9090" .port}}'
+      audio_device: '{{default "default" .audio_device}}'
+    cmds:
+      - uv run python examples/simple_transcriber.py --server "{{.host}}:{{.port}}" --audio-device "{{.audio_device}}" --model "distil-small.en" {{.CLI_ARGS}}
 
   build-client-ui:
     dir: packages/active-listener-ui-electron
@@ -53,14 +78,36 @@ tasks:
       - uv run eavesdrop-server --config config.yaml
 
   build-server-image:
-    desc: Build the server Docker image
+    # Verified ROCm build settings on AMD Framework 13 (Ryzen 7840U / Radeon 780M).
+    desc: Build ROCm base and server images
     dir: packages
+    vars:
+      SERVER_IMAGE: '{{default "ghcr.io/shyndman/lmnop-eavesdrop:latest" .SERVER_IMAGE}}'
+      ROCM_BASE_IMAGE: '{{default "eavesdrop-rocm-base" .ROCM_BASE_IMAGE}}'
+      GFX_ARCH: '{{default "gfx1030;gfx1100" .GFX_ARCH}}'
+      HSA_OVERRIDE_GFX_VERSION: '{{default "11.0.0" .HSA_OVERRIDE_GFX_VERSION}}'
     cmds:
-      - docker build --progress=plain -f server/docker/Dockerfile -t {{.SERVER_IMAGE}} --build-arg GFX_ARCH={{.GFX_ARCH}} .
+      - docker build --pull --no-cache --progress=plain -f server/docker/Dockerfile.rocm-base --build-arg GFX_ARCH='{{.GFX_ARCH}}' --build-arg HSA_OVERRIDE_GFX_VERSION='{{.HSA_OVERRIDE_GFX_VERSION}}' -t {{.ROCM_BASE_IMAGE}} .
+      - docker build --no-cache --progress=plain -f server/docker/Dockerfile --build-arg BASE_IMAGE={{.ROCM_BASE_IMAGE}} -t {{.SERVER_IMAGE}} .
 
   run-server-image:
-    desc: Run the server Docker image with GPU and port mapping
+    # Verified ROCm runtime flags on AMD Framework 13 (Ryzen 7840U / Radeon 780M).
+    desc: Run the server Docker image with ROCm runtime flags
     deps: [build-server-image]
-    dir: packages
+    dir: packages/server
+    vars:
+      SERVER_IMAGE: '{{default "ghcr.io/shyndman/lmnop-eavesdrop:latest" .SERVER_IMAGE}}'
+      HSA_OVERRIDE_GFX_VERSION: '{{default "11.0.0" .HSA_OVERRIDE_GFX_VERSION}}'
     cmds:
-      - docker run --device /dev/kfd --device /dev/dri --security-opt seccomp=unconfined --rm --publish '9090:9090' --name eavesdrop --volume ~/.cache/lmnop/eavesdrop:/app/.cache/eavesdrop/ --volume $PWD/server/config.yaml:/app/server/config.yaml:ro --env EAVESDROP_CONFIG=/app/server/config.yaml {{.SERVER_IMAGE}}
+      - docker run --interactive --tty \
+        --device /dev/kfd \
+        --device /dev/dri \
+        --security-opt seccomp=unconfined \
+        --rm \
+        --publish '9090:9090' \
+        --name eavesdrop \
+        --env HSA_OVERRIDE_GFX_VERSION='{{.HSA_OVERRIDE_GFX_VERSION}}' \
+        --volume "$HOME/.cache/lmnop/eavesdrop-models:/root/.cache/eavesdrop" \
+        --volume "$PWD/config.yaml:/app/server/config.yaml:ro" \
+        --env EAVESDROP_CONFIG=/app/server/config.yaml \
+        {{.SERVER_IMAGE}} -m eavesdrop.server
