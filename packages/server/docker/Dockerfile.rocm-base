@@ -24,7 +24,7 @@ RUN if [ -z "$GFX_ARCH" ]; then echo "GFX_ARCH build arg is required" && exit 1;
 
 ENV PYTORCH_ROCM_ARCH=$GFX_ARCH
 RUN if [ "$GFX_ARCH" = "gfx1100" ] && [ -z "$HSA_OVERRIDE_GFX_VERSION" ]; then \
-      export HSA_OVERRIDE_GFX_VERSION=11.0.0; \
+      export HSA_OVERRIDE_GFX_VERSION=11.0.3; \
     fi && \
     if [ -n "$HSA_OVERRIDE_GFX_VERSION" ]; then \
       conda env config vars set HSA_OVERRIDE_GFX_VERSION="$HSA_OVERRIDE_GFX_VERSION"; \
