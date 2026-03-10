@@ -1,7 +1,5 @@
 """Word-timestamp alignment and timing calculation for Whisper transcription."""
 
-import itertools
-
 import ctranslate2
 import numpy as np
 from faster_whisper.tokenizer import Tokenizer
@@ -66,7 +64,7 @@ class WordAlignmentProcessor:
     self,
     model: ctranslate2.models.Whisper,
     tokenizer: Tokenizer,
-    text_tokens: list[int],
+    text_tokens: list[list[int]],
     encoder_output: ctranslate2.StorageView,
     num_frames: int,
   ) -> list[list[WordTimingDict]]:
@@ -76,9 +74,9 @@ class WordAlignmentProcessor:
     :type model: ctranslate2.models.Whisper
     :param tokenizer: Tokenizer for processing tokens and splitting into words
     :type tokenizer: Tokenizer
-    :param text_tokens: List of integer token IDs to be aligned with audio frames.
-        Each token typically represents a word or sub-word unit from the transcription.
-    :type text_tokens: list[int]
+    :param text_tokens: Batched token sequences to align with audio frames.
+        Each outer-list item represents one segment-level token sequence.
+    :type text_tokens: list[list[int]]
     :param encoder_output: Pre-computed encoder features from the Whisper model.
         This is the mel-spectrogram audio processed by the encoder into a feature
         representation with shape [batch_size, sequence_length, d_model]. Contains
@@ -88,14 +86,15 @@ class WordAlignmentProcessor:
         Used by the alignment algorithm to properly scale timestamp indices back
         to the original audio timeline. Critical for accurate timing calculations.
     :type num_frames: int
-    :returns: List of word timing dictionaries for each token. The return structure is
-        two-dimensional: the outer list corresponds to each input text token, and
-        the inner list contains the individual words extracted from that token
-        with their timing information.
+    :returns: List of word timing dictionaries for each segment-level token sequence.
+        The outer list corresponds to each input token sequence, and the inner list
+        contains the individual words extracted from that sequence with timing info.
     :rtype: list[list[WordTimingDict]]
     """
     if len(text_tokens) == 0:
       return []
+
+    batched_num_frames = [num_frames] * len(text_tokens)
 
     # Call Whisper's forced alignment: cross-attention between encoder (audio) and decoder (text)
     # Returns alignment results containing text_token_probs and alignments (text_idx, time_idx)
@@ -104,7 +103,7 @@ class WordAlignmentProcessor:
       encoder_output,
       tokenizer.sot_sequence,
       text_tokens,
-      num_frames,
+      batched_num_frames,
       median_filter_width=self.median_filter_width,
     )
 
@@ -115,7 +114,7 @@ class WordAlignmentProcessor:
       text_indices = np.array([pair[0] for pair in alignments])
       time_indices = np.array([pair[1] for pair in alignments])
 
-      words, word_tokens = tokenizer.split_to_word_tokens([text_token] + [tokenizer.eot])
+      words, word_tokens = tokenizer.split_to_word_tokens(text_token + [tokenizer.eot])
       if len(word_tokens) <= 1:
         # Return empty list for tokens with no words (e.g., end-of-text only)
         # This prevents crashes when looking up jump_times with float indices
@@ -317,10 +316,11 @@ class WordTimestampAligner:
     # Extract text tokens from segments
     text_tokens_per_segment = self._extract_text_tokens(segments, tokenizer)
 
-    # Flatten all tokens for alignment
-    text_tokens = list(
-      itertools.chain.from_iterable(itertools.chain.from_iterable(text_tokens_per_segment))
-    )
+    # Flatten each segment group into one sequence for alignment batching
+    text_tokens = [
+      [token for subsegment_tokens in segment_tokens for token in subsegment_tokens]
+      for segment_tokens in text_tokens_per_segment
+    ]
 
     # Find alignments for all tokens
     alignments = self.alignment_processor.find_alignment(
