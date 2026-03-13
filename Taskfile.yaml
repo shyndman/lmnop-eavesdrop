@@ -107,15 +107,15 @@ tasks:
       SERVER_IMAGE: '{{default "ghcr.io/shyndman/lmnop-eavesdrop:latest" .SERVER_IMAGE}}'
       HSA_OVERRIDE_GFX_VERSION: '{{default "11.0.0" .HSA_OVERRIDE_GFX_VERSION}}'
     cmds:
-      - docker run --interactive --tty \
-        --device /dev/kfd \
-        --device /dev/dri \
-        --security-opt seccomp=unconfined \
-        --rm \
-        --publish '9090:9090' \
-        --name eavesdrop \
-        --env HSA_OVERRIDE_GFX_VERSION='{{.HSA_OVERRIDE_GFX_VERSION}}' \
-        --volume "$HOME/.cache/lmnop/eavesdrop-models:/root/.cache/eavesdrop" \
-        --volume "$PWD/config.yaml:/app/server/config.yaml:ro" \
-        --env EAVESDROP_CONFIG=/app/server/config.yaml \
+      - docker run --interactive --tty
+        --device /dev/kfd
+        --device /dev/dri
+        --security-opt seccomp=unconfined
+        --rm
+        --publish '9090:9090'
+        --name eavesdrop
+        --env HSA_OVERRIDE_GFX_VERSION='{{.HSA_OVERRIDE_GFX_VERSION}}'
+        --volume "$HOME/.cache/lmnop/eavesdrop-models:/root/.cache/eavesdrop"
+        --volume "$PWD/config.yaml:/app/server/config.yaml:ro"
+        --env EAVESDROP_CONFIG=/app/server/config.yaml
         {{.SERVER_IMAGE}} -m eavesdrop.server
