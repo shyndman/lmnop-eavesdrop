@@ -81,12 +81,20 @@ tasks:
     # Verified ROCm build settings on AMD Framework 13 (Ryzen 7840U / Radeon 780M).
     desc: Build ROCm base and server images
     dir: packages
+    sources:
+      - server/src/**/*.py
+      - server/docker/*
+      - server/.dockerignore
+      - server/uv.lock
     vars:
       SERVER_IMAGE: '{{default "ghcr.io/shyndman/lmnop-eavesdrop:latest" .SERVER_IMAGE}}'
       ROCM_BASE_IMAGE: '{{default "eavesdrop-rocm-base" .ROCM_BASE_IMAGE}}'
       GFX_ARCH: '{{default "gfx1030;gfx1100" .GFX_ARCH}}'
       HSA_OVERRIDE_GFX_VERSION: '{{default "11.0.0" .HSA_OVERRIDE_GFX_VERSION}}'
     cmds:
+      - echo "GFX_ARCH = {{.GFX_ARCH}}"
+      - echo "HSA_OVERRIDE_GFX_VERSION = {{.HSA_OVERRIDE_GFX_VERSION}}"
+
       - docker build --pull --no-cache --progress=plain -f server/docker/Dockerfile.rocm-base --build-arg GFX_ARCH='{{.GFX_ARCH}}' --build-arg HSA_OVERRIDE_GFX_VERSION='{{.HSA_OVERRIDE_GFX_VERSION}}' -t {{.ROCM_BASE_IMAGE}} .
       - docker build --no-cache --progress=plain -f server/docker/Dockerfile --build-arg BASE_IMAGE={{.ROCM_BASE_IMAGE}} -t {{.SERVER_IMAGE}} .
 
