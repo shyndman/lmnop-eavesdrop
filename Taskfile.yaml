@@ -119,3 +119,12 @@ tasks:
         --volume "$PWD/config.yaml:/app/server/config.yaml:ro"
         --env EAVESDROP_CONFIG=/app/server/config.yaml
         {{.SERVER_IMAGE}} -m eavesdrop.server
+
+  stop-server-image:
+    desc: Stop the running server container if needed, then remove it
+    cmds:
+      - |
+        if docker inspect -f '{{.State.Running}}' eavesdrop >/dev/null 2>&1 && [ "$(docker inspect -f '{{.State.Running}}' eavesdrop)" = "true" ]; then
+          docker stop eavesdrop
+        fi
+      - docker rm eavesdrop || true
