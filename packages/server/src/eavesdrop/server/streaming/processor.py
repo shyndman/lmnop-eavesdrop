@@ -4,6 +4,7 @@ Streaming transcription processor with integrated Faster Whisper transcriber.
 
 import asyncio
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -251,16 +252,35 @@ class StreamingTranscriptionProcessor:
   async def _transcription_loop(self) -> None:
     """Main processing loop: get audio → transcribe → send results → wait."""
     while not self.exit:
+      loop_start = time.monotonic()
       try:
+        chunk_fetch_start = time.monotonic()
         audio_chunk = await self._get_next_audio_chunk()
+        chunk_fetch_duration = time.monotonic() - chunk_fetch_start
         if audio_chunk is None:
           if self._source_exhausted and self.buffer.available_duration <= 0:
             break
           continue
 
+        result_processing_start = time.monotonic()
         transcription_result = await self._transcribe_chunk(audio_chunk)
         await self._process_transcription_result(transcription_result)
+        result_processing_duration = time.monotonic() - result_processing_start
+
+        interval_wait_start = time.monotonic()
         await self._wait_for_next_interval(transcription_result.processing_time)
+        interval_wait_duration = time.monotonic() - interval_wait_start
+
+        loop_duration = time.monotonic() - loop_start
+        self.logger.info(
+          "Transcription loop timing",
+          chunk_duration_s=f"{audio_chunk.duration:.3f}",
+          chunk_fetch_s=f"{chunk_fetch_duration:.3f}",
+          inference_and_result_s=f"{result_processing_duration:.3f}",
+          inference_s=f"{transcription_result.processing_time:.3f}",
+          interval_wait_s=f"{interval_wait_duration:.3f}",
+          total_loop_s=f"{loop_duration:.3f}",
+        )
       except Exception:
         await self._handle_transcription_error()
 
@@ -287,7 +307,14 @@ class StreamingTranscriptionProcessor:
     if duration < self.buffer.config.min_chunk_duration:
       if self._source_exhausted and duration > 0:
         return AudioChunk(data=input_bytes, duration=duration, start_time=start_time)
-      await asyncio.sleep(self.buffer.config.min_chunk_duration - duration)
+      remaining_wait = self.buffer.config.min_chunk_duration - duration
+      self.logger.info(
+        "Transcription loop minimum chunk wait",
+        buffered_duration_s=f"{duration:.3f}",
+        required_duration_s=f"{self.buffer.config.min_chunk_duration:.3f}",
+        wait_s=f"{remaining_wait:.3f}",
+      )
+      await asyncio.sleep(remaining_wait)
       return None
 
     # TRACING: Audio chunk range being processed
@@ -306,15 +333,13 @@ class StreamingTranscriptionProcessor:
 
   async def _transcribe_chunk(self, chunk: AudioChunk) -> ChunkTranscriptionResult:
     """Transcribe an audio chunk and return results with timing information."""
-    import time
-
     # Debug audio capture (post-buffer)
     if self._debug_capture:
       self._debug_capture.capture(chunk)
 
-    transcription_start = time.time()
+    transcription_start = time.monotonic()
     result, info, speech_chunks = await asyncio.to_thread(self._transcribe_audio, chunk)
-    processing_time = time.time() - transcription_start
+    processing_time = time.monotonic() - transcription_start
 
     self.logger.debug(
       "Transcription performance",
