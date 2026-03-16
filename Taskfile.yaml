@@ -144,6 +144,7 @@ tasks:
     vars:
       SERVER_IMAGE: '{{default "ghcr.io/shyndman/lmnop-eavesdrop:latest" .SERVER_IMAGE}}'
       HSA_OVERRIDE_GFX_VERSION: '{{default "11.0.0" .HSA_OVERRIDE_GFX_VERSION}}'
+      LOG_LEVEL: '{{default "INFO" .LOG_LEVEL}}'
     cmds:
       - docker run --interactive --tty
         --device /dev/kfd
@@ -153,6 +154,7 @@ tasks:
         --publish '9090:9090'
         --name eavesdrop
         --env HSA_OVERRIDE_GFX_VERSION='{{.HSA_OVERRIDE_GFX_VERSION}}'
+        --env LOG_LEVEL='{{.LOG_LEVEL}}'
         --volume "$HOME/.cache/lmnop/eavesdrop-models:/root/.cache/eavesdrop"
         --volume "$PWD/config.yaml:/app/server/config.yaml:ro"
         --env EAVESDROP_CONFIG=/app/server/config.yaml

@@ -40,6 +40,7 @@ docker run --interactive --tty \
   --rm \
   --publish '9090:9090' \
   --name eavesdrop \
+  --env LOG_LEVEL=INFO \
   --volume ~/.cache/lmnop/eavesdrop:/app/.cache/eavesdrop/ \
   ghcr.io/shyndman/lmnop-eavesdrop:latest
 
@@ -52,9 +53,12 @@ docker run --interactive --tty \
   --rm \
   --publish '9090:9090' \
   --name eavesdrop \
+  --env LOG_LEVEL=INFO \
   --volume ~/.cache/lmnop/eavesdrop:/app/.cache/eavesdrop/ \
   ghcr.io/shyndman/lmnop-eavesdrop:latest
 ```
+
+The containerized server honors `LOG_LEVEL`, so you can raise verbosity with values like `DEBUG` when needed.
 
 ### Run Options Explained
 
