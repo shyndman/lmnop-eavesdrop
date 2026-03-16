@@ -54,10 +54,9 @@ dev = [
     "pytest-asyncio>=0.24.0",
 ]
 type_checkable = [
-  "torch==2.6.0",
-  "torchaudio==2.6.0",
+  "torch==2.10.0",
+  "torchaudio==2.10.0",
   "faster-whisper==1.1.0",
-  "pytorch-triton-rocm==3.2.0",
 ]
 
 [tool.pytest.ini_options]
@@ -102,9 +101,8 @@ line-ending = "auto"
 
 [tool.uv.sources]
 eavesdrop-wire = {path = "../wire", editable = true}
-torch = {index = "pytorch"}
-torchaudio = {index = "pytorch"}
-pytorch-triton-rocm = {index = "pytorch"}
+torch = {index = "pytorch-cpu"}
+torchaudio = {index = "pytorch-cpu"}
 eavesdrop-common = { path = "../common", editable = true }
 
 [[tool.uv.index]]
@@ -113,6 +111,6 @@ url = "https://pypi.org/simple"
 default = true
 
 [[tool.uv.index]]
-name = "pytorch"
-url = "https://download.pytorch.org/whl/rocm6.2.4"
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
 explicit = true
