@@ -2,12 +2,13 @@
 
 import argparse
 import asyncio
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from eavesdrop.common import setup_logging_from_env
+from eavesdrop.common import get_logger, setup_logging
 
 from .core import EavesdropClient
 
@@ -26,6 +27,12 @@ class TranscribeFileConfig:
   :type audio_device: str
   :param timeout_s: Optional per-call timeout in seconds.
   :type timeout_s: float | None
+  :param json_logs: Whether to emit structured JSON logs.
+  :type json_logs: bool
+  :param correlation_id: Optional correlation identifier bound to logs.
+  :type correlation_id: str | None
+  :param log_namespace: Optional logger namespace filter.
+  :type log_namespace: str | None
   """
 
   audio_file: Path
@@ -33,6 +40,9 @@ class TranscribeFileConfig:
   port: int
   audio_device: str
   timeout_s: float | None
+  json_logs: bool
+  correlation_id: str | None
+  log_namespace: str | None
 
 
 def parse_audio_file(value: str) -> Path:
@@ -109,6 +119,28 @@ def parse_config() -> TranscribeFileConfig:
   _ = parser.add_argument("--port", default=9090, type=parse_port)
   _ = parser.add_argument("--audio-device", default="default")
   _ = parser.add_argument("--timeout-s", type=parse_timeout, default=None)
+  _ = parser.add_argument(
+    "--json_logs",
+    action="store_true",
+    default=os.getenv("JSON_LOGS", "false").lower() in ("true", "1", "yes", "on"),
+    help="Output logs in JSON format. (Env: JSON_LOGS)",
+  )
+  _ = parser.add_argument(
+    "--correlation_id",
+    type=str,
+    default=os.getenv("CORRELATION_ID"),
+    help="Correlation ID for log tracing. (Env: CORRELATION_ID)",
+  )
+  _ = parser.add_argument(
+    "--log_namespace",
+    type=str,
+    default=os.getenv("LOG_NAMESPACE"),
+    help=(
+      "Restrict output to a logger namespace. "
+      "Provide prefixes like 'client' to debug specific subsystems. "
+      "(Env: LOG_NAMESPACE)"
+    ),
+  )
 
   args = parser.parse_args()
 
@@ -118,6 +150,19 @@ def parse_config() -> TranscribeFileConfig:
     port=cast(int, args.port),
     audio_device=cast(str, args.audio_device),
     timeout_s=cast(float | None, args.timeout_s),
+    json_logs=cast(bool, args.json_logs),
+    correlation_id=cast(str | None, args.correlation_id),
+    log_namespace=cast(str | None, args.log_namespace),
+  )
+
+
+def configure_logging(config: TranscribeFileConfig) -> None:
+  """Configure client CLI logging using the shared common setup."""
+  setup_logging(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    json_output=config.json_logs,
+    correlation_id=config.correlation_id,
+    filter_to_logger=config.log_namespace,
   )
 
 
@@ -152,8 +197,15 @@ def main() -> int:
   :returns: Process exit code.
   :rtype: int
   """
-  setup_logging_from_env()
   config = parse_config()
+  configure_logging(config)
+  logger = get_logger("client/cli")
+  logger.info(
+    "starting file transcription",
+    audio_file=str(config.audio_file),
+    host=config.host,
+    port=config.port,
+  )
 
   try:
     return asyncio.run(transcribe_file(config))

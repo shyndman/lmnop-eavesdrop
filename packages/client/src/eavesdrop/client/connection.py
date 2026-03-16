@@ -6,6 +6,7 @@ import time
 from collections.abc import Callable
 
 import websockets
+from structlog.stdlib import BoundLogger
 from websockets.asyncio.client import ClientConnection
 
 from eavesdrop.common import get_logger
@@ -52,7 +53,13 @@ class WebSocketConnection:
     self.on_transcription_message = on_transcription_message
     self.on_disconnect = on_disconnect
 
-    self.logger = get_logger("conn", stream=stream_name)
+    self._logger: BoundLogger = get_logger(
+      "client/conn",
+      stream=stream_name,
+      client_type=client_type.value,
+      host=host,
+      port=port,
+    )
 
     self.ws: ClientConnection | None = None
     self.connected = False
@@ -73,8 +80,10 @@ class WebSocketConnection:
     if self.client_type == ClientType.RTSP_SUBSCRIBER:
       headers[WebSocketHeaders.STREAM_NAMES.value] = ",".join(self.stream_names)
 
+    self._logger.debug("connecting websocket", socket_url=socket_url)
     self.ws = await websockets.connect(socket_url, additional_headers=headers)
     self.connected = True
+    self._logger.debug("websocket connected", socket_url=socket_url)
 
     # Send client configuration for transcriber mode
     if self.client_type == ClientType.TRANSCRIBER:
@@ -93,6 +102,7 @@ class WebSocketConnection:
       await self.ws.close()
       self.ws = None
       self.connected = False
+      self._logger.debug("websocket disconnected")
 
   async def handle_messages(self):
     """Handle incoming WebSocket messages from server."""
@@ -166,8 +176,7 @@ class WebSocketConnection:
           # Handle unexpected message types
           self.on_error(f"Received unexpected message: {type(message)}")
 
-    except Exception as e:
-      self.on_error(f"Error processing message: {e}")
+    except Exception:
       raise
 
   async def send_audio_data(self, audio_data: bytes):

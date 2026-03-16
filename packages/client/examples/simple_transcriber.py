@@ -8,9 +8,12 @@ Usage:
 
 import argparse
 import asyncio
+import os
 import sys
+from typing import cast
 
 from eavesdrop.client import EavesdropClient
+from eavesdrop.common import get_logger, setup_logging
 
 
 async def test_transcriber(
@@ -18,13 +21,15 @@ async def test_transcriber(
   port: int,
   audio_device: str = "default",
   model: str = "distil-small.en",
-):
+) -> int:
   """Test the transcriber client with a real server."""
   print("Creating transcriber client...")
   print(f"  Host: {host}")
   print(f"  Port: {port}")
   print(f"  Audio device: {audio_device}")
   print(f"  Model: {model}")
+
+  client: EavesdropClient | None = None
 
   try:
     # Create transcriber client
@@ -65,8 +70,9 @@ async def test_transcriber(
       if message.segments:
         for i, segment in enumerate(message.segments):
           print(
-            f"    Segment {i}: '{segment.text}' ({segment.start:.2f}s - {segment.end:.2f}s) "
-            f"[{segment.avg_logprob:.2f}]"
+            f"    Segment {i}: '{segment.text}' ",
+            f"({segment.start:.2f}s - {segment.end:.2f}s) [{segment.avg_logprob:.2f}]",
+            sep="",
           )
 
   except KeyboardInterrupt:
@@ -79,7 +85,7 @@ async def test_transcriber(
     return 1
   finally:
     # Cleanup
-    if "client" in locals():
+    if client is not None:
       print("\nCleaning up...")
       if client.is_streaming():
         await client.stop_streaming()
@@ -93,39 +99,91 @@ async def test_transcriber(
   return 0
 
 
-def main():
+def configure_logging(
+  *, json_logs: bool, correlation_id: str | None, log_namespace: str | None
+) -> None:
+  """Configure shared structured logging for the microphone client example."""
+  setup_logging(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    json_output=json_logs,
+    correlation_id=correlation_id,
+    filter_to_logger=log_namespace,
+  )
+
+
+def main() -> int:
   """Main entry point."""
   parser = argparse.ArgumentParser(description="Test EavesdropClient transcriber mode")
-  parser.add_argument(
+  _ = parser.add_argument(
     "--server",
     default="localhost:8080",
     help="Server address as host:port (default: localhost:8080)",
   )
-  parser.add_argument(
+  _ = parser.add_argument(
     "--audio-device", default="default", help="Audio device to use (default: default)"
   )
-  parser.add_argument(
+  _ = parser.add_argument(
     "--model",
     default="distil-small.en",
     help="Whisper model alias to use (default: distil-small.en)",
   )
+  _ = parser.add_argument(
+    "--json_logs",
+    action="store_true",
+    default=os.getenv("JSON_LOGS", "false").lower() in ("true", "1", "yes", "on"),
+    help="Output logs in JSON format. (Env: JSON_LOGS)",
+  )
+  _ = parser.add_argument(
+    "--correlation_id",
+    type=str,
+    default=os.getenv("CORRELATION_ID"),
+    help="Correlation ID for log tracing. (Env: CORRELATION_ID)",
+  )
+  _ = parser.add_argument(
+    "--log_namespace",
+    type=str,
+    default=os.getenv("LOG_NAMESPACE"),
+    help=(
+      "Restrict output to a logger namespace. "
+      "Provide prefixes like 'client' to debug specific subsystems. "
+      "(Env: LOG_NAMESPACE)"
+    ),
+  )
 
   args = parser.parse_args()
+  server = cast(str, args.server)
+  audio_device = cast(str, args.audio_device)
+  model = cast(str, args.model)
+  json_logs = cast(bool, args.json_logs)
+  correlation_id = cast(str | None, args.correlation_id)
+  log_namespace = cast(str | None, args.log_namespace)
+  configure_logging(
+    json_logs=json_logs,
+    correlation_id=correlation_id,
+    log_namespace=log_namespace,
+  )
+  logger = get_logger("client/mic")
 
   # Parse server address
   try:
-    if ":" in args.server:
-      host, port_str = args.server.rsplit(":", 1)
+    if ":" in server:
+      host, port_str = server.rsplit(":", 1)
       port = int(port_str)
     else:
-      host = args.server
+      host = server
       port = 8080
   except ValueError:
-    print(f"Error: Invalid server address '{args.server}'. Use format 'host:port'")
+    print(f"Error: Invalid server address '{server}'. Use format 'host:port'")
     return 1
 
   try:
-    return asyncio.run(test_transcriber(host, port, args.audio_device, args.model))
+    logger.info(
+      "starting microphone transcription client",
+      server=server,
+      audio_device=audio_device,
+      model=model,
+    )
+    return asyncio.run(test_transcriber(host, port, audio_device, model))
   except KeyboardInterrupt:
     print("\nExiting...")
     return 0

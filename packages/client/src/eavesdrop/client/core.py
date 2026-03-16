@@ -11,6 +11,8 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from structlog.stdlib import BoundLogger
+
 from eavesdrop.client.audio import AudioCapture
 from eavesdrop.client.connection import WebSocketConnection
 from eavesdrop.common import get_logger
@@ -21,8 +23,6 @@ from eavesdrop.wire import (
   TranscriptionSourceMode,
   UserTranscriptionOptions,
 )
-
-logger = get_logger("cli")
 
 
 @dataclass(frozen=True)
@@ -81,6 +81,12 @@ class EavesdropClient:
     self._operation_lock = asyncio.Lock()
     self._disconnect_event = asyncio.Event()
     self._disconnect_reason: str | None = None
+    self._logger: BoundLogger = get_logger(
+      "client/core",
+      client_type=client_type.value,
+      host=host,
+      port=port,
+    )
 
     # Validate configuration
     self._validate_configuration()
@@ -338,7 +344,7 @@ class EavesdropClient:
       except asyncio.CancelledError:
         raise
       except Exception:
-        logger.exception("transcribe_file() failed", file_path=file_path)
+        self._logger.exception("transcribe_file failed", file_path=file_path)
         raise
       finally:
         await self.disconnect()
@@ -429,7 +435,11 @@ class EavesdropClient:
           f"last_committed_id={last_committed_id}"
         )
         warnings.append(warning)
-        logger.warning(warning)
+        self._logger.warning(
+          "reducer sentinel missing",
+          stream=message.stream,
+          last_committed_id=last_committed_id,
+        )
         new_segments = completed_segments
       else:
         new_segments = completed_segments[sentinel_index + 1 :]
@@ -455,8 +465,8 @@ class EavesdropClient:
         audio_data = await self._audio_capture.get_audio_data(timeout=0.1)
         if audio_data:
           await self._connection.send_audio_data(audio_data)
-    except Exception as e:
-      self._on_error(f"Audio streaming error: {e}")
+    except Exception:
+      self._logger.exception("audio streaming loop failed")
 
   def is_connected(self) -> bool:
     """Check if client is connected to server."""
@@ -520,6 +530,4 @@ class EavesdropClient:
 
   def _on_error(self, error: str) -> None:
     """Handle error callback."""
-    # For now, just print error
-    # In full implementation, could raise exceptions or call user error handlers
-    logger.error(f"EavesdropClient error: {error}")
+    self._logger.error("client error", error=error)
