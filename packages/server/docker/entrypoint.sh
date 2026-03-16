@@ -1,11 +1,14 @@
 #!/bin/bash
-source /opt/conda/etc/profile.d/conda.sh
 
-conda activate py_3.12
-export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$CONDA_PREFIX/lib/
+set -euo pipefail
+
+if [ -f /etc/profile.d/eavesdrop-rocm.sh ]; then
+  # Preserve the runtime ROCm override chosen at build time.
+  source /etc/profile.d/eavesdrop-rocm.sh
+fi
 
 echo "ENVIRONMENT POST ACTIVATION"
 echo "~~~ Variables ~~~"
 env
 
-/bin/uv run python $@
+exec python "$@"

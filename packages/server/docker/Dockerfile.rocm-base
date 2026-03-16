@@ -1,9 +1,11 @@
-ARG BASE_IMAGE="rocm/pytorch:rocm6.4.2_ubuntu24.04_py3.12_pytorch_release_2.6.0"
+ARG BASE_IMAGE="rocm/pytorch:rocm7.2_ubuntu24.04_py3.12_pytorch_release_2.10.0"
 FROM $BASE_IMAGE
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV VIRTUAL_ENV=/opt/venv
+ENV PATH=$VIRTUAL_ENV/bin:/opt/rocm/llvm/bin:$PATH
 
-SHELL ["conda", "run", "-n", "py_3.12", "/bin/bash", "-c"]
+SHELL ["/bin/bash", "-lc"]
 
 RUN --mount=type=cache,target=/var/cache/apt \
     --mount=type=cache,target=/var/lib/apt \
@@ -27,32 +29,35 @@ RUN if [ "$GFX_ARCH" = "gfx1100" ] && [ -z "$HSA_OVERRIDE_GFX_VERSION" ]; then \
       export HSA_OVERRIDE_GFX_VERSION=11.0.3; \
     fi && \
     if [ -n "$HSA_OVERRIDE_GFX_VERSION" ]; then \
-      conda env config vars set HSA_OVERRIDE_GFX_VERSION="$HSA_OVERRIDE_GFX_VERSION"; \
+      printf 'export HSA_OVERRIDE_GFX_VERSION=%s\n' "$HSA_OVERRIDE_GFX_VERSION" > /etc/profile.d/eavesdrop-rocm.sh; \
     fi
 ENV GFX_ARCH=$GFX_ARCH
-ENV CTRANSLATE2_ROOT=/opt/ctranslate2
-ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$CTRANSLATE2_ROOT/lib
+ENV CTRANSLATE2_ROOT=$VIRTUAL_ENV
+ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/opt/rocm/lib/llvm/lib:$CTRANSLATE2_ROOT/lib
 
-# CTranslate2
-RUN git clone https://github.com/arlo-phoenix/CTranslate2-rocm.git --recurse-submodules \
-    && cd CTranslate2-rocm \
+# PyPI wheels are CUDA-only. Build CTranslate2 from source with HIP support for ROCm.
+RUN git clone --depth 1 --branch v4.7.1 --recurse-submodules \
+      https://github.com/OpenNMT/CTranslate2.git /tmp/CTranslate2 \
+    && cd /tmp/CTranslate2 \
     && CLANG_CMAKE_CXX_COMPILER=clang++ CXX=clang++ HIPCXX="$(hipconfig -l)/clang" \
       HIP_PATH="$(hipconfig -R)" \
-      cmake -S . -B build -DWITH_MKL=OFF \
-      -DWITH_HIP=ON -DCMAKE_HIP_ARCHITECTURES=$PYTORCH_ROCM_ARCH \
-      -DGPU_TARGETS="$PYTORCH_ROCM_ARCH" -DAMDGPU_TARGETS="$PYTORCH_ROCM_ARCH" \
-      -DBUILD_TESTS=ON -DWITH_CUDNN=ON \
-    && cmake --build build -- -j16 \
-    && cd build \
-    && cmake --install . --prefix $CONDA_PREFIX \
-    && make install \
-    && sudo ln -sf /usr/local/lib/libctranslate2.so /opt/conda/envs/py_3.12/lib/ \
+      cmake -S . -B build \
+      -DWITH_MKL=OFF \
+      -DWITH_OPENBLAS=ON \
+      -DOPENMP_RUNTIME=COMP \
+      -DWITH_HIP=ON \
+      -DCMAKE_HIP_ARCHITECTURES=$PYTORCH_ROCM_ARCH \
+      -DGPU_TARGETS="$PYTORCH_ROCM_ARCH" \
+      -DAMDGPU_TARGETS="$PYTORCH_ROCM_ARCH" \
+      -DCMAKE_INSTALL_PREFIX="$CTRANSLATE2_ROOT" \
+    && cmake --build build --parallel "$(nproc)" \
+    && cmake --install build \
     && ldconfig \
-    && cd ../python \
+    && cd python \
     && pip install -r install_requirements.txt \
-    && python setup.py bdist_wheel \
+    && CTRANSLATE2_ROOT="$CTRANSLATE2_ROOT" python setup.py bdist_wheel \
     && pip install dist/*.whl \
-    && export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$CONDA_PREFIX/lib/
+    && rm -rf /tmp/CTranslate2
 
 # Faster-Whisper
 WORKDIR /home
@@ -61,5 +66,3 @@ RUN git clone --depth 1 --branch v1.1.0 https://github.com/SYSTRAN/faster-whispe
     && pip install . \
     && pip install pytest scipy
 
-ENV CT2_CUDA_ALLOCATOR=cub_caching
-ENV CT2_CUDA_CACHING_ALLOCATOR_CONFIG=4,3,12,419430400
