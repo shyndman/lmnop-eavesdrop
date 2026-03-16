@@ -22,6 +22,7 @@ from faster_whisper.vad import (
 
 from eavesdrop.common import get_logger
 from eavesdrop.server.transcription.models import LanguageProbability, SegmentDict, WordDict
+from eavesdrop.server.transcription.utils import summarize_array
 
 # Private module constants for anomaly detection thresholds
 _WORD_PROBABILITY_THRESHOLD = 0.15
@@ -195,15 +196,25 @@ class LanguageDetector:
     all_language_probs: list[tuple[str, float]] = []  # Initialize to avoid unbound variable
 
     for i in range(0, features.shape[-1], self.feature_extractor.nb_max_frames):
+      segment_index = i // self.feature_extractor.nb_max_frames + 1
+      segment_features = pad_or_trim(features[..., i : i + self.feature_extractor.nb_max_frames])
       self.logger.debug(
-        f"Processing language detection segment {i // self.feature_extractor.nb_max_frames + 1}"
+        "Language detection segment encode start",
+        segment_index=segment_index,
+        total_frames=features.shape[-1],
+        **summarize_array("features", segment_features),
       )
-      encoder_output = self._encode(
-        pad_or_trim(features[..., i : i + self.feature_extractor.nb_max_frames])
-      )
+      encoder_output = self._encode(segment_features)
+      self.logger.debug("Language detection segment encode complete", segment_index=segment_index)
+
       # results is a list of tuple[str, float] with language names and probabilities.
+      self.logger.debug("Language detection start", segment_index=segment_index)
       results = self.model.detect_language(encoder_output)[0]
-      self.logger.debug(f"Language detection results: {results[:3]}...")  # Show top 3 results
+      self.logger.debug(
+        "Language detection complete",
+        segment_index=segment_index,
+        top_results=results[:3],
+      )
 
       # Parse language names to strip out markers
       all_language_probs = [(token[2:-2], prob) for (token, prob) in results]
@@ -252,12 +263,21 @@ class LanguageDetector:
     if features.ndim == 2:
       features = np.expand_dims(features, 0)
 
+    self.logger.debug(
+      "Language detection model.encode start",
+      model_device=self.model.device,
+      model_device_index=self.model.device_index,
+      to_cpu=to_cpu,
+      **summarize_array("features", features),
+    )
+
     # Convert to CTranslate2 storage format
     from eavesdrop.server.transcription.utils import get_ctranslate2_storage
 
     features = get_ctranslate2_storage(features)
-
-    return self.model.encode(features, to_cpu=to_cpu)
+    encoded = self.model.encode(features, to_cpu=to_cpu)
+    self.logger.debug("Language detection model.encode complete", to_cpu=to_cpu)
+    return encoded
 
   def update_tokenizer_language(
     self, tokenizer: Tokenizer, encoder_output: ctranslate2.StorageView

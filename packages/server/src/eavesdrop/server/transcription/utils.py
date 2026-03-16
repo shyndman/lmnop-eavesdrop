@@ -11,6 +11,24 @@ from eavesdrop.server.transcription.models import SpeechChunk, WordTimingDict
 from eavesdrop.wire import Segment
 
 
+def summarize_array(name: str, array: np.ndarray) -> dict[str, object]:
+  summary: dict[str, object] = {
+    f"{name}_shape": tuple(int(dim) for dim in array.shape),
+    f"{name}_dtype": str(array.dtype),
+    f"{name}_size": int(array.size),
+    f"{name}_contiguous": bool(array.flags["C_CONTIGUOUS"]),
+  }
+
+  if array.size == 0:
+    summary[f"{name}_min"] = None
+    summary[f"{name}_max"] = None
+    return summary
+
+  summary[f"{name}_min"] = float(np.min(array))
+  summary[f"{name}_max"] = float(np.max(array))
+  return summary
+
+
 def restore_speech_timestamps(
   segments: Iterable[Segment],
   speech_chunks: list[SpeechChunk],

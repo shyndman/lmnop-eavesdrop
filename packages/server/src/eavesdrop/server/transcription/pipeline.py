@@ -35,6 +35,7 @@ from eavesdrop.server.transcription.utils import (
   get_ctranslate2_storage,
   get_suppressed_tokens,
   restore_speech_timestamps,
+  summarize_array,
 )
 from eavesdrop.server.transcription.word_alignment import WordTimestampAligner
 from eavesdrop.wire import Segment, Word
@@ -285,8 +286,21 @@ class WhisperModel:
     # Extract features using our audio processor
     with session.trace_feature_stage():
       features = self.audio_processor.extract_features(audio)
+      self.logger.debug(
+        "Feature extraction complete",
+        requested_language=language,
+        duration_after_vad=duration_after_vad,
+        **summarize_array("features", features),
+      )
+      self.logger.debug("Language resolution start", requested_language=language)
       (language, probability), all_language_probs = self.language_detector.resolve_language(
         language, features
+      )
+      self.logger.debug(
+        "Language resolution complete",
+        language=language,
+        language_probability=probability,
+        candidate_count=len(all_language_probs),
       )
 
     # Model inference and segment processing
@@ -372,9 +386,31 @@ class WhisperModel:
 
     while ctx.advance():
       segment = ctx.extract_segment()
+      segment_index = len(ctx.all_segments)
+      encoded_this_iteration = False
 
       if not ctx.at_beginning or encoder_output is None:
+        self.logger.debug(
+          "Segment encode start",
+          segment_index=segment_index,
+          at_beginning=ctx.at_beginning,
+          seek=ctx.seek,
+          time_offset=ctx.time_offset,
+          **summarize_array("segment_features", segment),
+        )
         encoder_output = self.encode(segment)
+        encoded_this_iteration = True
+        self.logger.debug(
+          "Segment encode complete",
+          segment_index=segment_index,
+          at_beginning=ctx.at_beginning,
+        )
+      else:
+        self.logger.debug(
+          "Reusing encoder output",
+          segment_index=segment_index,
+          at_beginning=ctx.at_beginning,
+        )
 
       # You may be thinking, "didn't they just detect a language earlier?", and you'd be quite
       # correct. That language was only used to initialize the tokenizer for the first pass. The
@@ -384,20 +420,39 @@ class WhisperModel:
         self.language_detector.update_tokenizer_language(tokenizer, encoder_output)
 
       # Generate the transcription
+      prompt = self.prompt_builder.build_prompt(
+        tokenizer,
+        ctx.context_tokens,
+        without_timestamps=transcription_options.without_timestamps,
+        prefix=transcription_options.prefix if ctx.at_beginning else None,
+        hotwords=transcription_options.hotwords,
+      )
+      self.logger.debug(
+        "Generation start",
+        segment_index=segment_index,
+        encoded_this_iteration=encoded_this_iteration,
+        multilingual=transcription_options.multilingual,
+        beam_size=transcription_options.beam_size,
+        prompt_length=len(prompt),
+        context_token_count=len(ctx.context_tokens),
+        word_timestamps=transcription_options.word_timestamps,
+      )
       result, avg_logprob, temperature, compression_ratio, attempts = (
         self.generation_strategies.generate_with_fallback(
           model=self.model,
           encoder_output=encoder_output,
-          prompt=self.prompt_builder.build_prompt(
-            tokenizer,
-            ctx.context_tokens,
-            without_timestamps=transcription_options.without_timestamps,
-            prefix=transcription_options.prefix if ctx.at_beginning else None,
-            hotwords=transcription_options.hotwords,
-          ),
+          prompt=prompt,
           tokenizer=tokenizer,
           transcription_options=transcription_options,
         )
+      )
+      self.logger.debug(
+        "Generation complete",
+        segment_index=segment_index,
+        attempts=attempts,
+        avg_logprob=avg_logprob,
+        temperature=temperature,
+        compression_ratio=compression_ratio,
       )
       tokens = result.sequences_ids[0]
       ctx.total_attempts += attempts
@@ -485,9 +540,17 @@ class WhisperModel:
 
     if features.ndim == 2:
       features = np.expand_dims(features, 0)
+    self.logger.debug(
+      "Whisper model.encode start",
+      model_device=self.model.device,
+      model_device_index=self.model.device_index,
+      to_cpu=to_cpu,
+      **summarize_array("features", features),
+    )
     features = get_ctranslate2_storage(features)
-
-    return self.model.encode(features, to_cpu=to_cpu)
+    encoded = self.model.encode(features, to_cpu=to_cpu)
+    self.logger.debug("Whisper model.encode complete", to_cpu=to_cpu)
+    return encoded
 
   def _process_word_timestamps(
     self,

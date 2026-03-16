@@ -22,6 +22,7 @@ from eavesdrop.server.streaming.interfaces import TranscriptionResult, Transcrip
 from eavesdrop.server.transcription.models import SpeechChunk, TranscriptionInfo
 from eavesdrop.server.transcription.pipeline import WhisperModel
 from eavesdrop.server.transcription.session import TranscriptionSession
+from eavesdrop.server.transcription.utils import summarize_array
 from eavesdrop.wire import Segment
 
 tracing_logger = get_logger("tracing")
@@ -390,8 +391,18 @@ class StreamingTranscriptionProcessor:
     if not self.transcriber:
       raise RuntimeError("Transcriber not initialized")
 
-    shape = chunk.data.shape
-    self.logger.debug("Transcribing audio sample", shape=shape, start_time=chunk.start_time)
+    self.logger.debug(
+      "Entering transcriber.transcribe",
+      start_time=chunk.start_time,
+      duration=chunk.duration,
+      processed_up_to_time=self.buffer.processed_up_to_time,
+      language=self.language,
+      use_vad=self.config.use_vad,
+      beam_size=self.config.beam_size,
+      word_timestamps=self.config.word_timestamps,
+      has_hotwords=bool(self.config.hotwords),
+      **summarize_array("audio", chunk.data),
+    )
 
     result, info = self.transcriber.transcribe(
       chunk.data,
@@ -406,7 +417,16 @@ class StreamingTranscriptionProcessor:
       beam_size=self.config.beam_size,
       word_timestamps=self.config.word_timestamps,
     )
+    self.logger.debug(
+      "Returned from transcriber.transcribe",
+      info_present=info is not None,
+      speech_chunk_count=len(info.speech_chunks) if info and info.speech_chunks else 0,
+    )
     result_list = list(result) if result else None
+    self.logger.debug(
+      "Materialized transcriber result",
+      segment_count=len(result_list) if result_list else 0,
+    )
 
     # Store VAD speech chunks for silence analysis
     speech_chunks = info.speech_chunks if info else None
