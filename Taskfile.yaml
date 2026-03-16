@@ -77,13 +77,40 @@ tasks:
     cmds:
       - uv run eavesdrop-server --config config.yaml
 
-  build-server-image:
+  build-rocm-base-image:
     # Verified ROCm build settings on AMD Framework 13 (Ryzen 7840U / Radeon 780M).
-    desc: Build ROCm base and server images
+    desc: Build the ROCm base image used by the server image
     dir: packages
     sources:
-      - server/src/**/*.py
-      - server/docker/*
+      - server/docker/Dockerfile.rocm-base
+    vars:
+      ROCM_BASE_IMAGE: '{{default "eavesdrop-rocm-base" .ROCM_BASE_IMAGE}}'
+      GFX_ARCH: '{{default "gfx1030;gfx1100" .GFX_ARCH}}'
+      HSA_OVERRIDE_GFX_VERSION: '{{default "11.0.0" .HSA_OVERRIDE_GFX_VERSION}}'
+      GFX_ARCH_LABEL: 'io.eavesdrop.gfx_arch'
+      HSA_OVERRIDE_GFX_VERSION_LABEL: 'io.eavesdrop.hsa_override_gfx_version'
+    status:
+      - docker image inspect {{.ROCM_BASE_IMAGE}} >/dev/null 2>&1
+      - python3 -c 'import json, subprocess, sys; image = json.loads(subprocess.check_output(["docker", "image", "inspect", "{{.ROCM_BASE_IMAGE}}"], text=True))[0]; labels = image["Config"].get("Labels") or {}; sys.exit(0 if labels.get("{{.GFX_ARCH_LABEL}}") == "{{.GFX_ARCH}}" else 1)'
+      - python3 -c 'import json, subprocess, sys; image = json.loads(subprocess.check_output(["docker", "image", "inspect", "{{.ROCM_BASE_IMAGE}}"], text=True))[0]; labels = image["Config"].get("Labels") or {}; sys.exit(0 if labels.get("{{.HSA_OVERRIDE_GFX_VERSION_LABEL}}") == "{{.HSA_OVERRIDE_GFX_VERSION}}" else 1)'
+    cmds:
+      - echo "GFX_ARCH = {{.GFX_ARCH}}"
+      - echo "HSA_OVERRIDE_GFX_VERSION = {{.HSA_OVERRIDE_GFX_VERSION}}"
+      - docker build --pull --no-cache --progress=plain -f server/docker/Dockerfile.rocm-base --build-arg GFX_ARCH='{{.GFX_ARCH}}' --build-arg HSA_OVERRIDE_GFX_VERSION='{{.HSA_OVERRIDE_GFX_VERSION}}' --label {{.GFX_ARCH_LABEL}}='{{.GFX_ARCH}}' --label {{.HSA_OVERRIDE_GFX_VERSION_LABEL}}='{{.HSA_OVERRIDE_GFX_VERSION}}' -t {{.ROCM_BASE_IMAGE}} .
+
+  build-server-image:
+    desc: Build the final server image
+    deps: [build-rocm-base-image]
+    dir: packages
+    sources:
+      - common/pyproject.toml
+      - common/src/**/*
+      - wire/pyproject.toml
+      - wire/src/**/*
+      - server/docker/Dockerfile
+      - server/docker/entrypoint.sh
+      - server/pyproject.toml
+      - server/src/**/*
       - server/.dockerignore
       - server/uv.lock
     vars:
@@ -91,12 +118,23 @@ tasks:
       ROCM_BASE_IMAGE: '{{default "eavesdrop-rocm-base" .ROCM_BASE_IMAGE}}'
       GFX_ARCH: '{{default "gfx1030;gfx1100" .GFX_ARCH}}'
       HSA_OVERRIDE_GFX_VERSION: '{{default "11.0.0" .HSA_OVERRIDE_GFX_VERSION}}'
+      BASE_IMAGE_ID_LABEL: 'io.eavesdrop.rocm_base_image_id'
+      GFX_ARCH_LABEL: 'io.eavesdrop.gfx_arch'
+      HSA_OVERRIDE_GFX_VERSION_LABEL: 'io.eavesdrop.hsa_override_gfx_version'
+    status:
+      - docker image inspect {{.ROCM_BASE_IMAGE}} >/dev/null 2>&1
+      - python3 -c 'import json, subprocess, sys; image = json.loads(subprocess.check_output(["docker", "image", "inspect", "{{.ROCM_BASE_IMAGE}}"], text=True))[0]; labels = image["Config"].get("Labels") or {}; sys.exit(0 if labels.get("{{.GFX_ARCH_LABEL}}") == "{{.GFX_ARCH}}" else 1)'
+      - python3 -c 'import json, subprocess, sys; image = json.loads(subprocess.check_output(["docker", "image", "inspect", "{{.ROCM_BASE_IMAGE}}"], text=True))[0]; labels = image["Config"].get("Labels") or {}; sys.exit(0 if labels.get("{{.HSA_OVERRIDE_GFX_VERSION_LABEL}}") == "{{.HSA_OVERRIDE_GFX_VERSION}}" else 1)'
+      - docker image inspect {{.SERVER_IMAGE}} >/dev/null 2>&1
+      - python3 -c 'import json, subprocess, sys; base = json.loads(subprocess.check_output(["docker", "image", "inspect", "{{.ROCM_BASE_IMAGE}}"], text=True))[0]["Id"]; server = json.loads(subprocess.check_output(["docker", "image", "inspect", "{{.SERVER_IMAGE}}"], text=True))[0]; labels = server["Config"].get("Labels") or {}; sys.exit(0 if labels.get("{{.BASE_IMAGE_ID_LABEL}}") == base else 1)'
+      - python3 -c 'import json, subprocess, sys; image = json.loads(subprocess.check_output(["docker", "image", "inspect", "{{.SERVER_IMAGE}}"], text=True))[0]; labels = image["Config"].get("Labels") or {}; sys.exit(0 if labels.get("{{.GFX_ARCH_LABEL}}") == "{{.GFX_ARCH}}" else 1)'
+      - python3 -c 'import json, subprocess, sys; image = json.loads(subprocess.check_output(["docker", "image", "inspect", "{{.SERVER_IMAGE}}"], text=True))[0]; labels = image["Config"].get("Labels") or {}; sys.exit(0 if labels.get("{{.HSA_OVERRIDE_GFX_VERSION_LABEL}}") == "{{.HSA_OVERRIDE_GFX_VERSION}}" else 1)'
     cmds:
       - echo "GFX_ARCH = {{.GFX_ARCH}}"
       - echo "HSA_OVERRIDE_GFX_VERSION = {{.HSA_OVERRIDE_GFX_VERSION}}"
-
-      - docker build --pull --no-cache --progress=plain -f server/docker/Dockerfile.rocm-base --build-arg GFX_ARCH='{{.GFX_ARCH}}' --build-arg HSA_OVERRIDE_GFX_VERSION='{{.HSA_OVERRIDE_GFX_VERSION}}' -t {{.ROCM_BASE_IMAGE}} .
-      - docker build --no-cache --progress=plain -f server/docker/Dockerfile --build-arg BASE_IMAGE={{.ROCM_BASE_IMAGE}} -t {{.SERVER_IMAGE}} .
+      - |
+        BASE_IMAGE_ID="$(docker image inspect {{.ROCM_BASE_IMAGE}} --format '{{"{{"}}.Id{{"}}"}}')"
+        docker build --no-cache --progress=plain -f server/docker/Dockerfile --build-arg BASE_IMAGE={{.ROCM_BASE_IMAGE}} --label {{.BASE_IMAGE_ID_LABEL}}="$BASE_IMAGE_ID" --label {{.GFX_ARCH_LABEL}}='{{.GFX_ARCH}}' --label {{.HSA_OVERRIDE_GFX_VERSION_LABEL}}='{{.HSA_OVERRIDE_GFX_VERSION}}' -t {{.SERVER_IMAGE}} .
 
   run-server-image:
     # Verified ROCm runtime flags on AMD Framework 13 (Ryzen 7840U / Radeon 780M).
