@@ -462,7 +462,7 @@ class VadStageTracer(BaseTracer):
     audio_duration = total_samples / sample_rate
     time_start, time_end = self.session.get_absolute_time_range()
 
-    if speech_chunks is not None:  # VAD was applied
+    if speech_chunks:
       speech_duration = sum(
         (chunk["end"] - chunk["start"]) / sample_rate for chunk in speech_chunks
       )
@@ -479,13 +479,23 @@ class VadStageTracer(BaseTracer):
         silence=silence_duration,
         vad=vad_viz,
       )
-    else:  # No VAD applied
+      return
+
+    if speech_chunks == []:
       self.session.logger.info(
         "No voice activity",
         t_start=time_start,
         t_end=time_end,
         total=audio_duration,
       )
+      return
+
+    self.session.logger.info(
+      "VAD not applied",
+      t_start=time_start,
+      t_end=time_end,
+      total=audio_duration,
+    )
 
 
 class FeatureStageTracer(BaseTracer):
