@@ -85,7 +85,7 @@ tasks:
       - server/docker/Dockerfile.rocm-base
     vars:
       ROCM_BASE_IMAGE: '{{default "eavesdrop-rocm-base" .ROCM_BASE_IMAGE}}'
-      GFX_ARCH: '{{default "gfx1030;gfx1100" .GFX_ARCH}}'
+      GFX_ARCH: 'gfx1030;gfx1100;gfx1103'
       HSA_OVERRIDE_GFX_VERSION: '{{default "11.0.0" .HSA_OVERRIDE_GFX_VERSION}}'
       GFX_ARCH_LABEL: 'io.eavesdrop.gfx_arch'
       HSA_OVERRIDE_GFX_VERSION_LABEL: 'io.eavesdrop.hsa_override_gfx_version'
@@ -140,7 +140,7 @@ tasks:
     # Verified ROCm runtime flags on AMD Framework 13 (Ryzen 7840U / Radeon 780M).
     desc: Run the server Docker image with ROCm runtime flags
     deps: [build-server-image]
-    dir: packages/server
+    dir: .
     vars:
       SERVER_IMAGE: '{{default "ghcr.io/shyndman/lmnop-eavesdrop:latest" .SERVER_IMAGE}}'
       HSA_OVERRIDE_GFX_VERSION: '{{default "11.0.0" .HSA_OVERRIDE_GFX_VERSION}}'
@@ -156,7 +156,7 @@ tasks:
         --env HSA_OVERRIDE_GFX_VERSION='{{.HSA_OVERRIDE_GFX_VERSION}}'
         --env LOG_LEVEL='{{.LOG_LEVEL}}'
         --volume "$HOME/.cache/lmnop/eavesdrop-models:/root/.cache/eavesdrop"
-        --volume "$PWD/config.yaml:/app/server/config.yaml:ro"
+        --volume "$PWD/packages/server/config.yaml:/app/server/config.yaml:ro"
         --env EAVESDROP_CONFIG=/app/server/config.yaml
         {{.SERVER_IMAGE}} -m eavesdrop.server
 
