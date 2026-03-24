@@ -1,0 +1,36 @@
+[project]
+name = "eavesdrop-workspace"
+version = "0.0.0"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.uv]
+package = false
+
+[tool.basedpyright]
+include = [
+  "packages/server/src",
+  "packages/server/tests",
+  "packages/client/src",
+  "packages/client/tests",
+  "packages/common/src",
+  "packages/common/tests",
+  "packages/wire/src",
+  "packages/wire/tests",
+  "packages/active-listener/src",
+  "packages/active-listener/tests",
+]
+ignore = ["**/.venv"]
+defineConstant = { DEBUG = true }
+reportMissingImports = "error"
+deprecateTypingAliases = true
+reportDeprecated = "information"
+pythonPlatform = "Linux"
+
+executionEnvironments = [
+  { root = "packages/common", extraPaths = ["packages/common/src"] },
+  { root = "packages/wire", extraPaths = ["packages/wire/src", "packages/common/src"] },
+  { root = "packages/client", extraPaths = ["packages/client/src", "packages/wire/src", "packages/common/src"] },
+  { root = "packages/server", extraPaths = ["packages/server/src", "packages/wire/src", "packages/common/src"] },
+  { root = "packages/active-listener", extraPaths = ["packages/active-listener/src", "packages/client/src", "packages/wire/src", "packages/common/src"] },
+]
