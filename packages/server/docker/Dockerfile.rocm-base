@@ -63,8 +63,7 @@ RUN git clone --depth 1 --branch v4.7.1 --recurse-submodules \
 
 # Faster-Whisper
 WORKDIR /home
-RUN git clone --depth 1 --branch v1.1.0 https://github.com/SYSTRAN/faster-whisper.git \
+RUN git clone --depth 1 --branch v1.2.1 https://github.com/SYSTRAN/faster-whisper.git \
     && cd faster-whisper \
     && pip install . \
     && pip install pytest scipy
-

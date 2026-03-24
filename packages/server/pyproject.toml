@@ -24,9 +24,10 @@ dependencies = [
   # These are installed via other means (see Dockerfile)
   # "tokenizers==0.20.3",
   # "transformers[torch]==4.54",
-  # "faster-whisper==1.1.1",
+  # "faster-whisper==1.2.1",
   # "openai-whisper==20240930",
   # "ctranslate2 @ file:///~/dev/github.com/ctranslate2",
+  # "tokenizers>=0.22.0",
 ]
 license = {text = "MIT"}
 
@@ -56,7 +57,7 @@ dev = [
 type_checkable = [
   "torch==2.10.0",
   "torchaudio==2.10.0",
-  "faster-whisper==1.1.0",
+  "faster-whisper==1.2.1",
 ]
 
 [tool.pytest.ini_options]
