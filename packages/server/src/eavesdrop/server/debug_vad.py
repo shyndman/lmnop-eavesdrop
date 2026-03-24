@@ -62,8 +62,8 @@ def analyze_with_vad(audio: np.ndarray, sample_rate: int, vad_options: VadOption
   """Run VAD analysis and print detailed results."""
   logger.info("Running VAD analysis...")
   logger.info("VAD Parameters:")
-  logger.info(f"  onset: {vad_options.onset}")
-  logger.info(f"  offset: {vad_options.offset}")
+  logger.info(f"  threshold: {vad_options.threshold}")
+  logger.info(f"  neg_threshold: {vad_options.neg_threshold}")
   logger.info(f"  min_speech_duration_ms: {vad_options.min_speech_duration_ms}")
   logger.info(f"  max_speech_duration_s: {vad_options.max_speech_duration_s}")
   logger.info(f"  min_silence_duration_ms: {vad_options.min_silence_duration_ms}")
@@ -154,16 +154,16 @@ def test_different_vad_settings(audio: np.ndarray, sample_rate: int):
 
   test_configs = [
     ("Default", VadOptions()),
-    ("More Sensitive", VadOptions(onset=0.3, offset=0.25)),
-    ("Less Sensitive", VadOptions(onset=0.7, offset=0.45)),
-    ("Very Sensitive", VadOptions(onset=0.2, offset=0.15)),
+    ("More Sensitive", VadOptions(threshold=0.3, neg_threshold=0.25)),
+    ("Less Sensitive", VadOptions(threshold=0.7, neg_threshold=0.45)),
+    ("Very Sensitive", VadOptions(threshold=0.2, neg_threshold=0.15)),
     ("Short Silence", VadOptions(min_silence_duration_ms=100)),
     ("No Min Speech", VadOptions(min_speech_duration_ms=0)),
   ]
 
   for name, vad_options in test_configs:
     logger.info(f"\n--- Testing: {name} ---")
-    logger.info(f"onset={vad_options.onset}, offset={vad_options.offset}")
+    logger.info(f"threshold={vad_options.threshold}, neg_threshold={vad_options.neg_threshold}")
     logger.info(f"min_speech_duration_ms={vad_options.min_speech_duration_ms}")
     logger.info(f"min_silence_duration_ms={vad_options.min_silence_duration_ms}")
 

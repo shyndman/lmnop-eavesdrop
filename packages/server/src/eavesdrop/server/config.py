@@ -173,9 +173,20 @@ class TranscriptionConfig(BaseModel):
         "computed automatically."
       )
 
-    # Reject min_silence_duration_ms in VAD parameters - it's set programmatically
+    # Reject obsolete or computed VAD fields before VadOptions silently ignores them.
     vad_params = values.get("vad_parameters")
     if vad_params and isinstance(vad_params, dict):
+      obsolete_keys = [key for key in ("onset", "offset") if key in vad_params]
+      if obsolete_keys:
+        replacements = {"onset": "threshold", "offset": "neg_threshold"}
+        obsolete_keys_text = ", ".join(f"'{key}'" for key in obsolete_keys)
+        replacement_text = ", ".join(f"'{key}' -> '{replacements[key]}'" for key in obsolete_keys)
+        raise ValueError(
+          "Obsolete VAD parameter(s) in vad_parameters: "
+          f"{obsolete_keys_text}. "
+          f"Use upstream faster-whisper names instead: {replacement_text}."
+        )
+
       if "min_silence_duration_ms" in vad_params:
         raise ValueError(
           "min_silence_duration_ms cannot be specified in vad_parameters. "
@@ -264,8 +275,8 @@ class EavesdropConfig(BaseModel):
     # VAD parameters - all properties
     logger.info("  VAD PARAMETERS:")
     vad = self.transcription.vad_parameters
-    logger.info(f"    Onset: {vad.onset}")
-    logger.info(f"    Offset: {vad.offset}")
+    logger.info(f"    Threshold: {vad.threshold}")
+    logger.info(f"    Neg Threshold: {vad.neg_threshold}")
     logger.info(f"    Min Speech Duration: {vad.min_speech_duration_ms}ms")
     logger.info(f"    Max Speech Duration: {vad.max_speech_duration_s}s")
     logger.info(f"    Min Silence Duration: {vad.min_silence_duration_ms}ms")
