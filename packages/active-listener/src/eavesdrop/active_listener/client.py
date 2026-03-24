@@ -5,11 +5,14 @@ transcription message handling, and error recovery for real-time audio streaming
 """
 
 import time
+from collections.abc import AsyncIterator
 
 from pydantic.dataclasses import dataclass
+from structlog.stdlib import BoundLogger
 
 from eavesdrop.client import EavesdropClient
 from eavesdrop.common import get_logger
+from eavesdrop.wire.messages import TranscriptionMessage
 
 
 @dataclass
@@ -26,13 +29,13 @@ class ConnectionState:
 class EavesdropClientWrapper:
   """Wrapper for EavesdropClient with connection management and health monitoring."""
 
-  def __init__(self, host: str, port: int, audio_device: str):
-    self._host = host
-    self._port = port
-    self._audio_device = audio_device
+  def __init__(self, host: str, port: int, audio_device: str) -> None:
+    self._host: str = host
+    self._port: int = port
+    self._audio_device: str = audio_device
     self._client: EavesdropClient | None = None
-    self._connection_state = ConnectionState()
-    self.logger = get_logger("client")
+    self._connection_state: ConnectionState = ConnectionState()
+    self.logger: BoundLogger = get_logger("client")
 
   async def initialize(self) -> None:
     """Initialize the eavesdrop client connection."""
@@ -60,13 +63,13 @@ class EavesdropClientWrapper:
       hotwords=["com"],
     )
 
-  def __aiter__(self):
+  def __aiter__(self) -> AsyncIterator[TranscriptionMessage]:
     """Make wrapper itself async iterable."""
     if not self._client:
       raise RuntimeError("Client not initialized")
     return self._client.__aiter__()
 
-  async def __anext__(self):
+  async def __anext__(self) -> TranscriptionMessage:
     """Forward async iteration to the underlying client."""
     if not self._client:
       raise StopAsyncIteration
