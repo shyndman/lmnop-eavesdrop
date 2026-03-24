@@ -1,5 +1,9 @@
 version: '3'
 
+vars:
+  DEFAULT_GFX_ARCH: '{{default "gfx1030;gfx1100;gfx1103" .GFX_ARCH}}'
+  DEFAULT_HSA_OVERRIDE_GFX_VERSION: '{{default "11.0.0" .HSA_OVERRIDE_GFX_VERSION}}'
+
 tasks:
   # TODO: Make sure we have the easyeffects Pulse Audio source (and on that
   # note, we should dump the config here)
@@ -85,8 +89,8 @@ tasks:
       - server/docker/Dockerfile.rocm-base
     vars:
       ROCM_BASE_IMAGE: '{{default "eavesdrop-rocm-base" .ROCM_BASE_IMAGE}}'
-      GFX_ARCH: 'gfx1030;gfx1100;gfx1103'
-      HSA_OVERRIDE_GFX_VERSION: '{{default "11.0.0" .HSA_OVERRIDE_GFX_VERSION}}'
+      GFX_ARCH: '{{.DEFAULT_GFX_ARCH}}'
+      HSA_OVERRIDE_GFX_VERSION: '{{.DEFAULT_HSA_OVERRIDE_GFX_VERSION}}'
       GFX_ARCH_LABEL: 'io.eavesdrop.gfx_arch'
       HSA_OVERRIDE_GFX_VERSION_LABEL: 'io.eavesdrop.hsa_override_gfx_version'
     status:
@@ -116,8 +120,8 @@ tasks:
     vars:
       SERVER_IMAGE: '{{default "ghcr.io/shyndman/lmnop-eavesdrop:latest" .SERVER_IMAGE}}'
       ROCM_BASE_IMAGE: '{{default "eavesdrop-rocm-base" .ROCM_BASE_IMAGE}}'
-      GFX_ARCH: '{{default "gfx1030;gfx1100" .GFX_ARCH}}'
-      HSA_OVERRIDE_GFX_VERSION: '{{default "11.0.0" .HSA_OVERRIDE_GFX_VERSION}}'
+      GFX_ARCH: '{{.DEFAULT_GFX_ARCH}}'
+      HSA_OVERRIDE_GFX_VERSION: '{{.DEFAULT_HSA_OVERRIDE_GFX_VERSION}}'
       BASE_IMAGE_ID_LABEL: 'io.eavesdrop.rocm_base_image_id'
       GFX_ARCH_LABEL: 'io.eavesdrop.gfx_arch'
       HSA_OVERRIDE_GFX_VERSION_LABEL: 'io.eavesdrop.hsa_override_gfx_version'
@@ -134,7 +138,7 @@ tasks:
       - echo "HSA_OVERRIDE_GFX_VERSION = {{.HSA_OVERRIDE_GFX_VERSION}}"
       - |
         BASE_IMAGE_ID="$(docker image inspect {{.ROCM_BASE_IMAGE}} --format '{{"{{"}}.Id{{"}}"}}')"
-        docker build --no-cache --progress=plain -f server/docker/Dockerfile --build-arg BASE_IMAGE={{.ROCM_BASE_IMAGE}} --label {{.BASE_IMAGE_ID_LABEL}}="$BASE_IMAGE_ID" --label {{.GFX_ARCH_LABEL}}='{{.GFX_ARCH}}' --label {{.HSA_OVERRIDE_GFX_VERSION_LABEL}}='{{.HSA_OVERRIDE_GFX_VERSION}}' -t {{.SERVER_IMAGE}} .
+        docker build --progress=plain -f server/docker/Dockerfile --build-arg BASE_IMAGE={{.ROCM_BASE_IMAGE}} --label {{.BASE_IMAGE_ID_LABEL}}="$BASE_IMAGE_ID" --label {{.GFX_ARCH_LABEL}}='{{.GFX_ARCH}}' --label {{.HSA_OVERRIDE_GFX_VERSION_LABEL}}='{{.HSA_OVERRIDE_GFX_VERSION}}' -t {{.SERVER_IMAGE}} .
 
   run-server-image:
     # Verified ROCm runtime flags on AMD Framework 13 (Ryzen 7840U / Radeon 780M).
@@ -143,7 +147,7 @@ tasks:
     dir: .
     vars:
       SERVER_IMAGE: '{{default "ghcr.io/shyndman/lmnop-eavesdrop:latest" .SERVER_IMAGE}}'
-      HSA_OVERRIDE_GFX_VERSION: '{{default "11.0.0" .HSA_OVERRIDE_GFX_VERSION}}'
+      HSA_OVERRIDE_GFX_VERSION: '{{.DEFAULT_HSA_OVERRIDE_GFX_VERSION}}'
       LOG_LEVEL: '{{default "INFO" .LOG_LEVEL}}'
     cmds:
       - docker run --interactive --tty
