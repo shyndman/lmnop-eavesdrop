@@ -34,6 +34,8 @@ RUN if [ "$GFX_ARCH" = "gfx1100" ] && [ -z "$HSA_OVERRIDE_GFX_VERSION" ]; then \
 ENV GFX_ARCH=$GFX_ARCH
 ENV CTRANSLATE2_ROOT=$VIRTUAL_ENV
 ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/opt/rocm/lib/llvm/lib:$CTRANSLATE2_ROOT/lib
+ENV CT2_CUDA_ALLOCATOR=cub_caching
+ENV CT2_CUDA_CACHING_ALLOCATOR_CONFIG=4,3,12,419430400
 
 # PyPI wheels are CUDA-only. Build CTranslate2 from source with HIP support for ROCm.
 RUN git clone --depth 1 --branch v4.7.1 --recurse-submodules \
