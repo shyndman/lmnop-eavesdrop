@@ -9,6 +9,9 @@
 - [ ] 1.3 Export `FlushControlMessage` from `packages/wire/src/eavesdrop/wire/__init__.py` so server code, client code, and tests can import it from `eavesdrop.wire`.
 - [ ] 1.4 Align the server WebSocket dependency floor with the client by declaring `websockets>=13.0` in `packages/server/pyproject.toml`.
 - [ ] 1.5 Extend `packages/wire/tests/test_wire_codec_contracts.py` with one round-trip test for `FlushControlMessage` and one negative test that proves unknown discriminators still fail validation.
+- [ ] 1.6 Add `flush_complete: bool | None = None` to `TranscriptionMessage` in `packages/wire/src/eavesdrop/wire/messages.py`.
+- [ ] 1.7 Update `packages/wire/src/eavesdrop/wire/codec.py::serialize_message(...)` so ordinary transcription messages omit `flush_complete` on the wire while flush-satisfying messages serialize with `flush_complete=true`.
+- [ ] 1.8 Extend codec tests to prove ordinary transcription messages omit `flush_complete` while flush-satisfying messages serialize with `flush_complete=true`.
 
 ## 2. Server live-session flush state and receive path
 
@@ -31,8 +34,14 @@
   - send the agreed `ErrorMessage`,
   - keep the connection open,
   - leave the original pending flush unchanged.
-- [ ] 2.7 Add or extend live-session tests in `packages/server/tests/test_streaming_lifecycle_contracts.py` to prove:
+- [ ] 2.7 Add explicit rejection for `control_flush` in unsupported states:
+  - before live transcriber setup completes,
+  - during file-mode transcription,
+  - from RTSP subscriber sessions.
+- [ ] 2.8 While a flush is accepted and in flight, suppress intermediate ordinary `TranscriptionMessage` emissions for that session until the single flush-satisfying response is sent.
+- [ ] 2.9 Add or extend live-session tests in `packages/server/tests/test_streaming_lifecycle_contracts.py` to prove:
   - a second flush is rejected,
+  - unsupported-state flushes are rejected,
   - the connection remains open after rejection,
   - the first flush remains active.
 
@@ -66,7 +75,8 @@
   - keep the pending flush,
   - skip the normal interval sleep,
   - immediately start another outer loop iteration so the next chunk snapshot includes more audio.
-- [ ] 4.7 If the pass does cover the flush boundary:
+- [ ] 4.7 Make sure audio that arrives after the accepted boundary stays buffered for later work and is not required to satisfy the current flush.
+- [ ] 4.8 If the pass does cover the flush boundary:
   - build the one flush-satisfying response,
   - apply `force_complete` if requested,
   - emit exactly one `TranscriptionMessage`,
@@ -96,9 +106,11 @@
   - reuse `_message_queue` for transcription messages,
   - reuse `_disconnect_event` patterns for connection loss,
   - clear local flush state in a `finally` block.
-- [ ] 6.7 Make `flush(...)` resolve when the flush-satisfying `TranscriptionMessage` is received.
-- [ ] 6.8 Make `flush(...)` fail if the server sends the concurrent-flush `ErrorMessage`, and surface that failure as a `RuntimeError` carrying the server’s message text.
-- [ ] 6.9 Add a strong docstring to `flush(...)` explaining:
+- [ ] 6.7 Immediately before sending `control_flush`, drain already-buffered `TranscriptionMessage` instances from the local client queue so stale pre-flush messages cannot satisfy the call.
+- [ ] 6.8 Make `flush(...)` resolve when the next `TranscriptionMessage` arrives after the flush command is sent.
+- [ ] 6.9 Make `flush(...)` fail if the server sends the concurrent-flush `ErrorMessage`, and surface that failure as a `RuntimeError` carrying the server’s message text.
+- [ ] 6.10 Make `flush(...)` fail immediately if the connection closes before the awaited flush response arrives.
+- [ ] 6.11 Add a strong docstring to `flush(...)` explaining:
   - it is a request/response operation,
   - only one flush may be in flight,
   - calling it again before the first flush completes is illegal.

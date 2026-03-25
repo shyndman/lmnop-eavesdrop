@@ -82,6 +82,21 @@ Notes for the implementer:
 3. This command must travel in a **text** WebSocket frame, not a binary frame.
 4. Audio remains binary float32 frames exactly as it works today.
 
+### Flush-satisfying transcription marker
+
+To avoid ambiguity between an ordinary transcription update and the response that satisfies an accepted flush, `TranscriptionMessage` must gain one optional field:
+
+```python
+flush_complete: bool | None = None
+```
+
+Rules:
+1. ordinary transcription updates omit `flush_complete` on the wire,
+2. the single transcription message that satisfies an accepted flush sets `flush_complete=True`,
+3. client `flush()` waits specifically for `TranscriptionMessage(flush_complete=True)` rather than merely the next transcription update.
+
+This shape is intentional. The current wire codec uses `TypeAdapter.dump_json(message)` with default `exclude_none=False`, so omission will not happen automatically. The implementation must make omission explicit at the wire serialization boundary, for example by using `exclude_none=True` in `serialize_message(...)` or by an equivalent explicit omission rule applied only to wire message serialization.
+
 ### Rejection message
 
 Reuse the existing `ErrorMessage` shape. Do not invent a new rejection envelope.
@@ -142,6 +157,20 @@ Concretely:
    3. text frame -> deserialize and handle session commands.
 
 This matters because the `websockets` library forbids concurrent `recv()` calls on the same connection. A junior engineer should not introduce a second background task that also reads the socket.
+
+### Unsupported-session behavior
+
+`control_flush` is only valid for an already-configured live transcriber session.
+
+Explicit rejection rules:
+1. **Before setup completes**: reject with `ErrorMessage`, because the server does not yet know which live transcription session should own the command.
+2. **File-mode transcriber session**: reject with `ErrorMessage`, because file mode already has deterministic `END_OF_AUDIO` finalization and file upload frames are not session-control traffic.
+3. **RTSP subscriber session**: reject with `ErrorMessage`, because subscribers do not own transcription processor state.
+
+Connection behavior for all three cases:
+1. keep the connection open unless another existing validation rule already closes it,
+2. do not create or mutate any pending flush state,
+3. do not treat the text frame as audio bytes.
 
 **Implementation note:**
 The current code spreads this responsibility across `TranscriptionServer.get_audio_from_websocket(...)`, `WebSocketAudioSource.read_audio()`, and `WebSocketStreamingClient._audio_ingestion_loop()`. During implementation, prefer the smallest refactor that leaves only one `recv()` owner in live mode. The easiest shape is:
@@ -331,6 +360,8 @@ pass_end_sample >= pending_flush.boundary_sample
 
 This matters because one outer processor iteration grabs a chunk snapshot of all currently unprocessed audio, but more audio may arrive before the flush frame is received. Whisper’s internal ~30s windowing does not require multiple outer loop iterations by itself; it already handles long chunks inside one transcription call. A second outer iteration is only required when the currently running snapshot does not yet extend to the flush boundary.
 
+Audio that arrives **after** the accepted flush boundary is not required to satisfy that flush. It remains buffered for the next ordinary processing pass or the next later flush. This rule prevents the processor from chasing newly arriving audio forever while trying to satisfy one already-accepted flush.
+
 ### Exact way to compute pass coverage
 
 Use the chunk snapshot that the processor already has.
@@ -367,6 +398,8 @@ This “clear after send” rule is important. It prevents a second flush from s
 ## Decision 8: Keep the invariant incomplete tail in every flush response
 
 Accepted flushes still return ordinary `TranscriptionMessage` payloads. The response SHALL still end with an incomplete tail segment.
+
+The only structural difference from an ordinary update is that the flush-satisfying response includes `flush_complete=True`.
 
 ### Current invariant to preserve
 
@@ -410,8 +443,9 @@ This is intentionally stronger than “send a command.” It makes flush a reque
 3. `flush()` must fail fast locally if another local flush call is already waiting.
 4. `flush()` sends exactly one `FlushControlMessage` text frame.
 5. `flush()` waits for one of two outcomes:
-   1. the flush-satisfying `TranscriptionMessage` -> return it,
+   1. a `TranscriptionMessage` with `flush_complete=True` -> return it,
    2. an `ErrorMessage` rejecting the flush -> raise `RuntimeError(error.message)`.
+6. if the connection closes before the flush-satisfying response arrives -> fail immediately and clear local flush state.
 
 ### Recommended client-side implementation strategy
 
@@ -419,6 +453,17 @@ Build on patterns that already exist in `EavesdropClient`:
 1. reuse `_operation_lock` style local legality checks for non-reentrant behavior,
 2. reuse `_message_queue` and `_disconnect_event` style waiting patterns,
 3. do not introduce a second socket reader.
+
+### Recommended client-side response boundary
+
+This change should not add a new round-trip identifier or flush ID. Instead, use the one-flush-at-a-time contract plus an explicit flush marker on the transcription result:
+
+1. immediately before sending `FlushControlMessage`, drain any already-buffered `TranscriptionMessage` instances from the local client queue,
+2. send the flush command,
+3. the server may still emit ordinary `TranscriptionMessage` updates, but only the one with `flush_complete=True` satisfies the flush,
+4. `flush()` ignores ordinary queued updates and waits for the marked response.
+
+This avoids the race where a nearly-finished ordinary update arrives just after the client sends `control_flush` but before the flush-satisfying response is ready.
 
 A junior engineer should **not** invent a separate message queue for flush unless it is necessary. The existing message callback path already pushes `TranscriptionMessage` instances into `_message_queue`.
 
@@ -435,11 +480,12 @@ Rules:
 1. `_flush_waiting` exists only to reject a second local `flush()` call early.
 2. The server remains authoritative; even if local state gets it wrong, server rejection must still be surfaced.
 3. Clear local flush-waiting state in a `finally` block inside `flush()`.
+4. If the connection closes before the awaited flush response arrives, clear local flush-waiting state and fail the call immediately.
 
 ### Response correlation rule
 
 Because only one flush may be in flight at a time, the client does **not** need a flush ID. The returned response is simply:
-- the first `TranscriptionMessage` received after the server accepted the flush and satisfied its boundary.
+- the next `TranscriptionMessage` for that session whose `flush_complete` field is `True`.
 
 This rule must be written into the implementation comments so future maintainers do not “helpfully” add ad-hoc correlation logic that conflicts with the one-flush-at-a-time contract.
 
@@ -468,7 +514,7 @@ processor
     | keep looping until pass_end_sample >= boundary_sample
     | mark tail complete
     | append fresh incomplete tail
-    | send one TranscriptionMessage
+    | send one TranscriptionMessage with flush_complete=True
     | clear pending_flush after send_result
     v
 client
