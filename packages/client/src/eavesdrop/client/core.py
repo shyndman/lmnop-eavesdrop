@@ -81,6 +81,8 @@ class EavesdropClient:
     self._operation_lock = asyncio.Lock()
     self._disconnect_event = asyncio.Event()
     self._disconnect_reason: str | None = None
+    self._flush_waiting = False
+    self._flush_error: str | None = None
     self._logger: BoundLogger = get_logger(
       "client/core",
       client_type=client_type.value,
@@ -304,6 +306,66 @@ class EavesdropClient:
     if self._audio_capture:
       self._audio_capture.stop_recording()
 
+  async def flush(self, *, force_complete: bool = True) -> TranscriptionMessage:
+    """Request a live transcription flush and await the terminal flush response.
+
+    This API is only valid for active transcriber websocket sessions. The client drains
+    stale buffered transcription updates before sending the flush command, then waits for
+    the next ``TranscriptionMessage`` whose ``flush_complete`` field is ``True``. Ordinary
+    transcription updates received while waiting are ignored.
+
+    :param force_complete: Whether the server should force-complete the current tentative tail.
+    :type force_complete: bool
+    :returns: The flush-satisfying transcription update from the server.
+    :rtype: TranscriptionMessage
+    :raises RuntimeError: If flush is unsupported for the current mode/session, another local
+      flush is already pending, the server rejects the request, or the live connection closes
+      before the flush completes.
+    """
+    if self._client_type != ClientType.TRANSCRIBER:
+      raise RuntimeError("flush() only supported in transcriber mode")
+
+    if self._operation_lock.locked():
+      raise RuntimeError("flush() unavailable during transcribe_file() operation")
+
+    if (
+      not self._connected
+      or not self._connection
+      or not self._connection.is_connected()
+      or self._message_task is None
+    ):
+      raise RuntimeError("flush() requires an active live transcriber connection")
+
+    if self._flush_waiting:
+      raise RuntimeError("flush() already in progress")
+
+    self._flush_waiting = True
+    self._flush_error = None
+
+    try:
+      self._clear_message_queue()
+      await self._connection.send_flush_control(force_complete=force_complete)
+
+      while True:
+        if self._flush_error is not None:
+          raise RuntimeError(self._flush_error)
+
+        if self._message_task.done() and self._message_queue.empty():
+          raise RuntimeError(self._flush_disconnect_message())
+
+        try:
+          message = await asyncio.wait_for(self._message_queue.get(), timeout=0.1)
+        except asyncio.TimeoutError:
+          if self._disconnect_event.is_set():
+            raise RuntimeError(self._flush_disconnect_message())
+          continue
+
+        if message.flush_complete is True:
+          return message
+    finally:
+      self._flush_waiting = False
+      self._flush_error = None
+
   async def transcribe_file(
     self,
     file_path: str,
@@ -455,6 +517,12 @@ class EavesdropClient:
     while not self._message_queue.empty():
       self._message_queue.get_nowait()
 
+  def _flush_disconnect_message(self) -> str:
+    """Build a truthful flush failure message from current disconnect state."""
+    if self._disconnect_reason:
+      return self._disconnect_reason
+    return "flush() failed because the live connection closed before flush completion"
+
   async def _audio_streaming_loop(self) -> None:
     """Background task to stream audio data to server."""
     if not self._connection or not self._audio_capture:
@@ -530,4 +598,6 @@ class EavesdropClient:
 
   def _on_error(self, error: str) -> None:
     """Handle error callback."""
+    if self._flush_waiting and self._flush_error is None:
+      self._flush_error = error
     self._logger.error("client error", error=error)

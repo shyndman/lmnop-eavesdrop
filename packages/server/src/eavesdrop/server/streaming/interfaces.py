@@ -24,6 +24,9 @@ class TranscriptionResult:
   language: str | None = None
   """Detected or specified language code."""
 
+  flush_complete: bool | None = None
+  """True only for the single response that satisfies an accepted flush."""
+
   language_probability: float | None = Field(default=None, ge=0.0, le=1.0)
   """Confidence score for language detection."""
 

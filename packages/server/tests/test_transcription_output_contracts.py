@@ -185,3 +185,58 @@ async def test_absolute_timestamps_remain_monotonic_across_multiple_updates() ->
   latest_output = sink.results[-1].segments
   assert [segment.text for segment in latest_output[:-1]] == ["alpha", "bravo", "charlie"]
   assert latest_output[-1].completed is False
+
+
+@pytest.mark.asyncio
+async def test_flush_force_complete_converts_tail_to_completed_history() -> None:
+  """Force-complete flush responses finalize the tentative tail and append a fresh tail."""
+  session = create_session("stream-1")
+  sink = RecordingSink()
+  processor = _create_processor(send_last_n_segments=3, session=session, sink=sink)
+
+  await processor._handle_transcription_output(
+    result=[
+      _segment(start=0.0, end=0.4, text="alpha", time_offset=4.0),
+      _segment(start=0.4, end=0.7, text="draft", time_offset=4.0),
+    ],
+    duration=0.2,
+    speech_chunks=None,
+    flush_complete=True,
+    force_complete=True,
+  )
+
+  flush_result = sink.results[-1]
+  output_segments = flush_result.segments
+
+  assert flush_result.flush_complete is True
+  assert [segment.text for segment in session.completed_segments] == ["alpha", "draft"]
+  assert [segment.text for segment in output_segments[:-1]] == ["alpha", "draft"]
+  assert all(segment.completed for segment in output_segments[:-1])
+  assert sum(not segment.completed for segment in output_segments) == 1
+  assert output_segments[-1].completed is False
+  assert output_segments[-1].text == ""
+
+
+@pytest.mark.asyncio
+async def test_flush_without_force_complete_preserves_existing_incomplete_tail() -> None:
+  """Non-forcing flush responses keep the tentative tail incomplete and singular."""
+  session = create_session("stream-1")
+  sink = RecordingSink()
+  processor = _create_processor(send_last_n_segments=3, session=session, sink=sink)
+
+  await processor._handle_transcription_output(
+    result=[_segment(start=0.2, end=0.9, text="draft", time_offset=12.0)],
+    duration=0.2,
+    speech_chunks=None,
+    flush_complete=True,
+    force_complete=False,
+  )
+
+  flush_result = sink.results[-1]
+  output_segments = flush_result.segments
+
+  assert flush_result.flush_complete is True
+  assert session.completed_segments == []
+  assert [segment.text for segment in output_segments] == ["draft"]
+  assert sum(not segment.completed for segment in output_segments) == 1
+  assert output_segments[-1].completed is False

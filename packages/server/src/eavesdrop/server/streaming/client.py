@@ -11,6 +11,7 @@ from enum import StrEnum
 
 import numpy as np
 from websockets.asyncio.server import ServerConnection
+from websockets.exceptions import ConnectionClosed
 
 from eavesdrop.common import get_logger
 from eavesdrop.server.config import TranscriptionConfig
@@ -25,13 +26,21 @@ from eavesdrop.server.streaming.file_decoder import (
   decode_file_bytes_to_canonical_audio,
 )
 from eavesdrop.server.streaming.file_queue import FileAudioQueue
+from eavesdrop.server.streaming.flush_state import LiveSessionFlushState
 from eavesdrop.server.streaming.processor import StreamingTranscriptionProcessor
 from eavesdrop.server.transcription.session import create_session
-from eavesdrop.wire import TranscriptionSourceMode
+from eavesdrop.wire import (
+  FlushControlMessage,
+  TranscriptionSourceMode,
+  deserialize_message,
+)
 
 FILE_QUEUE_ENQUEUE_CHUNK_SECONDS = 2.0
 FILE_OBSERVABILITY_INTERVAL_SECONDS = 5.0
 FILE_QUEUE_WARNING_FILL_RATIO = 0.85
+LIVE_FLUSH_ALREADY_PENDING_MESSAGE = "Flush rejected: another flush is already pending"
+LIVE_FLUSH_FILE_MODE_MESSAGE = "Flush rejected: control_flush is unsupported during file upload"
+LIVE_FLUSH_UNEXPECTED_MESSAGE = "Flush rejected: unsupported live control message"
 
 
 class FileLifecycleState(StrEnum):
@@ -75,6 +84,7 @@ class WebSocketStreamingClient:
     # Initialize session and components
     self.session = create_session(stream_name)
     self.buffer = AudioStreamBuffer(transcription_config.buffer)
+    self._flush_state = LiveSessionFlushState()
     self.audio_source = WebSocketAudioSource(websocket, get_audio_func)
     self.transcription_sink = WebSocketTranscriptionSink(websocket, stream_name)
     self.processor = StreamingTranscriptionProcessor(
@@ -83,6 +93,7 @@ class WebSocketStreamingClient:
       config=transcription_config,
       stream_name=stream_name,
       session=self.session,
+      flush_state=self._flush_state,
     )
 
     # Shared state tracking
@@ -170,8 +181,10 @@ class WebSocketStreamingClient:
       frame_data = await self.websocket.recv()
 
       if isinstance(frame_data, str):
-        frame_bytes = frame_data.encode("utf-8")
-      elif isinstance(frame_data, bytes):
+        await self._handle_file_text_frame(frame_data)
+        continue
+
+      if isinstance(frame_data, bytes):
         frame_bytes = frame_data
       else:
         frame_bytes = bytes(frame_data)
@@ -328,18 +341,68 @@ class WebSocketStreamingClient:
     """Add audio frames to the processor buffer."""
     self.processor.add_audio_frames(frames)
 
+  async def _handle_file_text_frame(self, message_json: str) -> None:
+    """Reject control frames that are illegal during file uploads."""
+    try:
+      message = deserialize_message(message_json)
+    except Exception:
+      await self.transcription_sink.send_error("Unexpected text frame during file upload")
+      return
+
+    if isinstance(message, FlushControlMessage):
+      await self.transcription_sink.send_error(LIVE_FLUSH_FILE_MODE_MESSAGE)
+      return
+
+    await self.transcription_sink.send_error(
+      f"Unexpected text frame during file upload: {message.type}"
+    )
+
+  async def _handle_live_text_frame(self, message_json: str) -> None:
+    """Handle post-setup live control frames without adding another recv owner."""
+    try:
+      message = deserialize_message(message_json)
+    except Exception:
+      await self.transcription_sink.send_error("Invalid live control frame")
+      return
+
+    if not isinstance(message, FlushControlMessage):
+      await self.transcription_sink.send_error(f"{LIVE_FLUSH_UNEXPECTED_MESSAGE}: {message.type}")
+      return
+
+    pending_flush = self._flush_state.accept(
+      boundary_sample=self.buffer.get_buffer_end_sample(),
+      force_complete=message.force_complete,
+    )
+    if pending_flush is None:
+      await self.transcription_sink.send_error(LIVE_FLUSH_ALREADY_PENDING_MESSAGE)
+      return
+
+    self.logger.info(
+      "Accepted live flush request",
+      boundary_sample=pending_flush.boundary_sample,
+      force_complete=pending_flush.force_complete,
+    )
+
   async def _audio_ingestion_loop(self) -> None:
     """Continuously read live audio and add it to the processing buffer."""
     while not self._exit:
       try:
-        audio_data = await self.audio_source.read_audio()
+        frame_data = await self.websocket.recv()
 
-        if audio_data is None:
+        if isinstance(frame_data, str):
+          await self._handle_live_text_frame(frame_data)
+          continue
+
+        frame_bytes = frame_data if isinstance(frame_data, bytes) else bytes(frame_data)
+        if frame_bytes == b"END_OF_AUDIO":
           self.logger.debug("End of audio stream received")
           break
 
-        self.add_frames(audio_data)
+        self.add_frames(np.frombuffer(frame_bytes, dtype=np.float32))
 
+      except ConnectionClosed:
+        self.logger.info("Live websocket closed during audio ingestion")
+        break
       except Exception:
         self.logger.exception("Error in audio ingestion loop")
         await asyncio.sleep(0.1)

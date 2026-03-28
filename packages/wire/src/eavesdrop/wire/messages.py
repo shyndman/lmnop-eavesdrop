@@ -45,6 +45,10 @@ class TranscriptionMessage(BaseMessage):
   stream: str = Field(description="Stream name for RTSP subscribers")
   segments: list[Segment] = Field(description="List of transcription segments")
   language: str | None = Field(default=None, description="Detected or specified language code")
+  flush_complete: bool | None = Field(
+    default=None,
+    description="True only for the response that satisfies an accepted flush request",
+  )
 
 
 @dataclass(kw_only=True)
@@ -114,4 +118,16 @@ class TranscriptionSetupMessage(BaseMessage):
   stream: str = Field(description="Stream name or client identifier")
   options: UserTranscriptionOptions = Field(
     description="User-specified transcription options, including source_mode routing intent"
+  )
+
+
+@dataclass(kw_only=True)
+class FlushControlMessage(BaseMessage):
+  """Message requesting an in-session live transcription flush."""
+
+  type: Literal["control_flush"] = "control_flush"
+  stream: str = Field(description="Stream name or client identifier")
+  force_complete: bool = Field(
+    default=True,
+    description="Whether the server should force-complete the current tentative tail",
   )

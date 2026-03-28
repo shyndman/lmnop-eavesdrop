@@ -14,6 +14,7 @@ from eavesdrop.wire import (
   ClientType,
   DisconnectMessage,
   ErrorMessage,
+  FlushControlMessage,
   ServerReadyMessage,
   TranscriptionMessage,
   TranscriptionSetupMessage,
@@ -202,6 +203,25 @@ class WebSocketConnection:
       await self.ws.send(b"END_OF_AUDIO")
     except Exception as e:
       self.on_error(f"Error sending END_OF_AUDIO: {e}")
+
+  async def send_flush_control(self, *, force_complete: bool = True) -> None:
+    """Send a live flush control message over the websocket.
+
+    :param force_complete: Whether the server should force-complete the current tail segment.
+    :type force_complete: bool
+    """
+    if not self.ws or not self.connected:
+      return
+
+    try:
+      flush_message = FlushControlMessage(
+        stream=self.stream_name,
+        force_complete=force_complete,
+      )
+      await self.ws.send(serialize_message(flush_message))
+    except Exception as e:
+      self.on_error(f"Error sending flush control: {e}")
+      raise
 
   async def send_file_bytes(
     self,

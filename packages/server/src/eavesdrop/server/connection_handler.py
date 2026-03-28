@@ -16,6 +16,7 @@ from eavesdrop.common import get_logger
 from eavesdrop.wire import (
   ClientType,
   ErrorMessage,
+  FlushControlMessage,
   TranscriptionSetupMessage,
   TranscriptionSourceMode,
   WebSocketHeaders,
@@ -51,6 +52,10 @@ ClientInitializer = Callable[
   [ServerConnection, TranscriptionSetupMessage],
   Awaitable["WebSocketStreamingClient"],
 ]
+
+PRE_SETUP_FLUSH_REJECTION = (
+  "Flush rejected: control_flush is unavailable before live transcriber setup completes"
+)
 
 
 class WebSocketConnectionHandler:
@@ -105,19 +110,27 @@ class WebSocketConnectionHandler:
         result = await self._handle_subscriber_connection(websocket, dict(headers))
         return SubscriberConnection() if result else None
 
-      raw_msg: str = await websocket.recv(decode=True)
-      message = deserialize_message(raw_msg)
+      while True:
+        raw_msg: str = await websocket.recv(decode=True)
+        message = deserialize_message(raw_msg)
 
-      match (client_type, message):
-        case (ClientType.TRANSCRIBER, TranscriptionSetupMessage()):
-          client = await self._handle_transcriber_connection(websocket, message)
-          if not client:
+        match (client_type, message):
+          case (ClientType.TRANSCRIBER, TranscriptionSetupMessage()):
+            client = await self._handle_transcriber_connection(websocket, message)
+            if not client:
+              return None
+            return TranscriberConnection(client=client, source_mode=message.options.source_mode)
+
+          case (ClientType.TRANSCRIBER, FlushControlMessage()):
+            await self._send_error(websocket, PRE_SETUP_FLUSH_REJECTION)
+            continue
+
+          case (ClientType.HEALTH_CHECK, HealthCheckRequest()):
+            await self._handle_health_check(websocket, message)
             return None
-          return TranscriberConnection(client=client, source_mode=message.options.source_mode)
 
-        case (ClientType.HEALTH_CHECK, HealthCheckRequest()):
-          await self._handle_health_check(websocket, message)
-          return None
+          case _:
+            return None
 
     except ConnectionClosed:
       self._logger.info("handle_connection: Connection closed by client")
@@ -210,6 +223,13 @@ class WebSocketConnectionHandler:
     """
     await self._send_and_close(websocket, ErrorMessage(message=error_message))
     self._logger.warning("Sent error and closed connection", error=error_message)
+
+  async def _send_error(self, websocket: ServerConnection, error_message: str) -> None:
+    """Send an error message without closing the websocket."""
+    try:
+      await websocket.send(serialize_message(ErrorMessage(message=error_message)))
+    except Exception:
+      self._logger.exception("Error sending message")
 
   async def _send_and_close(self, websocket: ServerConnection, message: Message) -> None:
     """

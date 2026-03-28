@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, TypeAdapter
 from .messages import (
   DisconnectMessage,
   ErrorMessage,
+  FlushControlMessage,
   HealthCheckRequest,
   LanguageDetectionMessage,
   ServerReadyMessage,
@@ -22,6 +23,7 @@ type Message = (
   TranscriptionMessage
   | StreamStatusMessage
   | ErrorMessage
+  | FlushControlMessage
   | LanguageDetectionMessage
   | ServerReadyMessage
   | DisconnectMessage
@@ -45,6 +47,8 @@ def serialize_message(message: Message) -> str:
   """
   message_type = type(message)
   adapter = TypeAdapter(message_type)
+  if isinstance(message, TranscriptionMessage) and message.flush_complete is None:
+    return adapter.dump_json(message, exclude={"flush_complete"}).decode("utf-8")
   return adapter.dump_json(message).decode("utf-8")
 
 

@@ -10,6 +10,7 @@ from typing import cast
 
 import pytest
 
+from eavesdrop.client.audio import AudioCapture
 from eavesdrop.client.connection import WebSocketConnection
 from eavesdrop.client.core import EavesdropClient
 from eavesdrop.wire import (
@@ -62,9 +63,24 @@ class RecordingConnection:
 
   def __init__(self) -> None:
     self.audio_chunks: list[bytes] = []
+    self.flush_commands: list[bool] = []
+    self.flush_sent = asyncio.Event()
 
   async def send_audio_data(self, audio_data: bytes) -> None:
     self.audio_chunks.append(audio_data)
+
+  async def send_flush_control(self, *, force_complete: bool = True) -> None:
+    self.flush_commands.append(force_complete)
+    self.flush_sent.set()
+
+  def is_connected(self) -> bool:
+    return True
+
+
+async def _hold_open(signal: asyncio.Event) -> None:
+  """Keep an async task pending until the test explicitly releases it."""
+
+  await signal.wait()
 
 
 def _segment(text: str) -> Segment:
@@ -226,9 +242,11 @@ async def test_start_and_stop_streaming_transition_state_with_mocks(
   """Streaming start/stop paths must be idempotent and update state predictably."""
 
   client = EavesdropClient.transcriber(audio_device="default")
+  audio_capture = RecordingAudioCapture()
+  connection = RecordingConnection()
   client._connected = True
-  client._audio_capture = RecordingAudioCapture()
-  client._connection = RecordingConnection()
+  client._audio_capture = cast(AudioCapture, cast(object, audio_capture))
+  client._connection = cast(WebSocketConnection, cast(object, connection))
 
   loop_started = asyncio.Event()
 
@@ -241,14 +259,120 @@ async def test_start_and_stop_streaming_transition_state_with_mocks(
   await asyncio.wait_for(loop_started.wait(), timeout=0.2)
 
   assert client.is_streaming() is True
-  assert client._audio_capture.start_calls == 1
+  assert audio_capture.start_calls == 1
 
   await client.start_streaming()
-  assert client._audio_capture.start_calls == 1
+  assert audio_capture.start_calls == 1
 
   await client.stop_streaming()
   assert client.is_streaming() is False
-  assert client._audio_capture.stop_calls == 1
+  assert audio_capture.stop_calls == 1
 
   await client.stop_streaming()
-  assert client._audio_capture.stop_calls == 1
+  assert audio_capture.stop_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_flush_waits_for_new_flush_complete_message() -> None:
+  """flush() must drop stale buffered completions and return the new flush response."""
+
+  client = EavesdropClient.transcriber(audio_device="default")
+  connection = RecordingConnection()
+  client._connected = True
+  client._connection = cast(WebSocketConnection, cast(object, connection))
+
+  stale_message = TranscriptionMessage(
+    stream="stream-live",
+    segments=[_segment("stale")],
+    language="en",
+    flush_complete=True,
+  )
+  fresh_message = TranscriptionMessage(
+    stream="stream-live",
+    segments=[_segment("fresh")],
+    language="en",
+    flush_complete=True,
+  )
+  client._message_queue.put_nowait(stale_message)
+
+  keepalive = asyncio.Event()
+  message_task = asyncio.create_task(_hold_open(keepalive))
+  client._message_task = message_task
+
+  async def _deliver_fresh_message() -> None:
+    await connection.flush_sent.wait()
+    client._message_queue.put_nowait(fresh_message)
+
+  deliver_task = asyncio.create_task(_deliver_fresh_message())
+  try:
+    result = await client.flush(force_complete=True)
+  finally:
+    keepalive.set()
+    await asyncio.gather(message_task, deliver_task)
+
+  assert connection.flush_commands == [True]
+  assert result == fresh_message
+
+
+@pytest.mark.asyncio
+async def test_flush_rejects_second_local_waiter_before_second_send() -> None:
+  """flush() must fail fast locally when another flush call is already pending."""
+
+  client = EavesdropClient.transcriber(audio_device="default")
+  connection = RecordingConnection()
+  client._connected = True
+  client._connection = cast(WebSocketConnection, cast(object, connection))
+
+  keepalive = asyncio.Event()
+  message_task = asyncio.create_task(_hold_open(keepalive))
+  client._message_task = message_task
+
+  first_flush = asyncio.create_task(client.flush())
+  await connection.flush_sent.wait()
+
+  with pytest.raises(RuntimeError, match="already in progress"):
+    await client.flush()
+
+  client._message_queue.put_nowait(
+    TranscriptionMessage(
+      stream="stream-live",
+      segments=[_segment("done")],
+      language="en",
+      flush_complete=True,
+    )
+  )
+
+  try:
+    await first_flush
+  finally:
+    keepalive.set()
+    await message_task
+
+  assert connection.flush_commands == [True]
+
+
+@pytest.mark.asyncio
+async def test_flush_surfaces_server_rejection_message() -> None:
+  """flush() must propagate server-side rejection text as a runtime error."""
+
+  client = EavesdropClient.transcriber(audio_device="default")
+  connection = RecordingConnection()
+  client._connected = True
+  client._connection = cast(WebSocketConnection, cast(object, connection))
+
+  keepalive = asyncio.Event()
+  message_task = asyncio.create_task(_hold_open(keepalive))
+  client._message_task = message_task
+
+  flush_task = asyncio.create_task(client.flush(force_complete=True))
+  await connection.flush_sent.wait()
+  client._on_error("server refused flush")
+
+  try:
+    with pytest.raises(RuntimeError, match="server refused flush"):
+      await flush_task
+  finally:
+    keepalive.set()
+    await message_task
+
+  assert connection.flush_commands == [True]

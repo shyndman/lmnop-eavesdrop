@@ -10,9 +10,11 @@ import pytest
 from pydantic import ValidationError
 
 from eavesdrop.wire import deserialize_message, serialize_message
+from eavesdrop.wire.codec import Message
 from eavesdrop.wire.messages import (
   DisconnectMessage,
   ErrorMessage,
+  FlushControlMessage,
   HealthCheckRequest,
   LanguageDetectionMessage,
   ServerReadyMessage,
@@ -83,6 +85,11 @@ def _build_contract_segment() -> Segment:
       stream="stream-a",
       message="operator stop",
     ),
+    FlushControlMessage(
+      timestamp=1_700_000_000.65,
+      stream="stream-a",
+      force_complete=False,
+    ),
     HealthCheckRequest(timestamp=1_700_000_000.7),
     TranscriptionSetupMessage(
       timestamp=1_700_000_000.8,
@@ -99,7 +106,7 @@ def _build_contract_segment() -> Segment:
     ),
   ],
 )
-def test_active_message_types_round_trip_without_payload_loss(message: object) -> None:
+def test_active_message_types_round_trip_without_payload_loss(message: Message) -> None:
   encoded = serialize_message(message)
   decoded = deserialize_message(encoded)
 
@@ -114,6 +121,7 @@ def test_decode_preserves_transcription_metadata_fields() -> None:
       stream="stream-1",
       segments=[_build_contract_segment()],
       language="fr",
+      flush_complete=True,
     )
   )
 
@@ -123,10 +131,12 @@ def test_decode_preserves_transcription_metadata_fields() -> None:
   assert decoded.timestamp == 1_700_000_001.0
   assert decoded.stream == "stream-1"
   assert decoded.language == "fr"
+  assert decoded.flush_complete is True
   assert decoded.segments[0].id == 4242
   assert decoded.segments[0].text == "contract fixture"
   assert decoded.segments[0].time_offset == 32.0
   assert decoded.segments[0].completed is True
+  assert decoded.segments[0].words is not None
   assert decoded.segments[0].words[0].word == "contract"
 
 
@@ -161,11 +171,53 @@ def test_decode_preserves_control_message_metadata_fields() -> None:
   assert decoded.options.model == "distil-small.en"
 
 
+def test_flush_control_round_trips_without_payload_loss() -> None:
+  encoded = serialize_message(
+    FlushControlMessage(
+      timestamp=1_700_000_002.5,
+      stream="stream-flush",
+      force_complete=False,
+    )
+  )
+
+  decoded = deserialize_message(encoded)
+
+  assert serialize_message(decoded) == encoded
+
+
+def test_ordinary_transcription_omits_flush_complete_on_wire() -> None:
+  encoded = serialize_message(
+    TranscriptionMessage(
+      timestamp=1_700_000_006.0,
+      stream="stream-ordinary",
+      segments=[_build_contract_segment()],
+      language="en",
+    )
+  )
+
+  assert '"flush_complete"' not in encoded
+  _ = deserialize_message(encoded)
+
+
+def test_flush_satisfying_transcription_serializes_flush_complete_true() -> None:
+  encoded = serialize_message(
+    TranscriptionMessage(
+      timestamp=1_700_000_007.0,
+      stream="stream-flush",
+      segments=[_build_contract_segment()],
+      flush_complete=True,
+    )
+  )
+
+  assert '"flush_complete":true' in encoded
+  _ = deserialize_message(encoded)
+
+
 def test_deserialize_rejects_unknown_discriminator_type() -> None:
   payload = '{"type":"unknown_event","timestamp":1700000003.0}'
 
   with pytest.raises(ValidationError) as exc_info:
-    deserialize_message(payload)
+    _ = deserialize_message(payload)
 
   assert "type" in str(exc_info.value)
 
@@ -174,7 +226,7 @@ def test_deserialize_rejects_non_string_discriminator_type() -> None:
   payload = '{"type":123,"timestamp":1700000004.0}'
 
   with pytest.raises(ValidationError) as exc_info:
-    deserialize_message(payload)
+    _ = deserialize_message(payload)
 
   assert "type" in str(exc_info.value)
 

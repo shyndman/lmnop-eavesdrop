@@ -16,7 +16,15 @@ from eavesdrop.server.streaming import (
   WebSocketStreamingClient,
 )
 from eavesdrop.server.websocket import WebSocketClientManager, WebSocketServer
-from eavesdrop.wire import TranscriptionSetupMessage
+from eavesdrop.wire import (
+  ErrorMessage,
+  FlushControlMessage,
+  TranscriptionSetupMessage,
+  deserialize_message,
+  serialize_message,
+)
+
+RTSP_FLUSH_REJECTION = "Flush rejected: control_flush is unsupported for RTSP subscriber sessions"
 
 
 # TODO: Introduce a common pathway for message deserialization
@@ -143,6 +151,10 @@ class TranscriptionServer:
       # Wait for the WebSocket connection to close
       # Subscribers don't send data, they just receive
       async for message in websocket:
+        if isinstance(message, str):
+          await self._reject_subscriber_control_frame(websocket, message)
+          continue
+
         # Log any unexpected messages from subscribers
         self.logger.warning(
           "Received unexpected message from subscriber",
@@ -165,6 +177,32 @@ class TranscriptionServer:
       if subscriber_manager:
         await subscriber_manager.unsubscribe_client(websocket)
       self.logger.debug("_handle_subscriber_lifecycle: Subscriber cleanup complete")
+
+  async def _reject_subscriber_control_frame(
+    self, websocket: ServerConnection, message_json: str
+  ) -> None:
+    """Reject live-control commands from RTSP subscriber sessions."""
+    try:
+      message = deserialize_message(message_json)
+    except Exception:
+      self.logger.warning("Received invalid text frame from subscriber")
+      return
+
+    if isinstance(message, FlushControlMessage):
+      await websocket.send(
+        serialize_message(
+          ErrorMessage(
+            stream=message.stream,
+            message=RTSP_FLUSH_REJECTION,
+          )
+        )
+      )
+      return
+
+    self.logger.warning(
+      "Received unexpected control frame from subscriber",
+      message_type=message.type,
+    )
 
   async def run(
     self,

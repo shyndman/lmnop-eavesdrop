@@ -20,7 +20,7 @@ dependencies = [
   "soundfile",
   "structlog>=25.4.0",
   "websocket-client>=1.8.0",
-  "websockets",
+  "websockets>=13.0",
   # These are installed via other means (see Dockerfile)
   # "tokenizers==0.20.3",
   # "transformers[torch]==4.54",

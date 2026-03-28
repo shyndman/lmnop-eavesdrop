@@ -127,6 +127,16 @@ class AudioStreamBuffer:
     duration = input_bytes.shape[0] / self.config.sample_rate
     return input_bytes, duration, chunk_start_time
 
+  def get_buffer_end_sample(self) -> int:
+    """Return the current absolute sample index at the end of the buffer.
+
+    :returns: Absolute sample index representing the current buffered-audio end.
+    :rtype: int
+    """
+    with self.lock:
+      buffered_sample_count = 0 if self.frames_np is None else self.frames_np.shape[0]
+      return int(self.buffer_start_time * self.config.sample_rate) + buffered_sample_count
+
   def advance_processed_boundary(self, offset: float) -> None:
     """
     Mark a portion of audio as processed by advancing the processed boundary.

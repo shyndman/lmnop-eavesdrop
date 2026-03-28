@@ -6,6 +6,7 @@ import asyncio
 import os
 import time
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
 import ctranslate2
@@ -18,6 +19,7 @@ from eavesdrop.server.config import TranscriptionConfig
 from eavesdrop.server.constants import CACHE_PATH, SINGLE_MODEL
 from eavesdrop.server.streaming.buffer import AudioStreamBuffer
 from eavesdrop.server.streaming.debug_capture import AudioDebugCapture
+from eavesdrop.server.streaming.flush_state import LiveSessionFlushState, PendingFlush
 from eavesdrop.server.streaming.interfaces import TranscriptionResult, TranscriptionSink
 from eavesdrop.server.transcription.models import SpeechChunk, TranscriptionInfo
 from eavesdrop.server.transcription.pipeline import WhisperModel
@@ -41,11 +43,21 @@ class AudioChunk:
 class ChunkTranscriptionResult:
   """Result of transcribing an audio chunk."""
 
+  status: "TranscriptionPassStatus"
+  chunk_start_sample: int
+  chunk_sample_count: int
   segments: list[Segment] | None
   info: TranscriptionInfo | None
   processing_time: float
   audio_duration: float
   speech_chunks: list[SpeechChunk] | None = None
+
+
+class TranscriptionPassStatus(str, Enum):
+  """Outcome for one transcription pass over a buffered audio chunk."""
+
+  TRANSCRIBED = "transcribed"
+  INTERRUPTED_BEFORE_COMMIT = "interrupted_before_commit"
 
 
 class StreamingTranscriptionProcessor:
@@ -67,12 +79,14 @@ class StreamingTranscriptionProcessor:
     config: TranscriptionConfig,
     session: TranscriptionSession,
     stream_name: str,
+    flush_state: LiveSessionFlushState | None = None,
   ) -> None:
     self.buffer = buffer
     self.sink = sink
     self.config = config
     self.stream_name = stream_name
     self.session: TranscriptionSession = session
+    self.flush_state = flush_state
     self.logger = get_logger("proc", stream=self.stream_name)
 
     # Transcription state
@@ -268,6 +282,9 @@ class StreamingTranscriptionProcessor:
         await self._process_transcription_result(transcription_result)
         result_processing_duration = time.monotonic() - result_processing_start
 
+        if transcription_result.status is TranscriptionPassStatus.INTERRUPTED_BEFORE_COMMIT:
+          continue
+
         interval_wait_start = time.monotonic()
         await self._wait_for_next_interval(transcription_result.processing_time)
         interval_wait_duration = time.monotonic() - interval_wait_start
@@ -315,7 +332,15 @@ class StreamingTranscriptionProcessor:
         required_duration_s=f"{self.buffer.config.min_chunk_duration:.3f}",
         wait_s=f"{remaining_wait:.3f}",
       )
-      await asyncio.sleep(remaining_wait)
+      wait_completed = await self._wait_for_flush_wakeup(remaining_wait)
+      pending_flush = self._pending_flush()
+      if not wait_completed and pending_flush is not None and duration > 0:
+        self.logger.info(
+          "Pending flush interrupts minimum chunk wait",
+          buffered_duration_s=f"{duration:.3f}s",
+          boundary_sample=pending_flush.boundary_sample,
+        )
+        return AudioChunk(data=input_bytes, duration=duration, start_time=start_time)
       return None
 
     # TRACING: Audio chunk range being processed
@@ -339,8 +364,11 @@ class StreamingTranscriptionProcessor:
       self._debug_capture.capture(chunk)
 
     transcription_start = time.monotonic()
-    result, info, speech_chunks = await asyncio.to_thread(self._transcribe_audio, chunk)
+    pass_result = await asyncio.to_thread(self._run_transcription_pass, chunk)
     processing_time = time.monotonic() - transcription_start
+
+    if pass_result.status is TranscriptionPassStatus.INTERRUPTED_BEFORE_COMMIT:
+      return pass_result
 
     self.logger.debug(
       "Transcription performance",
@@ -349,33 +377,45 @@ class StreamingTranscriptionProcessor:
       speed_vs_realtime=f"{chunk.duration / processing_time:.1f}x faster",
     )
 
-    # Store speech chunks for silence-based completion
-    return ChunkTranscriptionResult(
-      segments=result,
-      info=info,
-      processing_time=processing_time,
-      audio_duration=chunk.duration,
-      speech_chunks=speech_chunks,
-    )
+    pass_result.processing_time = processing_time
+    return pass_result
 
   async def _process_transcription_result(self, result: ChunkTranscriptionResult) -> None:
     """Process transcription results, update language, and handle segments."""
+    if result.status is TranscriptionPassStatus.INTERRUPTED_BEFORE_COMMIT:
+      self.logger.info("Skipping interrupted transcription pass before commit")
+      return
+
+    pending_flush = self._pending_flush()
+    flush_boundary_reached = pending_flush is not None and self._covers_flush_boundary(
+      result, pending_flush
+    )
+
     if self.language is None and result.info is not None:
       await self._set_language(result.info)
 
-    if result.segments is None or len(result.segments) == 0:
-      self.buffer.advance_processed_boundary(result.audio_duration)
-    else:
-      await self._handle_transcription_output(
-        result.segments, result.audio_duration, result.speech_chunks
-      )
+    await self._handle_transcription_output(
+      result.segments or [],
+      result.audio_duration,
+      result.speech_chunks,
+      emit_result=pending_flush is None or flush_boundary_reached,
+      flush_complete=flush_boundary_reached,
+      force_complete=bool(
+        flush_boundary_reached and pending_flush and pending_flush.force_complete
+      ),
+    )
+
+    if flush_boundary_reached and self.flush_state is not None:
+      self.flush_state.complete()
 
   async def _wait_for_next_interval(self, processing_time: float) -> None:
     """Wait to maintain consistent transcription intervals."""
     remaining_wait = self.buffer.config.transcription_interval - processing_time
     if remaining_wait > 0:
       self.logger.debug(f"Waiting {remaining_wait:.2f}s to maintain transcription interval")
-      await asyncio.sleep(remaining_wait)
+      wait_completed = await self._wait_for_flush_wakeup(remaining_wait)
+      if not wait_completed:
+        self.logger.info("Pending flush interrupts interval wait")
     else:
       self.logger.warning("Transcription took longer than interval, proceeding immediately")
 
@@ -383,6 +423,96 @@ class StreamingTranscriptionProcessor:
     """Handle transcription errors with logging and recovery."""
     self.logger.exception("Failed to transcribe audio chunk")
     await asyncio.sleep(self.buffer.config.transcription_interval)
+
+  def _pending_flush(self) -> PendingFlush | None:
+    """Return the currently pending flush request, if any."""
+    if self.flush_state is None:
+      return None
+    return self.flush_state.pending()
+
+  def _chunk_start_sample(self, chunk: AudioChunk) -> int:
+    """Convert an audio chunk's absolute start time to an absolute sample index."""
+    return int(round(chunk.start_time * self.buffer.config.sample_rate))
+
+  def _consume_precommit_interrupt(self) -> bool:
+    """Consume one pending flush interrupt before expensive work begins."""
+    if self.flush_state is None or not self.flush_state.interrupt.is_set():
+      return False
+    self.flush_state.clear_interrupt()
+    self.logger.info("Pending flush interrupts worker pass before commit")
+    return True
+
+  def _run_transcription_pass(self, chunk: AudioChunk) -> ChunkTranscriptionResult:
+    """Run one worker-thread transcription pass or report interruption before commit."""
+    if self._consume_precommit_interrupt():
+      return ChunkTranscriptionResult(
+        status=TranscriptionPassStatus.INTERRUPTED_BEFORE_COMMIT,
+        chunk_start_sample=self._chunk_start_sample(chunk),
+        chunk_sample_count=int(chunk.data.shape[0]),
+        segments=None,
+        info=None,
+        processing_time=0.0,
+        audio_duration=chunk.duration,
+        speech_chunks=None,
+      )
+
+    result, info, speech_chunks = self._transcribe_audio(chunk)
+    return ChunkTranscriptionResult(
+      status=TranscriptionPassStatus.TRANSCRIBED,
+      chunk_start_sample=self._chunk_start_sample(chunk),
+      chunk_sample_count=int(chunk.data.shape[0]),
+      segments=result,
+      info=info,
+      processing_time=0.0,
+      audio_duration=chunk.duration,
+      speech_chunks=speech_chunks,
+    )
+
+  def _covers_flush_boundary(
+    self, result: ChunkTranscriptionResult, pending_flush: PendingFlush
+  ) -> bool:
+    """Return whether the transcribed chunk covers the accepted flush boundary."""
+    chunk_end_sample = result.chunk_start_sample + result.chunk_sample_count
+    boundary_reached = chunk_end_sample >= pending_flush.boundary_sample
+    self.logger.debug(
+      "Evaluated flush boundary coverage",
+      chunk_start_sample=result.chunk_start_sample,
+      chunk_end_sample=chunk_end_sample,
+      boundary_sample=pending_flush.boundary_sample,
+      boundary_reached=boundary_reached,
+    )
+    return boundary_reached
+
+  async def _wait_for_flush_wakeup(self, delay: float) -> bool:
+    """Sleep unless a pending flush needs the loop to resume immediately."""
+    if delay <= 0:
+      return True
+    if self.flush_state is None:
+      await asyncio.sleep(delay)
+      return True
+    if not self.flush_state.begin_wait():
+      return False
+
+    sleep_task = asyncio.create_task(asyncio.sleep(delay))
+    wake_task = asyncio.create_task(self.flush_state.wakeup.wait())
+    try:
+      done, pending = await asyncio.wait(
+        {sleep_task, wake_task},
+        return_when=asyncio.FIRST_COMPLETED,
+      )
+      for task in pending:
+        task.cancel()
+      for task in pending:
+        try:
+          await task
+        except asyncio.CancelledError:
+          pass
+      return sleep_task in done
+    finally:
+      if not sleep_task.done():
+        sleep_task.cancel()
+      if not wake_task.done():
+        wake_task.cancel()
 
   def _transcribe_audio(
     self, chunk: AudioChunk
@@ -503,7 +633,14 @@ class StreamingTranscriptionProcessor:
       await self.sink.send_language_detection(info.language, info.language_probability)
 
   async def _handle_transcription_output(
-    self, result: list[Segment], duration: float, speech_chunks: list[SpeechChunk] | None = None
+    self,
+    result: list[Segment],
+    duration: float,
+    speech_chunks: list[SpeechChunk] | None = None,
+    *,
+    emit_result: bool = True,
+    flush_complete: bool = False,
+    force_complete: bool = False,
   ) -> None:
     """Handle transcription output and send to client."""
     result_count = len(result) if result else 0
@@ -513,27 +650,29 @@ class StreamingTranscriptionProcessor:
       segments=result_count,
     )
 
-    if not result:
+    if not result and not flush_complete:
       self.logger.debug("No segments to send to client")
+      self.buffer.advance_processed_boundary(duration)
       return
 
-    # TRACING: Raw Whisper segments generated
-    raw_segments = [
-      {
-        "id": seg.id,
-        "timespan": Range(Seconds(seg.start), Seconds(seg.end)),
-        "text": seg.text[:50] + ("..." if len(seg.text) > 50 else ""),
-        "logprob": f"{seg.avg_logprob:.3f}",
-        "completed": seg.completed,
-      }
-      for seg in result
-    ]
-    tracing_logger.info(
-      "Whisper generated segments",
-      segment_count=len(result),
-      segments=Pretty(raw_segments),
-      audio_duration=Seconds(duration),
-    )
+    if result:
+      # TRACING: Raw Whisper segments generated
+      raw_segments = [
+        {
+          "id": seg.id,
+          "timespan": Range(Seconds(seg.start), Seconds(seg.end)),
+          "text": seg.text[:50] + ("..." if len(seg.text) > 50 else ""),
+          "logprob": f"{seg.avg_logprob:.3f}",
+          "completed": seg.completed,
+        }
+        for seg in result
+      ]
+      tracing_logger.info(
+        "Whisper generated segments",
+        segment_count=len(result),
+        segments=Pretty(raw_segments),
+        audio_duration=Seconds(duration),
+      )
 
     self.logger.debug("Processing transcription segments")
     # Update internal transcript (for translation queue, etc.)
@@ -587,6 +726,20 @@ class StreamingTranscriptionProcessor:
             time_range=f"{segment.start:.2f}-{segment.end:.2f}s",
           )
 
+    if force_complete and current_incomplete_segment is not None:
+      preceding_segment = self.session.get_last_completed_segment()
+      current_incomplete_segment.mark_completed(preceding_segment)
+      self.session.add_completed_segment(current_incomplete_segment)
+      current_incomplete_segment = None
+
+      tracing_logger.info(
+        "Forced completion of tentative tail for flush",
+        flush_complete=flush_complete,
+      )
+
+    if not result:
+      self.buffer.advance_processed_boundary(duration)
+
     # Prepare segments for client: last N completed + current incomplete
     segments_for_client = []
 
@@ -607,6 +760,10 @@ class StreamingTranscriptionProcessor:
 
     # Advance buffer pointer based on completed segments
     self._advance_buffer_by_completed_segments(speech_chunks, silence_threshold, duration)
+
+    if not emit_result:
+      self.logger.debug("Suppressing ordinary emission while flush remains pending")
+      return
 
     # TRACING: Final client output
     client_segments = [
@@ -635,6 +792,7 @@ class StreamingTranscriptionProcessor:
     transcription_result = TranscriptionResult(
       segments=segments_for_client,
       language=self.language,
+      flush_complete=flush_complete or None,
     )
     self.logger.debug("Sending segments to client", segments=segments_for_client)
     await self.sink.send_result(transcription_result)

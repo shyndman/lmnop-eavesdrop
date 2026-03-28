@@ -160,6 +160,7 @@ class WebSocketTranscriptionSink(TranscriptionSink):
         stream=self.stream_name,
         segments=result.segments,
         language=result.language,
+        flush_complete=result.flush_complete,
       )
     )
 
