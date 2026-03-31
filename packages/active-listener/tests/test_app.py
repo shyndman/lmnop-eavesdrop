@@ -1,0 +1,571 @@
+"""Application policy tests for active-listener."""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
+
+import pytest
+from typing_extensions import override
+
+from active_listener.app import (
+  ActiveListenerConfig,
+  ActiveListenerRuntimeError,
+  ActiveListenerService,
+  create_service,
+)
+from active_listener.state import ForegroundPhase, KeyboardAction
+from eavesdrop.client import (
+  DisconnectedEvent,
+  ReconnectedEvent,
+  ReconnectingEvent,
+  TranscriptionEvent,
+)
+from eavesdrop.wire import Segment, TranscriptionMessage
+
+
+class RecordingLogger:
+  """Structured logger stand-in for app-policy assertions."""
+
+  def __init__(self) -> None:
+    self.info_messages: list[str] = []
+    self.warning_messages: list[str] = []
+    self.exception_messages: list[str] = []
+    self.info_records: list[LogRecord] = []
+    self.warning_records: list[LogRecord] = []
+    self.exception_records: list[LogRecord] = []
+
+  def info(self, event: str, **kwargs: object) -> None:
+    self.info_messages.append(event)
+    self.info_records.append(LogRecord(event=event, fields=kwargs))
+
+  def warning(self, event: str, **kwargs: object) -> None:
+    self.warning_messages.append(event)
+    self.warning_records.append(LogRecord(event=event, fields=kwargs))
+
+  def exception(self, event: str, **kwargs: object) -> None:
+    self.exception_messages.append(event)
+    self.exception_records.append(LogRecord(event=event, fields=kwargs))
+
+
+@dataclass(frozen=True)
+class LogRecord:
+  """Captured structured log entry for test assertions."""
+
+  event: str
+  fields: dict[str, object]
+
+
+AppEvent = DisconnectedEvent | ReconnectedEvent | ReconnectingEvent | TranscriptionEvent
+
+
+@dataclass
+class FakeKeyboard:
+  """Keyboard boundary stand-in used by app tests."""
+
+  grab_calls: int = 0
+  ungrab_calls: int = 0
+  close_calls: int = 0
+  queued_actions: list[KeyboardAction] = field(default_factory=list)
+
+  async def actions(self) -> AsyncIterator[KeyboardAction]:
+    for action in self.queued_actions:
+      yield action
+
+  def grab(self) -> None:
+    self.grab_calls += 1
+
+  def ungrab(self) -> None:
+    self.ungrab_calls += 1
+
+  def close(self) -> None:
+    self.close_calls += 1
+
+
+@dataclass
+class FakeEmitter:
+  """Text emitter stand-in used by app tests."""
+
+  initialize_calls: int = 0
+  emitted: list[str] = field(default_factory=list)
+
+  def initialize(self) -> None:
+    self.initialize_calls += 1
+
+  def emit_text(self, text: str) -> None:
+    self.emitted.append(text)
+
+
+@dataclass
+class FakeClient:
+  """Live-client stand-in used by app tests."""
+
+  connect_calls: int = 0
+  disconnect_calls: int = 0
+  start_calls: int = 0
+  stop_calls: int = 0
+  flush_calls: list[bool] = field(default_factory=list)
+  flush_results: list[asyncio.Future[TranscriptionMessage] | TranscriptionMessage | Exception] = (
+    field(default_factory=list)
+  )
+  events: list[AppEvent] = field(default_factory=list)
+
+  async def connect(self) -> None:
+    self.connect_calls += 1
+
+  async def disconnect(self) -> None:
+    self.disconnect_calls += 1
+
+  async def start_streaming(self) -> None:
+    self.start_calls += 1
+
+  async def stop_streaming(self) -> None:
+    self.stop_calls += 1
+
+  async def flush(self, *, force_complete: bool = True) -> TranscriptionMessage:
+    self.flush_calls.append(force_complete)
+    result = self.flush_results.pop(0)
+    if isinstance(result, Exception):
+      raise result
+    if isinstance(result, asyncio.Future):
+      return await result
+    return result
+
+  def __aiter__(self) -> AsyncIterator[AppEvent]:
+    return self._iterate_events()
+
+  async def _iterate_events(self) -> AsyncIterator[AppEvent]:
+    for event in self.events:
+      yield event
+
+
+class FailingConnectClient(FakeClient):
+  """Client stand-in whose initial connect attempt fails."""
+
+  @override
+  async def connect(self) -> None:
+    raise RuntimeError("server unavailable")
+
+
+def _segment(segment_id: int, text: str, *, completed: bool) -> Segment:
+  return Segment(
+    id=segment_id,
+    seek=0,
+    start=0.0,
+    end=0.1,
+    text=text,
+    tokens=[],
+    temperature=0.0,
+    avg_logprob=0.0,
+    compression_ratio=1.0,
+    words=None,
+    completed=completed,
+  )
+
+
+def _message(
+  *segments: Segment,
+  stream: str = "stream-1",
+  flush_complete: bool | None = True,
+) -> TranscriptionMessage:
+  return TranscriptionMessage(stream=stream, segments=list(segments), flush_complete=flush_complete)
+
+
+def _transcription_event(message: TranscriptionMessage) -> TranscriptionEvent:
+  return TranscriptionEvent(stream=message.stream, message=message)
+
+
+@dataclass(frozen=True)
+class ServiceHarness:
+  """Concrete service bundle used by app-policy tests."""
+
+  service: ActiveListenerService
+  client: FakeClient
+  keyboard: FakeKeyboard
+  emitter: FakeEmitter
+  logger: RecordingLogger
+
+
+def _service(
+  *,
+  client: FakeClient | None = None,
+  keyboard: FakeKeyboard | None = None,
+  emitter: FakeEmitter | None = None,
+  logger: RecordingLogger | None = None,
+) -> ServiceHarness:
+  resolved_client = client or FakeClient()
+  resolved_keyboard = keyboard or FakeKeyboard()
+  resolved_emitter = emitter or FakeEmitter()
+  resolved_logger = logger or RecordingLogger()
+  service = ActiveListenerService(
+    config=ActiveListenerConfig(
+      keyboard_name="Exact Keyboard",
+      host="localhost",
+      port=9090,
+      audio_device="default",
+    ),
+    keyboard=resolved_keyboard,
+    client=resolved_client,
+    emitter=resolved_emitter,
+    logger=resolved_logger,
+  )
+  return ServiceHarness(
+    service,
+    resolved_client,
+    resolved_keyboard,
+    resolved_emitter,
+    resolved_logger,
+  )
+
+
+@pytest.mark.asyncio
+async def test_create_service_connects_client_and_initializes_emitter() -> None:
+  keyboard = FakeKeyboard()
+  emitter = FakeEmitter()
+  client = FakeClient()
+
+  service = await create_service(
+    ActiveListenerConfig(
+      keyboard_name="Exact Keyboard",
+      host="localhost",
+      port=9090,
+      audio_device="default",
+    ),
+    keyboard_resolver=lambda _name: keyboard,
+    client_factory=lambda _config: client,
+    emitter_factory=lambda _socket: (emitter.initialize(), emitter)[1],
+  )
+
+  assert service.phase is ForegroundPhase.IDLE
+  assert client.connect_calls == 1
+  assert emitter.initialize_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_create_service_fails_fast_on_keyboard_resolution_error() -> None:
+  with pytest.raises(ActiveListenerRuntimeError, match="missing keyboard"):
+    _ = await create_service(
+      ActiveListenerConfig(
+        keyboard_name="Exact Keyboard",
+        host="localhost",
+        port=9090,
+        audio_device="default",
+      ),
+      keyboard_resolver=lambda _name: (_ for _ in ()).throw(RuntimeError("missing keyboard")),
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_service_fails_fast_on_connect_error() -> None:
+  keyboard = FakeKeyboard()
+  client = FailingConnectClient()
+
+  with pytest.raises(ActiveListenerRuntimeError, match="server unavailable"):
+    _ = await create_service(
+      ActiveListenerConfig(
+        keyboard_name="Exact Keyboard",
+        host="localhost",
+        port=9090,
+        audio_device="default",
+      ),
+      keyboard_resolver=lambda _name: keyboard,
+      client_factory=lambda _config: client,
+      emitter_factory=lambda _socket: FakeEmitter(),
+    )
+
+  assert keyboard.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_start_and_cancel_recording_toggle_grab_and_streaming() -> None:
+  harness = _service()
+  service = harness.service
+
+  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await service.handle_keyboard_action(KeyboardAction.CANCEL)
+
+  assert service.phase is ForegroundPhase.IDLE
+  assert harness.client.start_calls == 1
+  assert harness.client.stop_calls == 1
+  assert harness.keyboard.grab_calls == 1
+  assert harness.keyboard.ungrab_calls == 1
+  assert harness.logger.info_messages == ["recording started", "recording cancelled"]
+
+
+@pytest.mark.asyncio
+async def test_escape_is_ignored_while_idle() -> None:
+  harness = _service()
+  service = harness.service
+
+  await service.handle_keyboard_action(KeyboardAction.CANCEL)
+
+  assert service.phase is ForegroundPhase.IDLE
+  assert harness.client.stop_calls == 0
+  assert harness.keyboard.ungrab_calls == 0
+  assert harness.logger.info_messages == ["cancel ignored while idle"]
+
+
+@pytest.mark.asyncio
+async def test_caps_lock_is_suppressed_while_reconnecting() -> None:
+  harness = _service()
+  service = harness.service
+  service.phase = ForegroundPhase.RECONNECTING
+
+  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+
+  assert harness.client.start_calls == 0
+  assert harness.keyboard.grab_calls == 0
+  assert harness.logger.info_messages == ["recording start suppressed while reconnecting"]
+
+
+@pytest.mark.asyncio
+async def test_disconnect_during_recording_forces_local_abort() -> None:
+  harness = _service()
+  service = harness.service
+  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+
+  await service.handle_client_event(DisconnectedEvent(stream="stream-1", reason="socket closed"))
+
+  assert service.phase is ForegroundPhase.RECONNECTING
+  assert harness.client.stop_calls == 1
+  assert harness.keyboard.ungrab_calls == 1
+  assert harness.logger.warning_messages == ["recording aborted by disconnect"]
+
+
+@pytest.mark.asyncio
+async def test_reconnecting_and_reconnected_events_update_phase() -> None:
+  harness = _service()
+  service = harness.service
+
+  await service.handle_client_event(
+    ReconnectingEvent(stream="stream-1", attempt=2, retry_delay_s=10.0)
+  )
+  await service.handle_client_event(ReconnectedEvent(stream="stream-1"))
+
+  assert service.phase is ForegroundPhase.IDLE
+  assert harness.logger.warning_messages == ["client reconnecting"]
+  assert harness.logger.info_messages == ["client reconnected"]
+
+
+@pytest.mark.asyncio
+async def test_transcription_events_are_consumed_only_while_recording() -> None:
+  client = FakeClient(
+    flush_results=[
+      _message(
+        _segment(1, "alpha", completed=True),
+        _segment(2, "bravo", completed=True),
+        _segment(3, "tail", completed=False),
+      )
+    ]
+  )
+  emitter = FakeEmitter()
+  harness = _service(client=client, emitter=emitter)
+  service = harness.service
+
+  await service.handle_client_event(
+    _transcription_event(
+      _message(
+        _segment(90, "ignored", completed=True),
+        _segment(91, "tail", completed=False),
+        flush_complete=False,
+      )
+    )
+  )
+  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await service.handle_client_event(
+    _transcription_event(
+      _message(
+        _segment(1, "alpha", completed=True),
+        _segment(2, "draft", completed=False),
+        flush_complete=False,
+      )
+    )
+  )
+  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await service.wait_for_background_tasks()
+
+  assert service.phase is ForegroundPhase.IDLE
+  assert client.stop_calls == 1
+  assert client.flush_calls == [True]
+  assert emitter.emitted == ["alpha bravo"]
+  assert harness.keyboard.ungrab_calls == 1
+  assert harness.logger.info_messages[-2:] == ["recording finished", "text emitted"]
+
+
+@pytest.mark.asyncio
+async def test_cancel_discards_accumulated_transcription_state() -> None:
+  client = FakeClient(
+    flush_results=[
+      _message(
+        _segment(10, "bravo", completed=True),
+        _segment(11, "tail", completed=False),
+      )
+    ]
+  )
+  emitter = FakeEmitter()
+  harness = _service(client=client, emitter=emitter)
+  service = harness.service
+
+  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await service.handle_client_event(
+    _transcription_event(
+      _message(
+        _segment(1, "alpha", completed=True),
+        _segment(2, "tail", completed=False),
+        flush_complete=False,
+      )
+    )
+  )
+  await service.handle_keyboard_action(KeyboardAction.CANCEL)
+  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await service.wait_for_background_tasks()
+
+  assert client.flush_calls == [True]
+  assert emitter.emitted == ["bravo"]
+
+
+@pytest.mark.asyncio
+async def test_new_recording_can_start_while_older_finalization_waits() -> None:
+  pending_flush = asyncio.get_running_loop().create_future()
+  client = FakeClient(
+    flush_results=[
+      pending_flush,
+      _message(
+        _segment(3, "second", completed=True),
+        _segment(4, "tail", completed=False),
+      ),
+    ]
+  )
+  emitter = FakeEmitter()
+  harness = _service(client=client, emitter=emitter)
+  service = harness.service
+
+  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  pending_flush.set_result(
+    _message(
+      _segment(2, "first", completed=True),
+      _segment(3, "tail", completed=False),
+    )
+  )
+  await service.wait_for_background_tasks()
+
+  assert client.start_calls == 2
+  assert client.stop_calls == 2
+  assert client.flush_calls == [True, True]
+  assert emitter.emitted == ["first", "second"]
+  assert harness.keyboard.grab_calls == 2
+  assert harness.keyboard.ungrab_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_disconnect_during_background_finalization_skips_emission() -> None:
+  pending_flush = asyncio.get_running_loop().create_future()
+  client = FakeClient(flush_results=[pending_flush])
+  emitter = FakeEmitter()
+  harness = _service(client=client, emitter=emitter)
+  service = harness.service
+
+  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await service.handle_client_event(DisconnectedEvent(stream="stream-1", reason="socket closed"))
+  pending_flush.set_result(_message(_segment(1, "alpha", completed=True)))
+  await service.wait_for_background_tasks()
+
+  assert emitter.emitted == []
+  assert service.phase is ForegroundPhase.RECONNECTING
+  assert harness.logger.warning_messages[-2:] == [
+    "client disconnected",
+    "skipping emission after disconnect",
+  ]
+
+
+@pytest.mark.asyncio
+async def test_finished_recording_emits_joined_text_from_live_updates_and_flush() -> None:
+  client = FakeClient(
+    flush_results=[
+      _message(
+        _segment(2, "bravo", completed=True),
+        _segment(3, "charlie", completed=True),
+        _segment(4, "tail", completed=False),
+      )
+    ]
+  )
+  emitter = FakeEmitter()
+  harness = _service(client=client, emitter=emitter)
+  service = harness.service
+
+  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await service.handle_client_event(
+    _transcription_event(
+      _message(
+        _segment(1, "alpha", completed=True),
+        _segment(2, "draft", completed=False),
+        flush_complete=False,
+      )
+    )
+  )
+  await service.handle_client_event(
+    _transcription_event(
+      _message(
+        _segment(1, "alpha", completed=True),
+        _segment(2, "bravo", completed=True),
+        _segment(3, "draft", completed=False),
+        flush_complete=False,
+      )
+    )
+  )
+  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await service.wait_for_background_tasks()
+
+  assert client.flush_calls == [True]
+  assert emitter.emitted == ["alpha bravo charlie"]
+
+
+@pytest.mark.asyncio
+async def test_missing_transcription_sentinel_warns_and_falls_back_to_window() -> None:
+  client = FakeClient(
+    flush_results=[
+      _message(
+        _segment(7, "restart", completed=True),
+        _segment(8, "tail", completed=True),
+        _segment(9, "draft", completed=False),
+      )
+    ]
+  )
+  emitter = FakeEmitter()
+  logger = RecordingLogger()
+  harness = _service(client=client, emitter=emitter, logger=logger)
+  service = harness.service
+
+  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await service.handle_client_event(
+    _transcription_event(
+      _message(
+        _segment(1, "alpha", completed=True),
+        _segment(2, "tail", completed=False),
+        flush_complete=False,
+      )
+    )
+  )
+  await service.handle_client_event(
+    _transcription_event(
+      _message(
+        _segment(7, "restart", completed=True),
+        _segment(8, "draft", completed=False),
+        flush_complete=False,
+      )
+    )
+  )
+  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await service.wait_for_background_tasks()
+
+  assert emitter.emitted == ["alpha restart tail"]
+  assert logger.warning_records[-1] == LogRecord(
+    event="transcription reducer sentinel missing",
+    fields={"stream": "stream-1", "last_id": 1},
+  )

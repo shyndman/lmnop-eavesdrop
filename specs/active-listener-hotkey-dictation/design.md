@@ -4,6 +4,8 @@
 
 The existing `eavesdrop-client` already exposes the core live transcriber operations this tool needs: `connect()`, `start_streaming()`, `stop_streaming()`, and awaitable `flush()`. It does not yet model long-lived dictation truthfully enough for this use case. In particular, repeated `start_streaming()` / `stop_streaming()` cycles on one live connection can overlap stale audio-loop tasks, and reconnect state is not yet exposed as first-class events an application can consume.
 
+One important protocol detail affects text assembly: live transcription updates are windowed. The server sends only the most recent completed segments plus one incomplete tail, controlled by `send_last_n_segments`. Because of that windowing, a long recording cannot safely derive its final emitted text only from the final flush response; it must reduce committed segments incrementally over the life of the recording.
+
 Measured timings on the target machine informed the design:
 - Keyboard open/grab is effectively cheap; the full open/grab/ungrab/close cycle averaged about 44 ms.
 - Microphone create/start/stop/close is usually acceptable, but teardown has jitter, so the MVP keeps microphone lifecycle simple instead of prematurely optimizing around a warm stream.
@@ -38,6 +40,7 @@ To make implementation easier for a junior engineer, this document uses the foll
 - **Recording**: one local dictation attempt bounded by hotkeys. A recording starts on the first `Caps Lock` press and ends on `Escape` or the second `Caps Lock` press.
 - **Finalization**: the background work after finish is requested. For MVP this means: stop local mic capture if not already stopped, request `flush()`, reduce the returned transcription to committed text, and emit that text.
 - **Reconnect state**: the period after a live connection is lost and before it is re-established. During this state, the process stays alive but `Caps Lock` does not start a new recording.
+- **Reducer**: per-recording state that remembers the last committed segment ID already consumed and accumulates text parts for newly observed committed segments.
 
 The implementation should keep one level of abstraction per module:
 - `eavesdrop-client` reports network/transcription truth.
@@ -169,8 +172,10 @@ The app does not talk to wire messages directly, but design decisions depend on 
 - `TranscriptionMessage.stream` identifies the live connection
 - `TranscriptionMessage.segments` carries transcription segments
 - `TranscriptionMessage.flush_complete` marks the response that satisfies a flush request
+- the live transcriber stream is windowed by `send_last_n_segments`, so `message.segments` is not guaranteed to contain the entire history of a long recording
+- the server-side contract keeps completed segments first and one in-progress tail last
 
-Because `flush()` already returns a `TranscriptionMessage`, the app should reduce that returned value into committed text for typing. It should not watch arbitrary background transcription updates and type partial text.
+Because `flush()` already returns only the final window, the app must not build emitted text from the flush response alone. Instead, each recording must ingest ordinary `transcription` updates as they arrive, reduce newly committed segments incrementally, and then ingest the final flush response through the same reducer path before typing the final joined text.
 
 ## Goals / Non-Goals
 
@@ -243,10 +248,65 @@ Implementation detail to make this concrete:
 4. User presses `Escape` while recording.
 5. `active-listener` ungrabs the keyboard, asks the client to stop streaming, discards the local recording attempt, and returns to `Idle`.
 6. User presses `Caps Lock` while recording.
-7. `active-listener` ungrabs the keyboard immediately, asks the client to stop streaming, and spawns a background task that awaits `flush()` and then emits the returned text.
+7. `active-listener` ungrabs the keyboard immediately, asks the client to stop streaming, and spawns a background task that awaits `flush()`, ingests that flush response into the recording reducer, renders final text, and emits it.
 8. Foreground state returns to `Idle` immediately, so another recording may begin even if the previous flush is still running.
 
 The background finalization task must never re-grab the keyboard. The keyboard belongs only to the foreground `Recording` state.
+
+### 4a. Each recording owns its own committed-segment reducer
+The active-listener service must create fresh reducer state every time a recording starts. That reducer is discarded on cancel and handed off to the background finalization task on finish.
+
+The reducer has only two responsibilities:
+
+- **segment reduction**: determine which committed segments in the current message have not been seen before
+- **text assembly**: append the stripped text of those new committed segments to a per-recording `parts` list
+
+Do not collapse these into one opaque helper that mutates hidden state while also making typing decisions. The code should keep the two steps visibly separate.
+
+Minimum reducer state per recording:
+
+- `last_id: int | None`
+- `parts: list[str]`
+
+Reducer algorithm for one `TranscriptionMessage`:
+
+```python
+def reduce_new_segments(
+    segments: list[Segment],
+    last_id: int | None,
+) -> tuple[list[Segment], int | None]:
+    if not segments:
+        return [], last_id
+
+    completed_end = len(segments) - 1
+    if completed_end <= 0:
+        return [], last_id
+
+    found_index = None
+    for idx in range(completed_end - 1, -1, -1):
+        if segments[idx].id == last_id:
+            found_index = idx
+            break
+
+    start_idx = found_index + 1 if found_index is not None else 0
+    if start_idx >= completed_end:
+        return [], last_id
+
+    new_segments = segments[start_idx:completed_end]
+    return new_segments, new_segments[-1].id
+
+
+def append_segment_text(parts: list[str], segments: list[Segment]) -> None:
+    parts.extend(segment.text.strip() for segment in segments if segment.text.strip())
+```
+
+Important behavior notes:
+
+- The reducer is **per recording**, never shared across recordings.
+- It relies on the server invariant that the incomplete tail is the last element.
+- If the previously seen `last_id` is not found in the current window, fallback is to accept the whole completed prefix of the current message.
+- A message containing only the in-progress tail contributes no committed text.
+- `parts` is joined only at the end of finalization; do not keep concatenating one large string during ingestion.
 
 ### 5. Cancellation applies only before finish is requested
 `Escape` cancels only the active recording. Once `Caps Lock` has been pressed to finish, cancellation is unavailable for that recording; finalization proceeds and any successful result is emitted.
@@ -283,6 +343,8 @@ The event stream should stay intentionally small. A junior engineer should not i
 - `error` (optional if needed): emitted only for connection-level errors that the app must react to.
 
 The important design rule is that these are **client events**, not app actions. The client should not emit events like `recording_started` or `typing_finished`; those belong to `active-listener`.
+
+For text assembly, `active-listener` must consume `TranscriptionEvent` values during recording even though it does not type partial text. Those events feed the per-recording reducer. The app may ignore them for foreground state transitions, but it must not drop them if it wants correct final text for long recordings.
 
 ### 8. Fix the audio-loop invariant in the client
 `start_streaming()` must await any incomplete prior audio-loop task before starting a new one. `stop_streaming()` should continue to mean “request the stream to stop,” not “block until finalization is done,” and `flush()` should remain valid whenever the live client is connected and no other flush is in flight.
@@ -329,6 +391,7 @@ The package does not need many files, but it should separate concerns clearly:
 - `active_listener/app.py`: top-level orchestration for startup, shutdown, and the main async loop.
 - `active_listener/input.py`: keyboard resolution, evdev device opening, async event reading, grab/ungrab helpers.
 - `active_listener/state.py`: local enums/dataclasses for app state if needed.
+- `active_listener/reducer.py`: per-recording committed-segment reduction and text-part accumulation.
 - `active_listener/emitter.py`: text emission through `pydotool`.
 
 The client-side work likely belongs in:
@@ -370,6 +433,12 @@ The easiest shape is two producers and one consumer policy layer:
 
 If combining the two producers directly is awkward, an internal `asyncio.Queue` owned by `active-listener` is acceptable. The spec does not require that both event sources share one physical queue; it requires that the resulting policy is simple and ordered enough to reason about.
 
+The app logic must treat `TranscriptionEvent` differently from connection events:
+
+- while `Recording`, ingest each transcription message into the active recording reducer
+- while `Idle` or `Reconnecting`, ignore transcription messages for app policy purposes
+- on finish, pass the reducer into the background finalization task so the flush response is reduced into the same `parts` list
+
 ### Logging expectations
 
 Logs are the only operator-visible output in MVP. A junior engineer should treat them as part of the feature, not an afterthought. At minimum, log:
@@ -378,6 +447,7 @@ Logs are the only operator-visible output in MVP. A junior engineer should treat
 - keyboard resolution success/failure
 - initial client connect success/failure
 - recording started / cancelled / finished
+- reducer ingest fallback when a sentinel ID is missing from the current window
 - keyboard grabbed / released
 - connection lost / reconnect scheduled / reconnect succeeded
 - recording aborted because of disconnect
@@ -394,6 +464,7 @@ The spec intentionally splits tests by responsibility. A junior engineer should 
 
 - Client tests should verify connection and audio-loop invariants without using the real workstation keyboard.
 - Active-listener tests should use fakes/mocks only at the workstation boundary (`evdev` input device, `pydotool` emitter), while still exercising the real local state transitions.
+- Active-listener tests should include long-recording reduction cases where the final flush window alone would be insufficient, to prove that ordinary transcription events are being accumulated correctly over time.
 - One human-required validation remains for real typing into the focused application because that behavior depends on the workstation runtime.
 
 If a file begins to exceed a comfortable size while implementing this, split it early instead of waiting for a giant orchestrator module to form.

@@ -39,8 +39,13 @@ async def test_subscriber(host: str, port: int, stream_names: list[str]):
     message_count = 0
     streams_seen = set()
 
-    async for message in client:
+    async for event in client:
+      if event.family != "transcription":
+        print(f"\n[Client event] {event.family}")
+        continue
+
       message_count += 1
+      message = event.message
       streams_seen.add(message.stream)
 
       print(f"\n[Message {message_count}]")

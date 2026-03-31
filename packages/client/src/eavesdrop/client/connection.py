@@ -25,6 +25,7 @@ from eavesdrop.wire import (
 )
 
 FILE_UPLOAD_CHUNK_BYTES = 64 * 1024
+DEFAULT_SOCKET_CLOSE_REASON = "websocket connection closed"
 
 
 class WebSocketConnection:
@@ -64,6 +65,7 @@ class WebSocketConnection:
 
     self.ws: ClientConnection | None = None
     self.connected = False
+    self._disconnect_notified = False
 
     # Latency tracking
     self.first_audio_sent_time: float | None = None
@@ -84,6 +86,7 @@ class WebSocketConnection:
     self._logger.debug("connecting websocket", socket_url=socket_url)
     self.ws = await websockets.connect(socket_url, additional_headers=headers)
     self.connected = True
+    self._disconnect_notified = False
     self._logger.debug("websocket connected", socket_url=socket_url)
 
     # Send client configuration for transcriber mode
@@ -100,9 +103,11 @@ class WebSocketConnection:
   async def disconnect(self):
     """Close WebSocket connection."""
     if self.ws:
-      await self.ws.close()
+      ws = self.ws
       self.ws = None
       self.connected = False
+      self._disconnect_notified = True
+      await ws.close()
       self._logger.debug("websocket disconnected")
 
   async def handle_messages(self):
@@ -123,7 +128,12 @@ class WebSocketConnection:
 
         await self._process_message(message)
     except Exception as e:
+      self.connected = False
       self.on_error(f"Message handling error: {e}")
+      self._notify_disconnect(str(e))
+    else:
+      self.connected = False
+      self._notify_disconnect(DEFAULT_SOCKET_CLOSE_REASON)
 
   # TODO This is UG-LY. Needs a refactor.
   async def _process_message(self, message_json: str):
@@ -170,8 +180,8 @@ class WebSocketConnection:
         case DisconnectMessage() as disconnect:
           if disconnect.stream == self.stream_name:
             self.session_end_received = True
-            if self.on_disconnect:
-              self.on_disconnect(disconnect.message)
+            self.connected = False
+            self._notify_disconnect(disconnect.message)
 
         case _:
           # Handle unexpected message types
@@ -260,3 +270,16 @@ class WebSocketConnection:
   def is_connected(self) -> bool:
     """Check if WebSocket is connected."""
     return self.connected and self.ws is not None
+
+  def _notify_disconnect(self, reason: str | None) -> None:
+    """Notify the client exactly once about a terminal websocket disconnect.
+
+    :param reason: Disconnect reason from the server or transport layer.
+    :type reason: str | None
+    """
+    if self._disconnect_notified:
+      return
+
+    self._disconnect_notified = True
+    if self.on_disconnect:
+      self.on_disconnect(reason)

@@ -60,8 +60,13 @@ async def test_transcriber(
     print("\nListening for transcriptions (press Ctrl+C to stop)...")
     message_count = 0
 
-    async for message in client:
+    async for event in client:
+      if event.family != "transcription":
+        print(f"\n[Client event] {event.family}")
+        continue
+
       message_count += 1
+      message = event.message
       print(f"\n[Message {message_count}]")
       print(f"  Stream: {message.stream}")
       print(f"  Language: {message.language}")

@@ -12,6 +12,7 @@ The repo no longer has a usable end-user transcription flow now that the old act
 - Keep the client WebSocket connection alive across recordings, with automatic reconnect attempts every 10 seconds after disconnect.
 - Ignore start hotkey actions while disconnected/reconnecting, but log the suppressed attempt. Future user-facing feedback for this state is explicitly deferred.
 - Emit finalized transcription as typed text through `ydotool`; no clipboard path, overlay UI, or file-mode entrypoint is included in this feature.
+- Build emitted text from a per-recording reduction of committed transcription segments seen over the lifetime of that recording, rather than trusting only the final flush response window.
 - Modify the client live-stream lifecycle so repeated start/stop cycles on one persistent connection are first-class and truthful.
 
 ## Capabilities
@@ -24,7 +25,7 @@ The repo no longer has a usable end-user transcription flow now that the old act
 
 ## Impact
 
-- **Active listener package**: new long-running CLI package, logging setup, keyboard device selection, evdev input loop, dictation state machine, and text emission through `python-ydotool`.
+- **Active listener package**: new long-running CLI package, logging setup, keyboard device selection, evdev input loop, per-recording committed-segment reduction, dictation state machine, and text emission through `python-ydotool`.
 - **Client package**: reconnect-aware live connection management, connection-state event stream, and corrected audio streaming task lifecycle for repeated `start_streaming()` / `stop_streaming()` cycles.
 - **Dependencies**: `clypi` for the CLI entrypoint, `evdev` for keyboard events/grabs, and `python-ydotool` for text emission in `active-listener`. `python-ydotool` also implies an external `ydotoold`/`uinput` runtime requirement on the workstation. Existing `sounddevice` + NumPy microphone capture remains in the client path, which continues to rely on the existing PortAudio-backed audio stack.
 - **Operations**: intended to run as a systemd service; logs are the only operator feedback surface in the MVP.

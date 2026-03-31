@@ -1,7 +1,7 @@
 [project]
 name = "active-listener"
 version = "0.1.0"
-description = "Add your description here"
+description = "Keyboard-driven workstation dictation service"
 readme = "README.md"
 authors = [
     { name = "Scott Hyndman", email = "scotty.hyndman@gmail.com" }
@@ -9,10 +9,12 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "clypi>=1.8.2",
+    "eavesdrop-client",
+    "eavesdrop-common",
     "evdev>=1.9.3",
-    "numpy>=2.4.4",
+    "pydantic>=2",
     "python-ydotool>=1.1.1",
-    "sounddevice>=0.5.5",
+    "structlog>=25.4.0",
 ]
 
 [project.scripts]
@@ -21,3 +23,45 @@ active-listener = "active_listener:main"
 [build-system]
 requires = ["uv_build>=0.9.27,<0.10.0"]
 build-backend = "uv_build"
+
+[tool.uv.sources]
+eavesdrop-client = { path = "../client", editable = true }
+eavesdrop-common = { path = "../common", editable = true }
+
+[tool.basedpyright]
+include = ["src", "tests"]
+ignore = ["**/.venv"]
+extraPaths = ["../client/src", "../wire/src", "../common/src"]
+defineConstant = { DEBUG = true }
+reportMissingImports = "error"
+deprecateTypingAliases = true
+reportDeprecated = "information"
+pythonPlatform = "Linux"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+indent-width = 2
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+ignore = []
+
+[tool.ruff.lint.isort]
+known-first-party = ["active_listener", "eavesdrop"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+
+[dependency-groups]
+dev = [
+    "basedpyright>=1.35.0",
+    "pytest>=8.3.5",
+    "pytest-asyncio>=0.24.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

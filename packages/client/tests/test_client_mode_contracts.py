@@ -9,10 +9,18 @@ import json
 from typing import cast
 
 import pytest
+from structlog.stdlib import BoundLogger
 
 from eavesdrop.client.audio import AudioCapture
 from eavesdrop.client.connection import WebSocketConnection
 from eavesdrop.client.core import EavesdropClient
+from eavesdrop.client.events import (
+  ConnectedEvent,
+  DisconnectedEvent,
+  ReconnectedEvent,
+  ReconnectingEvent,
+  TranscriptionEvent,
+)
 from eavesdrop.wire import (
   ClientType,
   Segment,
@@ -39,6 +47,65 @@ class FakeWebSocket:
 
   async def __anext__(self) -> str:
     raise StopAsyncIteration
+
+
+class ScriptedWebSocket(FakeWebSocket):
+  """Websocket double that replays payloads then raises scripted failures."""
+
+  def __init__(self, script: list[str | Exception]) -> None:
+    super().__init__()
+    self._script = script
+
+  async def __anext__(self) -> str:
+    if not self._script:
+      await asyncio.sleep(0)
+      raise StopAsyncIteration
+
+    next_item = self._script.pop(0)
+    if isinstance(next_item, Exception):
+      raise next_item
+    return next_item
+
+
+class BlockingWebSocket(FakeWebSocket):
+  """Websocket double that stays open until the client closes it."""
+
+  def __init__(self) -> None:
+    super().__init__()
+    self._closed_event = asyncio.Event()
+
+  async def close(self) -> None:
+    await super().close()
+    self._closed_event.set()
+
+  async def __anext__(self) -> str:
+    await self._closed_event.wait()
+    raise StopAsyncIteration
+
+
+class RecordingLogger:
+  """Captures client-boundary log records for reconnect assertions."""
+
+  def __init__(self) -> None:
+    self.warning_messages: list[str] = []
+    self.info_messages: list[str] = []
+    self.error_messages: list[str] = []
+    self.exception_messages: list[str] = []
+
+  def debug(self, _event: str, **_kwargs: object) -> None:
+    pass
+
+  def warning(self, event: str, **_kwargs: object) -> None:
+    self.warning_messages.append(event)
+
+  def info(self, event: str, **_kwargs: object) -> None:
+    self.info_messages.append(event)
+
+  def error(self, event: str, **_kwargs: object) -> None:
+    self.error_messages.append(event)
+
+  def exception(self, event: str, **_kwargs: object) -> None:
+    self.exception_messages.append(event)
 
 
 class RecordingAudioCapture:
@@ -236,10 +303,133 @@ def test_transcriber_mode_requires_audio_device_configuration() -> None:
 
 
 @pytest.mark.asyncio
-async def test_start_and_stop_streaming_transition_state_with_mocks(
+async def test_live_client_event_types_expose_expected_payloads() -> None:
+  """Live client events must expose stable family names and typed payloads."""
+
+  message = TranscriptionMessage(
+    stream="stream-live",
+    segments=[_segment("ready")],
+    language="en",
+  )
+
+  connected = ConnectedEvent(stream="stream-live")
+  disconnected = DisconnectedEvent(stream="stream-live", reason="socket lost")
+  reconnecting = ReconnectingEvent(stream="stream-live", attempt=2, retry_delay_s=10.0)
+  reconnected = ReconnectedEvent(stream="stream-live")
+  transcription = TranscriptionEvent(stream="stream-live", message=message)
+
+  assert connected.family == "connected"
+  assert disconnected.reason == "socket lost"
+  assert reconnecting.retry_delay_s == 10.0
+  assert reconnected.family == "reconnected"
+  assert transcription.message == message
+
+
+@pytest.mark.asyncio
+async def test_async_iterator_yields_connected_then_transcription_event(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-  """Streaming start/stop paths must be idempotent and update state predictably."""
+  """The live async iterator must preserve connect-before-transcription ordering."""
+
+  fake_ws = BlockingWebSocket()
+
+  async def fake_connect(_url: str, additional_headers: dict[str, str]) -> BlockingWebSocket:
+    assert additional_headers == {"X-Client-Type": "transcriber"}
+    return fake_ws
+
+  monkeypatch.setattr("eavesdrop.client.connection.websockets.connect", fake_connect)
+  monkeypatch.setattr("eavesdrop.client.core.secrets.token_hex", lambda _n: "beef")
+
+  client = EavesdropClient.transcriber(audio_device="default")
+  await client.connect()
+
+  collected_events: list[ConnectedEvent | TranscriptionEvent] = []
+
+  async def _collect_two_events() -> None:
+    async for event in client:
+      collected_events.append(cast(ConnectedEvent | TranscriptionEvent, event))
+      if len(collected_events) == 2:
+        break
+
+  collector = asyncio.create_task(_collect_two_events())
+  client._on_transcription_message(
+    TranscriptionMessage(
+      stream="tbeef",
+      segments=[_segment("hello")],
+      language="en",
+    )
+  )
+
+  try:
+    await asyncio.wait_for(collector, timeout=0.2)
+  finally:
+    await client.disconnect()
+
+  assert [event.family for event in collected_events] == ["connected", "transcription"]
+  assert collected_events[0].stream == "tbeef"
+  transcription_event = cast(TranscriptionEvent, collected_events[1])
+  assert transcription_event.message.segments[0].text == "hello"
+
+
+@pytest.mark.asyncio
+async def test_live_transcriber_reconnects_with_truthful_events(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Socket loss must emit reconnect events, wait 10s, and log the transition truthfully."""
+
+  first_ws = ScriptedWebSocket([RuntimeError("socket lost")])
+  second_ws = BlockingWebSocket()
+  connect_results = [first_ws, second_ws]
+
+  async def fake_connect(_url: str, additional_headers: dict[str, str]) -> FakeWebSocket:
+    assert additional_headers == {"X-Client-Type": "transcriber"}
+    return connect_results.pop(0)
+
+  original_sleep = asyncio.sleep
+  recorded_sleeps: list[float] = []
+
+  async def fake_sleep(delay: float) -> None:
+    recorded_sleeps.append(delay)
+    await original_sleep(0)
+
+  monkeypatch.setattr("eavesdrop.client.connection.websockets.connect", fake_connect)
+  monkeypatch.setattr("eavesdrop.client.core.asyncio.sleep", fake_sleep)
+  monkeypatch.setattr("eavesdrop.client.core.secrets.token_hex", lambda _n: "beef")
+
+  client = EavesdropClient.transcriber(audio_device="default")
+  logger = RecordingLogger()
+  client._logger = cast(BoundLogger, cast(object, logger))
+
+  await client.connect()
+
+  observed_events: list[str] = []
+
+  async def _collect_reconnect_events() -> None:
+    async for event in client:
+      observed_events.append(event.family)
+      if len(observed_events) == 4:
+        break
+
+  collector = asyncio.create_task(_collect_reconnect_events())
+  try:
+    await asyncio.wait_for(collector, timeout=0.5)
+  finally:
+    await client.disconnect()
+
+  assert observed_events == ["connected", "disconnected", "reconnecting", "reconnected"]
+  assert recorded_sleeps == [10.0]
+  assert logger.warning_messages == [
+    "live transcriber disconnected",
+    "live transcriber reconnect scheduled",
+  ]
+  assert logger.info_messages == ["live transcriber reconnected"]
+
+
+@pytest.mark.asyncio
+async def test_streaming_tracks_dedicated_audio_loop_task(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Streaming must expose one dedicated audio-loop task and clear it after completion."""
 
   client = EavesdropClient.transcriber(audio_device="default")
   audio_capture = RecordingAudioCapture()
@@ -249,27 +439,121 @@ async def test_start_and_stop_streaming_transition_state_with_mocks(
   client._connection = cast(WebSocketConnection, cast(object, connection))
 
   loop_started = asyncio.Event()
+  allow_exit = asyncio.Event()
 
   async def fake_audio_streaming_loop() -> None:
     loop_started.set()
+    await allow_exit.wait()
 
   monkeypatch.setattr(client, "_audio_streaming_loop", fake_audio_streaming_loop)
 
   await client.start_streaming()
   await asyncio.wait_for(loop_started.wait(), timeout=0.2)
+  audio_loop_task = client._audio_loop_task
 
   assert client.is_streaming() is True
   assert audio_capture.start_calls == 1
-
-  await client.start_streaming()
-  assert audio_capture.start_calls == 1
+  assert audio_loop_task is not None
+  assert audio_loop_task.done() is False
 
   await client.stop_streaming()
   assert client.is_streaming() is False
   assert audio_capture.stop_calls == 1
 
+  allow_exit.set()
+  assert audio_loop_task is not None
+  await audio_loop_task
+  assert client._audio_loop_task is None
+
+
+@pytest.mark.asyncio
+async def test_start_streaming_awaits_prior_loop_and_flush_stays_valid(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Restarting streaming must await the prior loop and still allow flush after stop."""
+
+  client = EavesdropClient.transcriber(audio_device="default")
+  audio_capture = RecordingAudioCapture()
+  connection = RecordingConnection()
+  client._connected = True
+  client._audio_capture = cast(AudioCapture, cast(object, audio_capture))
+  client._connection = cast(WebSocketConnection, cast(object, connection))
+
+  entered_loops = 0
+  concurrent_loops = 0
+  max_concurrent_loops = 0
+  release_current_loop = asyncio.Event()
+  loop_ready = asyncio.Event()
+
+  async def fake_audio_streaming_loop() -> None:
+    nonlocal entered_loops, concurrent_loops, max_concurrent_loops, release_current_loop
+
+    entered_loops += 1
+    concurrent_loops += 1
+    max_concurrent_loops = max(max_concurrent_loops, concurrent_loops)
+    loop_ready.set()
+    try:
+      await release_current_loop.wait()
+    finally:
+      concurrent_loops -= 1
+
+  monkeypatch.setattr(client, "_audio_streaming_loop", fake_audio_streaming_loop)
+
+  await client.start_streaming()
+  await asyncio.wait_for(loop_ready.wait(), timeout=0.2)
+  first_task = client._audio_loop_task
+
   await client.stop_streaming()
-  assert audio_capture.stop_calls == 1
+
+  loop_ready = asyncio.Event()
+  second_start = asyncio.create_task(client.start_streaming())
+  await asyncio.sleep(0)
+  assert second_start.done() is False
+  assert audio_capture.start_calls == 1
+
+  release_current_loop.set()
+  assert first_task is not None
+  await first_task
+  release_current_loop = asyncio.Event()
+  await second_start
+  await asyncio.wait_for(loop_ready.wait(), timeout=0.2)
+
+  second_task = client._audio_loop_task
+  assert second_task is not None
+
+  await client.stop_streaming()
+  release_current_loop.set()
+  await second_task
+
+  keepalive = asyncio.Event()
+  message_task = asyncio.create_task(_hold_open(keepalive))
+  client._message_task = message_task
+
+  async def _deliver_flush_response() -> None:
+    await connection.flush_sent.wait()
+    client._message_queue.put_nowait(
+      TranscriptionMessage(
+        stream="stream-live",
+        segments=[_segment("done")],
+        language="en",
+        flush_complete=True,
+      )
+    )
+
+  deliver_task = asyncio.create_task(_deliver_flush_response())
+  try:
+    result = await client.flush(force_complete=False)
+  finally:
+    keepalive.set()
+    await asyncio.gather(message_task, deliver_task)
+
+  assert entered_loops == 2
+  assert max_concurrent_loops == 1
+  assert audio_capture.start_calls == 2
+  assert audio_capture.stop_calls == 2
+  assert client._audio_loop_task is None
+  assert connection.flush_commands == [False]
+  assert result.flush_complete is True
 
 
 @pytest.mark.asyncio
@@ -370,6 +654,33 @@ async def test_flush_surfaces_server_rejection_message() -> None:
 
   try:
     with pytest.raises(RuntimeError, match="server refused flush"):
+      await flush_task
+  finally:
+    keepalive.set()
+    await message_task
+
+  assert connection.flush_commands == [True]
+
+
+@pytest.mark.asyncio
+async def test_flush_surfaces_disconnect_reason_when_socket_drops() -> None:
+  """flush() must fail with the disconnect reason if the live socket drops mid-flight."""
+
+  client = EavesdropClient.transcriber(audio_device="default")
+  connection = RecordingConnection()
+  client._connected = True
+  client._connection = cast(WebSocketConnection, cast(object, connection))
+
+  keepalive = asyncio.Event()
+  message_task = asyncio.create_task(_hold_open(keepalive))
+  client._message_task = message_task
+
+  flush_task = asyncio.create_task(client.flush(force_complete=True))
+  await connection.flush_sent.wait()
+  client._on_disconnect("socket lost during flush")
+
+  try:
+    with pytest.raises(RuntimeError, match="socket lost during flush"):
       await flush_task
   finally:
     keepalive.set()
