@@ -8,8 +8,11 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
+    "clypi>=1.8.2",
     "evdev>=1.9.3",
+    "numpy>=2.4.4",
     "python-ydotool>=1.1.1",
+    "sounddevice>=0.5.5",
 ]
 
 [project.scripts]
