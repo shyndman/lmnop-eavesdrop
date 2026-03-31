@@ -1,0 +1,20 @@
+[project]
+name = "active-listener"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Scott Hyndman", email = "scotty.hyndman@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "evdev>=1.9.3",
+    "python-ydotool>=1.1.1",
+]
+
+[project.scripts]
+active-listener = "active_listener:main"
+
+[build-system]
+requires = ["uv_build>=0.9.27,<0.10.0"]
+build-backend = "uv_build"

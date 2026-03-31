@@ -7,6 +7,11 @@ dependencies = []
 [tool.uv]
 package = false
 
+[tool.uv.workspace]
+members = [
+    "packages/active-listener",
+]
+
 [tool.basedpyright]
 include = [
   "packages/server/src",
