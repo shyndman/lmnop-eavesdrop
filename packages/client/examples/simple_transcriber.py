@@ -16,6 +16,10 @@ from eavesdrop.client import EavesdropClient
 from eavesdrop.common import get_logger, setup_logging
 
 
+def _format_segment_time_range(start: float, end: float) -> str:
+  return f"({start:.2f}s - {end:.2f}s)"
+
+
 async def test_transcriber(
   host: str,
   port: int,
@@ -74,9 +78,13 @@ async def test_transcriber(
 
       if message.segments:
         for i, segment in enumerate(message.segments):
+          time_range = _format_segment_time_range(
+            segment.absolute_start_time,
+            segment.absolute_end_time,
+          )
           print(
             f"    Segment {i}: '{segment.text}' ",
-            f"({segment.start:.2f}s - {segment.end:.2f}s) [{segment.avg_logprob:.2f}]",
+            f"{time_range} [{segment.avg_logprob:.2f}]",
             sep="",
           )
 
