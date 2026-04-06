@@ -5,19 +5,18 @@ vars:
   DEFAULT_HSA_OVERRIDE_GFX_VERSION: '{{default "11.0.0" .HSA_OVERRIDE_GFX_VERSION}}'
 
 tasks:
-  # TODO: Make sure we have the easyeffects Pulse Audio source (and on that
-  # note, we should dump the config here)
-  # TODO: Ensure that ydotool is running
-  run-client:
-    deps: [prepare-client, build-client-ui]
+  run-active-listener:
+    desc: Start the active-listener workstation dictation CLI
     dir: packages/active-listener
-    cmds:
-      - uv run al --audio-device default --ui-bin ./../active-listener-ui-electron/dist/linux-unpacked/active-listener-ui
-
-  prepare-client:
-    dir: packages/active-listener
+    vars:
+      host: '{{default "localhost" .host}}'
+      port: '{{default "9090" .port}}'
+      audio_device: '{{default "default" .audio_device}}'
+      keyboard_name: '{{default "AT Translated Set 2 keyboard" .keyboard_name}}'
+      ydotool_socket: '{{default "" .ydotool_socket}}'
     cmds:
       - uv sync --all-extras --all-groups
+      - uv run active-listener --host "{{.host}}" --port {{.port}} --audio-device "{{.audio_device}}" --keyboard-name "{{.keyboard_name}}"{{if .ydotool_socket}} --ydotool-socket "{{.ydotool_socket}}"{{end}} {{.CLI_ARGS}}
 
   prepare-client-lib:
     desc: Install client library dependencies
@@ -47,26 +46,6 @@ tasks:
       audio_device: '{{default "default" .audio_device}}'
     cmds:
       - uv run python examples/simple_transcriber.py --server "{{.host}}:{{.port}}" --audio-device "{{.audio_device}}" --model "distil-small.en" {{.CLI_ARGS}}
-
-  build-client-ui:
-    dir: packages/active-listener-ui-electron
-    sources:
-      - resources/*.*
-      - src/**/*.ts
-      - src/**/*.css
-      - src/**/*.html
-      - electron-builder.yml
-      - electron.vite.config.ts
-      - pnpm-lock.yaml
-      - tsconfig.json
-      - tsconfig.*.json
-    generates:
-      - dist/linux-unpacked/*
-      - dist/linux-unpacked/*.pak
-      - dist/linux-unpacked/*.so
-    cmds:
-      - pnpm install
-      - pnpm run build:linux:dev
 
   prepare-server:
     desc: Install server dependencies
