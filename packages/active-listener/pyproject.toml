@@ -13,6 +13,8 @@ dependencies = [
     "eavesdrop-common",
     "evdev>=1.9.3",
     "pydantic>=2",
+    "pydantic-ai>=1.74.0",
+    "python-frontmatter>=1.1.0",
     "python-ydotool>=1.1.1",
     "structlog>=25.4.0",
 ]
