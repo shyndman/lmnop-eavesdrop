@@ -2,11 +2,38 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol, cast
 
 import pydotool
+
+
+def _candidate_socket_paths() -> tuple[Path, ...]:
+  uid = os.getuid()
+  return (
+    Path(f"/run/user/{uid}/.ydotool_socket"),
+    Path("/tmp/.ydotool_socket"),
+  )
+
+
+def _initialize_pydotool(socket_path: str | None) -> None:
+  init_with_socket = cast(Callable[[str], None], pydotool.init)
+
+  if socket_path is not None:
+    init_with_socket(socket_path)
+    return
+
+  for candidate in _candidate_socket_paths():
+    try:
+      init_with_socket(str(candidate))
+      return
+    except OSError:
+      continue
+
+  pydotool.init()
 
 
 class TextEmitter(Protocol):
@@ -40,11 +67,7 @@ class PydotoolTextEmitter:
     if self._initialized:
       return
 
-    if self.socket_path is None:
-      pydotool.init()
-    else:
-      init_with_socket = cast(Callable[[str], None], pydotool.init)
-      init_with_socket(self.socket_path)
+    _initialize_pydotool(self.socket_path)
     self._initialized = True
 
   def emit_text(self, text: str) -> None:

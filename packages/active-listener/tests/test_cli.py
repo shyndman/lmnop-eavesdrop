@@ -114,11 +114,29 @@ async def test_command_run_builds_validated_config(monkeypatch: pytest.MonkeyPat
   ]
 
 
-def test_require_env_raises_for_missing_value(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_keyboard_name_defaults_to_local_keyboard(monkeypatch: pytest.MonkeyPatch) -> None:
   monkeypatch.delenv("ACTIVE_LISTENER_KEYBOARD_NAME", raising=False)
 
-  with pytest.raises(RuntimeError, match="ACTIVE_LISTENER_KEYBOARD_NAME"):
-    _ = require_env("ACTIVE_LISTENER_KEYBOARD_NAME")
+  command = ActiveListenerCommand()
+
+  assert command.keyboard_name == "AT Translated Set 2 keyboard"
+
+
+def test_keyboard_name_reads_env_at_command_construction(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  monkeypatch.setenv("ACTIVE_LISTENER_KEYBOARD_NAME", "External Keyboard")
+
+  command = ActiveListenerCommand()
+
+  assert command.keyboard_name == "External Keyboard"
+
+
+def test_require_env_raises_for_missing_value(monkeypatch: pytest.MonkeyPatch) -> None:
+  monkeypatch.delenv("SOME_REQUIRED_ENV", raising=False)
+
+  with pytest.raises(RuntimeError, match="SOME_REQUIRED_ENV"):
+    _ = require_env("SOME_REQUIRED_ENV")
 
 
 def test_env_int_raises_for_invalid_integer(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -53,8 +53,13 @@ class ActiveListenerCommand(Command):
   """Run the long-lived active-listener hotkey service."""
 
   keyboard_name: str = arg(
-    default_factory=lambda: require_env("ACTIVE_LISTENER_KEYBOARD_NAME"),
-    help="Exact evdev keyboard device name. (Env: ACTIVE_LISTENER_KEYBOARD_NAME)",
+    default_factory=lambda: os.getenv(
+      "ACTIVE_LISTENER_KEYBOARD_NAME", "AT Translated Set 2 keyboard"
+    ),
+    help=(
+      "Exact evdev keyboard device name. "
+      '(Env: ACTIVE_LISTENER_KEYBOARD_NAME, default: "AT Translated Set 2 keyboard")'
+    ),
   )
   host: str = arg(
     default=os.getenv("EAVESDROP_HOST", "localhost"),
