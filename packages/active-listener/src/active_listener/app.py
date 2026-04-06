@@ -18,6 +18,13 @@ from active_listener.reducer import (
   reduce_new_segments,
   render_text,
 )
+from active_listener.rewrite import (
+  LlmRewriteClient,
+  RewriteClientError,
+  RewriteClientTimeoutError,
+  RewritePromptError,
+  load_rewrite_prompt,
+)
 from active_listener.state import (
   ConnectionDecision,
   ForegroundPhase,
@@ -38,6 +45,15 @@ from eavesdrop.common import get_logger
 from eavesdrop.wire import TranscriptionMessage
 
 
+class LlmRewriteConfig(BaseModel):
+  model_config: ClassVar[ConfigDict] = ConfigDict(strict=True)
+
+  enabled: bool
+  base_url: str = Field(min_length=1)
+  timeout_s: int = Field(default=30, ge=1)
+  prompt_path: str = Field(min_length=1)
+
+
 class ActiveListenerConfig(BaseModel):
   """Validated runtime configuration for the active-listener service.
 
@@ -51,6 +67,8 @@ class ActiveListenerConfig(BaseModel):
   :type audio_device: str
   :param ydotool_socket: Optional custom ydotool daemon socket path.
   :type ydotool_socket: str | None
+  :param llm_rewrite: Nested rewrite configuration.
+  :type llm_rewrite: LlmRewriteConfig
   """
 
   model_config: ClassVar[ConfigDict] = ConfigDict(strict=True)
@@ -60,6 +78,7 @@ class ActiveListenerConfig(BaseModel):
   port: int = Field(ge=1, le=65535)
   audio_device: str = Field(min_length=1)
   ydotool_socket: str | None = None
+  llm_rewrite: LlmRewriteConfig
 
 
 class ActiveListenerClient(Protocol):
@@ -107,6 +126,17 @@ class ActiveListenerLogger(Protocol):
 
   def exception(self, event: str, **kwargs: object) -> None:
     """Emit an exception event with stack trace."""
+
+
+class ActiveListenerRewriteClient(Protocol):
+  async def rewrite_text(
+    self,
+    *,
+    model_name: str,
+    instructions: str,
+    transcript: str,
+  ) -> str:
+    ...
     ...
 
 
@@ -154,6 +184,7 @@ class ActiveListenerService:
   client: ActiveListenerClient
   emitter: TextEmitter
   logger: ActiveListenerLogger
+  rewrite_client: ActiveListenerRewriteClient
   phase: ForegroundPhase = ForegroundPhase.IDLE
   disconnect_generation: int = 0
   _recording_reducer_state: RecordingReducerState | None = None
@@ -503,18 +534,96 @@ class ActiveListenerService:
         return
 
       self._ingest_transcription_message(state=reducer_state, message=message)
-      text = render_text(reducer_state.parts)
-      if not text:
+      raw_text = render_text(reducer_state.parts)
+      if not raw_text:
         self.logger.info("recording finalized without committed text", stream=message.stream)
         return
 
+      self.logger.info("finalized raw transcript", stream=message.stream, raw_text=raw_text)
+
+      text_to_emit = raw_text
+      emitted_text_source = "raw"
+
+      if self.config.llm_rewrite.enabled:
+        try:
+          prompt = load_rewrite_prompt(self.config.llm_rewrite.prompt_path)
+          self.logger.info(
+            "rewrite prompt loaded",
+            stream=message.stream,
+            prompt_path=self.config.llm_rewrite.prompt_path,
+            model_name=prompt.model_name,
+            prompt_metadata=prompt.metadata,
+          )
+          self.logger.info(
+            "rewrite prompt rendered",
+            stream=message.stream,
+            prompt_path=self.config.llm_rewrite.prompt_path,
+            model_name=prompt.model_name,
+            instructions=prompt.instructions,
+          )
+          self.logger.info(
+            "rewrite started",
+            stream=message.stream,
+            base_url=self.config.llm_rewrite.base_url,
+            model_name=prompt.model_name,
+            raw_text=raw_text,
+          )
+          text_to_emit = await self.rewrite_client.rewrite_text(
+            model_name=prompt.model_name,
+            instructions=prompt.instructions,
+            transcript=raw_text,
+          )
+          emitted_text_source = "rewritten"
+          self.logger.info(
+            "rewrite succeeded",
+            stream=message.stream,
+            model_name=prompt.model_name,
+            raw_text=raw_text,
+            rewritten_text=text_to_emit,
+          )
+        except RewritePromptError:
+          self.logger.exception(
+            "rewrite prompt load failed",
+            stream=message.stream,
+            prompt_path=self.config.llm_rewrite.prompt_path,
+          )
+          self.logger.warning(
+            "rewrite raw fallback selected",
+            stream=message.stream,
+            raw_text=raw_text,
+          )
+        except RewriteClientTimeoutError:
+          self.logger.exception(
+            "rewrite timed out",
+            stream=message.stream,
+            timeout_s=self.config.llm_rewrite.timeout_s,
+          )
+          self.logger.warning(
+            "rewrite raw fallback selected",
+            stream=message.stream,
+            raw_text=raw_text,
+          )
+        except RewriteClientError:
+          self.logger.exception("rewrite model failed", stream=message.stream)
+          self.logger.warning(
+            "rewrite raw fallback selected",
+            stream=message.stream,
+            raw_text=raw_text,
+          )
+
       try:
-        self.emitter.emit_text(text)
+        self.emitter.emit_text(text_to_emit)
       except Exception:
         self.logger.exception("text emission failed", stream=message.stream)
         return
 
-      self.logger.info("text emitted", stream=message.stream, text_length=len(text))
+      self.logger.info(
+        "text emitted",
+        stream=message.stream,
+        emitted_text=text_to_emit,
+        text_length=len(text_to_emit),
+        source=emitted_text_source,
+      )
 
 
 async def create_service(
@@ -523,6 +632,7 @@ async def create_service(
   keyboard_resolver: Callable[[str], KeyboardInput] = resolve_keyboard,
   client_factory: Callable[[ActiveListenerConfig], ActiveListenerClient] | None = None,
   emitter_factory: Callable[[str | None], TextEmitter] | None = None,
+  rewrite_client_factory: Callable[[LlmRewriteConfig], ActiveListenerRewriteClient] | None = None,
 ) -> ActiveListenerService:
   """Construct a fully initialized service instance.
 
@@ -542,6 +652,7 @@ async def create_service(
   logger = get_logger("al/app")
   resolved_client_factory = client_factory or build_client
   resolved_emitter_factory = emitter_factory or build_emitter
+  resolved_rewrite_client_factory = rewrite_client_factory or build_rewrite_client
 
   try:
     keyboard = keyboard_resolver(config.keyboard_name)
@@ -552,6 +663,7 @@ async def create_service(
   try:
     emitter = resolved_emitter_factory(config.ydotool_socket)
     client = resolved_client_factory(config)
+    rewrite_client = resolved_rewrite_client_factory(config.llm_rewrite)
     await client.connect()
   except Exception as exc:
     keyboard.close()
@@ -575,6 +687,7 @@ async def create_service(
     client=client,
     emitter=emitter,
     logger=logger,
+    rewrite_client=rewrite_client,
   )
 
 
@@ -584,6 +697,7 @@ async def run_service(
   keyboard_resolver: Callable[[str], KeyboardInput] = resolve_keyboard,
   client_factory: Callable[[ActiveListenerConfig], ActiveListenerClient] | None = None,
   emitter_factory: Callable[[str | None], TextEmitter] | None = None,
+  rewrite_client_factory: Callable[[LlmRewriteConfig], ActiveListenerRewriteClient] | None = None,
 ) -> None:
   """Create and run the long-lived active-listener service.
 
@@ -604,6 +718,7 @@ async def run_service(
     keyboard_resolver=keyboard_resolver,
     client_factory=client_factory,
     emitter_factory=emitter_factory,
+    rewrite_client_factory=rewrite_client_factory,
   )
   await service.run()
 
@@ -636,3 +751,7 @@ def build_emitter(socket_path: str | None) -> TextEmitter:
   emitter = PydotoolTextEmitter(socket_path=socket_path)
   emitter.initialize()
   return emitter
+
+
+def build_rewrite_client(config: LlmRewriteConfig) -> ActiveListenerRewriteClient:
+  return LlmRewriteClient(base_url=config.base_url, timeout_s=config.timeout_s)

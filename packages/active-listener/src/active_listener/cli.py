@@ -7,7 +7,8 @@ import os
 from clypi import Command, arg
 from typing_extensions import override
 
-from active_listener.app import ActiveListenerConfig, run_service
+from active_listener.app import run_service
+from active_listener.config import DEFAULT_CONFIG_PATH, load_active_listener_config
 from eavesdrop.common import get_logger, setup_logging_from_env
 
 
@@ -52,49 +53,49 @@ def env_int(name: str, default: int) -> int:
 class ActiveListenerCommand(Command):
   """Run the long-lived active-listener hotkey service."""
 
-  keyboard_name: str = arg(
-    default_factory=lambda: os.getenv(
-      "ACTIVE_LISTENER_KEYBOARD_NAME", "AT Translated Set 2 keyboard"
-    ),
-    help=(
-      "Exact evdev keyboard device name. "
-      '(Env: ACTIVE_LISTENER_KEYBOARD_NAME, default: "AT Translated Set 2 keyboard")'
-    ),
+  config_path: str = arg(
+    default=str(DEFAULT_CONFIG_PATH),
+    help="Path to the active-listener YAML config file.",
   )
-  host: str = arg(
-    default=os.getenv("EAVESDROP_HOST", "localhost"),
-    help="Eavesdrop server hostname. (Env: EAVESDROP_HOST)",
+
+  keyboard_name: str | None = arg(
+    default=None,
+    help="Exact evdev keyboard device name override.",
   )
-  port: int = arg(
-    default=env_int("EAVESDROP_PORT", 9090),
-    help="Eavesdrop server port. (Env: EAVESDROP_PORT)",
+  host: str | None = arg(
+    default=None,
+    help="Eavesdrop server hostname override.",
   )
-  audio_device: str = arg(
-    default=os.getenv("EAVESDROP_AUDIO_DEVICE", "default"),
-    help="PortAudio capture device name. (Env: EAVESDROP_AUDIO_DEVICE)",
+  port: int | None = arg(
+    default=None,
+    help="Eavesdrop server port override.",
+  )
+  audio_device: str | None = arg(
+    default=None,
+    help="PortAudio capture device name override.",
   )
   ydotool_socket: str | None = arg(
-    default=os.getenv("YDOTOOL_SOCKET"),
-    help="Optional ydotool daemon socket path. (Env: YDOTOOL_SOCKET)",
+    default=None,
+    help="Optional ydotool daemon socket path override.",
   )
 
   @override
   async def run(self) -> None:
-    """Build validated config and start the long-running service.
+    """Load validated config and start the long-running service.
 
     :returns: None
     :rtype: None
     """
 
-    config = ActiveListenerConfig.model_validate(
-      {
+    config = load_active_listener_config(
+      config_path=self.config_path,
+      overrides={
         "keyboard_name": self.keyboard_name,
         "host": self.host,
         "port": self.port,
         "audio_device": self.audio_device,
         "ydotool_socket": self.ydotool_socket,
       },
-      strict=True,
     )
     await run_service(config)
 

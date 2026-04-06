@@ -15,7 +15,14 @@ from active_listener.app import (
   ActiveListenerConfig,
   ActiveListenerRuntimeError,
   ActiveListenerService,
+  LlmRewriteConfig,
   create_service,
+)
+from active_listener.rewrite import (
+  LoadedRewritePrompt,
+  RewriteClientError,
+  RewriteClientTimeoutError,
+  RewritePromptError,
 )
 from active_listener.state import ForegroundPhase, KeyboardAction
 from eavesdrop.client import (
@@ -60,6 +67,51 @@ class LogRecord:
 
 
 AppEvent = DisconnectedEvent | ReconnectedEvent | ReconnectingEvent | TranscriptionEvent
+
+
+def _rewrite_config(*, enabled: bool = False) -> LlmRewriteConfig:
+  return LlmRewriteConfig(
+    enabled=enabled,
+    base_url="http://localhost:11434/v1",
+    timeout_s=30,
+    prompt_path="packages/active-listener/src/active_listener/rewrite_prompt.md",
+  )
+
+
+def _config(*, rewrite_enabled: bool = False) -> ActiveListenerConfig:
+  return ActiveListenerConfig(
+    keyboard_name="Exact Keyboard",
+    host="localhost",
+    port=9090,
+    audio_device="default",
+    llm_rewrite=_rewrite_config(enabled=rewrite_enabled),
+  )
+
+
+def _prompt(
+  *,
+  metadata: dict[str, object] | None = None,
+  instructions: str = "Rewrite this transcript.",
+) -> LoadedRewritePrompt:
+  return LoadedRewritePrompt(
+    model_name="llama3",
+    metadata=metadata or {},
+    instructions=instructions,
+  )
+
+
+def _prompt_loader(prompt: LoadedRewritePrompt) -> Callable[[str], LoadedRewritePrompt]:
+  def load(_path: str) -> LoadedRewritePrompt:
+    return prompt
+
+  return load
+
+
+def _failing_prompt_loader(error: Exception) -> Callable[[str], LoadedRewritePrompt]:
+  def load(_path: str) -> LoadedRewritePrompt:
+    raise error
+
+  return load
 
 
 @dataclass
@@ -192,6 +244,31 @@ class FailingStopClient(FakeClient):
     raise RuntimeError("stop failed")
 
 
+@dataclass
+class FakeRewriteClient:
+  rewritten_text: str = "rewritten text"
+  error: Exception | None = None
+  calls: list[dict[str, str]] = field(default_factory=list)
+
+  async def rewrite_text(
+    self,
+    *,
+    model_name: str,
+    instructions: str,
+    transcript: str,
+  ) -> str:
+    self.calls.append(
+      {
+        "model_name": model_name,
+        "instructions": instructions,
+        "transcript": transcript,
+      }
+    )
+    if self.error is not None:
+      raise self.error
+    return self.rewritten_text
+
+
 def _segment(segment_id: int, text: str, *, completed: bool) -> Segment:
   return Segment(
     id=segment_id,
@@ -229,6 +306,7 @@ class ServiceHarness:
   keyboard: FakeKeyboard
   emitter: FakeEmitter
   logger: RecordingLogger
+  rewrite_client: FakeRewriteClient
 
 
 def _service(
@@ -237,22 +315,21 @@ def _service(
   keyboard: FakeKeyboard | None = None,
   emitter: FakeEmitter | None = None,
   logger: RecordingLogger | None = None,
+  rewrite_client: FakeRewriteClient | None = None,
+  config: ActiveListenerConfig | None = None,
 ) -> ServiceHarness:
   resolved_client = client or FakeClient()
   resolved_keyboard = keyboard or FakeKeyboard()
   resolved_emitter = emitter or FakeEmitter()
   resolved_logger = logger or RecordingLogger()
+  resolved_rewrite_client = rewrite_client or FakeRewriteClient()
   service = ActiveListenerService(
-    config=ActiveListenerConfig(
-      keyboard_name="Exact Keyboard",
-      host="localhost",
-      port=9090,
-      audio_device="default",
-    ),
+    config=config or _config(),
     keyboard=resolved_keyboard,
     client=resolved_client,
     emitter=resolved_emitter,
     logger=resolved_logger,
+    rewrite_client=resolved_rewrite_client,
   )
   return ServiceHarness(
     service,
@@ -260,6 +337,7 @@ def _service(
     resolved_keyboard,
     resolved_emitter,
     resolved_logger,
+    resolved_rewrite_client,
   )
 
 
@@ -270,12 +348,7 @@ async def test_create_service_connects_client_and_initializes_emitter() -> None:
   client = FakeClient()
 
   service = await create_service(
-    ActiveListenerConfig(
-      keyboard_name="Exact Keyboard",
-      host="localhost",
-      port=9090,
-      audio_device="default",
-    ),
+    _config(),
     keyboard_resolver=lambda _name: keyboard,
     client_factory=lambda _config: client,
     emitter_factory=lambda _socket: (emitter.initialize(), emitter)[1],
@@ -290,12 +363,7 @@ async def test_create_service_connects_client_and_initializes_emitter() -> None:
 async def test_create_service_fails_fast_on_keyboard_resolution_error() -> None:
   with pytest.raises(ActiveListenerRuntimeError, match="missing keyboard"):
     _ = await create_service(
-      ActiveListenerConfig(
-        keyboard_name="Exact Keyboard",
-        host="localhost",
-        port=9090,
-        audio_device="default",
-      ),
+      _config(),
       keyboard_resolver=lambda _name: (_ for _ in ()).throw(RuntimeError("missing keyboard")),
     )
 
@@ -307,12 +375,7 @@ async def test_create_service_fails_fast_on_connect_error() -> None:
 
   with pytest.raises(ActiveListenerRuntimeError, match="server unavailable"):
     _ = await create_service(
-      ActiveListenerConfig(
-        keyboard_name="Exact Keyboard",
-        host="localhost",
-        port=9090,
-        audio_device="default",
-      ),
+      _config(),
       keyboard_resolver=lambda _name: keyboard,
       client_factory=lambda _config: client,
       emitter_factory=lambda _socket: FakeEmitter(),
@@ -493,7 +556,8 @@ async def test_transcription_events_are_consumed_only_while_recording() -> None:
   assert client.flush_calls == [True]
   assert emitter.emitted == ["alpha bravo"]
   assert harness.keyboard.ungrab_calls == 1
-  assert harness.logger.info_messages[-2:] == ["recording finished", "text emitted"]
+  assert "recording finished" in harness.logger.info_messages
+  assert harness.logger.info_messages[-1] == "text emitted"
 
 
 @pytest.mark.asyncio
@@ -671,4 +735,289 @@ async def test_missing_transcription_sentinel_warns_and_falls_back_to_window() -
   assert logger.warning_records[-1] == LogRecord(
     event="transcription reducer sentinel missing",
     fields={"stream": "stream-1", "last_id": 1},
+  )
+
+
+@pytest.mark.asyncio
+async def test_finalize_recording_emits_raw_text_when_rewrite_is_disabled() -> None:
+  client = FakeClient(
+    flush_results=[
+      _message(
+        _segment(1, "alpha", completed=True),
+        _segment(2, "tail", completed=False),
+      )
+    ]
+  )
+  harness = _service(client=client)
+
+  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await harness.service.wait_for_background_tasks()
+
+  assert harness.emitter.emitted == ["alpha"]
+  assert harness.rewrite_client.calls == []
+
+
+@pytest.mark.asyncio
+async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  client = FakeClient(
+    flush_results=[
+      _message(
+        _segment(1, "alpha", completed=True),
+        _segment(2, "tail", completed=False),
+      )
+    ]
+  )
+  rewrite_client = FakeRewriteClient(rewritten_text="rewritten alpha")
+  harness = _service(
+    client=client,
+    rewrite_client=rewrite_client,
+    config=_config(rewrite_enabled=True),
+  )
+  monkeypatch.setattr(
+    "active_listener.app.load_rewrite_prompt",
+    _prompt_loader(_prompt(metadata={"voice": "concise"})),
+  )
+
+  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await harness.service.wait_for_background_tasks()
+
+  assert harness.emitter.emitted == ["rewritten alpha"]
+  assert rewrite_client.calls == [
+    {
+      "model_name": "llama3",
+      "instructions": "Rewrite this transcript.",
+      "transcript": "alpha",
+    }
+  ]
+  assert harness.logger.info_records[-1] == LogRecord(
+    event="text emitted",
+    fields={
+      "stream": "stream-1",
+      "emitted_text": "rewritten alpha",
+      "text_length": 15,
+      "source": "rewritten",
+    },
+  )
+
+
+@pytest.mark.asyncio
+async def test_finalize_recording_falls_back_to_raw_text_when_rewrite_fails(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  client = FakeClient(
+    flush_results=[
+      _message(
+        _segment(1, "alpha", completed=True),
+        _segment(2, "tail", completed=False),
+      )
+    ]
+  )
+  rewrite_client = FakeRewriteClient(error=RewriteClientError("model failed"))
+  harness = _service(
+    client=client,
+    rewrite_client=rewrite_client,
+    config=_config(rewrite_enabled=True),
+  )
+  monkeypatch.setattr(
+    "active_listener.app.load_rewrite_prompt",
+    _prompt_loader(_prompt()),
+  )
+
+  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await harness.service.wait_for_background_tasks()
+
+  assert harness.emitter.emitted == ["alpha"]
+  assert harness.logger.exception_messages == ["rewrite model failed"]
+  assert harness.logger.warning_records[-1] == LogRecord(
+    event="rewrite raw fallback selected",
+    fields={"stream": "stream-1", "raw_text": "alpha"},
+  )
+
+
+@pytest.mark.asyncio
+async def test_finalize_recording_skips_rewrite_after_disconnect(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  pending_flush = asyncio.get_running_loop().create_future()
+  client = FakeClient(flush_results=[pending_flush])
+  harness = _service(
+    client=client,
+    config=_config(rewrite_enabled=True),
+  )
+  prompt_load_calls: list[str] = []
+
+  def fake_load_prompt(_path: str) -> LoadedRewritePrompt:
+    prompt_load_calls.append("called")
+    return _prompt()
+
+  monkeypatch.setattr(
+    "active_listener.app.load_rewrite_prompt",
+    fake_load_prompt,
+  )
+
+  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await harness.service.handle_client_event(
+    DisconnectedEvent(stream="stream-1", reason="socket closed")
+  )
+  pending_flush.set_result(
+    _message(
+      _segment(1, "alpha", completed=True),
+      _segment(2, "tail", completed=False),
+    )
+  )
+  await harness.service.wait_for_background_tasks()
+
+  assert prompt_load_calls == []
+  assert harness.emitter.emitted == []
+
+
+@pytest.mark.asyncio
+async def test_finalize_recording_skips_rewrite_for_empty_text(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  client = FakeClient(
+    flush_results=[
+      _message(
+        _segment(1, "   ", completed=True),
+        _segment(2, "tail", completed=False),
+      )
+    ]
+  )
+  harness = _service(
+    client=client,
+    config=_config(rewrite_enabled=True),
+  )
+  prompt_load_calls: list[str] = []
+
+  def fake_load_prompt(_path: str) -> LoadedRewritePrompt:
+    prompt_load_calls.append("called")
+    return _prompt()
+
+  monkeypatch.setattr(
+    "active_listener.app.load_rewrite_prompt",
+    fake_load_prompt,
+  )
+
+  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await harness.service.wait_for_background_tasks()
+
+  assert prompt_load_calls == []
+  assert harness.emitter.emitted == []
+  assert harness.logger.info_messages[-1] == "recording finalized without committed text"
+
+
+@pytest.mark.asyncio
+async def test_rewrite_logging_captures_prompt_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+  client = FakeClient(
+    flush_results=[
+      _message(
+        _segment(1, "alpha", completed=True),
+        _segment(2, "tail", completed=False),
+      )
+    ]
+  )
+  harness = _service(client=client, config=_config(rewrite_enabled=True))
+  monkeypatch.setattr(
+    "active_listener.app.load_rewrite_prompt",
+    _failing_prompt_loader(RewritePromptError("bad prompt")),
+  )
+
+  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await harness.service.wait_for_background_tasks()
+
+  assert harness.logger.exception_records[-1] == LogRecord(
+    event="rewrite prompt load failed",
+    fields={
+      "stream": "stream-1",
+      "prompt_path": "packages/active-listener/src/active_listener/rewrite_prompt.md",
+    },
+  )
+  assert harness.logger.warning_records[-1] == LogRecord(
+    event="rewrite raw fallback selected",
+    fields={"stream": "stream-1", "raw_text": "alpha"},
+  )
+
+
+@pytest.mark.asyncio
+async def test_rewrite_logging_captures_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+  client = FakeClient(
+    flush_results=[
+      _message(
+        _segment(1, "alpha", completed=True),
+        _segment(2, "tail", completed=False),
+      )
+    ]
+  )
+  rewrite_client = FakeRewriteClient(error=RewriteClientTimeoutError("timed out"))
+  harness = _service(
+    client=client,
+    rewrite_client=rewrite_client,
+    config=_config(rewrite_enabled=True),
+  )
+  monkeypatch.setattr(
+    "active_listener.app.load_rewrite_prompt",
+    _prompt_loader(_prompt()),
+  )
+
+  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await harness.service.wait_for_background_tasks()
+
+  assert harness.logger.exception_records[-1] == LogRecord(
+    event="rewrite timed out",
+    fields={"stream": "stream-1", "timeout_s": 30},
+  )
+
+
+@pytest.mark.asyncio
+async def test_rewrite_logging_captures_success_payloads(monkeypatch: pytest.MonkeyPatch) -> None:
+  client = FakeClient(
+    flush_results=[
+      _message(
+        _segment(1, "alpha", completed=True),
+        _segment(2, "tail", completed=False),
+      )
+    ]
+  )
+  rewrite_client = FakeRewriteClient(rewritten_text="rewritten alpha")
+  harness = _service(
+    client=client,
+    rewrite_client=rewrite_client,
+    config=_config(rewrite_enabled=True),
+  )
+  monkeypatch.setattr(
+    "active_listener.app.load_rewrite_prompt",
+    _prompt_loader(_prompt(metadata={"voice": "concise"})),
+  )
+
+  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await harness.service.wait_for_background_tasks()
+
+  assert (
+    LogRecord(
+      event="finalized raw transcript",
+      fields={"stream": "stream-1", "raw_text": "alpha"},
+    )
+    in harness.logger.info_records
+  )
+  assert (
+    LogRecord(
+      event="rewrite succeeded",
+      fields={
+        "stream": "stream-1",
+        "model_name": "llama3",
+        "raw_text": "alpha",
+        "rewritten_text": "rewritten alpha",
+      },
+    )
+    in harness.logger.info_records
   )
