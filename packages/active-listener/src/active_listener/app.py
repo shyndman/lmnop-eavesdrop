@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Callable
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from typing import ClassVar, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from active_listener.emitter import PydotoolTextEmitter, TextEmitter
-from active_listener.input import KeyboardInput, resolve_keyboard
+from active_listener.input import KeyboardInput, RecordingGrabRelease, resolve_keyboard
 from active_listener.reducer import (
   RecordingReducerState,
   append_segment_text,
@@ -121,11 +122,7 @@ class ClientSignal:
   """Signal carrying a live client event into app policy."""
 
   event: (
-    ConnectedEvent
-    | DisconnectedEvent
-    | ReconnectingEvent
-    | ReconnectedEvent
-    | TranscriptionEvent
+    ConnectedEvent | DisconnectedEvent | ReconnectingEvent | ReconnectedEvent | TranscriptionEvent
   )
 
 
@@ -160,6 +157,8 @@ class ActiveListenerService:
   phase: ForegroundPhase = ForegroundPhase.IDLE
   disconnect_generation: int = 0
   _recording_reducer_state: RecordingReducerState | None = None
+  _recording_grab_stack: AsyncExitStack | None = None
+  _release_recording_grab: RecordingGrabRelease | None = None
   _finalization_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
   _background_tasks: set[asyncio.Task[None]] = field(default_factory=set)
 
@@ -211,8 +210,26 @@ class ActiveListenerService:
       _ = await asyncio.gather(*self._background_tasks, return_exceptions=True)
       self._background_tasks.clear()
 
-    await self.client.disconnect()
-    self.keyboard.close()
+    cleanup_errors: list[Exception] = []
+
+    try:
+      if self.phase is ForegroundPhase.RECORDING:
+        try:
+          await self._exit_recording(next_phase=ForegroundPhase.IDLE)
+        except Exception as exc:
+          cleanup_errors.append(exc)
+
+      try:
+        await self.client.disconnect()
+      except Exception as exc:
+        cleanup_errors.append(exc)
+    finally:
+      self.keyboard.close()
+
+    if len(cleanup_errors) == 1:
+      raise cleanup_errors[0]
+    if cleanup_errors:
+      raise ExceptionGroup("active-listener close failed", cleanup_errors)
 
   async def wait_for_background_tasks(self) -> None:
     """Await all currently scheduled background finalization tasks.
@@ -246,28 +263,18 @@ class ActiveListenerService:
 
     if decision is KeyboardDecision.START_RECORDING:
       await self.client.start_streaming()
-      self.keyboard.grab()
-      self._recording_reducer_state = RecordingReducerState()
-      self.phase = ForegroundPhase.RECORDING
+      await self._enter_recording()
       self.logger.info("recording started")
       return
 
     if decision is KeyboardDecision.CANCEL_RECORDING:
-      self.keyboard.ungrab()
-      await self.client.stop_streaming()
-      self._recording_reducer_state = None
-      self.phase = ForegroundPhase.IDLE
+      await self._exit_recording(next_phase=ForegroundPhase.IDLE)
       self.logger.info("recording cancelled")
       return
 
-    reducer_state = self._recording_reducer_state
-    if reducer_state is None:
-      raise ActiveListenerRuntimeError("recording finish requested without reducer state")
+    reducer_state = self._require_recording_reducer_state()
 
-    self.keyboard.ungrab()
-    await self.client.stop_streaming()
-    self._recording_reducer_state = None
-    self.phase = ForegroundPhase.IDLE
+    await self._exit_recording(next_phase=ForegroundPhase.IDLE)
     finalization_task = asyncio.create_task(
       self._finalize_recording(
         disconnect_generation=self.disconnect_generation,
@@ -281,11 +288,7 @@ class ActiveListenerService:
   async def handle_client_event(
     self,
     event: (
-      ConnectedEvent
-      | DisconnectedEvent
-      | ReconnectingEvent
-      | ReconnectedEvent
-      | TranscriptionEvent
+      ConnectedEvent | DisconnectedEvent | ReconnectingEvent | ReconnectedEvent | TranscriptionEvent
     ),
   ) -> None:
     """Apply a live-client lifecycle event to the foreground policy.
@@ -338,9 +341,7 @@ class ActiveListenerService:
     assert isinstance(disconnected_event, DisconnectedEvent)
 
     if decision is ConnectionDecision.ABORT_RECORDING:
-      self.keyboard.ungrab()
-      await self.client.stop_streaming()
-      self._recording_reducer_state = None
+      await self._exit_recording(next_phase=ForegroundPhase.RECONNECTING)
       self.logger.warning(
         "recording aborted by disconnect",
         stream=disconnected_event.stream,
@@ -353,6 +354,86 @@ class ActiveListenerService:
       stream=disconnected_event.stream,
       reason=disconnected_event.reason,
     )
+
+  async def _enter_recording(self) -> None:
+    """Acquire recording-owned state and keyboard grab.
+
+    :returns: None
+    :rtype: None
+    :raises ActiveListenerRuntimeError: If recording grab ownership already exists.
+    """
+
+    if self._recording_grab_stack is not None or self._release_recording_grab is not None:
+      raise ActiveListenerRuntimeError("recording grab entered twice")
+
+    grab_stack = AsyncExitStack()
+    try:
+      release_recording_grab = await grab_stack.enter_async_context(self.keyboard.recording_grab())
+    except Exception:
+      await grab_stack.aclose()
+      raise
+
+    self._recording_grab_stack = grab_stack
+    self._release_recording_grab = release_recording_grab
+    self._recording_reducer_state = RecordingReducerState()
+    self.phase = ForegroundPhase.RECORDING
+
+  async def _exit_recording(self, *, next_phase: ForegroundPhase) -> None:
+    """End the local recording scope before awaited downstream cleanup.
+
+    This helper exists because a leaked evdev grab is operationally dangerous.
+    If the service leaves the workstation keyboard grabbed while it awaits
+    network shutdown or finalization work, the desktop can lose normal input
+    exactly when the process is already on a failure path. ``run()`` still has
+    outer cleanup, but that is a last resort. Recording exit must release the
+    keyboard locally, in one place, before any slow or exception-prone await.
+
+    The method tells the truth about local state first: it clears reducer and
+    grab ownership, updates the foreground phase, then releases the keyboard in
+    ``finally`` by invoking the early-release callback and closing the stored
+    async context manager. Only after that does it await ``stop_streaming()``.
+    That ordering keeps cancel, finish, disconnect-abort, and shutdown on the
+    same release-first invariant even if later work raises.
+
+    :param next_phase: Foreground phase visible after local recording cleanup.
+    :type next_phase: ForegroundPhase
+    :returns: None
+    :rtype: None
+    :raises ActiveListenerRuntimeError: If recording grab ownership is inconsistent.
+    """
+
+    release_recording_grab = self._release_recording_grab
+    grab_stack = self._recording_grab_stack
+
+    if (release_recording_grab is None) != (grab_stack is None):
+      raise ActiveListenerRuntimeError("recording grab ownership is inconsistent")
+
+    self._release_recording_grab = None
+    self._recording_grab_stack = None
+    self._recording_reducer_state = None
+    self.phase = next_phase
+
+    try:
+      if release_recording_grab is not None:
+        release_recording_grab()
+    finally:
+      if grab_stack is not None:
+        await grab_stack.aclose()
+
+    await self.client.stop_streaming()
+
+  def _require_recording_reducer_state(self) -> RecordingReducerState:
+    """Return the reducer state required to finalize a recording.
+
+    :returns: Active recording reducer state.
+    :rtype: RecordingReducerState
+    :raises ActiveListenerRuntimeError: If finish is requested without reducer state.
+    """
+
+    reducer_state = self._recording_reducer_state
+    if reducer_state is None:
+      raise ActiveListenerRuntimeError("recording finish requested without reducer state")
+    return reducer_state
 
   async def _pump_keyboard_actions(self, signal_queue: asyncio.Queue[RuntimeSignal]) -> None:
     """Forward normalized workstation input into the internal signal queue.

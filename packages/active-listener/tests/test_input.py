@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import pytest
 from evdev.events import InputEvent
@@ -27,16 +27,22 @@ class FakeDevice:
   grab_calls: int = 0
   ungrab_calls: int = 0
   close_calls: int = 0
+  grabbed: bool = False
+  kernel_events: list[tuple[int, int]] = field(default_factory=list)
 
   async def async_read_loop(self) -> AsyncIterator[InputEvent]:
     for event in self.events:
+      if not self.grabbed:
+        self.kernel_events.append((event.code, event.value))
       yield event
 
   def grab(self) -> None:
     self.grab_calls += 1
+    self.grabbed = True
 
   def ungrab(self) -> None:
     self.ungrab_calls += 1
+    self.grabbed = False
 
   def close(self) -> None:
     self.close_calls += 1
@@ -77,6 +83,37 @@ async def test_evdev_keyboard_actions_only_emit_normalized_hotkeys() -> None:
   assert actions == [KeyboardAction.START_OR_FINISH, KeyboardAction.CANCEL]
 
 
+@pytest.mark.asyncio
+async def test_grab_transitions_do_not_split_hotkey_press_release_pairs() -> None:
+  device = FakeDevice(
+    path="/dev/input/event1",
+    name="Exact Keyboard",
+    events=[
+      _key_event(58, 1),
+      _key_event(58, 0),
+      _key_event(1, 1),
+      _key_event(1, 0),
+    ],
+  )
+  keyboard = EvdevKeyboard(device=device)
+
+  action_iterator = keyboard.actions().__aiter__()
+
+  assert await action_iterator.__anext__() is KeyboardAction.START_OR_FINISH
+  keyboard.grab()
+
+  assert await action_iterator.__anext__() is KeyboardAction.CANCEL
+  keyboard.ungrab()
+
+  with pytest.raises(StopAsyncIteration):
+    _ = await action_iterator.__anext__()
+
+  assert device.kernel_events == [
+    (58, 1),
+    (58, 0),
+  ]
+
+
 def test_evdev_keyboard_grab_and_ungrab_delegate_to_device() -> None:
   device = FakeDevice(path="/dev/input/event1", name="Exact Keyboard", events=[])
   keyboard = EvdevKeyboard(device=device)
@@ -86,6 +123,39 @@ def test_evdev_keyboard_grab_and_ungrab_delegate_to_device() -> None:
   keyboard.close()
 
   assert device.grab_calls == 1
+  assert device.ungrab_calls == 1
+  assert device.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_recording_grab_release_is_idempotent() -> None:
+  device = FakeDevice(path="/dev/input/event1", name="Exact Keyboard", events=[])
+  keyboard = EvdevKeyboard(device=device)
+
+  async with keyboard.recording_grab() as release:
+    assert device.grab_calls == 1
+    assert device.grabbed is True
+
+    release()
+    release()
+
+    assert device.ungrab_calls == 1
+    assert device.grabbed is False
+
+  assert device.grab_calls == 1
+  assert device.ungrab_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_close_is_safe_after_recording_grab_context_exits() -> None:
+  device = FakeDevice(path="/dev/input/event1", name="Exact Keyboard", events=[])
+  keyboard = EvdevKeyboard(device=device)
+
+  async with keyboard.recording_grab():
+    assert device.grabbed is True
+
+  keyboard.close()
+
   assert device.ungrab_calls == 1
   assert device.close_calls == 1
 

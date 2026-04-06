@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from typing import final
 
 import pytest
 from typing_extensions import override
@@ -67,20 +69,41 @@ class FakeKeyboard:
   grab_calls: int = 0
   ungrab_calls: int = 0
   close_calls: int = 0
+  grabbed: bool = False
   queued_actions: list[KeyboardAction] = field(default_factory=list)
 
   async def actions(self) -> AsyncIterator[KeyboardAction]:
     for action in self.queued_actions:
       yield action
 
+  @asynccontextmanager
+  async def recording_grab(self) -> AsyncIterator[Callable[[], None]]:
+    self.grab()
+    released = False
+
+    def release() -> None:
+      nonlocal released
+      if released:
+        return
+      released = True
+      self.ungrab()
+
+    try:
+      yield release
+    finally:
+      release()
+
   def grab(self) -> None:
     self.grab_calls += 1
+    self.grabbed = True
 
   def ungrab(self) -> None:
     self.ungrab_calls += 1
+    self.grabbed = False
 
   def close(self) -> None:
     self.close_calls += 1
+    self.grabbed = False
 
 
 @dataclass
@@ -140,12 +163,33 @@ class FakeClient:
       yield event
 
 
+@final
 class FailingConnectClient(FakeClient):
   """Client stand-in whose initial connect attempt fails."""
 
   @override
   async def connect(self) -> None:
     raise RuntimeError("server unavailable")
+
+
+@final
+class FailingDisconnectClient(FakeClient):
+  """Client stand-in whose disconnect path fails."""
+
+  @override
+  async def disconnect(self) -> None:
+    self.disconnect_calls += 1
+    raise RuntimeError("disconnect failed")
+
+
+@final
+class FailingStopClient(FakeClient):
+  """Client stand-in whose stop-streaming path fails."""
+
+  @override
+  async def stop_streaming(self) -> None:
+    self.stop_calls += 1
+    raise RuntimeError("stop failed")
 
 
 def _segment(segment_id: int, text: str, *, completed: bool) -> Segment:
@@ -294,6 +338,21 @@ async def test_start_and_cancel_recording_toggle_grab_and_streaming() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cancel_clears_foreground_state_before_stop_streaming_returns() -> None:
+  harness = _service(client=FailingStopClient())
+  service = harness.service
+
+  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+
+  with pytest.raises(RuntimeError, match="stop failed"):
+    await service.handle_keyboard_action(KeyboardAction.CANCEL)
+
+  assert service.phase is ForegroundPhase.IDLE
+  assert harness.keyboard.grabbed is False
+  assert harness.keyboard.ungrab_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_escape_is_ignored_while_idle() -> None:
   harness = _service()
   service = harness.service
@@ -331,6 +390,50 @@ async def test_disconnect_during_recording_forces_local_abort() -> None:
   assert harness.client.stop_calls == 1
   assert harness.keyboard.ungrab_calls == 1
   assert harness.logger.warning_messages == ["recording aborted by disconnect"]
+
+
+@pytest.mark.asyncio
+async def test_finish_clears_foreground_state_before_stop_streaming_returns() -> None:
+  harness = _service(client=FailingStopClient())
+  service = harness.service
+
+  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+
+  with pytest.raises(RuntimeError, match="stop failed"):
+    await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+
+  assert service.phase is ForegroundPhase.IDLE
+  assert harness.keyboard.grabbed is False
+  assert harness.keyboard.ungrab_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_close_releases_keyboard_even_when_disconnect_raises() -> None:
+  harness = _service(client=FailingDisconnectClient())
+  service = harness.service
+
+  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+
+  with pytest.raises(RuntimeError, match="disconnect failed"):
+    await service.close()
+
+  assert harness.keyboard.close_calls == 1
+  assert harness.keyboard.grabbed is False
+
+
+@pytest.mark.asyncio
+async def test_close_still_disconnects_when_stop_streaming_fails() -> None:
+  harness = _service(client=FailingStopClient())
+  service = harness.service
+
+  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+
+  with pytest.raises(RuntimeError, match="stop failed"):
+    await service.close()
+
+  assert harness.client.disconnect_calls == 1
+  assert harness.keyboard.close_calls == 1
+  assert harness.keyboard.grabbed is False
 
 
 @pytest.mark.asyncio
