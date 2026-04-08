@@ -3,7 +3,7 @@ name = "eavesdrop-wire"
 version = "0.0.0"
 description = "Shared message types and protocol definitions for Eavesdrop transcription services"
 authors = [{name = "shyndman", email = "scotty.hyndman@gmail.com"}]
-requires-python = ">=3.12"
+requires-python = ">=3.12.12"
 dependencies = [
     "fastcrc>=0.3.2",
     "pydantic>=2",
