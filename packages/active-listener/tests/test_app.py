@@ -173,6 +173,29 @@ class FakeEmitter:
 
 
 @dataclass
+class FakeDbusService:
+  states: list[ForegroundPhase] = field(default_factory=list)
+  signals: list[tuple[str, str | None]] = field(default_factory=list)
+
+  async def set_state(self, state: ForegroundPhase) -> None:
+    if self.states and self.states[-1] is state:
+      return
+    self.states.append(state)
+
+  async def recording_aborted(self, reason: str) -> None:
+    self.signals.append(("RecordingAborted", reason))
+
+  async def reconnecting(self) -> None:
+    self.signals.append(("Reconnecting", None))
+
+  async def reconnected(self) -> None:
+    self.signals.append(("Reconnected", None))
+
+  async def close(self) -> None:
+    return None
+
+
+@dataclass
 class FakeClient:
   """Live-client stand-in used by app tests."""
 
@@ -307,6 +330,7 @@ class ServiceHarness:
   emitter: FakeEmitter
   logger: RecordingLogger
   rewrite_client: FakeRewriteClient
+  dbus_service: FakeDbusService
 
 
 def _service(
@@ -316,6 +340,7 @@ def _service(
   emitter: FakeEmitter | None = None,
   logger: RecordingLogger | None = None,
   rewrite_client: FakeRewriteClient | None = None,
+  dbus_service: FakeDbusService | None = None,
   config: ActiveListenerConfig | None = None,
 ) -> ServiceHarness:
   resolved_client = client or FakeClient()
@@ -323,6 +348,7 @@ def _service(
   resolved_emitter = emitter or FakeEmitter()
   resolved_logger = logger or RecordingLogger()
   resolved_rewrite_client = rewrite_client or FakeRewriteClient()
+  resolved_dbus_service = dbus_service or FakeDbusService()
   service = ActiveListenerService(
     config=config or _config(),
     keyboard=resolved_keyboard,
@@ -330,6 +356,7 @@ def _service(
     emitter=resolved_emitter,
     logger=resolved_logger,
     rewrite_client=resolved_rewrite_client,
+    dbus_service=resolved_dbus_service,
   )
   return ServiceHarness(
     service,
@@ -338,6 +365,7 @@ def _service(
     resolved_emitter,
     resolved_logger,
     resolved_rewrite_client,
+    resolved_dbus_service,
   )
 
 
@@ -346,9 +374,11 @@ async def test_create_service_connects_client_and_initializes_emitter() -> None:
   keyboard = FakeKeyboard()
   emitter = FakeEmitter()
   client = FakeClient()
+  dbus_service = FakeDbusService()
 
   service = await create_service(
     _config(),
+    dbus_service=dbus_service,
     keyboard_resolver=lambda _name: keyboard,
     client_factory=lambda _config: client,
     emitter_factory=lambda _socket: (emitter.initialize(), emitter)[1],
@@ -357,6 +387,7 @@ async def test_create_service_connects_client_and_initializes_emitter() -> None:
   assert service.phase is ForegroundPhase.IDLE
   assert client.connect_calls == 1
   assert emitter.initialize_calls == 1
+  assert dbus_service.states == [ForegroundPhase.IDLE]
 
 
 @pytest.mark.asyncio
@@ -452,7 +483,29 @@ async def test_disconnect_during_recording_forces_local_abort() -> None:
   assert service.phase is ForegroundPhase.RECONNECTING
   assert harness.client.stop_calls == 1
   assert harness.keyboard.ungrab_calls == 1
+  assert harness.dbus_service.states == [ForegroundPhase.RECORDING, ForegroundPhase.RECONNECTING]
+  assert harness.dbus_service.signals == [
+    ("RecordingAborted", "socket closed"),
+    ("Reconnecting", None),
+  ]
   assert harness.logger.warning_messages == ["recording aborted by disconnect"]
+
+
+@pytest.mark.asyncio
+async def test_disconnect_without_reason_uses_truthful_dbus_fallback() -> None:
+  harness = _service()
+  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+
+  await harness.service.handle_client_event(DisconnectedEvent(stream="stream-1", reason=None))
+
+  assert harness.dbus_service.signals == [
+    ("RecordingAborted", "unknown disconnect reason"),
+    ("Reconnecting", None),
+  ]
+  assert harness.logger.warning_records[-1] == LogRecord(
+    event="recording aborted by disconnect",
+    fields={"stream": "stream-1", "reason": "unknown disconnect reason"},
+  )
 
 
 @pytest.mark.asyncio
@@ -510,8 +563,46 @@ async def test_reconnecting_and_reconnected_events_update_phase() -> None:
   await service.handle_client_event(ReconnectedEvent(stream="stream-1"))
 
   assert service.phase is ForegroundPhase.IDLE
+  assert harness.dbus_service.states == [ForegroundPhase.RECONNECTING, ForegroundPhase.IDLE]
+  assert harness.dbus_service.signals == [
+    ("Reconnecting", None),
+    ("Reconnected", None),
+  ]
   assert harness.logger.warning_messages == ["client reconnecting"]
   assert harness.logger.info_messages == ["client reconnected"]
+
+
+@pytest.mark.asyncio
+async def test_start_and_finish_publish_recording_and_idle_states() -> None:
+  client = FakeClient(
+    flush_results=[
+      _message(
+        _segment(1, "alpha", completed=True),
+        _segment(2, "tail", completed=False),
+      )
+    ]
+  )
+  harness = _service(client=client)
+
+  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await harness.service.wait_for_background_tasks()
+
+  assert harness.dbus_service.states == [ForegroundPhase.RECORDING, ForegroundPhase.IDLE]
+  assert harness.dbus_service.signals == []
+
+
+@pytest.mark.asyncio
+async def test_idle_disconnect_sets_reconnecting_without_extra_dbus_signal() -> None:
+  harness = _service()
+
+  await harness.service.handle_client_event(
+    DisconnectedEvent(stream="stream-1", reason="socket closed")
+  )
+
+  assert harness.service.phase is ForegroundPhase.RECONNECTING
+  assert harness.dbus_service.states == [ForegroundPhase.RECONNECTING]
+  assert harness.dbus_service.signals == []
 
 
 @pytest.mark.asyncio

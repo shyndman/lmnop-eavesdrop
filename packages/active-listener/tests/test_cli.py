@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
@@ -13,7 +13,13 @@ from active_listener.app import (
   ActiveListenerRuntimeError,
   LlmRewriteConfig,
 )
-from active_listener.cli import ActiveListenerCommand, env_int, require_env
+from active_listener.cli import ActiveListenerCommand, build_app_state_service, env_int, require_env
+from active_listener.dbus_service import (
+  DbusDuplicateInstanceError,
+  DbusServiceError,
+  NoopDbusService,
+)
+from active_listener.state import ForegroundPhase
 
 
 class RecordingLogger:
@@ -41,6 +47,27 @@ class StubCommand:
     self.started = True
     if self.start_error is not None:
       raise self.start_error
+
+
+@dataclass
+class FakeDbusService:
+  states: list[ForegroundPhase] = field(default_factory=lambda: [ForegroundPhase.STARTING])
+  close_calls: int = 0
+
+  async def set_state(self, state: ForegroundPhase) -> None:
+    self.states.append(state)
+
+  async def recording_aborted(self, reason: str) -> None:
+    _ = reason
+
+  async def reconnecting(self) -> None:
+    return None
+
+  async def reconnected(self) -> None:
+    return None
+
+  async def close(self) -> None:
+    self.close_calls += 1
 
 
 def _write_config(
@@ -129,13 +156,19 @@ async def test_command_run_uses_config_file_values(
   monkeypatch: pytest.MonkeyPatch,
   tmp_path: Path,
 ) -> None:
-  captured: list[ActiveListenerConfig] = []
+  captured: list[tuple[ActiveListenerConfig, object]] = []
   config_path = tmp_path / "config.yaml"
   _write_config(config_path)
+  dbus_service = FakeDbusService()
 
-  async def fake_run_service(config: ActiveListenerConfig) -> None:
-    captured.append(config)
+  async def fake_run_service(config: ActiveListenerConfig, *, dbus_service: object) -> None:
+    captured.append((config, dbus_service))
 
+  async def fake_build_app_state_service(*, no_dbus: bool) -> object:
+    assert no_dbus is False
+    return dbus_service
+
+  monkeypatch.setattr("active_listener.cli.build_app_state_service", fake_build_app_state_service)
   monkeypatch.setattr("active_listener.cli.run_service", fake_run_service)
 
   command = ActiveListenerCommand(config_path=str(config_path))
@@ -143,18 +176,21 @@ async def test_command_run_uses_config_file_values(
   await command.run()
 
   assert captured == [
-    ActiveListenerConfig(
-      keyboard_name="Config Keyboard",
-      host="config.local",
-      port=9090,
-      audio_device="config-device",
-      ydotool_socket="/tmp/config.sock",
-      llm_rewrite=LlmRewriteConfig(
-        enabled=True,
-        base_url="http://localhost:11434/v1",
-        timeout_s=30,
-        prompt_path="packages/active-listener/src/active_listener/rewrite_prompt.md",
+    (
+      ActiveListenerConfig(
+        keyboard_name="Config Keyboard",
+        host="config.local",
+        port=9090,
+        audio_device="config-device",
+        ydotool_socket="/tmp/config.sock",
+        llm_rewrite=LlmRewriteConfig(
+          enabled=True,
+          base_url="http://localhost:11434/v1",
+          timeout_s=30,
+          prompt_path="packages/active-listener/src/active_listener/rewrite_prompt.md",
+        ),
       ),
+      dbus_service,
     )
   ]
 
@@ -168,9 +204,15 @@ async def test_command_run_overrides_config_file_values(
   config_path = tmp_path / "config.yaml"
   _write_config(config_path, host="config-host", port=7000)
 
-  async def fake_run_service(config: ActiveListenerConfig) -> None:
+  async def fake_run_service(config: ActiveListenerConfig, *, dbus_service: object) -> None:
+    _ = dbus_service
     captured.append(config)
 
+  async def fake_build_app_state_service(*, no_dbus: bool) -> NoopDbusService:
+    _ = no_dbus
+    return NoopDbusService()
+
+  monkeypatch.setattr("active_listener.cli.build_app_state_service", fake_build_app_state_service)
   monkeypatch.setattr("active_listener.cli.run_service", fake_run_service)
 
   command = ActiveListenerCommand(
@@ -196,16 +238,25 @@ async def test_command_run_raises_for_missing_required_rewrite_fields(
     config_path,
     llm_rewrite_block="llm_rewrite:\n  enabled: true\n",
   )
+  dbus_service = FakeDbusService()
 
-  async def fake_run_service(_config: ActiveListenerConfig) -> None:
+  async def fake_run_service(_config: ActiveListenerConfig, *, dbus_service: object) -> None:
+    _ = dbus_service
     raise AssertionError("run_service should not be called")
 
+  async def fake_build_app_state_service(*, no_dbus: bool) -> FakeDbusService:
+    assert no_dbus is False
+    return dbus_service
+
+  monkeypatch.setattr("active_listener.cli.build_app_state_service", fake_build_app_state_service)
   monkeypatch.setattr("active_listener.cli.run_service", fake_run_service)
 
   command = ActiveListenerCommand(config_path=str(config_path))
 
   with pytest.raises(ValueError, match="llm_rewrite"):
     await command.run()
+
+  assert dbus_service.close_calls == 1
 
 
 @pytest.mark.asyncio
@@ -217,9 +268,15 @@ async def test_command_run_preserves_file_value_when_cli_flag_is_not_set(
   config_path = tmp_path / "config.yaml"
   _write_config(config_path, audio_device="alsa-input")
 
-  async def fake_run_service(config: ActiveListenerConfig) -> None:
+  async def fake_run_service(config: ActiveListenerConfig, *, dbus_service: object) -> None:
+    _ = dbus_service
     captured.append(config)
 
+  async def fake_build_app_state_service(*, no_dbus: bool) -> NoopDbusService:
+    _ = no_dbus
+    return NoopDbusService()
+
+  monkeypatch.setattr("active_listener.cli.build_app_state_service", fake_build_app_state_service)
   monkeypatch.setattr("active_listener.cli.run_service", fake_run_service)
 
   command = ActiveListenerCommand(
@@ -231,6 +288,91 @@ async def test_command_run_preserves_file_value_when_cli_flag_is_not_set(
 
   assert captured[0].host == "override-host"
   assert captured[0].audio_device == "alsa-input"
+
+
+@pytest.mark.asyncio
+async def test_command_run_supports_no_dbus_mode(
+  monkeypatch: pytest.MonkeyPatch,
+  tmp_path: Path,
+) -> None:
+  captured: list[object] = []
+  config_path = tmp_path / "config.yaml"
+  _write_config(config_path)
+
+  async def fake_run_service(config: ActiveListenerConfig, *, dbus_service: object) -> None:
+    _ = config
+    captured.append(dbus_service)
+
+  async def fake_build_app_state_service(*, no_dbus: bool) -> NoopDbusService | FakeDbusService:
+    if no_dbus:
+      return NoopDbusService()
+    return FakeDbusService()
+
+  monkeypatch.setattr("active_listener.cli.build_app_state_service", fake_build_app_state_service)
+  monkeypatch.setattr("active_listener.cli.run_service", fake_run_service)
+
+  command = ActiveListenerCommand(config_path=str(config_path), no_dbus=True)
+
+  await command.run()
+
+  assert isinstance(captured[0], NoopDbusService)
+
+
+@pytest.mark.asyncio
+async def test_command_run_builds_dbus_before_service_startup(
+  monkeypatch: pytest.MonkeyPatch,
+  tmp_path: Path,
+) -> None:
+  config_path = tmp_path / "config.yaml"
+  _write_config(config_path)
+  dbus_service = FakeDbusService()
+
+  async def fake_run_service(config: ActiveListenerConfig, *, dbus_service: object) -> None:
+    _ = config
+    assert dbus_service is expected_dbus_service
+
+  expected_dbus_service = dbus_service
+
+  async def fake_build_app_state_service(*, no_dbus: bool) -> object:
+    assert no_dbus is False
+    return dbus_service
+
+  monkeypatch.setattr("active_listener.cli.build_app_state_service", fake_build_app_state_service)
+  monkeypatch.setattr("active_listener.cli.run_service", fake_run_service)
+
+  command = ActiveListenerCommand(config_path=str(config_path))
+
+  await command.run()
+
+  assert dbus_service.states == [ForegroundPhase.STARTING]
+
+
+@pytest.mark.asyncio
+async def test_build_app_state_service_maps_duplicate_instance_error() -> None:
+  async def fake_connect() -> FakeDbusService:
+    raise DbusDuplicateInstanceError("another active-listener instance is already running")
+
+  monkeypatch = pytest.MonkeyPatch()
+  monkeypatch.setattr("active_listener.cli.SdbusDbusService.connect", fake_connect)
+
+  with pytest.raises(ActiveListenerRuntimeError, match="already running"):
+    _ = await build_app_state_service(no_dbus=False)
+
+  monkeypatch.undo()
+
+
+@pytest.mark.asyncio
+async def test_build_app_state_service_suggests_no_dbus_for_session_bus_failure() -> None:
+  async def fake_connect() -> FakeDbusService:
+    raise DbusServiceError("session bus unavailable")
+
+  monkeypatch = pytest.MonkeyPatch()
+  monkeypatch.setattr("active_listener.cli.SdbusDbusService.connect", fake_connect)
+
+  with pytest.raises(ActiveListenerRuntimeError, match="--no-dbus"):
+    _ = await build_app_state_service(no_dbus=False)
+
+  monkeypatch.undo()
 
 
 def test_require_env_raises_for_missing_value(monkeypatch: pytest.MonkeyPatch) -> None:

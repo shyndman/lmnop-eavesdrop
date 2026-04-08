@@ -7,8 +7,15 @@ import os
 from clypi import Command, arg
 from typing_extensions import override
 
-from active_listener.app import run_service
+from active_listener.app import ActiveListenerRuntimeError, run_service
 from active_listener.config import DEFAULT_CONFIG_PATH, load_active_listener_config
+from active_listener.dbus_service import (
+  AppStateService,
+  DbusDuplicateInstanceError,
+  DbusServiceError,
+  NoopDbusService,
+  SdbusDbusService,
+)
 from eavesdrop.common import get_logger, setup_logging_from_env
 
 
@@ -50,6 +57,22 @@ def env_int(name: str, default: int) -> int:
     raise RuntimeError(f"Environment variable {name} must be an integer") from exc
 
 
+async def build_app_state_service(*, no_dbus: bool) -> AppStateService:
+  if no_dbus:
+    return NoopDbusService()
+
+  try:
+    return await SdbusDbusService.connect()
+  except DbusDuplicateInstanceError as exc:
+    raise ActiveListenerRuntimeError(str(exc)) from exc
+  except DbusServiceError as exc:
+    message = (
+      "failed to start DBus app-state publishing: "
+      f"{exc}. Try --no-dbus if this environment has no session bus"
+    )
+    raise ActiveListenerRuntimeError(message) from exc
+
+
 class ActiveListenerCommand(Command):
   """Run the long-lived active-listener hotkey service."""
 
@@ -78,6 +101,10 @@ class ActiveListenerCommand(Command):
     default=None,
     help="Optional ydotool daemon socket path override.",
   )
+  no_dbus: bool = arg(
+    default=False,
+    help="Disable DBus app-state publishing.",
+  )
 
   @override
   async def run(self) -> None:
@@ -87,17 +114,24 @@ class ActiveListenerCommand(Command):
     :rtype: None
     """
 
-    config = load_active_listener_config(
-      config_path=self.config_path,
-      overrides={
-        "keyboard_name": self.keyboard_name,
-        "host": self.host,
-        "port": self.port,
-        "audio_device": self.audio_device,
-        "ydotool_socket": self.ydotool_socket,
-      },
-    )
-    await run_service(config)
+    dbus_service = await build_app_state_service(no_dbus=self.no_dbus)
+
+    try:
+      config = load_active_listener_config(
+        config_path=self.config_path,
+        overrides={
+          "keyboard_name": self.keyboard_name,
+          "host": self.host,
+          "port": self.port,
+          "audio_device": self.audio_device,
+          "ydotool_socket": self.ydotool_socket,
+        },
+      )
+    except Exception:
+      await dbus_service.close()
+      raise
+
+    await run_service(config, dbus_service=dbus_service)
 
 
 def main() -> int:

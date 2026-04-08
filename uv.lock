@@ -23,6 +23,7 @@ dependencies = [
     { name = "python-frontmatter" },
     { name = "python-ydotool" },
     { name = "pyyaml" },
+    { name = "sdbus" },
     { name = "structlog" },
 ]
 
@@ -45,6 +46,7 @@ requires-dist = [
     { name = "python-frontmatter", specifier = ">=1.1.0" },
     { name = "python-ydotool", specifier = ">=1.1.1" },
     { name = "pyyaml", specifier = ">=6" },
+    { name = "sdbus", specifier = ">=0.12.0" },
     { name = "structlog", specifier = ">=25.4.0" },
 ]
 
@@ -2813,6 +2815,17 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/05/04/74127fc843314818edfa81b5540e26dd537353b123a4edc563109d8f17dd/s3transfer-0.16.0.tar.gz", hash = "sha256:8e990f13268025792229cd52fa10cb7163744bf56e719e0b9cb925ab79abf920", size = 153827, upload-time = "2025-12-01T02:30:59.114Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/fc/51/727abb13f44c1fcf6d145979e1535a35794db0f6e450a0cb46aa24732fe2/s3transfer-0.16.0-py3-none-any.whl", hash = "sha256:18e25d66fed509e3868dc1572b3f427ff947dd2c56f844a5bf09481ad3f3b2fe", size = 86830, upload-time = "2025-12-01T02:30:57.729Z" },
+]
+
+[[package]]
+name = "sdbus"
+version = "0.14.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/7c/0f/0cf6b2fb0338fb3ab564cb8a8d68aa1c6de767851f5f9de9a3c83dbabeab/sdbus-0.14.2.tar.gz", hash = "sha256:4f5d13b196e1e1de35311ebb2563a32de791451a30f5b9a4894528ba98766412", size = 89923, upload-time = "2025-12-21T20:22:32.683Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6b/e0/43d2c3e0cc6f6c345df5f3230e2a9c62bd8ae8608d401f582ccf943da14d/sdbus-0.14.2-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:fbed8db91668ad537089c42a71d30e2472faa2e6616a461441ab0d51344a461c", size = 769099, upload-time = "2025-12-21T20:22:27.773Z" },
+    { url = "https://files.pythonhosted.org/packages/3a/0b/043869e8e53fe267b0fc9a98688f8ec9131ae2761a1665ee7c553b67ba69/sdbus-0.14.2-cp39-abi3-manylinux_2_28_armv7l.whl", hash = "sha256:019871c00d9c2eeb5b40c3f3c94ff1d6579a49e245d6ecaf3bd9e245c4b248bc", size = 698023, upload-time = "2025-12-21T20:22:29.518Z" },
+    { url = "https://files.pythonhosted.org/packages/0f/f8/416467419d3345763372aaa51ef389fc95d0bd210679561edb63daa49933/sdbus-0.14.2-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:8a64bbb6280104efeb24a9632a9ebd5504e9c9c1349594142bbe50e734f16c83", size = 742236, upload-time = "2025-12-21T20:22:31.207Z" },
 ]
 
 [[package]]

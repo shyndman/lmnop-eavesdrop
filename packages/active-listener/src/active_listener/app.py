@@ -10,6 +10,7 @@ from typing import ClassVar, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from active_listener.dbus_service import AppStateService, NoopDbusService
 from active_listener.emitter import PydotoolTextEmitter, TextEmitter
 from active_listener.input import KeyboardInput, RecordingGrabRelease, resolve_keyboard
 from active_listener.reducer import (
@@ -43,6 +44,8 @@ from eavesdrop.client import (
 )
 from eavesdrop.common import get_logger
 from eavesdrop.wire import TranscriptionMessage
+
+UNKNOWN_DISCONNECT_REASON = "unknown disconnect reason"
 
 
 class LlmRewriteConfig(BaseModel):
@@ -185,6 +188,7 @@ class ActiveListenerService:
   emitter: TextEmitter
   logger: ActiveListenerLogger
   rewrite_client: ActiveListenerRewriteClient
+  dbus_service: AppStateService
   phase: ForegroundPhase = ForegroundPhase.IDLE
   disconnect_generation: int = 0
   _recording_reducer_state: RecordingReducerState | None = None
@@ -295,17 +299,20 @@ class ActiveListenerService:
     if decision is KeyboardDecision.START_RECORDING:
       await self.client.start_streaming()
       await self._enter_recording()
+      await self.dbus_service.set_state(self.phase)
       self.logger.info("recording started")
       return
 
     if decision is KeyboardDecision.CANCEL_RECORDING:
       await self._exit_recording(next_phase=ForegroundPhase.IDLE)
+      await self.dbus_service.set_state(self.phase)
       self.logger.info("recording cancelled")
       return
 
     reducer_state = self._require_recording_reducer_state()
 
     await self._exit_recording(next_phase=ForegroundPhase.IDLE)
+    await self.dbus_service.set_state(self.phase)
     finalization_task = asyncio.create_task(
       self._finalize_recording(
         disconnect_generation=self.disconnect_generation,
@@ -344,11 +351,14 @@ class ActiveListenerService:
 
     if decision is ConnectionDecision.CONNECTED:
       self.phase = ForegroundPhase.IDLE
+      await self.dbus_service.set_state(self.phase)
       self.logger.info("client connected", stream=event.stream)
       return
 
     if decision is ConnectionDecision.RECONNECTING:
       self.phase = ForegroundPhase.RECONNECTING
+      await self.dbus_service.set_state(self.phase)
+      await self.dbus_service.reconnecting()
       reconnect_event = event
       if isinstance(reconnect_event, ReconnectingEvent):
         self.logger.warning(
@@ -361,6 +371,8 @@ class ActiveListenerService:
 
     if decision is ConnectionDecision.RECONNECTED:
       self.phase = ForegroundPhase.IDLE
+      await self.dbus_service.set_state(self.phase)
+      await self.dbus_service.reconnected()
       reconnected_event = event
       assert isinstance(reconnected_event, ReconnectedEvent)
       self.logger.info("client reconnected", stream=reconnected_event.stream)
@@ -368,22 +380,27 @@ class ActiveListenerService:
 
     self.disconnect_generation += 1
     self.phase = ForegroundPhase.RECONNECTING
+    await self.dbus_service.set_state(self.phase)
     disconnected_event = event
     assert isinstance(disconnected_event, DisconnectedEvent)
+    disconnect_reason = disconnected_event.reason or UNKNOWN_DISCONNECT_REASON
 
     if decision is ConnectionDecision.ABORT_RECORDING:
       await self._exit_recording(next_phase=ForegroundPhase.RECONNECTING)
+      await self.dbus_service.set_state(self.phase)
+      await self.dbus_service.recording_aborted(disconnect_reason)
+      await self.dbus_service.reconnecting()
       self.logger.warning(
         "recording aborted by disconnect",
         stream=disconnected_event.stream,
-        reason=disconnected_event.reason,
+        reason=disconnect_reason,
       )
       return
 
     self.logger.warning(
       "client disconnected",
       stream=disconnected_event.stream,
-      reason=disconnected_event.reason,
+      reason=disconnect_reason,
     )
 
   async def _enter_recording(self) -> None:
@@ -629,6 +646,7 @@ class ActiveListenerService:
 async def create_service(
   config: ActiveListenerConfig,
   *,
+  dbus_service: AppStateService | None = None,
   keyboard_resolver: Callable[[str], KeyboardInput] = resolve_keyboard,
   client_factory: Callable[[ActiveListenerConfig], ActiveListenerClient] | None = None,
   emitter_factory: Callable[[str | None], TextEmitter] | None = None,
@@ -650,6 +668,7 @@ async def create_service(
   """
 
   logger = get_logger("al/app")
+  resolved_dbus_service = dbus_service or NoopDbusService()
   resolved_client_factory = client_factory or build_client
   resolved_emitter_factory = emitter_factory or build_emitter
   resolved_rewrite_client_factory = rewrite_client_factory or build_rewrite_client
@@ -681,6 +700,7 @@ async def create_service(
     host=config.host,
     port=config.port,
   )
+  await resolved_dbus_service.set_state(ForegroundPhase.IDLE)
   return ActiveListenerService(
     config=config,
     keyboard=keyboard,
@@ -688,12 +708,14 @@ async def create_service(
     emitter=emitter,
     logger=logger,
     rewrite_client=rewrite_client,
+    dbus_service=resolved_dbus_service,
   )
 
 
 async def run_service(
   config: ActiveListenerConfig,
   *,
+  dbus_service: AppStateService | None = None,
   keyboard_resolver: Callable[[str], KeyboardInput] = resolve_keyboard,
   client_factory: Callable[[ActiveListenerConfig], ActiveListenerClient] | None = None,
   emitter_factory: Callable[[str | None], TextEmitter] | None = None,
@@ -713,14 +735,24 @@ async def run_service(
   :rtype: None
   """
 
-  service = await create_service(
-    config,
-    keyboard_resolver=keyboard_resolver,
-    client_factory=client_factory,
-    emitter_factory=emitter_factory,
-    rewrite_client_factory=rewrite_client_factory,
-  )
-  await service.run()
+  resolved_dbus_service = dbus_service or NoopDbusService()
+  try:
+    service = await create_service(
+      config,
+      dbus_service=resolved_dbus_service,
+      keyboard_resolver=keyboard_resolver,
+      client_factory=client_factory,
+      emitter_factory=emitter_factory,
+      rewrite_client_factory=rewrite_client_factory,
+    )
+  except Exception:
+    await resolved_dbus_service.close()
+    raise
+
+  try:
+    await service.run()
+  finally:
+    await resolved_dbus_service.close()
 
 
 def build_client(config: ActiveListenerConfig) -> ActiveListenerClient:
