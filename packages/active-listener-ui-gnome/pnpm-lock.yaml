@@ -8,15 +8,21 @@ importers:
 
   .:
     devDependencies:
+      '@girs/adw-1':
+        specifier: ^1.10.0-4.0.0-rc.1
+        version: 1.10.0-4.0.0-rc.1
       '@girs/gio-2.0':
-        specifier: ^2.88.0-4.0.0-rc.1
+        specifier: 2.88.0-4.0.0-rc.1
         version: 2.88.0-4.0.0-rc.1
       '@girs/gjs':
-        specifier: ^4.0.0-rc.1
+        specifier: 4.0.0-rc.1
         version: 4.0.0-rc.1
       '@girs/gnome-shell':
         specifier: ^49.1.0
         version: 49.1.0
+      '@girs/gtk-4.0':
+        specifier: ^4.23.0-4.0.0-rc.1
+        version: 4.23.0-4.0.0-rc.1
       '@girs/st-17':
         specifier: ^17.0.0-4.0.0-rc.1
         version: 17.0.0-4.0.0-rc.1
@@ -190,6 +196,9 @@ packages:
 
   '@girs/accountsservice-1.0@1.0.0-4.0.0-beta.38':
     resolution: {integrity: sha512-6QzytM5dztmMynF2bxN73EuNK9ArMFxkP2L8wUC7IH45zBeBOfYcqL85BFh2PmkGmqRk+Rli5EFR8dAkx3Ig5Q==}
+
+  '@girs/adw-1@1.10.0-4.0.0-rc.1':
+    resolution: {integrity: sha512-LsmJmOArCi0WAwz0xwMDX5HpVIiNMW2kfupTKZRhn08julbC5g0SvJEmTU0HzEFIrUMCEIlynFJh6mMR9tdsOA==}
 
   '@girs/adw-1@1.9.0-4.0.0-beta.40':
     resolution: {integrity: sha512-AaP8nDnUQkB7AUiOvOXXyXbjFC/L8Uh8MwqDD/NZKpIGKYwgE8hfuLyPW1d/K10wabLq4pgO19QJiTpr6hKyhg==}
@@ -512,6 +521,24 @@ snapshots:
       '@girs/gmodule-2.0': 2.0.0-4.0.0-beta.38
       '@girs/gobject-2.0': 2.86.0-4.0.0-beta.38
 
+  '@girs/adw-1@1.10.0-4.0.0-rc.1':
+    dependencies:
+      '@girs/cairo-1.0': 1.0.0-4.0.0-rc.1
+      '@girs/freetype2-2.0': 2.0.0-4.0.0-rc.1
+      '@girs/gdk-4.0': 4.0.0-4.0.0-rc.1
+      '@girs/gdkpixbuf-2.0': 2.0.0-4.0.0-rc.1
+      '@girs/gio-2.0': 2.88.0-4.0.0-rc.1
+      '@girs/gjs': 4.0.0-rc.1
+      '@girs/glib-2.0': 2.88.0-4.0.0-rc.1
+      '@girs/gmodule-2.0': 2.0.0-4.0.0-rc.1
+      '@girs/gobject-2.0': 2.88.0-4.0.0-rc.1
+      '@girs/graphene-1.0': 1.0.0-4.0.0-rc.1
+      '@girs/gsk-4.0': 4.0.0-4.0.0-rc.1
+      '@girs/gtk-4.0': 4.23.0-4.0.0-rc.1
+      '@girs/harfbuzz-0.0': 13.2.1-4.0.0-rc.1
+      '@girs/pango-1.0': 1.57.1-4.0.0-rc.1
+      '@girs/pangocairo-1.0': 1.0.0-4.0.0-rc.1
+
   '@girs/adw-1@1.9.0-4.0.0-beta.40':
     dependencies:
       '@girs/cairo-1.0': 1.0.0-4.0.0-beta.40
@@ -803,7 +830,7 @@ snapshots:
       '@girs/gdm-1.0': 1.0.0-4.0.0-rc.1
       '@girs/gio-2.0': 2.86.0-4.0.0-beta.38
       '@girs/giounix-2.0': 2.0.0-4.0.0-rc.1
-      '@girs/gjs': 4.0.0-rc.1
+      '@girs/gjs': 4.0.0-beta.40
       '@girs/glib-2.0': 2.86.0-4.0.0-beta.38
       '@girs/gnomebg-4.0': 4.0.0-4.0.0-rc.1
       '@girs/gnomebluetooth-3.0': 3.0.0-4.0.0-rc.1

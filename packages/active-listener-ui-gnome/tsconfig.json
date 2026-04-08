@@ -6,11 +6,13 @@
     "skipLibCheck": true,
     "target": "ES2023",
     "lib": [
-      "ES2023"
+      "ES2023",
+      "DOM"
     ]
   },
   "files": [
     "ambient.d.ts",
-    "src/extension.ts"
+    "src/extension.ts",
+    "src/prefs.ts"
   ]
 }

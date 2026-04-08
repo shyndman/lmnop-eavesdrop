@@ -1,6 +1,6 @@
 import { build } from 'esbuild';
 import AdmZip from 'adm-zip';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -10,6 +10,15 @@ const distDir = resolve(outDir, 'dist');
 const assetsDir = resolve(distDir, 'assets');
 const metadataPath = resolve(__dirname, 'metadata.json');
 const sourceIconPath = resolve(__dirname, '..', '..', 'assets', 'reel-to-reel.svg');
+const fallbackPromptSourcePath = resolve(
+  __dirname,
+  '..',
+  'active-listener',
+  'src',
+  'active_listener',
+  'rewrite_prompt.md',
+);
+const fallbackPromptDistPath = resolve(assetsDir, 'rewrite_prompt.md');
 const metadata = JSON.parse(readFileSync(metadataPath, 'utf8'));
 const iconTemplate = readFileSync(sourceIconPath, 'utf8');
 
@@ -20,7 +29,10 @@ const STATE_COLORS = {
 };
 
 function writeStateIcon(state, color) {
-  const icon = iconTemplate.replace('fill="rgb(4,4,4)"', `fill="${color}"`);
+  const icon = iconTemplate.replace(/fill="[^"]+"/, `fill="${color}"`);
+  if (icon === iconTemplate) {
+    throw new Error(`Failed to recolor icon for state ${state}`);
+  }
   writeFileSync(resolve(assetsDir, `reel-to-reel-${state}.svg`), icon);
 }
 
@@ -29,8 +41,8 @@ async function main() {
   mkdirSync(assetsDir, { recursive: true });
 
   await build({
-    entryPoints: [resolve(__dirname, 'src', 'extension.ts')],
-    outfile: resolve(distDir, 'extension.js'),
+    entryPoints: [resolve(__dirname, 'src', 'extension.ts'), resolve(__dirname, 'src', 'prefs.ts')],
+    outdir: distDir,
     format: 'esm',
     platform: 'neutral',
     bundle: false,
@@ -43,6 +55,8 @@ async function main() {
   for (const [state, color] of Object.entries(STATE_COLORS)) {
     writeStateIcon(state, color);
   }
+
+  copyFileSync(fallbackPromptSourcePath, fallbackPromptDistPath);
 
   const zipPath = resolve(outDir, `${metadata.uuid}.zip`);
   const zip = new AdmZip();
