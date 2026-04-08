@@ -10,9 +10,11 @@ from typing_extensions import override
 
 from active_listener.rewrite import (
   LlmRewriteClient,
+  LoadedRewritePromptFile,
   RewriteClientError,
   RewriteClientTimeoutError,
   RewritePromptError,
+  load_active_listener_rewrite_prompt,
   load_rewrite_prompt,
 )
 
@@ -134,6 +136,93 @@ related_words:
   prompt = load_rewrite_prompt(str(prompt_path))
 
   assert prompt.instructions == "alpha / bravo"
+
+
+def test_load_active_listener_rewrite_prompt_prefers_user_override(
+  tmp_path: Path,
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  config_dir = tmp_path / "config"
+
+  def fake_override_prompt_path() -> Path:
+    return config_dir / "system.md"
+
+  override_path = config_dir / "system.md"
+  _ = override_path.parent.mkdir(parents=True)
+  _ = override_path.write_text("---\nmodel: override\n---\nOverride prompt\n", encoding="utf-8")
+
+  configured_prompt_path = tmp_path / "configured.md"
+  _ = configured_prompt_path.write_text(
+    "---\nmodel: fallback\n---\nFallback prompt\n", encoding="utf-8"
+  )
+  monkeypatch.setattr(
+    "active_listener.rewrite.resolve_active_listener_override_prompt_path",
+    fake_override_prompt_path,
+  )
+
+  loaded_prompt = load_active_listener_rewrite_prompt(str(configured_prompt_path))
+
+  assert loaded_prompt == LoadedRewritePromptFile(
+    prompt_path=override_path,
+    prompt=load_rewrite_prompt(override_path),
+  )
+
+
+def test_load_active_listener_rewrite_prompt_falls_back_without_override(
+  tmp_path: Path,
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  config_dir = tmp_path / "config"
+
+  def fake_override_prompt_path() -> Path:
+    return config_dir / "system.md"
+
+  configured_prompt_path = tmp_path / "configured.md"
+  _ = configured_prompt_path.write_text(
+    "---\nmodel: fallback\n---\nFallback prompt\n", encoding="utf-8"
+  )
+  monkeypatch.setattr(
+    "active_listener.rewrite.resolve_active_listener_override_prompt_path",
+    fake_override_prompt_path,
+  )
+
+  loaded_prompt = load_active_listener_rewrite_prompt(str(configured_prompt_path))
+
+  assert loaded_prompt == LoadedRewritePromptFile(
+    prompt_path=configured_prompt_path,
+    prompt=load_rewrite_prompt(configured_prompt_path),
+  )
+
+
+def test_load_active_listener_rewrite_prompt_reloads_override_each_time(
+  tmp_path: Path,
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  config_dir = tmp_path / "config"
+
+  def fake_override_prompt_path() -> Path:
+    return config_dir / "system.md"
+
+  override_path = config_dir / "system.md"
+  _ = override_path.parent.mkdir(parents=True)
+  monkeypatch.setattr(
+    "active_listener.rewrite.resolve_active_listener_override_prompt_path",
+    fake_override_prompt_path,
+  )
+
+  _ = override_path.write_text("---\nmodel: override\n---\nfirst prompt\n", encoding="utf-8")
+  first_loaded_prompt = load_active_listener_rewrite_prompt(
+    "packages/active-listener/src/active_listener/rewrite_prompt.md"
+  )
+
+  _ = override_path.write_text("---\nmodel: override\n---\nsecond prompt\n", encoding="utf-8")
+  second_loaded_prompt = load_active_listener_rewrite_prompt(
+    "packages/active-listener/src/active_listener/rewrite_prompt.md"
+  )
+
+  assert first_loaded_prompt.prompt.instructions == "first prompt"
+  assert second_loaded_prompt.prompt.instructions == "second prompt"
+  assert first_loaded_prompt.prompt_path == second_loaded_prompt.prompt_path == override_path
 
 
 @pytest.mark.asyncio

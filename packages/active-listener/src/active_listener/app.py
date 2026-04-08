@@ -24,7 +24,7 @@ from active_listener.rewrite import (
   RewriteClientError,
   RewriteClientTimeoutError,
   RewritePromptError,
-  load_rewrite_prompt,
+  load_active_listener_rewrite_prompt,
 )
 from active_listener.state import (
   ConnectionDecision,
@@ -562,19 +562,22 @@ class ActiveListenerService:
       emitted_text_source = "raw"
 
       if self.config.llm_rewrite.enabled:
+        prompt_path: str | None = None
         try:
-          prompt = load_rewrite_prompt(self.config.llm_rewrite.prompt_path)
+          loaded_prompt = load_active_listener_rewrite_prompt(self.config.llm_rewrite.prompt_path)
+          prompt = loaded_prompt.prompt
+          prompt_path = str(loaded_prompt.prompt_path)
           self.logger.info(
             "rewrite prompt loaded",
             stream=message.stream,
-            prompt_path=self.config.llm_rewrite.prompt_path,
+            prompt_path=prompt_path,
             model_name=prompt.model_name,
             prompt_metadata=prompt.metadata,
           )
           self.logger.info(
             "rewrite prompt rendered",
             stream=message.stream,
-            prompt_path=self.config.llm_rewrite.prompt_path,
+            prompt_path=prompt_path,
             model_name=prompt.model_name,
             instructions=prompt.instructions,
           )
@@ -582,6 +585,7 @@ class ActiveListenerService:
             "rewrite started",
             stream=message.stream,
             base_url=self.config.llm_rewrite.base_url,
+            prompt_path=prompt_path,
             model_name=prompt.model_name,
             raw_text=raw_text,
           )
@@ -594,15 +598,16 @@ class ActiveListenerService:
           self.logger.info(
             "rewrite succeeded",
             stream=message.stream,
+            prompt_path=prompt_path,
             model_name=prompt.model_name,
             raw_text=raw_text,
             rewritten_text=text_to_emit,
           )
-        except RewritePromptError:
+        except RewritePromptError as exc:
           self.logger.exception(
             "rewrite prompt load failed",
             stream=message.stream,
-            prompt_path=self.config.llm_rewrite.prompt_path,
+            prompt_path=str(exc.prompt_path) if exc.prompt_path is not None else None,
           )
           self.logger.warning(
             "rewrite raw fallback selected",
@@ -613,6 +618,7 @@ class ActiveListenerService:
           self.logger.exception(
             "rewrite timed out",
             stream=message.stream,
+            prompt_path=prompt_path,
             timeout_s=self.config.llm_rewrite.timeout_s,
           )
           self.logger.warning(
@@ -621,7 +627,11 @@ class ActiveListenerService:
             raw_text=raw_text,
           )
         except RewriteClientError:
-          self.logger.exception("rewrite model failed", stream=message.stream)
+          self.logger.exception(
+            "rewrite model failed",
+            stream=message.stream,
+            prompt_path=prompt_path,
+          )
           self.logger.warning(
             "rewrite raw fallback selected",
             stream=message.stream,

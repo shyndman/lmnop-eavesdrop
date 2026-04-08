@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import final
 
 import pytest
@@ -20,6 +21,7 @@ from active_listener.app import (
 )
 from active_listener.rewrite import (
   LoadedRewritePrompt,
+  LoadedRewritePromptFile,
   RewriteClientError,
   RewriteClientTimeoutError,
   RewritePromptError,
@@ -100,15 +102,25 @@ def _prompt(
   )
 
 
-def _prompt_loader(prompt: LoadedRewritePrompt) -> Callable[[str], LoadedRewritePrompt]:
-  def load(_path: str) -> LoadedRewritePrompt:
-    return prompt
+def _loaded_prompt_file(
+  prompt: LoadedRewritePrompt,
+  *,
+  prompt_path: str = "/tmp/rewrite/system.md",
+) -> LoadedRewritePromptFile:
+  return LoadedRewritePromptFile(prompt_path=Path(prompt_path), prompt=prompt)
+
+
+def _prompt_loader(
+  loaded_prompt: LoadedRewritePromptFile,
+) -> Callable[[str], LoadedRewritePromptFile]:
+  def load(_path: str) -> LoadedRewritePromptFile:
+    return loaded_prompt
 
   return load
 
 
-def _failing_prompt_loader(error: Exception) -> Callable[[str], LoadedRewritePrompt]:
-  def load(_path: str) -> LoadedRewritePrompt:
+def _failing_prompt_loader(error: Exception) -> Callable[[str], LoadedRewritePromptFile]:
+  def load(_path: str) -> LoadedRewritePromptFile:
     raise error
 
   return load
@@ -868,8 +880,8 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
     config=_config(rewrite_enabled=True),
   )
   monkeypatch.setattr(
-    "active_listener.app.load_rewrite_prompt",
-    _prompt_loader(_prompt(metadata={"voice": "concise"})),
+    "active_listener.app.load_active_listener_rewrite_prompt",
+    _prompt_loader(_loaded_prompt_file(_prompt(metadata={"voice": "concise"}))),
   )
 
   await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
@@ -914,8 +926,8 @@ async def test_finalize_recording_falls_back_to_raw_text_when_rewrite_fails(
     config=_config(rewrite_enabled=True),
   )
   monkeypatch.setattr(
-    "active_listener.app.load_rewrite_prompt",
-    _prompt_loader(_prompt()),
+    "active_listener.app.load_active_listener_rewrite_prompt",
+    _prompt_loader(_loaded_prompt_file(_prompt())),
   )
 
   await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
@@ -942,12 +954,12 @@ async def test_finalize_recording_skips_rewrite_after_disconnect(
   )
   prompt_load_calls: list[str] = []
 
-  def fake_load_prompt(_path: str) -> LoadedRewritePrompt:
+  def fake_load_prompt(_path: str) -> LoadedRewritePromptFile:
     prompt_load_calls.append("called")
-    return _prompt()
+    return _loaded_prompt_file(_prompt())
 
   monkeypatch.setattr(
-    "active_listener.app.load_rewrite_prompt",
+    "active_listener.app.load_active_listener_rewrite_prompt",
     fake_load_prompt,
   )
 
@@ -986,12 +998,12 @@ async def test_finalize_recording_skips_rewrite_for_empty_text(
   )
   prompt_load_calls: list[str] = []
 
-  def fake_load_prompt(_path: str) -> LoadedRewritePrompt:
+  def fake_load_prompt(_path: str) -> LoadedRewritePromptFile:
     prompt_load_calls.append("called")
-    return _prompt()
+    return _loaded_prompt_file(_prompt())
 
   monkeypatch.setattr(
-    "active_listener.app.load_rewrite_prompt",
+    "active_listener.app.load_active_listener_rewrite_prompt",
     fake_load_prompt,
   )
 
@@ -1016,8 +1028,10 @@ async def test_rewrite_logging_captures_prompt_failure(monkeypatch: pytest.Monke
   )
   harness = _service(client=client, config=_config(rewrite_enabled=True))
   monkeypatch.setattr(
-    "active_listener.app.load_rewrite_prompt",
-    _failing_prompt_loader(RewritePromptError("bad prompt")),
+    "active_listener.app.load_active_listener_rewrite_prompt",
+    _failing_prompt_loader(
+      RewritePromptError("bad prompt", prompt_path=Path("/tmp/override/system.md"))
+    ),
   )
 
   await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
@@ -1028,12 +1042,50 @@ async def test_rewrite_logging_captures_prompt_failure(monkeypatch: pytest.Monke
     event="rewrite prompt load failed",
     fields={
       "stream": "stream-1",
-      "prompt_path": "packages/active-listener/src/active_listener/rewrite_prompt.md",
+      "prompt_path": "/tmp/override/system.md",
     },
   )
   assert harness.logger.warning_records[-1] == LogRecord(
     event="rewrite raw fallback selected",
     fields={"stream": "stream-1", "raw_text": "alpha"},
+  )
+
+
+@pytest.mark.asyncio
+async def test_rewrite_logging_uses_resolved_prompt_path(monkeypatch: pytest.MonkeyPatch) -> None:
+  client = FakeClient(
+    flush_results=[
+      _message(
+        _segment(1, "alpha", completed=True),
+        _segment(2, "tail", completed=False),
+      )
+    ]
+  )
+  harness = _service(client=client, config=_config(rewrite_enabled=True))
+  monkeypatch.setattr(
+    "active_listener.app.load_active_listener_rewrite_prompt",
+    _prompt_loader(
+      _loaded_prompt_file(
+        _prompt(metadata={"voice": "concise"}), prompt_path="/tmp/override/system.md"
+      )
+    ),
+  )
+
+  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await harness.service.wait_for_background_tasks()
+
+  assert (
+    LogRecord(
+      event="rewrite prompt loaded",
+      fields={
+        "stream": "stream-1",
+        "prompt_path": "/tmp/override/system.md",
+        "model_name": "llama3",
+        "prompt_metadata": {"voice": "concise"},
+      },
+    )
+    in harness.logger.info_records
   )
 
 
@@ -1054,8 +1106,8 @@ async def test_rewrite_logging_captures_timeout(monkeypatch: pytest.MonkeyPatch)
     config=_config(rewrite_enabled=True),
   )
   monkeypatch.setattr(
-    "active_listener.app.load_rewrite_prompt",
-    _prompt_loader(_prompt()),
+    "active_listener.app.load_active_listener_rewrite_prompt",
+    _prompt_loader(_loaded_prompt_file(_prompt(), prompt_path="/tmp/override/system.md")),
   )
 
   await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
@@ -1064,7 +1116,11 @@ async def test_rewrite_logging_captures_timeout(monkeypatch: pytest.MonkeyPatch)
 
   assert harness.logger.exception_records[-1] == LogRecord(
     event="rewrite timed out",
-    fields={"stream": "stream-1", "timeout_s": 30},
+    fields={
+      "stream": "stream-1",
+      "prompt_path": "/tmp/override/system.md",
+      "timeout_s": 30,
+    },
   )
 
 
@@ -1085,8 +1141,13 @@ async def test_rewrite_logging_captures_success_payloads(monkeypatch: pytest.Mon
     config=_config(rewrite_enabled=True),
   )
   monkeypatch.setattr(
-    "active_listener.app.load_rewrite_prompt",
-    _prompt_loader(_prompt(metadata={"voice": "concise"})),
+    "active_listener.app.load_active_listener_rewrite_prompt",
+    _prompt_loader(
+      _loaded_prompt_file(
+        _prompt(metadata={"voice": "concise"}),
+        prompt_path="/tmp/override/system.md",
+      )
+    ),
   )
 
   await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
@@ -1105,6 +1166,7 @@ async def test_rewrite_logging_captures_success_payloads(monkeypatch: pytest.Mon
       event="rewrite succeeded",
       fields={
         "stream": "stream-1",
+        "prompt_path": "/tmp/override/system.md",
         "model_name": "llama3",
         "raw_text": "alpha",
         "rewritten_text": "rewritten alpha",
