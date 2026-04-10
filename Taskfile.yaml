@@ -53,6 +53,11 @@ tasks:
     cmds:
       - uv sync --all-extras --all-groups
 
+  list-gpus:
+    desc: Print GPU names as reported by PyTorch on the current machine
+    cmds:
+      - uv run --no-project "$(command -v python3)" -c 'import json, torch; print(json.dumps([torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())]))'
+
   run-server:
     desc: Start the transcription server with local config
     deps: [prepare-server]
