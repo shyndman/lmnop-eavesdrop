@@ -1,3 +1,9 @@
+default_install_hook_types:
+  - pre-commit
+  - post-checkout
+  - post-merge
+  - post-rewrite
+
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     # Ruff version.
@@ -10,9 +16,40 @@ repos:
       - id: ruff-format
   - repo: https://github.com/astral-sh/uv-pre-commit
     # uv version.
-    rev: 0.8.4
+    rev: 0.11.6
     hooks:
       - id: uv-lock
+        name: uv-lock root workspace
+      - id: uv-lock
+        name: uv-lock packages/common
+        files: ^packages/common/(pyproject\.toml|uv\.lock)$
+        args: [--project, packages/common]
+      - id: uv-lock
+        name: uv-lock packages/wire
+        files: ^packages/wire/(pyproject\.toml|uv\.lock)$
+        args: [--project, packages/wire]
+      - id: uv-lock
+        name: uv-lock packages/client
+        files: ^packages/client/(pyproject\.toml|uv\.lock)$
+        args: [--project, packages/client]
+      - id: uv-lock
+        name: uv-lock packages/server
+        files: ^packages/server/(pyproject\.toml|uv\.lock)$
+        args: [--project, packages/server]
+      - id: uv-sync
+        name: uv-sync root workspace
+      - id: uv-sync
+        name: uv-sync packages/common
+        args: [--locked, --project, packages/common]
+      - id: uv-sync
+        name: uv-sync packages/wire
+        args: [--locked, --project, packages/wire]
+      - id: uv-sync
+        name: uv-sync packages/client
+        args: [--locked, --project, packages/client]
+      - id: uv-sync
+        name: uv-sync packages/server
+        args: [--locked, --project, packages/server]
   - repo: local
     hooks:
       - id: eslint

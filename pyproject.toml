@@ -1,7 +1,7 @@
 [project]
 name = "eavesdrop-workspace"
 version = "0.0.0"
-requires-python = ">=3.12.12"
+requires-python = ">=3.12.3,<3.13"
 dependencies = []
 
 [tool.uv]
