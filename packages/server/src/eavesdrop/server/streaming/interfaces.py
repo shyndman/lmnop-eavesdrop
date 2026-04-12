@@ -8,10 +8,13 @@ using Python's Protocol system for structural typing.
 from typing import Protocol
 
 import numpy as np
+from numpy.typing import NDArray
 from pydantic import Field
 from pydantic.dataclasses import dataclass
 
 from eavesdrop.wire import Segment
+
+Float32Audio = NDArray[np.float32]
 
 
 @dataclass
@@ -38,7 +41,7 @@ class AudioSource(Protocol):
   Implementations provide audio data to the streaming transcription system.
   """
 
-  async def read_audio(self) -> np.ndarray | None:
+  async def read_audio(self) -> Float32Audio | None:
     """
     Read the next chunk of audio data.
 

@@ -6,10 +6,14 @@ that integrate with the existing WebSocket server infrastructure.
 """
 
 from collections.abc import Awaitable, Callable
+from typing import override
 
 import numpy as np
+import structlog
+from numpy.typing import NDArray
 from websockets.asyncio.server import ServerConnection
 from websockets.exceptions import ConnectionClosedError
+from websockets.protocol import State
 
 from eavesdrop.common import get_logger
 from eavesdrop.server.streaming.interfaces import (
@@ -26,6 +30,8 @@ from eavesdrop.wire import (
   serialize_message,
 )
 from eavesdrop.wire.codec import Message
+
+Float32Audio = NDArray[np.float32]
 
 
 class WebSocketAudioSource(AudioSource):
@@ -58,7 +64,7 @@ class WebSocketAudioSource(AudioSource):
   def __init__(
     self,
     websocket: ServerConnection,
-    get_audio_func: Callable[[ServerConnection], Awaitable[np.ndarray | bool]],
+    get_audio_func: Callable[[ServerConnection], Awaitable[Float32Audio | bool]],
   ) -> None:
     """
     Initialize WebSocket audio source.
@@ -67,11 +73,14 @@ class WebSocketAudioSource(AudioSource):
     :param get_audio_func: Function to get audio from websocket (from TranscriptionServer).
     """
     self.websocket: ServerConnection = websocket
-    self.get_audio_func: Callable[[ServerConnection], Awaitable[np.ndarray | bool]] = get_audio_func
-    self.logger = get_logger("ws/src")
+    self.get_audio_func: Callable[[ServerConnection], Awaitable[Float32Audio | bool]] = (
+      get_audio_func
+    )
+    self.logger: structlog.stdlib.BoundLogger = get_logger("ws/src")
     self._closed: bool = False
 
-  async def read_audio(self) -> np.ndarray | None:
+  @override
+  async def read_audio(self) -> Float32Audio | None:
     """
     Read audio data from the WebSocket connection.
 
@@ -81,7 +90,7 @@ class WebSocketAudioSource(AudioSource):
       return None
 
     try:
-      audio_data = await self.get_audio_func(self.websocket)
+      audio_data: Float32Audio | bool = await self.get_audio_func(self.websocket)
 
       # Handle end-of-audio signal
       if audio_data is False:
@@ -102,6 +111,7 @@ class WebSocketAudioSource(AudioSource):
       self.logger.exception("Error reading audio from WebSocket")
       return None
 
+  @override
   def close(self) -> None:
     """Close the audio source and clean up resources."""
     self._closed = True
@@ -151,9 +161,10 @@ class WebSocketTranscriptionSink(TranscriptionSink):
     """
     self.websocket: ServerConnection = websocket
     self.stream_name: str = stream_name
-    self.logger = get_logger("ws/sink")
+    self.logger: structlog.stdlib.BoundLogger = get_logger("ws/sink")
     self._closed: bool = False
 
+  @override
   async def send_result(self, result: TranscriptionResult) -> None:
     await self.send_message(
       TranscriptionMessage(
@@ -164,6 +175,7 @@ class WebSocketTranscriptionSink(TranscriptionSink):
       )
     )
 
+  @override
   async def send_error(self, error: str) -> None:
     await self.send_message(
       ErrorMessage(
@@ -172,6 +184,7 @@ class WebSocketTranscriptionSink(TranscriptionSink):
       )
     )
 
+  @override
   async def send_language_detection(self, language: str, probability: float) -> None:
     await self.send_message(
       LanguageDetectionMessage(
@@ -181,6 +194,7 @@ class WebSocketTranscriptionSink(TranscriptionSink):
       )
     )
 
+  @override
   async def send_server_ready(self, backend: str) -> None:
     await self.send_message(
       ServerReadyMessage(
@@ -189,11 +203,17 @@ class WebSocketTranscriptionSink(TranscriptionSink):
       )
     )
 
+  @override
   async def disconnect(self) -> None:
     """Send disconnect notification and clean up resources."""
     try:
-      if not self._closed and self.websocket:
-        await self.send_message(DisconnectMessage(stream=self.stream_name))
+      if self._closed or not self.websocket or self.websocket.state is not State.OPEN:
+        return
+
+      try:
+        await self.websocket.send(serialize_message(DisconnectMessage(stream=self.stream_name)))
+      except Exception:
+        pass
     finally:
       self._closed = True
       self.logger.info("WebSocket transcription sink disconnected")
