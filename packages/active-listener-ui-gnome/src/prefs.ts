@@ -8,6 +8,7 @@ import { ExtensionPreferences } from 'resource:///org/gnome/Shell/Extensions/js/
 const PROMPT_OVERRIDE_DIRNAME = 'active-listener';
 const PROMPT_OVERRIDE_FILENAME = 'system.md';
 const FALLBACK_PROMPT_FILENAME = 'rewrite_prompt.md';
+const AUTOSAVE_DELAY_MS = 500;
 
 function getPromptOverridePath(): string {
   return GLib.build_filenamev([
@@ -22,8 +23,15 @@ function getPromptOverrideFile(): Gio.File {
 }
 
 function loadFileContentsUtf8(file: Gio.File): Promise<string> {
-  return file.load_contents_async(null).then(([contents]) => {
-    return new TextDecoder('utf-8').decode(contents);
+  return new Promise((resolve, reject) => {
+    file.load_contents_async(null, (_source, result) => {
+      try {
+        const [, contents] = file.load_contents_finish(result);
+        resolve(new TextDecoder('utf-8').decode(contents));
+      } catch (error) {
+        reject(error);
+      }
+    });
   });
 }
 
@@ -70,9 +78,13 @@ type LoadedPrompt = {
 
 export default class ActiveListenerPreferences extends ExtensionPreferences {
   private readonly promptBuffer = new Gtk.TextBuffer();
-  private readonly saveButton = new Gtk.Button({ label: 'Save' });
   private readonly revertButton = new Gtk.Button({ label: 'Revert' });
-  private loadedPromptContents = '';
+  private initialPromptContents = '';
+  private persistedPromptContents = '';
+  private autosaveSourceId: number | null = null;
+  private autosaveInFlight = false;
+  private promptRevision = 0;
+  private updatingPromptContents = false;
 
   async fillPreferencesWindow(
     window: Parameters<ExtensionPreferences['fillPreferencesWindow']>[0],
@@ -93,17 +105,26 @@ export default class ActiveListenerPreferences extends ExtensionPreferences {
     window.add(page as unknown as Parameters<typeof window.add>[0]);
 
     this.promptBuffer.connect('changed', () => {
+      if (this.updatingPromptContents) {
+        return;
+      }
+
+      this.promptRevision += 1;
       this.syncActionSensitivity();
+      this.scheduleAutosave();
     });
 
-    this.saveButton.connect('clicked', () => {
-      void this.savePromptContents();
-    });
     this.revertButton.connect('clicked', () => {
-      void this.reloadPromptContents();
+      void this.revertPromptContents();
     });
 
-    await this.reloadPromptContents().catch(() => undefined);
+    window.connect('close-request', () => {
+      this.cancelPendingAutosave();
+      void this.flushAutosave();
+      return false;
+    });
+
+    await this.initializePromptContents().catch(() => undefined);
   }
 
   private createPromptPathSection(): Gtk.Box {
@@ -132,6 +153,7 @@ export default class ActiveListenerPreferences extends ExtensionPreferences {
   private createPromptEditor(): Gtk.ScrolledWindow {
     const textView = new Gtk.TextView();
     textView.set_buffer(this.promptBuffer);
+    textView.set_accepts_tab(false);
     textView.set_monospace(true);
     textView.set_wrap_mode(Gtk.WrapMode.WORD_CHAR);
     textView.set_top_margin(12);
@@ -141,11 +163,10 @@ export default class ActiveListenerPreferences extends ExtensionPreferences {
 
     const scrolledWindow = new Gtk.ScrolledWindow({
       hexpand: true,
-      vexpand: true,
       margin_top: 6,
       margin_bottom: 6,
     });
-    scrolledWindow.set_min_content_height(360);
+    scrolledWindow.set_min_content_height(280);
     scrolledWindow.set_child(textView);
 
     return scrolledWindow;
@@ -160,10 +181,7 @@ export default class ActiveListenerPreferences extends ExtensionPreferences {
       margin_bottom: 6,
     });
 
-    this.saveButton.add_css_class('suggested-action');
-
     actionBox.append(this.revertButton);
-    actionBox.append(this.saveButton);
     return actionBox;
   }
 
@@ -192,21 +210,44 @@ export default class ActiveListenerPreferences extends ExtensionPreferences {
   }
 
   private setPromptContents(contents: string): void {
+    this.promptRevision += 1;
+    this.updatingPromptContents = true;
     this.promptBuffer.set_text(contents, -1);
+    this.updatingPromptContents = false;
   }
 
   private syncActionSensitivity(): void {
-    const hasChanges = this.getCurrentPromptContents() !== this.loadedPromptContents;
-    this.saveButton.set_sensitive(hasChanges);
+    const hasChanges = this.getCurrentPromptContents() !== this.initialPromptContents;
     this.revertButton.set_sensitive(hasChanges);
   }
 
-  private async reloadPromptContents(): Promise<void> {
+  private scheduleAutosave(): void {
+    this.cancelPendingAutosave();
+
+    this.autosaveSourceId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, AUTOSAVE_DELAY_MS, () => {
+      this.autosaveSourceId = null;
+      void this.flushAutosave();
+      return GLib.SOURCE_REMOVE;
+    });
+  }
+
+  private cancelPendingAutosave(): void {
+    if (this.autosaveSourceId === null) {
+      return;
+    }
+
+    GLib.source_remove(this.autosaveSourceId);
+    this.autosaveSourceId = null;
+  }
+
+  private async initializePromptContents(): Promise<void> {
+    this.cancelPendingAutosave();
     this.setActionSensitivity(false);
 
     try {
       const prompt = await this.loadPromptContents();
-      this.loadedPromptContents = prompt.contents;
+      this.initialPromptContents = prompt.contents;
+      this.persistedPromptContents = prompt.contents;
       this.setPromptContents(prompt.contents);
       console.info(`Active Listener prefs loaded ${prompt.source} rewrite prompt`);
     } catch (error) {
@@ -217,25 +258,45 @@ export default class ActiveListenerPreferences extends ExtensionPreferences {
     }
   }
 
-  private async savePromptContents(): Promise<void> {
+  private async revertPromptContents(): Promise<void> {
+    this.cancelPendingAutosave();
     this.setActionSensitivity(false);
+    this.setPromptContents(this.initialPromptContents);
+    await this.flushAutosave();
+  }
+
+  private async flushAutosave(): Promise<void> {
+    if (this.autosaveInFlight) {
+      this.scheduleAutosave();
+      return;
+    }
 
     const contents = this.getCurrentPromptContents();
+    if (contents === this.persistedPromptContents) {
+      this.syncActionSensitivity();
+      return;
+    }
+
+    const revision = this.promptRevision;
+    this.autosaveInFlight = true;
 
     try {
       await writeFileContentsUtf8(getPromptOverrideFile(), contents);
-      this.loadedPromptContents = contents;
-      console.info(`Active Listener prefs saved rewrite prompt to ${getPromptOverridePath()}`);
+      this.persistedPromptContents = contents;
+      if (revision !== this.promptRevision) {
+        this.scheduleAutosave();
+      }
+
+      console.info(`Active Listener prefs autosaved rewrite prompt to ${getPromptOverridePath()}`);
     } catch (error) {
-      console.error('Active Listener prefs failed to save rewrite prompt', error);
-      throw error;
+      console.error('Active Listener prefs failed to autosave rewrite prompt', error);
     } finally {
+      this.autosaveInFlight = false;
       this.syncActionSensitivity();
     }
   }
 
   private setActionSensitivity(sensitive: boolean): void {
-    this.saveButton.set_sensitive(sensitive);
     this.revertButton.set_sensitive(sensitive);
   }
 }
