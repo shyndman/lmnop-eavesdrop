@@ -18,6 +18,91 @@ tasks:
       - uv sync --all-extras --all-groups
       - uv run active-listener --host "{{.host}}" --port {{.port}} --audio-device "{{.audio_device}}" --keyboard-name "{{.keyboard_name}}"{{if .ydotool_socket}} --ydotool-socket "{{.ydotool_socket}}"{{end}} {{.CLI_ARGS}}
 
+  install-active-listener-service:
+    desc: Install or update the active-listener user systemd service
+    dir: .
+    cmds:
+      - uv sync --all-extras --all-groups --project packages/active-listener
+      - |
+        python3 - <<'PY'
+        from pathlib import Path
+        import shutil
+
+        repo_root = Path.cwd()
+        unit_template = repo_root / "packages/active-listener/systemd/active-listener.service.in"
+        unit_destination = Path.home() / ".config/systemd/user/active-listener.service"
+        config_destination = Path.home() / ".config/eavesdrop/active-listener.yaml"
+        prompt_destination = Path.home() / ".config/eavesdrop/active-listener.system.md"
+        legacy_prompt_source = Path.home() / ".config/active-listener/system.md"
+
+        package_dir = repo_root / "packages/active-listener"
+        active_listener_bin = repo_root / ".venv/bin/active-listener"
+        if not active_listener_bin.exists():
+          raise SystemExit(f"active-listener entrypoint not found at {active_listener_bin}")
+
+        unit_text = unit_template.read_text()
+        unit_text = unit_text.replace("@REPO_ROOT@", str(repo_root))
+        unit_text = unit_text.replace("@ACTIVE_LISTENER_BIN@", str(active_listener_bin))
+        unit_destination.parent.mkdir(parents=True, exist_ok=True)
+        unit_destination.write_text(unit_text)
+
+        config_destination.parent.mkdir(parents=True, exist_ok=True)
+        if not config_destination.exists():
+          for source in (
+            package_dir / "config.yaml",
+            package_dir / "config.sample.yaml",
+          ):
+            if source.exists():
+              shutil.copy2(source, config_destination)
+              break
+          else:
+            raise SystemExit("No active-listener config source found to seed the XDG config path")
+
+        if legacy_prompt_source.exists() and not prompt_destination.exists():
+          prompt_destination.parent.mkdir(parents=True, exist_ok=True)
+          shutil.copy2(legacy_prompt_source, prompt_destination)
+
+        print(f"Installed {unit_destination}")
+        print(f"Using config path {config_destination}")
+        if prompt_destination.exists():
+          print(f"Prompt override path {prompt_destination}")
+        PY
+      - systemctl --user daemon-reload
+      - systemctl --user enable --now active-listener.service
+      - |
+        deadline=$((SECONDS + 60))
+        while [ "$SECONDS" -lt "$deadline" ]; do
+          if systemctl --user is-active --quiet active-listener.service; then
+            sleep 10
+            if systemctl --user is-active --quiet active-listener.service; then
+              systemctl --user status active-listener.service --no-pager
+              exit 0
+            fi
+          fi
+          sleep 2
+        done
+        systemctl --user status active-listener.service --no-pager
+        journalctl --user -u active-listener.service -n 100 --no-pager
+        exit 1
+
+  uninstall-active-listener-service:
+    desc: Stop, disable, and remove the active-listener user systemd service
+    dir: .
+    cmds:
+      - systemctl --user disable --now active-listener.service || true
+      - rm -f "$HOME/.config/systemd/user/active-listener.service"
+      - systemctl --user daemon-reload
+      - |
+        if systemctl --user is-enabled active-listener.service >/dev/null 2>&1; then
+          echo "active-listener.service is still enabled"
+          exit 1
+        fi
+      - |
+        if systemctl --user is-active --quiet active-listener.service; then
+          systemctl --user status active-listener.service --no-pager
+          exit 1
+        fi
+
   prepare-client-lib:
     desc: Install client library dependencies
     dir: packages/client

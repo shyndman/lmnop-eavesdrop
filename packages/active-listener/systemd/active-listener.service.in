@@ -1,0 +1,15 @@
+[Unit]
+Description=Eavesdrop active-listener desktop dictation service
+PartOf=graphical-session.target
+After=graphical-session.target ydotoold.service
+Wants=ydotoold.service
+
+[Service]
+Type=simple
+WorkingDirectory=@REPO_ROOT@
+ExecStart=@ACTIVE_LISTENER_BIN@
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

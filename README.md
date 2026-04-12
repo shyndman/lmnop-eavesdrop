@@ -40,14 +40,26 @@ uv run eavesdrop-server --config config.yaml
 ### Active Listener (Desktop Voice Input)
 
 ```bash
+# Install or update the user service bound to graphical-session.target
+task install-active-listener-service
+
+# Inspect service health and logs
+systemctl --user status active-listener.service
+journalctl --user -u active-listener.service -f
+
+# Remove the user service
+task uninstall-active-listener-service
+```
+
+The active-listener runtime config now lives at `~/.config/eavesdrop/active-listener.yaml`.
+The optional rewrite prompt override lives at `~/.config/eavesdrop/active-listener.system.md`.
+
+For manual development runs, use the same CLI entrypoint the service uses:
+
+```bash
 cd packages/active-listener
 uv sync
-
-# List available audio devices
-uv run al list-devices
-
-# Start voice-to-text typing (default: localhost:9090)
-uv run al --audio-device "Your Microphone" --server localhost:9090
+uv run active-listener --config-path ~/.config/eavesdrop/active-listener.yaml
 ```
 
 ### Client Library
