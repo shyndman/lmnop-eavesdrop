@@ -745,6 +745,7 @@ async def run_service(
   :rtype: None
   """
 
+  logger = get_logger("al/app")
   resolved_dbus_service = dbus_service or NoopDbusService()
   try:
     service = await create_service(
@@ -755,14 +756,51 @@ async def run_service(
       emitter_factory=emitter_factory,
       rewrite_client_factory=rewrite_client_factory,
     )
-  except Exception:
+  except Exception as exc:
+    await emit_fatal_error_if_possible(
+      dbus_service=resolved_dbus_service,
+      reason=str(exc),
+      logger=logger,
+      failure_kind="startup",
+    )
     await resolved_dbus_service.close()
     raise
 
   try:
     await service.run()
+  except Exception as exc:
+    await emit_fatal_error_if_possible(
+      dbus_service=resolved_dbus_service,
+      reason=str(exc),
+      logger=logger,
+      failure_kind="runtime",
+    )
+    raise
   finally:
     await resolved_dbus_service.close()
+
+
+async def emit_fatal_error_if_possible(
+  *,
+  dbus_service: AppStateService,
+  reason: str,
+  logger: ActiveListenerLogger,
+  failure_kind: str,
+) -> None:
+  """Publish a one-shot fatal event when DBus is live.
+
+  Fatal publication is only truthful after the process has an exported
+  DBus service. ``NoopDbusService`` means DBus was disabled or unavailable, so
+  there is no bus consumer that could observe the event.
+  """
+
+  if isinstance(dbus_service, NoopDbusService):
+    return
+
+  try:
+    await dbus_service.fatal_error(reason)
+  except Exception:
+    logger.exception(f"{failure_kind} fatal publication failed", reason=reason)
 
 
 def build_client(config: ActiveListenerConfig) -> ActiveListenerClient:

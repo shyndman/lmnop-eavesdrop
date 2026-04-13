@@ -38,6 +38,8 @@ class AppStateService(Protocol):
 
   async def recording_aborted(self, reason: str) -> None: ...
 
+  async def fatal_error(self, reason: str) -> None: ...
+
   async def reconnecting(self) -> None: ...
 
   async def reconnected(self) -> None: ...
@@ -59,6 +61,7 @@ if TYPE_CHECKING:
     _state: str = ""
     state: object = object()
     recording_aborted: object = object()
+    fatal_error: object = object()
     reconnecting: object = object()
     reconnected: object = object()
 
@@ -117,6 +120,14 @@ else:
       def recording_aborted(self) -> str:
         raise NotImplementedError
 
+      @dbus_signal_async(
+        signal_signature="s",
+        signal_args_names=("reason",),
+        signal_name="FatalError",
+      )
+      def fatal_error(self) -> str:
+        raise NotImplementedError
+
       @dbus_signal_async(signal_signature="", signal_name="Reconnecting")
       def reconnecting(self) -> None:
         raise NotImplementedError
@@ -148,6 +159,7 @@ else:
       namespace["__init__"] = __init__
       namespace["state"] = state
       namespace["recording_aborted"] = recording_aborted
+      namespace["fatal_error"] = fatal_error
       namespace["reconnecting"] = reconnecting
       namespace["reconnected"] = reconnected
       namespace["set_state"] = set_state
@@ -169,6 +181,9 @@ class NoopDbusService:
     _ = state
 
   async def recording_aborted(self, reason: str) -> None:
+    _ = reason
+
+  async def fatal_error(self, reason: str) -> None:
     _ = reason
 
   async def reconnecting(self) -> None:
@@ -215,6 +230,9 @@ class SdbusDbusService:
 
   async def recording_aborted(self, reason: str) -> None:
     cast(DbusSignalEmitter, self.interface.recording_aborted).emit(reason)
+
+  async def fatal_error(self, reason: str) -> None:
+    cast(DbusSignalEmitter, self.interface.fatal_error).emit(reason)
 
   async def reconnecting(self) -> None:
     cast(DbusSignalEmitter, self.interface.reconnecting).emit(None)

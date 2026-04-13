@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
@@ -8,8 +9,20 @@ import yaml
 
 from active_listener.app import ActiveListenerConfig
 
-PACKAGE_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_CONFIG_PATH = PACKAGE_ROOT / "config.yaml"
+USER_CONFIG_ENV_VAR = "XDG_CONFIG_HOME"
+DEFAULT_USER_CONFIG_DIRNAME = ".config"
+APP_CONFIG_DIRNAME = "eavesdrop"
+ACTIVE_LISTENER_CONFIG_FILENAME = "active-listener.yaml"
+
+
+def resolve_default_active_listener_config_path() -> Path:
+  configured_path = os.environ.get(USER_CONFIG_ENV_VAR)
+  base_config_dir = (
+    Path(configured_path).expanduser()
+    if configured_path is not None and configured_path != ""
+    else Path.home() / DEFAULT_USER_CONFIG_DIRNAME
+  )
+  return base_config_dir / APP_CONFIG_DIRNAME / ACTIVE_LISTENER_CONFIG_FILENAME
 
 
 class ActiveListenerConfigFileError(RuntimeError):
@@ -21,7 +34,9 @@ def load_active_listener_config(
   config_path: str | None = None,
   overrides: Mapping[str, object | None],
 ) -> ActiveListenerConfig:
-  resolved_path = Path(config_path) if config_path is not None else DEFAULT_CONFIG_PATH
+  resolved_path = (
+    Path(config_path) if config_path is not None else resolve_default_active_listener_config_path()
+  )
   config_data = load_active_listener_config_file(resolved_path)
   merged_config = dict(config_data)
 

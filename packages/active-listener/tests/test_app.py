@@ -18,7 +18,9 @@ from active_listener.app import (
   ActiveListenerService,
   LlmRewriteConfig,
   create_service,
+  run_service,
 )
+from active_listener.input import KeyboardInput
 from active_listener.rewrite import (
   LoadedRewritePrompt,
   LoadedRewritePromptFile,
@@ -188,6 +190,7 @@ class FakeEmitter:
 class FakeDbusService:
   states: list[ForegroundPhase] = field(default_factory=list)
   signals: list[tuple[str, str | None]] = field(default_factory=list)
+  close_calls: int = 0
 
   async def set_state(self, state: ForegroundPhase) -> None:
     if self.states and self.states[-1] is state:
@@ -197,6 +200,9 @@ class FakeDbusService:
   async def recording_aborted(self, reason: str) -> None:
     self.signals.append(("RecordingAborted", reason))
 
+  async def fatal_error(self, reason: str) -> None:
+    self.signals.append(("FatalError", reason))
+
   async def reconnecting(self) -> None:
     self.signals.append(("Reconnecting", None))
 
@@ -204,6 +210,7 @@ class FakeDbusService:
     self.signals.append(("Reconnected", None))
 
   async def close(self) -> None:
+    self.close_calls += 1
     return None
 
 
@@ -562,6 +569,49 @@ async def test_close_still_disconnects_when_stop_streaming_fails() -> None:
   assert harness.client.disconnect_calls == 1
   assert harness.keyboard.close_calls == 1
   assert harness.keyboard.grabbed is False
+
+
+@pytest.mark.asyncio
+async def test_run_service_emits_fatal_error_once_on_startup_failure() -> None:
+  dbus_service = FakeDbusService()
+
+  def fail_keyboard_resolver(_keyboard_name: str) -> KeyboardInput:
+    raise ActiveListenerRuntimeError("keyboard missing")
+
+  with pytest.raises(ActiveListenerRuntimeError, match="keyboard missing"):
+    await run_service(
+      _config(),
+      dbus_service=dbus_service,
+      keyboard_resolver=fail_keyboard_resolver,
+      client_factory=lambda _config: FakeClient(),
+      emitter_factory=lambda _socket: FakeEmitter(),
+      rewrite_client_factory=lambda _config: FakeRewriteClient(),
+    )
+
+  assert dbus_service.states == []
+  assert dbus_service.signals == [("FatalError", "keyboard missing")]
+  assert dbus_service.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_run_service_emits_fatal_error_once_on_runtime_failure() -> None:
+  keyboard = FakeKeyboard(queued_actions=[KeyboardAction.START_OR_FINISH, KeyboardAction.CANCEL])
+  client = FailingStopClient()
+  dbus_service = FakeDbusService()
+
+  with pytest.raises(RuntimeError, match="stop failed"):
+    await run_service(
+      _config(),
+      dbus_service=dbus_service,
+      keyboard_resolver=lambda _name: keyboard,
+      client_factory=lambda _config: client,
+      emitter_factory=lambda _socket: FakeEmitter(),
+      rewrite_client_factory=lambda _config: FakeRewriteClient(),
+    )
+
+  assert dbus_service.states == [ForegroundPhase.IDLE, ForegroundPhase.RECORDING]
+  assert dbus_service.signals == [("FatalError", "stop failed")]
+  assert dbus_service.close_calls == 1
 
 
 @pytest.mark.asyncio

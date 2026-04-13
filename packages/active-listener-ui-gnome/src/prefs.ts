@@ -5,8 +5,8 @@ import Gtk from 'gi://Gtk';
 
 import { ExtensionPreferences } from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
-const PROMPT_OVERRIDE_DIRNAME = 'active-listener';
-const PROMPT_OVERRIDE_FILENAME = 'system.md';
+const PROMPT_OVERRIDE_DIRNAME = 'eavesdrop';
+const PROMPT_OVERRIDE_FILENAME = 'active-listener.system.md';
 const FALLBACK_PROMPT_FILENAME = 'rewrite_prompt.md';
 const AUTOSAVE_DELAY_MS = 500;
 

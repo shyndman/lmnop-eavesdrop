@@ -7,8 +7,12 @@ import os
 from clypi import Command, arg
 from typing_extensions import override
 
-from active_listener.app import ActiveListenerRuntimeError, run_service
-from active_listener.config import DEFAULT_CONFIG_PATH, load_active_listener_config
+from active_listener.app import (
+  ActiveListenerRuntimeError,
+  emit_fatal_error_if_possible,
+  run_service,
+)
+from active_listener.config import load_active_listener_config
 from active_listener.dbus_service import (
   AppStateService,
   DbusDuplicateInstanceError,
@@ -76,8 +80,8 @@ async def build_app_state_service(*, no_dbus: bool) -> AppStateService:
 class ActiveListenerCommand(Command):
   """Run the long-lived active-listener hotkey service."""
 
-  config_path: str = arg(
-    default=str(DEFAULT_CONFIG_PATH),
+  config_path: str | None = arg(
+    default=None,
     help="Path to the active-listener YAML config file.",
   )
 
@@ -114,6 +118,7 @@ class ActiveListenerCommand(Command):
     :rtype: None
     """
 
+    logger = get_logger("al/cli")
     dbus_service = await build_app_state_service(no_dbus=self.no_dbus)
 
     try:
@@ -127,7 +132,13 @@ class ActiveListenerCommand(Command):
           "ydotool_socket": self.ydotool_socket,
         },
       )
-    except Exception:
+    except Exception as exc:
+      await emit_fatal_error_if_possible(
+        dbus_service=dbus_service,
+        reason=str(exc),
+        logger=logger,
+        failure_kind="startup",
+      )
       await dbus_service.close()
       raise
 

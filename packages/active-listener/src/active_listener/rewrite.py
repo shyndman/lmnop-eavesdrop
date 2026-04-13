@@ -14,8 +14,8 @@ from pydantic_ai.providers.openai import OpenAIProvider
 REPO_ROOT = Path(__file__).resolve().parents[4]
 USER_CONFIG_ENV_VAR = "XDG_CONFIG_HOME"
 DEFAULT_USER_CONFIG_DIRNAME = ".config"
-ACTIVE_LISTENER_CONFIG_DIRNAME = "active-listener"
-ACTIVE_LISTENER_PROMPT_FILENAME = "system.md"
+EAVESDROP_CONFIG_DIRNAME = "eavesdrop"
+ACTIVE_LISTENER_PROMPT_FILENAME = "active-listener.system.md"
 
 
 @dataclass(frozen=True)
@@ -90,11 +90,7 @@ def resolve_active_listener_prompt_path(configured_prompt_path: str) -> Path:
 
 
 def resolve_active_listener_override_prompt_path() -> Path:
-  return (
-    resolve_user_config_dir()
-    / ACTIVE_LISTENER_CONFIG_DIRNAME
-    / ACTIVE_LISTENER_PROMPT_FILENAME
-  )
+  return resolve_user_config_dir() / EAVESDROP_CONFIG_DIRNAME / ACTIVE_LISTENER_PROMPT_FILENAME
 
 
 def resolve_user_config_dir() -> Path:

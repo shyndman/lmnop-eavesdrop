@@ -26,11 +26,17 @@ requires_user_bus = pytest.mark.skipif(
 
 
 class WritablePropertyProxy(Protocol):
+  async def get_async(self) -> str: ...
+
   async def set_async(self, value: str) -> None: ...
 
 
 class EmptySignalProxy(Protocol):
   def __aiter__(self) -> AsyncIterator[None]: ...
+
+
+class StringSignalProxy(Protocol):
+  def __aiter__(self) -> AsyncIterator[str]: ...
 
 
 class PropertyDescriptor(Protocol):
@@ -50,6 +56,10 @@ async def receive_next_signal(iterator: AsyncIterator[None]) -> None:
   await anext(iterator)
 
 
+async def receive_next_string_signal(iterator: AsyncIterator[str]) -> str:
+  return await anext(iterator)
+
+
 @requires_user_bus
 @pytest.mark.asyncio
 async def test_interface_contract_names_match_spec() -> None:
@@ -57,6 +67,10 @@ async def test_interface_contract_names_match_spec() -> None:
   recording_aborted_signal = cast(
     SignalDescriptor,
     ActiveListenerDbusInterface.__dict__["recording_aborted"],
+  )
+  fatal_error_signal = cast(
+    SignalDescriptor,
+    ActiveListenerDbusInterface.__dict__["fatal_error"],
   )
   reconnecting_signal = cast(
     SignalDescriptor,
@@ -70,6 +84,7 @@ async def test_interface_contract_names_match_spec() -> None:
   assert state_descriptor.property_name == "State"
   assert state_descriptor.property_setter_is_public is False
   assert recording_aborted_signal.signal_name == "RecordingAborted"
+  assert fatal_error_signal.signal_name == "FatalError"
   assert reconnecting_signal.signal_name == "Reconnecting"
   assert reconnected_signal.signal_name == "Reconnected"
 
@@ -92,20 +107,38 @@ async def test_property_is_read_only_over_dbus_and_empty_signals_emit() -> None:
   proxy = ActiveListenerDbusInterface.new_proxy(DBUS_BUS_NAME, DBUS_OBJECT_PATH, bus=service.bus)
 
   try:
-    with pytest.raises(DbusPropertyReadOnlyError, match="State"):
-      await cast(WritablePropertyProxy, proxy.state).set_async("idle")
+    state_proxy = cast(WritablePropertyProxy, proxy.state)
 
+    assert await state_proxy.get_async() == ForegroundPhase.STARTING.value
+
+    with pytest.raises(DbusPropertyReadOnlyError, match="State"):
+      await state_proxy.set_async("idle")
+
+    for state in (
+      ForegroundPhase.IDLE,
+      ForegroundPhase.RECORDING,
+      ForegroundPhase.RECONNECTING,
+      ForegroundPhase.IDLE,
+    ):
+      await service.set_state(state)
+      assert await state_proxy.get_async() == state.value
+
+    fatal_error_iter = cast(StringSignalProxy, proxy.fatal_error).__aiter__()
     reconnecting_iter = cast(EmptySignalProxy, proxy.reconnecting).__aiter__()
     reconnected_iter = cast(EmptySignalProxy, proxy.reconnected).__aiter__()
+    fatal_error_task = asyncio.create_task(receive_next_string_signal(fatal_error_iter))
     reconnecting_task = asyncio.create_task(receive_next_signal(reconnecting_iter))
     reconnected_task = asyncio.create_task(receive_next_signal(reconnected_iter))
     await asyncio.sleep(0.05)
 
+    await service.fatal_error("boom")
     await service.reconnecting()
     await service.reconnected()
 
+    assert await asyncio.wait_for(fatal_error_task, timeout=2) == "boom"
     assert await asyncio.wait_for(reconnecting_task, timeout=2) is None
     assert await asyncio.wait_for(reconnected_task, timeout=2) is None
+    assert await state_proxy.get_async() == ForegroundPhase.IDLE.value
   finally:
     await service.close()
 
@@ -128,9 +161,10 @@ async def test_dbus_introspection_matches_locked_contract() -> None:
     assert 'interface name="ca.lmnop.Eavesdrop.ActiveListener1"' in introspection_xml
     assert '<property name="State" type="s" access="read">' in introspection_xml
     assert '<signal name="RecordingAborted">' in introspection_xml
+    assert '<signal name="FatalError">' in introspection_xml
     assert '<signal name="Reconnecting">' in introspection_xml
     assert '<signal name="Reconnected">' in introspection_xml
-    assert interface_block.count("<signal name=") == 3
+    assert interface_block.count("<signal name=") == 4
   finally:
     await service.close()
 

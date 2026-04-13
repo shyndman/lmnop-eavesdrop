@@ -16,6 +16,7 @@ from active_listener.rewrite import (
   RewritePromptError,
   load_active_listener_rewrite_prompt,
   load_rewrite_prompt,
+  resolve_active_listener_override_prompt_path,
 )
 
 
@@ -223,6 +224,42 @@ def test_load_active_listener_rewrite_prompt_reloads_override_each_time(
   assert first_loaded_prompt.prompt.instructions == "first prompt"
   assert second_loaded_prompt.prompt.instructions == "second prompt"
   assert first_loaded_prompt.prompt_path == second_loaded_prompt.prompt_path == override_path
+
+
+def test_resolve_active_listener_override_prompt_path_uses_eavesdrop_xdg_config_dir(
+  tmp_path: Path,
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  config_home = tmp_path / "xdg-config"
+  monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+
+  assert resolve_active_listener_override_prompt_path() == (
+    config_home / "eavesdrop" / "active-listener.system.md"
+  )
+
+
+def test_resolve_active_listener_override_prompt_path_falls_back_to_home_config_dir(
+  tmp_path: Path,
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  monkeypatch.setenv("XDG_CONFIG_HOME", "")
+  monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+  assert resolve_active_listener_override_prompt_path() == (
+    tmp_path / ".config" / "eavesdrop" / "active-listener.system.md"
+  )
+
+
+def test_resolve_active_listener_override_prompt_path_uses_home_config_dir_when_unset(
+  tmp_path: Path,
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+  monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+  assert resolve_active_listener_override_prompt_path() == (
+    tmp_path / ".config" / "eavesdrop" / "active-listener.system.md"
+  )
 
 
 @pytest.mark.asyncio

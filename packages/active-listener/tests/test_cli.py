@@ -52,6 +52,7 @@ class StubCommand:
 @dataclass
 class FakeDbusService:
   states: list[ForegroundPhase] = field(default_factory=lambda: [ForegroundPhase.STARTING])
+  signals: list[tuple[str, str | None]] = field(default_factory=list)
   close_calls: int = 0
 
   async def set_state(self, state: ForegroundPhase) -> None:
@@ -59,6 +60,9 @@ class FakeDbusService:
 
   async def recording_aborted(self, reason: str) -> None:
     _ = reason
+
+  async def fatal_error(self, reason: str) -> None:
+    self.signals.append(("FatalError", reason))
 
   async def reconnecting(self) -> None:
     return None
@@ -196,6 +200,70 @@ async def test_command_run_uses_config_file_values(
 
 
 @pytest.mark.asyncio
+async def test_command_run_uses_default_xdg_config_path_when_flag_is_not_set(
+  monkeypatch: pytest.MonkeyPatch,
+  tmp_path: Path,
+) -> None:
+  captured: list[ActiveListenerConfig] = []
+  config_home = tmp_path / "xdg-config"
+  config_path = config_home / "eavesdrop" / "active-listener.yaml"
+  config_path.parent.mkdir(parents=True)
+  _write_config(config_path, host="default-host", port=9191)
+
+  async def fake_run_service(config: ActiveListenerConfig, *, dbus_service: object) -> None:
+    _ = dbus_service
+    captured.append(config)
+
+  async def fake_build_app_state_service(*, no_dbus: bool) -> NoopDbusService:
+    _ = no_dbus
+    return NoopDbusService()
+
+  monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+  monkeypatch.setattr("active_listener.cli.build_app_state_service", fake_build_app_state_service)
+  monkeypatch.setattr("active_listener.cli.run_service", fake_run_service)
+
+  command = ActiveListenerCommand()
+
+  await command.run()
+
+  assert captured[0].host == "default-host"
+  assert captured[0].port == 9191
+
+
+@pytest.mark.asyncio
+async def test_command_run_explicit_config_path_overrides_default_xdg_location(
+  monkeypatch: pytest.MonkeyPatch,
+  tmp_path: Path,
+) -> None:
+  captured: list[ActiveListenerConfig] = []
+  config_home = tmp_path / "xdg-config"
+  default_config_path = config_home / "eavesdrop" / "active-listener.yaml"
+  explicit_config_path = tmp_path / "explicit-config.yaml"
+  default_config_path.parent.mkdir(parents=True)
+  _write_config(default_config_path, host="default-host", port=9191)
+  _write_config(explicit_config_path, host="explicit-host", port=9292)
+
+  async def fake_run_service(config: ActiveListenerConfig, *, dbus_service: object) -> None:
+    _ = dbus_service
+    captured.append(config)
+
+  async def fake_build_app_state_service(*, no_dbus: bool) -> NoopDbusService:
+    _ = no_dbus
+    return NoopDbusService()
+
+  monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+  monkeypatch.setattr("active_listener.cli.build_app_state_service", fake_build_app_state_service)
+  monkeypatch.setattr("active_listener.cli.run_service", fake_run_service)
+
+  command = ActiveListenerCommand(config_path=str(explicit_config_path))
+
+  await command.run()
+
+  assert captured[0].host == "explicit-host"
+  assert captured[0].port == 9292
+
+
+@pytest.mark.asyncio
 async def test_command_run_overrides_config_file_values(
   monkeypatch: pytest.MonkeyPatch,
   tmp_path: Path,
@@ -229,6 +297,38 @@ async def test_command_run_overrides_config_file_values(
 
 
 @pytest.mark.asyncio
+async def test_command_run_overrides_default_path_config_values(
+  monkeypatch: pytest.MonkeyPatch,
+  tmp_path: Path,
+) -> None:
+  captured: list[ActiveListenerConfig] = []
+  config_home = tmp_path / "xdg-config"
+  config_path = config_home / "eavesdrop" / "active-listener.yaml"
+  config_path.parent.mkdir(parents=True)
+  _write_config(config_path, host="default-host", port=7000)
+
+  async def fake_run_service(config: ActiveListenerConfig, *, dbus_service: object) -> None:
+    _ = dbus_service
+    captured.append(config)
+
+  async def fake_build_app_state_service(*, no_dbus: bool) -> NoopDbusService:
+    _ = no_dbus
+    return NoopDbusService()
+
+  monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+  monkeypatch.setattr("active_listener.cli.build_app_state_service", fake_build_app_state_service)
+  monkeypatch.setattr("active_listener.cli.run_service", fake_run_service)
+
+  command = ActiveListenerCommand(host="override-host", port=8080)
+
+  await command.run()
+
+  assert captured[0].host == "override-host"
+  assert captured[0].port == 8080
+  assert captured[0].keyboard_name == "Config Keyboard"
+
+
+@pytest.mark.asyncio
 async def test_command_run_raises_for_missing_required_rewrite_fields(
   monkeypatch: pytest.MonkeyPatch,
   tmp_path: Path,
@@ -253,9 +353,10 @@ async def test_command_run_raises_for_missing_required_rewrite_fields(
 
   command = ActiveListenerCommand(config_path=str(config_path))
 
-  with pytest.raises(ValueError, match="llm_rewrite"):
+  with pytest.raises(ValueError, match="llm_rewrite") as exc_info:
     await command.run()
 
+  assert dbus_service.signals == [("FatalError", str(exc_info.value))]
   assert dbus_service.close_calls == 1
 
 
