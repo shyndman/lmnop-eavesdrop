@@ -233,6 +233,35 @@ tasks:
         --env EAVESDROP_CONFIG=/app/server/config.yaml
         {{.SERVER_IMAGE}} -m eavesdrop.server
 
+  run-server-image-persistent:
+    # Verified ROCm runtime flags on AMD Framework 13 (Ryzen 7840U / Radeon 780M).
+    desc: Run the server Docker image as a restart-always background container
+    deps: [build-server-image]
+    dir: .
+    vars:
+      SERVER_IMAGE: '{{default "ghcr.io/shyndman/lmnop-eavesdrop:latest" .SERVER_IMAGE}}'
+      HSA_OVERRIDE_GFX_VERSION: '{{.DEFAULT_HSA_OVERRIDE_GFX_VERSION}}'
+      LOG_LEVEL: '{{default "INFO" .LOG_LEVEL}}'
+    cmds:
+      - |
+        if docker inspect -f '{{.State.Running}}' eavesdrop >/dev/null 2>&1 && [ "$(docker inspect -f '{{.State.Running}}' eavesdrop)" = "true" ]; then
+          docker stop eavesdrop
+        fi
+      - docker rm eavesdrop || true
+      - docker run --detach
+        --device /dev/kfd
+        --device /dev/dri
+        --security-opt seccomp=unconfined
+        --restart always
+        --publish '9090:9090'
+        --name eavesdrop
+        --env HSA_OVERRIDE_GFX_VERSION='{{.HSA_OVERRIDE_GFX_VERSION}}'
+        --env LOG_LEVEL='{{.LOG_LEVEL}}'
+        --volume "$HOME/.cache/lmnop/eavesdrop-models:/root/.cache/eavesdrop"
+        --volume "$PWD/packages/server/config.yaml:/app/server/config.yaml:ro"
+        --env EAVESDROP_CONFIG=/app/server/config.yaml
+        {{.SERVER_IMAGE}} -m eavesdrop.server
+
   stop-server-image:
     desc: Stop the running server container if needed, then remove it
     cmds:
