@@ -348,8 +348,11 @@ def setup_logging(
     cache_logger_on_first_use=True,
   )
 
+  root_logger = logging.getLogger()
+
   formatter = structlog.stdlib.ProcessorFormatter(
     foreign_pre_chain=shared_processors,
+    logger=root_logger,
     processors=[
       structlog.stdlib.ProcessorFormatter.remove_processors_meta,
       log_renderer,
@@ -359,7 +362,6 @@ def setup_logging(
   # setup logging
   handler = logging.StreamHandler()
   handler.setFormatter(formatter)
-  root_logger = logging.getLogger()
   root_logger.addHandler(handler)
   root_logger.setLevel(level)
 
