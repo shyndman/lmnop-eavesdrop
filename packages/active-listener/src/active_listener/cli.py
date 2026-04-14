@@ -7,11 +7,7 @@ import os
 from clypi import Command, arg
 from typing_extensions import override
 
-from active_listener.app import (
-  ActiveListenerRuntimeError,
-  emit_fatal_error_if_possible,
-  run_service,
-)
+from active_listener.bootstrap import emit_fatal_error_if_possible, run_service
 from active_listener.config import load_active_listener_config
 from active_listener.dbus_service import (
   AppStateService,
@@ -20,6 +16,7 @@ from active_listener.dbus_service import (
   NoopDbusService,
   SdbusDbusService,
 )
+from active_listener.service import ActiveListenerRuntimeError
 from eavesdrop.common import get_logger, setup_logging_from_env
 
 

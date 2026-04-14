@@ -1,18 +1,15 @@
-"""Application assembly and runtime policy for active-listener."""
-
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
-from typing import ClassVar, Protocol
+from typing import Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
-
-from active_listener.dbus_service import AppStateService, NoopDbusService
-from active_listener.emitter import PydotoolTextEmitter, TextEmitter
-from active_listener.input import KeyboardInput, RecordingGrabRelease, resolve_keyboard
+import active_listener.rewrite as rewrite_module
+from active_listener.dbus_service import AppStateService
+from active_listener.emitter import TextEmitter
+from active_listener.input import KeyboardInput, RecordingGrabRelease
 from active_listener.reducer import (
   RecordingReducerState,
   append_segment_text,
@@ -20,12 +17,11 @@ from active_listener.reducer import (
   render_text,
 )
 from active_listener.rewrite import (
-  LlmRewriteClient,
   RewriteClientError,
   RewriteClientTimeoutError,
   RewritePromptError,
-  load_active_listener_rewrite_prompt,
 )
+from active_listener.settings import ActiveListenerConfig
 from active_listener.state import (
   ConnectionDecision,
   ForegroundPhase,
@@ -37,51 +33,13 @@ from active_listener.state import (
 from eavesdrop.client import (
   ConnectedEvent,
   DisconnectedEvent,
-  EavesdropClient,
   ReconnectedEvent,
   ReconnectingEvent,
   TranscriptionEvent,
 )
-from eavesdrop.common import get_logger
 from eavesdrop.wire import TranscriptionMessage
 
 UNKNOWN_DISCONNECT_REASON = "unknown disconnect reason"
-
-
-class LlmRewriteConfig(BaseModel):
-  model_config: ClassVar[ConfigDict] = ConfigDict(strict=True)
-
-  enabled: bool
-  base_url: str = Field(min_length=1)
-  timeout_s: int = Field(default=30, ge=1)
-  prompt_path: str = Field(min_length=1)
-
-
-class ActiveListenerConfig(BaseModel):
-  """Validated runtime configuration for the active-listener service.
-
-  :param keyboard_name: Exact evdev device name to capture during dictation.
-  :type keyboard_name: str
-  :param host: Eavesdrop server hostname.
-  :type host: str
-  :param port: Eavesdrop server port.
-  :type port: int
-  :param audio_device: PortAudio capture device name passed to the client.
-  :type audio_device: str
-  :param ydotool_socket: Optional custom ydotool daemon socket path.
-  :type ydotool_socket: str | None
-  :param llm_rewrite: Nested rewrite configuration.
-  :type llm_rewrite: LlmRewriteConfig
-  """
-
-  model_config: ClassVar[ConfigDict] = ConfigDict(strict=True)
-
-  keyboard_name: str = Field(min_length=1)
-  host: str = Field(min_length=1)
-  port: int = Field(ge=1, le=65535)
-  audio_device: str = Field(min_length=1)
-  ydotool_socket: str | None = None
-  llm_rewrite: LlmRewriteConfig
 
 
 class ActiveListenerClient(Protocol):
@@ -138,9 +96,7 @@ class ActiveListenerRewriteClient(Protocol):
     model_name: str,
     instructions: str,
     transcript: str,
-  ) -> str:
-    ...
-    ...
+  ) -> str: ...
 
 
 @dataclass(frozen=True)
@@ -168,19 +124,7 @@ class ActiveListenerRuntimeError(RuntimeError):
 
 @dataclass
 class ActiveListenerService:
-  """Long-running active-listener service instance.
-
-  :param config: Validated runtime configuration.
-  :type config: ActiveListenerConfig
-  :param keyboard: Workstation keyboard boundary used for hotkey input and grabs.
-  :type keyboard: KeyboardInput
-  :param client: Live transcriber client boundary.
-  :type client: ActiveListenerClient
-  :param emitter: Text emission boundary.
-  :type emitter: TextEmitter
-  :param logger: Structured logger for service lifecycle events.
-  :type logger: ActiveListenerLogger
-  """
+  """Long-running active-listener service instance."""
 
   config: ActiveListenerConfig
   keyboard: KeyboardInput
@@ -198,12 +142,6 @@ class ActiveListenerService:
   _background_tasks: set[asyncio.Task[None]] = field(default_factory=set)
 
   async def run(self) -> None:
-    """Run the steady-state hotkey and client-event loop.
-
-    :returns: This coroutine only returns on cancellation or unrecoverable producer exit.
-    :rtype: None
-    """
-
     self.logger.info(
       "active-listener ready",
       keyboard_name=self.config.keyboard_name,
@@ -233,12 +171,6 @@ class ActiveListenerService:
       await self.close()
 
   async def close(self) -> None:
-    """Release service-owned resources.
-
-    :returns: None
-    :rtype: None
-    """
-
     for task in list(self._background_tasks):
       _ = task.cancel()
     if self._background_tasks:
@@ -267,24 +199,10 @@ class ActiveListenerService:
       raise ExceptionGroup("active-listener close failed", cleanup_errors)
 
   async def wait_for_background_tasks(self) -> None:
-    """Await all currently scheduled background finalization tasks.
-
-    :returns: None
-    :rtype: None
-    """
-
     if self._background_tasks:
       _ = await asyncio.gather(*list(self._background_tasks), return_exceptions=True)
 
   async def handle_keyboard_action(self, action: KeyboardAction) -> None:
-    """Apply a hotkey action to the foreground policy.
-
-    :param action: Normalized hotkey action from the input boundary.
-    :type action: KeyboardAction
-    :returns: None
-    :rtype: None
-    """
-
     decision = decide_keyboard_action(self.phase, action)
 
     if decision is KeyboardDecision.IGNORE:
@@ -329,15 +247,6 @@ class ActiveListenerService:
       ConnectedEvent | DisconnectedEvent | ReconnectingEvent | ReconnectedEvent | TranscriptionEvent
     ),
   ) -> None:
-    """Apply a live-client lifecycle event to the foreground policy.
-
-    :param event: Live client event.
-    :type event: ConnectedEvent | DisconnectedEvent | ReconnectingEvent |
-                 ReconnectedEvent | TranscriptionEvent
-    :returns: None
-    :rtype: None
-    """
-
     if isinstance(event, TranscriptionEvent):
       reducer_state = self._recording_reducer_state
       if self.phase is ForegroundPhase.RECORDING and reducer_state is not None:
@@ -404,13 +313,6 @@ class ActiveListenerService:
     )
 
   async def _enter_recording(self) -> None:
-    """Acquire recording-owned state and keyboard grab.
-
-    :returns: None
-    :rtype: None
-    :raises ActiveListenerRuntimeError: If recording grab ownership already exists.
-    """
-
     if self._recording_grab_stack is not None or self._release_recording_grab is not None:
       raise ActiveListenerRuntimeError("recording grab entered twice")
 
@@ -427,29 +329,6 @@ class ActiveListenerService:
     self.phase = ForegroundPhase.RECORDING
 
   async def _exit_recording(self, *, next_phase: ForegroundPhase) -> None:
-    """End the local recording scope before awaited downstream cleanup.
-
-    This helper exists because a leaked evdev grab is operationally dangerous.
-    If the service leaves the workstation keyboard grabbed while it awaits
-    network shutdown or finalization work, the desktop can lose normal input
-    exactly when the process is already on a failure path. ``run()`` still has
-    outer cleanup, but that is a last resort. Recording exit must release the
-    keyboard locally, in one place, before any slow or exception-prone await.
-
-    The method tells the truth about local state first: it clears reducer and
-    grab ownership, updates the foreground phase, then releases the keyboard in
-    ``finally`` by invoking the early-release callback and closing the stored
-    async context manager. Only after that does it await ``stop_streaming()``.
-    That ordering keeps cancel, finish, disconnect-abort, and shutdown on the
-    same release-first invariant even if later work raises.
-
-    :param next_phase: Foreground phase visible after local recording cleanup.
-    :type next_phase: ForegroundPhase
-    :returns: None
-    :rtype: None
-    :raises ActiveListenerRuntimeError: If recording grab ownership is inconsistent.
-    """
-
     release_recording_grab = self._release_recording_grab
     grab_stack = self._recording_grab_stack
 
@@ -471,39 +350,16 @@ class ActiveListenerService:
     await self.client.stop_streaming()
 
   def _require_recording_reducer_state(self) -> RecordingReducerState:
-    """Return the reducer state required to finalize a recording.
-
-    :returns: Active recording reducer state.
-    :rtype: RecordingReducerState
-    :raises ActiveListenerRuntimeError: If finish is requested without reducer state.
-    """
-
     reducer_state = self._recording_reducer_state
     if reducer_state is None:
       raise ActiveListenerRuntimeError("recording finish requested without reducer state")
     return reducer_state
 
   async def _pump_keyboard_actions(self, signal_queue: asyncio.Queue[RuntimeSignal]) -> None:
-    """Forward normalized workstation input into the internal signal queue.
-
-    :param signal_queue: Service-owned queue of normalized runtime signals.
-    :type signal_queue: asyncio.Queue[RuntimeSignal]
-    :returns: None
-    :rtype: None
-    """
-
     async for action in self.keyboard.actions():
       await signal_queue.put(KeyboardSignal(action=action))
 
   async def _pump_client_events(self, signal_queue: asyncio.Queue[RuntimeSignal]) -> None:
-    """Forward live client lifecycle events into the internal signal queue.
-
-    :param signal_queue: Service-owned queue of normalized runtime signals.
-    :type signal_queue: asyncio.Queue[RuntimeSignal]
-    :returns: None
-    :rtype: None
-    """
-
     async for event in self.client:
       await signal_queue.put(ClientSignal(event=event))
 
@@ -529,16 +385,6 @@ class ActiveListenerService:
     disconnect_generation: int,
     reducer_state: RecordingReducerState,
   ) -> None:
-    """Flush and emit a finished recording without re-grabbing the keyboard.
-
-    :param disconnect_generation: Disconnect epoch observed when finish was requested.
-    :type disconnect_generation: int
-    :param reducer_state: Recording-owned transcription reducer state handed off from foreground.
-    :type reducer_state: RecordingReducerState
-    :returns: None
-    :rtype: None
-    """
-
     async with self._finalization_lock:
       try:
         message = await self.client.flush(force_complete=True)
@@ -564,7 +410,9 @@ class ActiveListenerService:
       if self.config.llm_rewrite.enabled:
         prompt_path: str | None = None
         try:
-          loaded_prompt = load_active_listener_rewrite_prompt(self.config.llm_rewrite.prompt_path)
+          loaded_prompt = rewrite_module.load_active_listener_rewrite_prompt(
+            self.config.llm_rewrite.prompt_path
+          )
           prompt = loaded_prompt.prompt
           prompt_path = str(loaded_prompt.prompt_path)
           self.logger.info(
@@ -651,187 +499,3 @@ class ActiveListenerService:
         text_length=len(text_to_emit),
         source=emitted_text_source,
       )
-
-
-async def create_service(
-  config: ActiveListenerConfig,
-  *,
-  dbus_service: AppStateService | None = None,
-  keyboard_resolver: Callable[[str], KeyboardInput] = resolve_keyboard,
-  client_factory: Callable[[ActiveListenerConfig], ActiveListenerClient] | None = None,
-  emitter_factory: Callable[[str | None], TextEmitter] | None = None,
-  rewrite_client_factory: Callable[[LlmRewriteConfig], ActiveListenerRewriteClient] | None = None,
-) -> ActiveListenerService:
-  """Construct a fully initialized service instance.
-
-  :param config: Validated runtime configuration.
-  :type config: ActiveListenerConfig
-  :param keyboard_resolver: Resolver for the exact-name keyboard dependency.
-  :type keyboard_resolver: Callable[[str], KeyboardInput]
-  :param client_factory: Factory for the live transcriber dependency.
-  :type client_factory: Callable[[ActiveListenerConfig], ActiveListenerClient] | None
-  :param emitter_factory: Factory for the text emitter dependency.
-  :type emitter_factory: Callable[[str | None], TextEmitter] | None
-  :returns: Ready-to-run service instance.
-  :rtype: ActiveListenerService
-  :raises ActiveListenerRuntimeError: If startup prerequisites cannot be satisfied.
-  """
-
-  logger = get_logger("al/app")
-  resolved_dbus_service = dbus_service or NoopDbusService()
-  resolved_client_factory = client_factory or build_client
-  resolved_emitter_factory = emitter_factory or build_emitter
-  resolved_rewrite_client_factory = rewrite_client_factory or build_rewrite_client
-
-  try:
-    keyboard = keyboard_resolver(config.keyboard_name)
-  except Exception as exc:
-    logger.exception("keyboard resolution failed", keyboard_name=config.keyboard_name)
-    raise ActiveListenerRuntimeError(str(exc)) from exc
-
-  try:
-    emitter = resolved_emitter_factory(config.ydotool_socket)
-    client = resolved_client_factory(config)
-    rewrite_client = resolved_rewrite_client_factory(config.llm_rewrite)
-    await client.connect()
-  except Exception as exc:
-    keyboard.close()
-    logger.exception(
-      "startup prerequisite failed",
-      keyboard_name=config.keyboard_name,
-      host=config.host,
-      port=config.port,
-    )
-    raise ActiveListenerRuntimeError(str(exc)) from exc
-
-  logger.info(
-    "startup prerequisites satisfied",
-    keyboard_name=config.keyboard_name,
-    host=config.host,
-    port=config.port,
-  )
-  await resolved_dbus_service.set_state(ForegroundPhase.IDLE)
-  return ActiveListenerService(
-    config=config,
-    keyboard=keyboard,
-    client=client,
-    emitter=emitter,
-    logger=logger,
-    rewrite_client=rewrite_client,
-    dbus_service=resolved_dbus_service,
-  )
-
-
-async def run_service(
-  config: ActiveListenerConfig,
-  *,
-  dbus_service: AppStateService | None = None,
-  keyboard_resolver: Callable[[str], KeyboardInput] = resolve_keyboard,
-  client_factory: Callable[[ActiveListenerConfig], ActiveListenerClient] | None = None,
-  emitter_factory: Callable[[str | None], TextEmitter] | None = None,
-  rewrite_client_factory: Callable[[LlmRewriteConfig], ActiveListenerRewriteClient] | None = None,
-) -> None:
-  """Create and run the long-lived active-listener service.
-
-  :param config: Validated runtime configuration.
-  :type config: ActiveListenerConfig
-  :param keyboard_resolver: Resolver for the exact-name keyboard dependency.
-  :type keyboard_resolver: Callable[[str], KeyboardInput]
-  :param client_factory: Factory for the live transcriber dependency.
-  :type client_factory: Callable[[ActiveListenerConfig], ActiveListenerClient] | None
-  :param emitter_factory: Factory for the text emitter dependency.
-  :type emitter_factory: Callable[[str | None], TextEmitter] | None
-  :returns: None
-  :rtype: None
-  """
-
-  logger = get_logger("al/app")
-  resolved_dbus_service = dbus_service or NoopDbusService()
-  try:
-    service = await create_service(
-      config,
-      dbus_service=resolved_dbus_service,
-      keyboard_resolver=keyboard_resolver,
-      client_factory=client_factory,
-      emitter_factory=emitter_factory,
-      rewrite_client_factory=rewrite_client_factory,
-    )
-  except Exception as exc:
-    await emit_fatal_error_if_possible(
-      dbus_service=resolved_dbus_service,
-      reason=str(exc),
-      logger=logger,
-      failure_kind="startup",
-    )
-    await resolved_dbus_service.close()
-    raise
-
-  try:
-    await service.run()
-  except Exception as exc:
-    await emit_fatal_error_if_possible(
-      dbus_service=resolved_dbus_service,
-      reason=str(exc),
-      logger=logger,
-      failure_kind="runtime",
-    )
-    raise
-  finally:
-    await resolved_dbus_service.close()
-
-
-async def emit_fatal_error_if_possible(
-  *,
-  dbus_service: AppStateService,
-  reason: str,
-  logger: ActiveListenerLogger,
-  failure_kind: str,
-) -> None:
-  """Publish a one-shot fatal event when DBus is live.
-
-  Fatal publication is only truthful after the process has an exported
-  DBus service. ``NoopDbusService`` means DBus was disabled or unavailable, so
-  there is no bus consumer that could observe the event.
-  """
-
-  if isinstance(dbus_service, NoopDbusService):
-    return
-
-  try:
-    await dbus_service.fatal_error(reason)
-  except Exception:
-    logger.exception(f"{failure_kind} fatal publication failed", reason=reason)
-
-
-def build_client(config: ActiveListenerConfig) -> ActiveListenerClient:
-  """Build the live transcriber client for the configured workstation.
-
-  :param config: Validated runtime configuration.
-  :type config: ActiveListenerConfig
-  :returns: Configured live transcriber client.
-  :rtype: ActiveListenerClient
-  """
-
-  return EavesdropClient.transcriber(
-    host=config.host,
-    port=config.port,
-    audio_device=config.audio_device,
-  )
-
-
-def build_emitter(socket_path: str | None) -> TextEmitter:
-  """Build and initialize the text emission boundary.
-
-  :param socket_path: Optional custom ydotool daemon socket path.
-  :type socket_path: str | None
-  :returns: Initialized text emitter.
-  :rtype: TextEmitter
-  """
-
-  emitter = PydotoolTextEmitter(socket_path=socket_path)
-  emitter.initialize()
-  return emitter
-
-
-def build_rewrite_client(config: LlmRewriteConfig) -> ActiveListenerRewriteClient:
-  return LlmRewriteClient(base_url=config.base_url, timeout_s=config.timeout_s)
