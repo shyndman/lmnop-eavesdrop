@@ -217,6 +217,7 @@ class FakeClient:
   disconnect_calls: int = 0
   start_calls: int = 0
   stop_calls: int = 0
+  cancel_calls: int = 0
   flush_calls: list[bool] = field(default_factory=list)
   flush_results: list[asyncio.Future[TranscriptionMessage] | TranscriptionMessage | Exception] = (
     field(default_factory=list)
@@ -234,6 +235,9 @@ class FakeClient:
 
   async def stop_streaming(self) -> None:
     self.stop_calls += 1
+
+  async def cancel_utterance(self) -> None:
+    self.cancel_calls += 1
 
   async def flush(self, *, force_complete: bool = True) -> TranscriptionMessage:
     self.flush_calls.append(force_complete)
@@ -440,6 +444,7 @@ async def test_start_and_cancel_recording_toggle_grab_and_streaming() -> None:
   assert service.phase is ForegroundPhase.IDLE
   assert harness.client.start_calls == 1
   assert harness.client.stop_calls == 1
+  assert harness.client.cancel_calls == 1
   assert harness.keyboard.grab_calls == 1
   assert harness.keyboard.ungrab_calls == 1
   assert harness.logger.info_messages == ["recording started", "recording cancelled"]
@@ -456,6 +461,7 @@ async def test_cancel_clears_foreground_state_before_stop_streaming_returns() ->
     await service.handle_keyboard_action(KeyboardAction.CANCEL)
 
   assert service.phase is ForegroundPhase.IDLE
+  assert harness.client.cancel_calls == 0
   assert harness.keyboard.grabbed is False
   assert harness.keyboard.ungrab_calls == 1
 
@@ -647,6 +653,8 @@ async def test_start_and_finish_publish_recording_and_idle_states() -> None:
 
   assert harness.dbus_service.states == [ForegroundPhase.RECORDING, ForegroundPhase.IDLE]
   assert harness.dbus_service.signals == []
+  assert client.cancel_calls == 0
+  assert client.flush_calls == [True]
 
 
 @pytest.mark.asyncio
@@ -737,6 +745,7 @@ async def test_cancel_discards_accumulated_transcription_state() -> None:
   await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
   await service.wait_for_background_tasks()
 
+  assert client.cancel_calls == 1
   assert client.flush_calls == [True]
   assert emitter.emitted == ["bravo"]
 

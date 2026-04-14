@@ -17,6 +17,7 @@ from .messages import (
   StreamStatusMessage,
   TranscriptionMessage,
   TranscriptionSetupMessage,
+  UtteranceCancelledMessage,
   WebSocketHeaders,
 )
 from .transcription import Segment, TranscriptionSourceMode, UserTranscriptionOptions, Word
@@ -34,6 +35,7 @@ __all__ = [
   "TranscriptionMessage",
   "TranscriptionSourceMode",
   "TranscriptionSetupMessage",
+  "UtteranceCancelledMessage",
   "UserTranscriptionOptions",
   "WebSocketHeaders",
   "Word",

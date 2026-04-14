@@ -408,8 +408,27 @@ class StreamingTranscriptionProcessor:
       ),
     )
 
-    if flush_boundary_reached and self.flush_state is not None:
-      self.flush_state.complete()
+    if flush_boundary_reached:
+      self._discard_short_tail_after_flush()
+      if self.flush_state is not None:
+        self.flush_state.complete()
+
+  def _discard_short_tail_after_flush(self) -> None:
+    """Drop an unprocessable residual tail once a flush response has been emitted."""
+    available_duration = self.buffer.available_duration
+    if available_duration <= 0:
+      return
+
+    min_chunk_duration = self.buffer.config.min_chunk_duration
+    if available_duration >= min_chunk_duration:
+      return
+
+    discarded_duration = self.buffer.discard_unprocessed_audio()
+    self.logger.info(
+      "Discarded residual short tail after flush",
+      discarded_duration_s=f"{discarded_duration:.3f}",
+      min_chunk_duration_s=f"{min_chunk_duration:.3f}",
+    )
 
   async def _wait_for_next_interval(self, processing_time: float) -> None:
     """Wait to maintain consistent transcription intervals."""

@@ -10,6 +10,7 @@ from typing import cast
 
 import pytest
 from structlog.stdlib import BoundLogger
+from websockets.asyncio.client import ClientConnection
 
 from eavesdrop.client.audio import AudioCapture
 from eavesdrop.client.connection import WebSocketConnection
@@ -130,15 +131,23 @@ class RecordingConnection:
 
   def __init__(self) -> None:
     self.audio_chunks: list[bytes] = []
+    self.command_log: list[str] = []
     self.flush_commands: list[bool] = []
     self.flush_sent = asyncio.Event()
+    self.cancel_requests = 0
 
   async def send_audio_data(self, audio_data: bytes) -> None:
     self.audio_chunks.append(audio_data)
+    self.command_log.append("audio")
 
   async def send_flush_control(self, *, force_complete: bool = True) -> None:
     self.flush_commands.append(force_complete)
+    self.command_log.append("flush")
     self.flush_sent.set()
+
+  async def send_utterance_cancelled(self) -> None:
+    self.cancel_requests += 1
+    self.command_log.append("cancel")
 
   def is_connected(self) -> bool:
     return True
@@ -248,6 +257,31 @@ async def test_subscriber_connect_sends_stream_subscription_header(
     "X-Stream-Names": "cam-a,cam-b",
   }
   assert fake_ws.sent_payloads == []
+
+
+@pytest.mark.asyncio
+async def test_connection_serializes_utterance_cancel_control_message() -> None:
+  """Live cancel control must serialize the new wire message discriminator."""
+
+  fake_ws = FakeWebSocket()
+  connection = WebSocketConnection(
+    host="localhost",
+    port=9090,
+    stream_name="stream-cancel",
+    on_ready=lambda _backend: None,
+    on_transcription=lambda _text: None,
+    on_error=lambda _message: None,
+  )
+  connection.ws = cast(ClientConnection, cast(object, fake_ws))
+  connection.connected = True
+
+  await connection.send_utterance_cancelled()
+
+  assert len(fake_ws.sent_payloads) == 1
+  encoded = cast(str, fake_ws.sent_payloads[0])
+  decoded = deserialize_message(encoded)
+  assert decoded.type == "control_utterance_cancelled"
+  assert decoded.stream == "stream-cancel"
 
 
 @pytest.mark.asyncio
@@ -456,11 +490,15 @@ async def test_streaming_tracks_dedicated_audio_loop_task(
   assert audio_loop_task is not None
   assert audio_loop_task.done() is False
 
-  await client.stop_streaming()
+  stop_task = asyncio.create_task(client.stop_streaming())
+  await asyncio.sleep(0)
+
   assert client.is_streaming() is False
   assert audio_capture.stop_calls == 1
+  assert stop_task.done() is False
 
   allow_exit.set()
+  await stop_task
   assert audio_loop_task is not None
   await audio_loop_task
   assert client._audio_loop_task is None
@@ -503,15 +541,18 @@ async def test_start_streaming_awaits_prior_loop_and_flush_stays_valid(
   await asyncio.wait_for(loop_ready.wait(), timeout=0.2)
   first_task = client._audio_loop_task
 
-  await client.stop_streaming()
+  first_stop = asyncio.create_task(client.stop_streaming())
+  await asyncio.sleep(0)
 
   loop_ready = asyncio.Event()
   second_start = asyncio.create_task(client.start_streaming())
   await asyncio.sleep(0)
+  assert first_stop.done() is False
   assert second_start.done() is False
   assert audio_capture.start_calls == 1
 
   release_current_loop.set()
+  await first_stop
   assert first_task is not None
   await first_task
   release_current_loop = asyncio.Event()
@@ -521,8 +562,11 @@ async def test_start_streaming_awaits_prior_loop_and_flush_stays_valid(
   second_task = client._audio_loop_task
   assert second_task is not None
 
-  await client.stop_streaming()
+  second_stop = asyncio.create_task(client.stop_streaming())
+  await asyncio.sleep(0)
+  assert second_stop.done() is False
   release_current_loop.set()
+  await second_stop
   await second_task
 
   keepalive = asyncio.Event()
@@ -554,6 +598,52 @@ async def test_start_streaming_awaits_prior_loop_and_flush_stays_valid(
   assert client._audio_loop_task is None
   assert connection.flush_commands == [False]
   assert result.flush_complete is True
+
+
+@pytest.mark.asyncio
+async def test_cancel_utterance_waits_for_stream_stop_before_sending_control(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Cancel must wait for the trailing audio loop to finish before sending control."""
+
+  client = EavesdropClient.transcriber(audio_device="default")
+  audio_capture = RecordingAudioCapture()
+  connection = RecordingConnection()
+  client._connected = True
+  client._audio_capture = cast(AudioCapture, cast(object, audio_capture))
+  client._connection = cast(WebSocketConnection, cast(object, connection))
+  client._message_task = asyncio.create_task(_hold_open(asyncio.Event()))
+
+  loop_started = asyncio.Event()
+  release_tail = asyncio.Event()
+
+  async def fake_audio_streaming_loop() -> None:
+    loop_started.set()
+    await release_tail.wait()
+    await connection.send_audio_data(b"tail")
+
+  monkeypatch.setattr(client, "_audio_streaming_loop", fake_audio_streaming_loop)
+
+  await client.start_streaming()
+  await asyncio.wait_for(loop_started.wait(), timeout=0.2)
+
+  cancel_task = asyncio.create_task(client.cancel_utterance())
+  await asyncio.sleep(0)
+
+  assert cancel_task.done() is False
+  assert connection.cancel_requests == 0
+  assert audio_capture.stop_calls == 1
+
+  release_tail.set()
+  await cancel_task
+
+  assert client.is_streaming() is False
+  assert connection.audio_chunks == [b"tail"]
+  assert connection.cancel_requests == 1
+  assert connection.command_log == ["audio", "cancel"]
+
+  client._message_task.cancel()
+  await asyncio.gather(client._message_task, return_exceptions=True)
 
 
 @pytest.mark.asyncio

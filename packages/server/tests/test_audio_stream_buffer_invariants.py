@@ -90,6 +90,29 @@ def test_cleanup_keeps_processed_boundary_safe_when_buffer_is_trimmed() -> None:
   assert start_time <= buffer.buffer_start_time + buffer.total_duration
 
 
+def test_discard_unprocessed_audio_preserves_processed_cursor_for_next_utterance() -> None:
+  """Dropping a live utterance tail must preserve the processed cursor for future audio."""
+  config = _make_config()
+  buffer = AudioStreamBuffer(config)
+  buffer.add_frames(_frames(3.0, sample_rate=config.sample_rate))
+  buffer.advance_processed_boundary(1.2)
+
+  discarded_duration = buffer.discard_unprocessed_audio()
+
+  assert discarded_duration == 1.8
+  assert buffer.processed_up_to_time == 1.2
+  assert buffer.buffer_start_time == 1.2
+  assert buffer.total_duration == 0.0
+  assert buffer.available_duration == 0.0
+
+  buffer.add_frames(_frames(0.5, sample_rate=config.sample_rate))
+  chunk, duration, start_time = buffer.get_chunk_for_processing()
+
+  assert chunk.shape[0] == 5
+  assert duration == 0.5
+  assert start_time == 1.2
+
+
 def test_clip_if_stalled_respects_enabled_disabled_and_threshold_boundaries() -> None:
   """Clip behavior must be gated and trigger only above the stall threshold."""
   disabled_config = _make_config(clip_audio=False)

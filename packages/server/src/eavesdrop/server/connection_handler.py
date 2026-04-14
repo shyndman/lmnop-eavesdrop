@@ -19,6 +19,7 @@ from eavesdrop.wire import (
   FlushControlMessage,
   TranscriptionSetupMessage,
   TranscriptionSourceMode,
+  UtteranceCancelledMessage,
   WebSocketHeaders,
   deserialize_message,
   serialize_message,
@@ -56,6 +57,7 @@ ClientInitializer = Callable[
 PRE_SETUP_FLUSH_REJECTION = (
   "Flush rejected: control_flush is unavailable before live transcriber setup completes"
 )
+PRE_SETUP_UTTERANCE_CANCEL_REJECTION = "Utterance cancel rejected: control_utterance_cancelled is unavailable before live transcriber setup completes"
 
 
 class WebSocketConnectionHandler:
@@ -123,6 +125,10 @@ class WebSocketConnectionHandler:
 
           case (ClientType.TRANSCRIBER, FlushControlMessage()):
             await self._send_error(websocket, PRE_SETUP_FLUSH_REJECTION)
+            continue
+
+          case (ClientType.TRANSCRIBER, UtteranceCancelledMessage()):
+            await self._send_error(websocket, PRE_SETUP_UTTERANCE_CANCEL_REJECTION)
             continue
 
           case (ClientType.HEALTH_CHECK, HealthCheckRequest()):

@@ -21,6 +21,7 @@ from eavesdrop.wire.messages import (
   StreamStatusMessage,
   TranscriptionMessage,
   TranscriptionSetupMessage,
+  UtteranceCancelledMessage,
 )
 from eavesdrop.wire.transcription import (
   Segment,
@@ -89,6 +90,10 @@ def _build_contract_segment() -> Segment:
       timestamp=1_700_000_000.65,
       stream="stream-a",
       force_complete=False,
+    ),
+    UtteranceCancelledMessage(
+      timestamp=1_700_000_000.66,
+      stream="stream-a",
     ),
     HealthCheckRequest(timestamp=1_700_000_000.7),
     TranscriptionSetupMessage(
@@ -177,6 +182,19 @@ def test_flush_control_round_trips_without_payload_loss() -> None:
       timestamp=1_700_000_002.5,
       stream="stream-flush",
       force_complete=False,
+    )
+  )
+
+  decoded = deserialize_message(encoded)
+
+  assert serialize_message(decoded) == encoded
+
+
+def test_utterance_cancel_control_round_trips_without_payload_loss() -> None:
+  encoded = serialize_message(
+    UtteranceCancelledMessage(
+      timestamp=1_700_000_002.6,
+      stream="stream-cancel",
     )
   )
 

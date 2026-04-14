@@ -389,17 +389,42 @@ class EavesdropClient:
     self._set_audio_loop_task(self._track_background_task(task))
 
   async def stop_streaming(self) -> None:
-    """Stop audio streaming while maintaining connection (transcriber mode only)."""
+    """Stop audio streaming and wait for the active audio loop to exit."""
     if self._client_type != ClientType.TRANSCRIBER:
       raise RuntimeError("stop_streaming() only supported in transcriber mode")
 
     if not self._streaming:
+      await self._await_prior_audio_loop()
       return
 
     self._streaming = False
 
     if self._audio_capture:
       self._audio_capture.stop_recording()
+
+    await self._await_prior_audio_loop()
+
+  async def cancel_utterance(self) -> None:
+    """Cancel the current live utterance without closing the websocket session.
+
+    :raises RuntimeError: If cancel is unsupported for the current mode/session.
+    """
+    if self._client_type != ClientType.TRANSCRIBER:
+      raise RuntimeError("cancel_utterance() only supported in transcriber mode")
+
+    if self._operation_lock.locked():
+      raise RuntimeError("cancel_utterance() unavailable during transcribe_file() operation")
+
+    if (
+      not self._connected
+      or not self._connection
+      or not self._connection.is_connected()
+      or self._message_task is None
+    ):
+      raise RuntimeError("cancel_utterance() requires an active live transcriber connection")
+
+    await self.stop_streaming()
+    await self._connection.send_utterance_cancelled()
 
   async def _reconnect_loop(self) -> None:
     """Reconnect a live transcriber session on a fixed retry cadence."""

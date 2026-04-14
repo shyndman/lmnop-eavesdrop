@@ -61,6 +61,10 @@ class ActiveListenerClient(Protocol):
     """Stop microphone capture for the active recording."""
     ...
 
+  async def cancel_utterance(self) -> None:
+    """Discard the current live utterance without closing the session."""
+    ...
+
   async def flush(self, *, force_complete: bool = True) -> TranscriptionMessage:
     """Request a committed transcription flush from the server."""
     ...
@@ -224,6 +228,7 @@ class ActiveListenerService:
     if decision is KeyboardDecision.CANCEL_RECORDING:
       await self._exit_recording(next_phase=ForegroundPhase.IDLE)
       await self.dbus_service.set_state(self.phase)
+      await self.client.cancel_utterance()
       self.logger.info("recording cancelled")
       return
 

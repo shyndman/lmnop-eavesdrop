@@ -213,6 +213,27 @@ class AudioStreamBuffer:
       self.buffer_start_time = 0.0
       self.processed_up_to_time = 0.0
 
+  def discard_unprocessed_audio(self) -> float:
+    """Discard buffered audio at and after the processed boundary.
+
+    :returns: Duration in seconds discarded from the unprocessed tail.
+    :rtype: float
+    """
+    with self.lock:
+      if self.frames_np is None:
+        self.buffer_start_time = self.processed_up_to_time
+        return 0.0
+
+      processed_offset = self.processed_up_to_time - self.buffer_start_time
+      processed_samples = max(0, int(processed_offset * self.config.sample_rate))
+      processed_samples = min(processed_samples, self.frames_np.shape[0])
+      discarded_samples = self.frames_np.shape[0] - processed_samples
+
+      self.frames_np = None
+      self.buffer_start_time = self.processed_up_to_time
+
+    return discarded_samples / self.config.sample_rate
+
   @property
   def available_duration(self) -> float:
     """

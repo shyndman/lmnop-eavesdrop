@@ -131,3 +131,11 @@ class FlushControlMessage(BaseMessage):
     default=True,
     description="Whether the server should force-complete the current tentative tail",
   )
+
+
+@dataclass(kw_only=True)
+class UtteranceCancelledMessage(BaseMessage):
+  """Message declaring that the current live utterance was cancelled."""
+
+  type: Literal["control_utterance_cancelled"] = "control_utterance_cancelled"
+  stream: str = Field(description="Stream name or client identifier")

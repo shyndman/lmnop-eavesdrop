@@ -17,6 +17,7 @@ from .messages import (
   StreamStatusMessage,
   TranscriptionMessage,
   TranscriptionSetupMessage,
+  UtteranceCancelledMessage,
 )
 
 type Message = (
@@ -24,6 +25,7 @@ type Message = (
   | StreamStatusMessage
   | ErrorMessage
   | FlushControlMessage
+  | UtteranceCancelledMessage
   | LanguageDetectionMessage
   | ServerReadyMessage
   | DisconnectMessage

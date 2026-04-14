@@ -18,6 +18,7 @@ from eavesdrop.wire import (
   ServerReadyMessage,
   TranscriptionMessage,
   TranscriptionSetupMessage,
+  UtteranceCancelledMessage,
   UserTranscriptionOptions,
   WebSocketHeaders,
   deserialize_message,
@@ -231,6 +232,18 @@ class WebSocketConnection:
       await self.ws.send(serialize_message(flush_message))
     except Exception as e:
       self.on_error(f"Error sending flush control: {e}")
+      raise
+
+  async def send_utterance_cancelled(self) -> None:
+    """Send a live utterance-cancel control message over the websocket."""
+    if not self.ws or not self.connected:
+      return
+
+    try:
+      cancel_message = UtteranceCancelledMessage(stream=self.stream_name)
+      await self.ws.send(serialize_message(cancel_message))
+    except Exception as e:
+      self.on_error(f"Error sending utterance cancel control: {e}")
       raise
 
   async def send_file_bytes(

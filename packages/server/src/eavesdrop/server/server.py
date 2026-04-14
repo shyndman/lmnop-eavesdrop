@@ -20,11 +20,13 @@ from eavesdrop.wire import (
   ErrorMessage,
   FlushControlMessage,
   TranscriptionSetupMessage,
+  UtteranceCancelledMessage,
   deserialize_message,
   serialize_message,
 )
 
 RTSP_FLUSH_REJECTION = "Flush rejected: control_flush is unsupported for RTSP subscriber sessions"
+RTSP_UTTERANCE_CANCEL_REJECTION = "Utterance cancel rejected: control_utterance_cancelled is unsupported for RTSP subscriber sessions"
 
 
 # TODO: Introduce a common pathway for message deserialization
@@ -194,6 +196,17 @@ class TranscriptionServer:
           ErrorMessage(
             stream=message.stream,
             message=RTSP_FLUSH_REJECTION,
+          )
+        )
+      )
+      return
+
+    if isinstance(message, UtteranceCancelledMessage):
+      await websocket.send(
+        serialize_message(
+          ErrorMessage(
+            stream=message.stream,
+            message=RTSP_UTTERANCE_CANCEL_REJECTION,
           )
         )
       )

@@ -18,13 +18,19 @@ from websockets.asyncio.server import ServerConnection
 from eavesdrop.server.config import BufferConfig, TranscriptionConfig
 from eavesdrop.server.connection_handler import (
   PRE_SETUP_FLUSH_REJECTION,
+  PRE_SETUP_UTTERANCE_CANCEL_REJECTION,
   WebSocketConnectionHandler,
 )
-from eavesdrop.server.server import RTSP_FLUSH_REJECTION, TranscriptionServer
+from eavesdrop.server.server import (
+  RTSP_FLUSH_REJECTION,
+  RTSP_UTTERANCE_CANCEL_REJECTION,
+  TranscriptionServer,
+)
 from eavesdrop.server.streaming.buffer import AudioStreamBuffer
 from eavesdrop.server.streaming.client import (
   LIVE_FLUSH_ALREADY_PENDING_MESSAGE,
   LIVE_FLUSH_FILE_MODE_MESSAGE,
+  LIVE_UTTERANCE_CANCEL_FILE_MODE_MESSAGE,
   WebSocketStreamingClient,
 )
 from eavesdrop.server.streaming.flush_state import LiveSessionFlushState
@@ -35,6 +41,7 @@ from eavesdrop.wire import (
   FlushControlMessage,
   TranscriptionSetupMessage,
   UserTranscriptionOptions,
+  UtteranceCancelledMessage,
   deserialize_message,
   serialize_message,
 )
@@ -337,11 +344,55 @@ async def test_second_live_flush_is_rejected_and_original_flush_stays_pending() 
 
 
 @pytest.mark.asyncio
-async def test_pre_setup_flush_is_rejected_without_closing_connection() -> None:
-  """Flush sent before transcriber setup must be rejected while leaving the websocket usable."""
+async def test_live_utterance_cancel_discards_tail_without_merging_future_audio() -> None:
+  """Accepted cancel control must drop the tail and preserve the monotonic processed cursor."""
+  client = WebSocketStreamingClient.__new__(WebSocketStreamingClient)
+  client.logger = MagicMock()
+  client.buffer = AudioStreamBuffer(BufferConfig(sample_rate=10, min_chunk_duration=1.0))
+  client.transcription_sink = MagicMock()
+  client.transcription_sink.send_error = AsyncMock()
+  client._flush_state = LiveSessionFlushState()
+
+  client.buffer.add_frames(np.ones(8, dtype=np.float32))
+  client.buffer.advance_processed_boundary(0.3)
+
+  await client._handle_live_text_frame(
+    serialize_message(UtteranceCancelledMessage(stream="stream-1"))
+  )
+
+  assert client.buffer.processed_up_to_time == pytest.approx(0.3)
+  assert client.buffer.buffer_start_time == pytest.approx(0.3)
+  assert client.buffer.available_duration == 0.0
+  assert client.buffer.total_duration == 0.0
+
+  client.buffer.add_frames(np.full(4, 0.5, dtype=np.float32))
+  chunk, duration, start_time = client.buffer.get_chunk_for_processing()
+
+  assert chunk.shape[0] == 4
+  assert duration == pytest.approx(0.4)
+  assert start_time == pytest.approx(0.3)
+  client.transcription_sink.send_error.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+  ("message", "expected_rejection"),
+  [
+    (FlushControlMessage(stream="stream-1"), PRE_SETUP_FLUSH_REJECTION),
+    (
+      UtteranceCancelledMessage(stream="stream-1"),
+      PRE_SETUP_UTTERANCE_CANCEL_REJECTION,
+    ),
+  ],
+)
+async def test_pre_setup_live_controls_are_rejected_without_closing_connection(
+  message: FlushControlMessage | UtteranceCancelledMessage,
+  expected_rejection: str,
+) -> None:
+  """Live control sent before transcriber setup must be rejected while keeping the socket usable."""
   websocket = _SequentialRecvWebSocket(
     [
-      serialize_message(FlushControlMessage(stream="stream-1")),
+      serialize_message(message),
       serialize_message(
         TranscriptionSetupMessage(
           stream="stream-1",
@@ -362,34 +413,60 @@ async def test_pre_setup_flush_is_rejected_without_closing_connection() -> None:
   assert len(websocket.sent_payloads) == 1
   rejection_message = deserialize_message(websocket.sent_payloads[0])
   assert rejection_message.type == "error"
-  assert rejection_message.message == PRE_SETUP_FLUSH_REJECTION
+  assert rejection_message.message == expected_rejection
 
 
 @pytest.mark.asyncio
-async def test_file_mode_flush_is_rejected_without_tearing_down_session() -> None:
-  """File-mode uploads must reject control_flush text frames and keep ingest alive."""
+@pytest.mark.parametrize(
+  ("message", "expected_rejection"),
+  [
+    (FlushControlMessage(stream="stream-1"), LIVE_FLUSH_FILE_MODE_MESSAGE),
+    (
+      UtteranceCancelledMessage(stream="stream-1"),
+      LIVE_UTTERANCE_CANCEL_FILE_MODE_MESSAGE,
+    ),
+  ],
+)
+async def test_file_mode_live_controls_are_rejected_without_tearing_down_session(
+  message: FlushControlMessage | UtteranceCancelledMessage,
+  expected_rejection: str,
+) -> None:
+  """File-mode uploads must reject live control frames and keep ingest alive."""
   client = WebSocketStreamingClient.__new__(WebSocketStreamingClient)
   client.transcription_sink = MagicMock()
   client.transcription_sink.send_error = AsyncMock()
 
-  await client._handle_file_text_frame(serialize_message(FlushControlMessage(stream="stream-1")))
+  await client._handle_file_text_frame(serialize_message(message))
 
-  client.transcription_sink.send_error.assert_awaited_once_with(LIVE_FLUSH_FILE_MODE_MESSAGE)
+  client.transcription_sink.send_error.assert_awaited_once_with(expected_rejection)
 
 
 @pytest.mark.asyncio
-async def test_subscriber_flush_is_rejected_without_closing_connection() -> None:
-  """RTSP subscriber sessions must reject flush commands and keep the socket open."""
+@pytest.mark.parametrize(
+  ("message", "expected_rejection"),
+  [
+    (FlushControlMessage(stream="cam-a"), RTSP_FLUSH_REJECTION),
+    (
+      UtteranceCancelledMessage(stream="cam-a"),
+      RTSP_UTTERANCE_CANCEL_REJECTION,
+    ),
+  ],
+)
+async def test_subscriber_live_controls_are_rejected_without_closing_connection(
+  message: FlushControlMessage | UtteranceCancelledMessage,
+  expected_rejection: str,
+) -> None:
+  """RTSP subscriber sessions must reject live controls and keep the socket open."""
   websocket = _SequentialRecvWebSocket([])
   server = TranscriptionServer()
 
   await server._reject_subscriber_control_frame(
     cast(ServerConnection, websocket),
-    serialize_message(FlushControlMessage(stream="cam-a")),
+    serialize_message(message),
   )
 
   assert websocket.close.await_count == 0
   assert len(websocket.sent_payloads) == 1
   rejection_message = deserialize_message(websocket.sent_payloads[0])
   assert rejection_message.type == "error"
-  assert rejection_message.message == RTSP_FLUSH_REJECTION
+  assert rejection_message.message == expected_rejection

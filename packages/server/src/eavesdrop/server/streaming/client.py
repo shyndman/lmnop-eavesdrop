@@ -32,6 +32,7 @@ from eavesdrop.server.transcription.session import create_session
 from eavesdrop.wire import (
   FlushControlMessage,
   TranscriptionSourceMode,
+  UtteranceCancelledMessage,
   deserialize_message,
 )
 
@@ -40,6 +41,9 @@ FILE_OBSERVABILITY_INTERVAL_SECONDS = 5.0
 FILE_QUEUE_WARNING_FILL_RATIO = 0.85
 LIVE_FLUSH_ALREADY_PENDING_MESSAGE = "Flush rejected: another flush is already pending"
 LIVE_FLUSH_FILE_MODE_MESSAGE = "Flush rejected: control_flush is unsupported during file upload"
+LIVE_UTTERANCE_CANCEL_FILE_MODE_MESSAGE = (
+  "Utterance cancel rejected: control_utterance_cancelled is unsupported during file upload"
+)
 LIVE_FLUSH_UNEXPECTED_MESSAGE = "Flush rejected: unsupported live control message"
 
 
@@ -353,6 +357,10 @@ class WebSocketStreamingClient:
       await self.transcription_sink.send_error(LIVE_FLUSH_FILE_MODE_MESSAGE)
       return
 
+    if isinstance(message, UtteranceCancelledMessage):
+      await self.transcription_sink.send_error(LIVE_UTTERANCE_CANCEL_FILE_MODE_MESSAGE)
+      return
+
     await self.transcription_sink.send_error(
       f"Unexpected text frame during file upload: {message.type}"
     )
@@ -363,6 +371,15 @@ class WebSocketStreamingClient:
       message = deserialize_message(message_json)
     except Exception:
       await self.transcription_sink.send_error("Invalid live control frame")
+      return
+
+    if isinstance(message, UtteranceCancelledMessage):
+      discarded_duration = self.buffer.discard_unprocessed_audio()
+      self.logger.info(
+        "Discarded live utterance tail",
+        discarded_duration_s=f"{discarded_duration:.3f}",
+        processed_up_to_time_s=f"{self.buffer.processed_up_to_time:.3f}",
+      )
       return
 
     if not isinstance(message, FlushControlMessage):

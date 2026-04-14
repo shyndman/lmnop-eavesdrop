@@ -8,6 +8,7 @@ These tests lock down the server-to-client segment envelope guarantees:
 
 from dataclasses import dataclass, field
 
+import numpy as np
 import pytest
 
 from eavesdrop.server.config import BufferConfig, TranscriptionConfig
@@ -223,6 +224,9 @@ async def test_flush_without_force_complete_preserves_existing_incomplete_tail()
   session = create_session("stream-1")
   sink = RecordingSink()
   processor = _create_processor(send_last_n_segments=3, session=session, sink=sink)
+  processor.buffer.add_frames(
+    np.ones(int(0.2 * processor.buffer.config.sample_rate), dtype=np.float32)
+  )
 
   await processor._handle_transcription_output(
     result=[_segment(start=0.2, end=0.9, text="draft", time_offset=12.0)],
@@ -231,6 +235,7 @@ async def test_flush_without_force_complete_preserves_existing_incomplete_tail()
     flush_complete=True,
     force_complete=False,
   )
+  processor._discard_short_tail_after_flush()
 
   flush_result = sink.results[-1]
   output_segments = flush_result.segments
@@ -240,3 +245,5 @@ async def test_flush_without_force_complete_preserves_existing_incomplete_tail()
   assert [segment.text for segment in output_segments] == ["draft"]
   assert sum(not segment.completed for segment in output_segments) == 1
   assert output_segments[-1].completed is False
+  assert processor.buffer.available_duration == 0.0
+  assert processor.buffer.total_duration == 0.0
