@@ -244,7 +244,7 @@ tasks:
       LOG_LEVEL: '{{default "INFO" .LOG_LEVEL}}'
     cmds:
       - |
-        if docker inspect -f '{{.State.Running}}' eavesdrop >/dev/null 2>&1 && [ "$(docker inspect -f '{{.State.Running}}' eavesdrop)" = "true" ]; then
+        if docker inspect -f '{{"{{"}}.State.Running{{"}}"}}' eavesdrop >/dev/null 2>&1 && [ "$(docker inspect -f '{{"{{"}}.State.Running{{"}}"}}' eavesdrop)" = "true" ]; then
           docker stop eavesdrop
         fi
       - docker rm eavesdrop || true
@@ -266,7 +266,7 @@ tasks:
     desc: Stop the running server container if needed, then remove it
     cmds:
       - |
-        if docker inspect -f '{{.State.Running}}' eavesdrop >/dev/null 2>&1 && [ "$(docker inspect -f '{{.State.Running}}' eavesdrop)" = "true" ]; then
+        if docker inspect -f '{{"{{"}}.State.Running{{"}}"}}' eavesdrop >/dev/null 2>&1 && [ "$(docker inspect -f '{{"{{"}}.State.Running{{"}}"}}' eavesdrop)" = "true" ]; then
           docker stop eavesdrop
         fi
       - docker rm eavesdrop || true
