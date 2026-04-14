@@ -273,6 +273,29 @@ async def test_pending_flush_interrupts_minimum_chunk_wait() -> None:
 
 
 @pytest.mark.asyncio
+async def test_minimum_chunk_wait_logs_once_per_processor() -> None:
+  """Repeated below-threshold polling must not spam the minimum-wait info log."""
+  buffer = AudioStreamBuffer(
+    BufferConfig(sample_rate=16000, min_chunk_duration=0.5, transcription_interval=0.5)
+  )
+  buffer.add_frames(np.zeros(1600, dtype=np.float32))
+  processor = _build_processor(buffer=buffer, flush_state=LiveSessionFlushState())
+  processor.logger = MagicMock()
+  processor._wait_for_flush_wakeup = AsyncMock(return_value=True)
+
+  await processor._get_next_audio_chunk()
+  await processor._get_next_audio_chunk()
+
+  minimum_wait_logs = [
+    call
+    for call in processor.logger.info.call_args_list
+    if call.args and call.args[0] == "Transcription loop minimum chunk wait"
+  ]
+
+  assert len(minimum_wait_logs) == 1
+
+
+@pytest.mark.asyncio
 async def test_pending_flush_interrupts_interval_wait() -> None:
   """Accepted flushes must wake the interval wait so boundary coverage can continue immediately."""
   flush_state = LiveSessionFlushState()

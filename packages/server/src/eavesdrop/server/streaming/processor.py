@@ -92,6 +92,7 @@ class StreamingTranscriptionProcessor:
     # Transcription state
     self.exit: bool = False
     self._source_exhausted: bool = False
+    self._minimum_chunk_wait_logged: bool = False
     self.language: str | None = config.language
     self.text: list[str] = []
 
@@ -326,12 +327,14 @@ class StreamingTranscriptionProcessor:
       if self._source_exhausted and duration > 0:
         return AudioChunk(data=input_bytes, duration=duration, start_time=start_time)
       remaining_wait = self.buffer.config.min_chunk_duration - duration
-      self.logger.info(
-        "Transcription loop minimum chunk wait",
-        buffered_duration_s=f"{duration:.3f}",
-        required_duration_s=f"{self.buffer.config.min_chunk_duration:.3f}",
-        wait_s=f"{remaining_wait:.3f}",
-      )
+      if not self._minimum_chunk_wait_logged:
+        self.logger.info(
+          "Transcription loop minimum chunk wait",
+          buffered_duration_s=f"{duration:.3f}",
+          required_duration_s=f"{self.buffer.config.min_chunk_duration:.3f}",
+          wait_s=f"{remaining_wait:.3f}",
+        )
+        self._minimum_chunk_wait_logged = True
       wait_completed = await self._wait_for_flush_wakeup(remaining_wait)
       pending_flush = self._pending_flush()
       if not wait_completed and pending_flush is not None and duration > 0:
