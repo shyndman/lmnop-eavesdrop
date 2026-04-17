@@ -1,0 +1,13 @@
+{
+  "servers": {
+    "pyright": {
+      "disabled": true
+    },
+    "typescript-language-server": {
+      "rootMarkers": [
+        "packages/active-listener-ui-gnome/package.json",
+        "packages/active-listener-ui-gnome/tsconfig.json"
+      ]
+    }
+  }
+}

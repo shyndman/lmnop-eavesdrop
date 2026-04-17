@@ -1,16 +1,24 @@
 import Gio from 'gi://Gio';
+import GLib from 'gi://GLib';
 import St from 'gi://St';
 
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
+import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 const DBUS_BUS_NAME = 'ca.lmnop.Eavesdrop.ActiveListener';
 const DBUS_OBJECT_PATH = '/ca/lmnop/Eavesdrop/ActiveListener';
 const DBUS_INTERFACE_NAME = 'ca.lmnop.Eavesdrop.ActiveListener1';
 const DBUS_STATE_PROPERTY = 'State';
+const SYSTEMD_DBUS_BUS_NAME = 'org.freedesktop.systemd1';
+const SYSTEMD_DBUS_OBJECT_PATH = '/org/freedesktop/systemd1';
+const SYSTEMD_DBUS_INTERFACE_NAME = 'org.freedesktop.systemd1.Manager';
+const ACTIVE_LISTENER_SERVICE_NAME = 'active-listener.service';
+const SYSTEMD_JOB_MODE = 'replace';
 
 type IndicatorState = 'absent' | 'idle' | 'recording';
+type SystemdMethodName = 'RestartUnit' | 'StopUnit';
 
 const DBUS_PROXY_FLAGS = Gio.DBusProxyFlags.DO_NOT_AUTO_START_AT_CONSTRUCTION;
 
@@ -20,13 +28,12 @@ export default class ActiveListenerIndicatorExtension extends Extension {
   private proxy: Gio.DBusProxy | null = null;
   private proxySignalId: number | null = null;
   private busWatchId: number | null = null;
+  private restartServiceItem: PopupMenu.PopupMenuItem | null = null;
+  private stopServiceItem: PopupMenu.PopupMenuItem | null = null;
   private indicatorState: IndicatorState = 'absent';
 
   enable(): void {
     this.button = new PanelMenu.Button(0.0, this.metadata.name, false);
-    this.button.reactive = false;
-    this.button.can_focus = false;
-    this.button.track_hover = false;
 
     this.icon = new St.Icon({
       gicon: this.getStateIcon('absent'),
@@ -34,6 +41,7 @@ export default class ActiveListenerIndicatorExtension extends Extension {
       accessible_name: 'Active Listener absent',
     });
     this.button.add_child(this.icon);
+    this.addMenuItems();
 
     Main.panel.addToStatusArea(this.uuid, this.button);
 
@@ -59,9 +67,41 @@ export default class ActiveListenerIndicatorExtension extends Extension {
 
     this.detachProxy();
     this.icon = null;
+    this.restartServiceItem = null;
+    this.stopServiceItem = null;
 
     this.button?.destroy();
     this.button = null;
+  }
+
+  private addMenuItems(): void {
+    if (this.button === null) {
+      return;
+    }
+
+    if (!(this.button.menu instanceof PopupMenu.PopupMenu)) {
+      return;
+    }
+
+    const preferencesItem = new PopupMenu.PopupMenuItem('Preferences');
+    preferencesItem.connect('activate', () => {
+      this.openPreferences();
+    });
+
+    this.restartServiceItem = new PopupMenu.PopupMenuItem('Restart service');
+    this.restartServiceItem.connect('activate', () => {
+      void this.runServiceAction('RestartUnit');
+    });
+
+    this.stopServiceItem = new PopupMenu.PopupMenuItem('Stop service');
+    this.stopServiceItem.connect('activate', () => {
+      void this.runServiceAction('StopUnit');
+    });
+
+    this.button.menu.addMenuItem(preferencesItem);
+    this.button.menu.addMenuItem(this.restartServiceItem);
+    this.button.menu.addMenuItem(this.stopServiceItem);
+    this.updateMenuSensitivity();
   }
 
   private attachProxy(): void {
@@ -111,15 +151,63 @@ export default class ActiveListenerIndicatorExtension extends Extension {
     this.updateIndicator(nextState);
   }
 
+  private async runServiceAction(methodName: SystemdMethodName): Promise<void> {
+    try {
+      await this.callSystemdManager(methodName);
+      console.debug(`Active Listener indicator requested ${methodName} for ${ACTIVE_LISTENER_SERVICE_NAME}`);
+    } catch (error) {
+      console.error(`Active Listener indicator failed to ${methodName} ${ACTIVE_LISTENER_SERVICE_NAME}`, error);
+    }
+  }
+
+  private callSystemdManager(methodName: SystemdMethodName): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const connection = Gio.DBus.session;
+
+      connection.call(
+        SYSTEMD_DBUS_BUS_NAME,
+        SYSTEMD_DBUS_OBJECT_PATH,
+        SYSTEMD_DBUS_INTERFACE_NAME,
+        methodName,
+        new GLib.Variant('(ss)', [ACTIVE_LISTENER_SERVICE_NAME, SYSTEMD_JOB_MODE]),
+        null,
+        Gio.DBusCallFlags.NONE,
+        -1,
+        null,
+        (source, result) => {
+          try {
+            source?.call_finish(result);
+            resolve();
+          } catch (error) {
+            reject(error);
+          }
+        },
+      );
+    });
+  }
+
   private updateIndicator(state: IndicatorState): void {
-    if (this.icon === null || state === this.indicatorState) {
+    const stateChanged = state !== this.indicatorState;
+    this.indicatorState = state;
+    this.updateMenuSensitivity();
+
+    if (this.icon === null || !stateChanged) {
       return;
     }
 
-    this.indicatorState = state;
     this.icon.gicon = this.getStateIcon(state);
     this.icon.accessible_name = `Active Listener ${state}`;
     console.debug(`Active Listener indicator state ${state}`);
+  }
+
+  private updateMenuSensitivity(): void {
+    if (this.restartServiceItem !== null) {
+      this.restartServiceItem.sensitive = true;
+    }
+
+    if (this.stopServiceItem !== null) {
+      this.stopServiceItem.sensitive = this.indicatorState !== 'absent';
+    }
   }
 
   private getStateIcon(state: IndicatorState): Gio.FileIcon {
