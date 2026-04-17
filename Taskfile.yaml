@@ -7,16 +7,10 @@ vars:
 tasks:
   run-active-listener:
     desc: Start the active-listener workstation dictation CLI
-    dir: packages/active-listener
-    vars:
-      host: '{{default "localhost" .host}}'
-      port: '{{default "9090" .port}}'
-      audio_device: '{{default "default" .audio_device}}'
-      keyboard_name: '{{default "AT Translated Set 2 keyboard" .keyboard_name}}'
-      ydotool_socket: '{{default "" .ydotool_socket}}'
+    dir: .
     cmds:
-      - uv sync --all-extras --all-groups
-      - uv run active-listener --host "{{.host}}" --port {{.port}} --audio-device "{{.audio_device}}" --keyboard-name "{{.keyboard_name}}"{{if .ydotool_socket}} --ydotool-socket "{{.ydotool_socket}}"{{end}} {{.CLI_ARGS}}
+      - uv sync --all-extras --all-groups --project packages/active-listener
+      - uv run --project packages/active-listener active-listener --config-path packages/active-listener/config.yaml {{.CLI_ARGS}}
 
   install-active-listener-service:
     desc: Install or update the active-listener user systemd service
