@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from typing import Protocol
@@ -15,11 +15,6 @@ from active_listener.reducer import (
   append_segment_text,
   reduce_new_segments,
   render_text,
-)
-from active_listener.rewrite import (
-  RewriteClientError,
-  RewriteClientTimeoutError,
-  RewritePromptError,
 )
 from active_listener.settings import ActiveListenerConfig
 from active_listener.state import (
@@ -40,6 +35,7 @@ from eavesdrop.client import (
 from eavesdrop.wire import TranscriptionMessage
 
 UNKNOWN_DISCONNECT_REASON = "unknown disconnect reason"
+PipelineStep = Callable[[str], Awaitable[str]]
 
 
 class ActiveListenerClient(Protocol):
@@ -364,6 +360,84 @@ class ActiveListenerService:
       raise ActiveListenerRuntimeError("recording finish requested without reducer state")
     return reducer_state
 
+  def _pipeline_steps(self, *, stream: str) -> tuple[PipelineStep, ...]:
+    if not self.config.llm_rewrite.enabled:
+      return ()
+
+    async def rewrite_with_llm(text: str) -> str:
+      return await self._rewrite_with_llm(text=text, stream=stream)
+
+    return (rewrite_with_llm,)
+
+  async def _run_pipeline(
+    self,
+    *,
+    text: str,
+    steps: tuple[PipelineStep, ...],
+    stream: str,
+  ) -> str | None:
+    for step in steps:
+      try:
+        text = await step(text)
+      except Exception as exc:
+        self.logger.exception(
+          "dictation pipeline step failed",
+          stream=stream,
+          step=step.__name__,
+          reason=str(exc),
+        )
+        await self.dbus_service.pipeline_failed(step.__name__, str(exc))
+        return None
+
+    return text
+
+  async def _rewrite_with_llm(self, *, text: str, stream: str) -> str:
+    prompt_path: str | None = None
+
+    #! This very deliberately happens on each recording run. DO NOT ALTER THIS. Do not ask
+    # about loading up front. Just leave it.
+    loaded_prompt = rewrite_module.load_active_listener_rewrite_prompt(
+      self.config.llm_rewrite.prompt_path
+    )
+    prompt = loaded_prompt.prompt
+    prompt_path = str(loaded_prompt.prompt_path)
+    self.logger.info(
+      "rewrite prompt loaded",
+      stream=stream,
+      prompt_path=prompt_path,
+      model_name=prompt.model_name,
+      prompt_metadata=prompt.metadata,
+    )
+    self.logger.info(
+      "rewrite prompt rendered",
+      stream=stream,
+      prompt_path=prompt_path,
+      model_name=prompt.model_name,
+      instructions=prompt.instructions,
+    )
+    self.logger.info(
+      "rewrite started",
+      stream=stream,
+      base_url=self.config.llm_rewrite.base_url,
+      prompt_path=prompt_path,
+      model_name=prompt.model_name,
+      raw_text=text,
+    )
+    rewritten_text = await self.rewrite_client.rewrite_text(
+      model_name=prompt.model_name,
+      instructions=prompt.instructions,
+      transcript=text,
+    )
+    self.logger.info(
+      "rewrite succeeded",
+      stream=stream,
+      prompt_path=prompt_path,
+      model_name=prompt.model_name,
+      raw_text=text,
+      rewritten_text=rewritten_text,
+    )
+    return rewritten_text
+
   async def _pump_keyboard_actions(self, signal_queue: asyncio.Queue[RuntimeSignal]) -> None:
     async for action in self.keyboard.actions():
       await signal_queue.put(KeyboardSignal(action=action))
@@ -414,90 +488,19 @@ class ActiveListenerService:
 
       self.logger.info("finalized raw transcript", stream=message.stream, raw_text=raw_text)
 
-      text_to_emit = raw_text
-      emitted_text_source = "raw"
+      pipeline_steps = self._pipeline_steps(stream=message.stream)
+      final_text = await self._run_pipeline(
+        text=raw_text,
+        steps=pipeline_steps,
+        stream=message.stream,
+      )
+      if final_text is None:
+        return
 
-      if self.config.llm_rewrite.enabled:
-        prompt_path: str | None = None
-        try:
-          loaded_prompt = rewrite_module.load_active_listener_rewrite_prompt(
-            self.config.llm_rewrite.prompt_path
-          )
-          prompt = loaded_prompt.prompt
-          prompt_path = str(loaded_prompt.prompt_path)
-          self.logger.info(
-            "rewrite prompt loaded",
-            stream=message.stream,
-            prompt_path=prompt_path,
-            model_name=prompt.model_name,
-            prompt_metadata=prompt.metadata,
-          )
-          self.logger.info(
-            "rewrite prompt rendered",
-            stream=message.stream,
-            prompt_path=prompt_path,
-            model_name=prompt.model_name,
-            instructions=prompt.instructions,
-          )
-          self.logger.info(
-            "rewrite started",
-            stream=message.stream,
-            base_url=self.config.llm_rewrite.base_url,
-            prompt_path=prompt_path,
-            model_name=prompt.model_name,
-            raw_text=raw_text,
-          )
-          text_to_emit = await self.rewrite_client.rewrite_text(
-            model_name=prompt.model_name,
-            instructions=prompt.instructions,
-            transcript=raw_text,
-          )
-          emitted_text_source = "rewritten"
-          self.logger.info(
-            "rewrite succeeded",
-            stream=message.stream,
-            prompt_path=prompt_path,
-            model_name=prompt.model_name,
-            raw_text=raw_text,
-            rewritten_text=text_to_emit,
-          )
-        except RewritePromptError as exc:
-          self.logger.exception(
-            "rewrite prompt load failed",
-            stream=message.stream,
-            prompt_path=str(exc.prompt_path) if exc.prompt_path is not None else None,
-          )
-          self.logger.warning(
-            "rewrite raw fallback selected",
-            stream=message.stream,
-            raw_text=raw_text,
-          )
-        except RewriteClientTimeoutError:
-          self.logger.exception(
-            "rewrite timed out",
-            stream=message.stream,
-            prompt_path=prompt_path,
-            timeout_s=self.config.llm_rewrite.timeout_s,
-          )
-          self.logger.warning(
-            "rewrite raw fallback selected",
-            stream=message.stream,
-            raw_text=raw_text,
-          )
-        except RewriteClientError:
-          self.logger.exception(
-            "rewrite model failed",
-            stream=message.stream,
-            prompt_path=prompt_path,
-          )
-          self.logger.warning(
-            "rewrite raw fallback selected",
-            stream=message.stream,
-            raw_text=raw_text,
-          )
+      emitted_text_source = "raw" if not pipeline_steps else "pipeline"
 
       try:
-        self.emitter.emit_text(text_to_emit)
+        self.emitter.emit_text(final_text)
       except Exception:
         self.logger.exception("text emission failed", stream=message.stream)
         return
@@ -505,7 +508,7 @@ class ActiveListenerService:
       self.logger.info(
         "text emitted",
         stream=message.stream,
-        emitted_text=text_to_emit,
-        text_length=len(text_to_emit),
+        emitted_text=final_text,
+        text_length=len(final_text),
         source=emitted_text_source,
       )

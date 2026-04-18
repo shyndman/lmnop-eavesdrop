@@ -11,6 +11,7 @@ const DBUS_BUS_NAME = 'ca.lmnop.Eavesdrop.ActiveListener';
 const DBUS_OBJECT_PATH = '/ca/lmnop/Eavesdrop/ActiveListener';
 const DBUS_INTERFACE_NAME = 'ca.lmnop.Eavesdrop.ActiveListener1';
 const DBUS_STATE_PROPERTY = 'State';
+const DBUS_PIPELINE_FAILED_SIGNAL = 'PipelineFailed';
 const SYSTEMD_DBUS_BUS_NAME = 'org.freedesktop.systemd1';
 const SYSTEMD_DBUS_OBJECT_PATH = '/org/freedesktop/systemd1';
 const SYSTEMD_DBUS_INTERFACE_NAME = 'org.freedesktop.systemd1.Manager';
@@ -26,7 +27,8 @@ export default class ActiveListenerIndicatorExtension extends Extension {
   private button: PanelMenu.Button | null = null;
   private icon: St.Icon | null = null;
   private proxy: Gio.DBusProxy | null = null;
-  private proxySignalId: number | null = null;
+  private proxyPropertiesSignalId: number | null = null;
+  private proxyDbusSignalId: number | null = null;
   private busWatchId: number | null = null;
   private restartServiceItem: PopupMenu.PopupMenuItem | null = null;
   private stopServiceItem: PopupMenu.PopupMenuItem | null = null;
@@ -123,8 +125,11 @@ export default class ActiveListenerIndicatorExtension extends Extension {
       return;
     }
 
-    this.proxySignalId = this.proxy.connect('g-properties-changed', () => {
+    this.proxyPropertiesSignalId = this.proxy.connect('g-properties-changed', () => {
       this.syncIndicatorState();
+    });
+    this.proxyDbusSignalId = this.proxy.connect('g-signal', (_proxy, _senderName, signalName, parameters) => {
+      this.handleProxySignal(signalName, parameters);
     });
 
     console.debug('Active Listener indicator connected to DBus service');
@@ -132,12 +137,27 @@ export default class ActiveListenerIndicatorExtension extends Extension {
   }
 
   private detachProxy(): void {
-    if (this.proxy !== null && this.proxySignalId !== null) {
-      this.proxy.disconnect(this.proxySignalId);
+    if (this.proxy !== null && this.proxyPropertiesSignalId !== null) {
+      this.proxy.disconnect(this.proxyPropertiesSignalId);
+    }
+    if (this.proxy !== null && this.proxyDbusSignalId !== null) {
+      this.proxy.disconnect(this.proxyDbusSignalId);
     }
 
-    this.proxySignalId = null;
+    this.proxyPropertiesSignalId = null;
+    this.proxyDbusSignalId = null;
     this.proxy = null;
+  }
+
+  private handleProxySignal(signalName: string, parameters: GLib.Variant): void {
+    if (signalName !== DBUS_PIPELINE_FAILED_SIGNAL) {
+      return;
+    }
+
+    const [step, reason] = parameters.deepUnpack() as [string, string];
+    const detail = `${step}: ${reason}`;
+    console.error(`Active Listener pipeline failed ${detail}`);
+    Main.notifyError('Active Listener pipeline failed', detail);
   }
 
   private syncIndicatorState(): void {

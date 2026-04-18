@@ -30,13 +30,15 @@ class DbusExportHandle(Protocol):
 
 
 class DbusSignalEmitter(Protocol):
-  def emit(self, payload: str | None) -> None: ...
+  def emit(self, payload: object | None) -> None: ...
 
 
 class AppStateService(Protocol):
   async def set_state(self, state: ForegroundPhase) -> None: ...
 
   async def recording_aborted(self, reason: str) -> None: ...
+
+  async def pipeline_failed(self, step: str, reason: str) -> None: ...
 
   async def fatal_error(self, reason: str) -> None: ...
 
@@ -61,6 +63,7 @@ if TYPE_CHECKING:
     _state: str = ""
     state: object = object()
     recording_aborted: object = object()
+    pipeline_failed: object = object()
     fatal_error: object = object()
     reconnecting: object = object()
     reconnected: object = object()
@@ -121,6 +124,14 @@ else:
         raise NotImplementedError
 
       @dbus_signal_async(
+        signal_signature="ss",
+        signal_args_names=("step", "reason"),
+        signal_name="PipelineFailed",
+      )
+      def pipeline_failed(self) -> tuple[str, str]:
+        raise NotImplementedError
+
+      @dbus_signal_async(
         signal_signature="s",
         signal_args_names=("reason",),
         signal_name="FatalError",
@@ -159,6 +170,7 @@ else:
       namespace["__init__"] = __init__
       namespace["state"] = state
       namespace["recording_aborted"] = recording_aborted
+      namespace["pipeline_failed"] = pipeline_failed
       namespace["fatal_error"] = fatal_error
       namespace["reconnecting"] = reconnecting
       namespace["reconnected"] = reconnected
@@ -181,6 +193,10 @@ class NoopDbusService:
     _ = state
 
   async def recording_aborted(self, reason: str) -> None:
+    _ = reason
+
+  async def pipeline_failed(self, step: str, reason: str) -> None:
+    _ = step
     _ = reason
 
   async def fatal_error(self, reason: str) -> None:
@@ -230,6 +246,9 @@ class SdbusDbusService:
 
   async def recording_aborted(self, reason: str) -> None:
     cast(DbusSignalEmitter, self.interface.recording_aborted).emit(reason)
+
+  async def pipeline_failed(self, step: str, reason: str) -> None:
+    cast(DbusSignalEmitter, self.interface.pipeline_failed).emit((step, reason))
 
   async def fatal_error(self, reason: str) -> None:
     cast(DbusSignalEmitter, self.interface.fatal_error).emit(reason)

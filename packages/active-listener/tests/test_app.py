@@ -184,7 +184,7 @@ class FakeEmitter:
 @dataclass
 class FakeDbusService:
   states: list[ForegroundPhase] = field(default_factory=list)
-  signals: list[tuple[str, str | None]] = field(default_factory=list)
+  signals: list[tuple[str, object | None]] = field(default_factory=list)
   close_calls: int = 0
 
   async def set_state(self, state: ForegroundPhase) -> None:
@@ -194,6 +194,9 @@ class FakeDbusService:
 
   async def recording_aborted(self, reason: str) -> None:
     self.signals.append(("RecordingAborted", reason))
+
+  async def pipeline_failed(self, step: str, reason: str) -> None:
+    self.signals.append(("PipelineFailed", (step, reason)))
 
   async def fatal_error(self, reason: str) -> None:
     self.signals.append(("FatalError", reason))
@@ -981,6 +984,15 @@ async def test_finalize_recording_emits_raw_text_when_rewrite_is_disabled() -> N
 
   assert harness.emitter.emitted == ["alpha"]
   assert harness.rewrite_client.calls == []
+  assert harness.logger.info_records[-1] == LogRecord(
+    event="text emitted",
+    fields={
+      "stream": "stream-1",
+      "emitted_text": "alpha",
+      "text_length": 5,
+      "source": "raw",
+    },
+  )
 
 
 @pytest.mark.asyncio
@@ -1024,13 +1036,13 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
       "stream": "stream-1",
       "emitted_text": "rewritten alpha",
       "text_length": 15,
-      "source": "rewritten",
+      "source": "pipeline",
     },
   )
 
 
 @pytest.mark.asyncio
-async def test_finalize_recording_falls_back_to_raw_text_when_rewrite_fails(
+async def test_finalize_recording_drops_text_and_signals_pipeline_failure_when_rewrite_fails(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
   client = FakeClient(
@@ -1056,11 +1068,18 @@ async def test_finalize_recording_falls_back_to_raw_text_when_rewrite_fails(
   await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
   await harness.service.wait_for_background_tasks()
 
-  assert harness.emitter.emitted == ["alpha"]
-  assert harness.logger.exception_messages == ["rewrite model failed"]
-  assert harness.logger.warning_records[-1] == LogRecord(
-    event="rewrite raw fallback selected",
-    fields={"stream": "stream-1", "raw_text": "alpha"},
+  assert harness.emitter.emitted == []
+  assert harness.dbus_service.signals[-1] == (
+    "PipelineFailed",
+    ("rewrite_with_llm", "model failed"),
+  )
+  assert harness.logger.exception_records[-1] == LogRecord(
+    event="dictation pipeline step failed",
+    fields={
+      "stream": "stream-1",
+      "step": "rewrite_with_llm",
+      "reason": "model failed",
+    },
   )
 
 
@@ -1158,16 +1177,18 @@ async def test_rewrite_logging_captures_prompt_failure(monkeypatch: pytest.Monke
   await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
   await harness.service.wait_for_background_tasks()
 
+  assert harness.emitter.emitted == []
+  assert harness.dbus_service.signals[-1] == (
+    "PipelineFailed",
+    ("rewrite_with_llm", "bad prompt"),
+  )
   assert harness.logger.exception_records[-1] == LogRecord(
-    event="rewrite prompt load failed",
+    event="dictation pipeline step failed",
     fields={
       "stream": "stream-1",
-      "prompt_path": "/tmp/override/system.md",
+      "step": "rewrite_with_llm",
+      "reason": "bad prompt",
     },
-  )
-  assert harness.logger.warning_records[-1] == LogRecord(
-    event="rewrite raw fallback selected",
-    fields={"stream": "stream-1", "raw_text": "alpha"},
   )
 
 
@@ -1234,12 +1255,17 @@ async def test_rewrite_logging_captures_timeout(monkeypatch: pytest.MonkeyPatch)
   await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
   await harness.service.wait_for_background_tasks()
 
+  assert harness.emitter.emitted == []
+  assert harness.dbus_service.signals[-1] == (
+    "PipelineFailed",
+    ("rewrite_with_llm", "timed out"),
+  )
   assert harness.logger.exception_records[-1] == LogRecord(
-    event="rewrite timed out",
+    event="dictation pipeline step failed",
     fields={
       "stream": "stream-1",
-      "prompt_path": "/tmp/override/system.md",
-      "timeout_s": 30,
+      "step": "rewrite_with_llm",
+      "reason": "timed out",
     },
   )
 

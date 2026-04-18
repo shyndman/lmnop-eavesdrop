@@ -39,6 +39,10 @@ class StringSignalProxy(Protocol):
   def __aiter__(self) -> AsyncIterator[str]: ...
 
 
+class PairSignalProxy(Protocol):
+  def __aiter__(self) -> AsyncIterator[tuple[str, str]]: ...
+
+
 class PropertyDescriptor(Protocol):
   property_name: str
   property_setter_is_public: bool
@@ -60,6 +64,10 @@ async def receive_next_string_signal(iterator: AsyncIterator[str]) -> str:
   return await anext(iterator)
 
 
+async def receive_next_pair_signal(iterator: AsyncIterator[tuple[str, str]]) -> tuple[str, str]:
+  return await anext(iterator)
+
+
 @requires_user_bus
 @pytest.mark.asyncio
 async def test_interface_contract_names_match_spec() -> None:
@@ -67,6 +75,10 @@ async def test_interface_contract_names_match_spec() -> None:
   recording_aborted_signal = cast(
     SignalDescriptor,
     ActiveListenerDbusInterface.__dict__["recording_aborted"],
+  )
+  pipeline_failed_signal = cast(
+    SignalDescriptor,
+    ActiveListenerDbusInterface.__dict__["pipeline_failed"],
   )
   fatal_error_signal = cast(
     SignalDescriptor,
@@ -84,6 +96,7 @@ async def test_interface_contract_names_match_spec() -> None:
   assert state_descriptor.property_name == "State"
   assert state_descriptor.property_setter_is_public is False
   assert recording_aborted_signal.signal_name == "RecordingAborted"
+  assert pipeline_failed_signal.signal_name == "PipelineFailed"
   assert fatal_error_signal.signal_name == "FatalError"
   assert reconnecting_signal.signal_name == "Reconnecting"
   assert reconnected_signal.signal_name == "Reconnected"
@@ -124,18 +137,25 @@ async def test_property_is_read_only_over_dbus_and_empty_signals_emit() -> None:
       assert await state_proxy.get_async() == state.value
 
     fatal_error_iter = cast(StringSignalProxy, proxy.fatal_error).__aiter__()
+    pipeline_failed_iter = cast(PairSignalProxy, proxy.pipeline_failed).__aiter__()
     reconnecting_iter = cast(EmptySignalProxy, proxy.reconnecting).__aiter__()
     reconnected_iter = cast(EmptySignalProxy, proxy.reconnected).__aiter__()
     fatal_error_task = asyncio.create_task(receive_next_string_signal(fatal_error_iter))
+    pipeline_failed_task = asyncio.create_task(receive_next_pair_signal(pipeline_failed_iter))
     reconnecting_task = asyncio.create_task(receive_next_signal(reconnecting_iter))
     reconnected_task = asyncio.create_task(receive_next_signal(reconnected_iter))
     await asyncio.sleep(0.05)
 
     await service.fatal_error("boom")
+    await service.pipeline_failed("rewrite_with_llm", "timed out")
     await service.reconnecting()
     await service.reconnected()
 
     assert await asyncio.wait_for(fatal_error_task, timeout=2) == "boom"
+    assert await asyncio.wait_for(pipeline_failed_task, timeout=2) == (
+      "rewrite_with_llm",
+      "timed out",
+    )
     assert await asyncio.wait_for(reconnecting_task, timeout=2) is None
     assert await asyncio.wait_for(reconnected_task, timeout=2) is None
     assert await state_proxy.get_async() == ForegroundPhase.IDLE.value
@@ -161,10 +181,11 @@ async def test_dbus_introspection_matches_locked_contract() -> None:
     assert 'interface name="ca.lmnop.Eavesdrop.ActiveListener1"' in introspection_xml
     assert '<property name="State" type="s" access="read">' in introspection_xml
     assert '<signal name="RecordingAborted">' in introspection_xml
+    assert '<signal name="PipelineFailed">' in introspection_xml
     assert '<signal name="FatalError">' in introspection_xml
     assert '<signal name="Reconnecting">' in introspection_xml
     assert '<signal name="Reconnected">' in introspection_xml
-    assert interface_block.count("<signal name=") == 4
+    assert interface_block.count("<signal name=") == 5
   finally:
     await service.close()
 
