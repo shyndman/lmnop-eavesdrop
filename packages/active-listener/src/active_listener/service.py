@@ -139,6 +139,7 @@ class ActiveListenerService:
   dbus_service: AppStateService
   phase: ForegroundPhase = ForegroundPhase.IDLE
   disconnect_generation: int = 0
+  _connection_last_id: int | None = None
   _recording_reducer_state: RecordingReducerState | None = None
   _recording_grab_stack: AsyncExitStack | None = None
   _release_recording_grab: RecordingGrabRelease | None = None
@@ -258,6 +259,9 @@ class ActiveListenerService:
         self._ingest_transcription_message(state=reducer_state, message=event.message)
       return
 
+    if isinstance(event, ConnectedEvent | ReconnectedEvent):
+      self._connection_last_id = None
+
     decision = decide_client_event(self.phase, event)
 
     if decision is ConnectionDecision.IGNORE:
@@ -330,7 +334,7 @@ class ActiveListenerService:
 
     self._recording_grab_stack = grab_stack
     self._release_recording_grab = release_recording_grab
-    self._recording_reducer_state = RecordingReducerState()
+    self._recording_reducer_state = RecordingReducerState(last_id=self._connection_last_id)
     self.phase = ForegroundPhase.RECORDING
 
   async def _exit_recording(self, *, next_phase: ForegroundPhase) -> None:
@@ -383,6 +387,7 @@ class ActiveListenerService:
       )
     append_segment_text(state.parts, reduction.segments)
     state.last_id = reduction.last_id
+    self._connection_last_id = reduction.last_id
 
   async def _finalize_recording(
     self,

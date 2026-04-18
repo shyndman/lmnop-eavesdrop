@@ -717,12 +717,13 @@ async def test_transcription_events_are_consumed_only_while_recording() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cancel_discards_accumulated_transcription_state() -> None:
+async def test_cancel_preserves_connection_cursor_for_next_recording() -> None:
   client = FakeClient(
     flush_results=[
       _message(
-        _segment(10, "bravo", completed=True),
-        _segment(11, "tail", completed=False),
+        _segment(1, "alpha", completed=True),
+        _segment(2, "bravo", completed=True),
+        _segment(3, "tail", completed=False),
       )
     ]
   )
@@ -748,6 +749,73 @@ async def test_cancel_discards_accumulated_transcription_state() -> None:
   assert client.cancel_calls == 1
   assert client.flush_calls == [True]
   assert emitter.emitted == ["bravo"]
+
+
+@pytest.mark.asyncio
+async def test_new_recording_ignores_completed_history_before_seeded_cursor() -> None:
+  client = FakeClient(
+    flush_results=[
+      _message(
+        _segment(1, "alpha", completed=True),
+        _segment(2, "tail", completed=False),
+      ),
+      _message(
+        _segment(1, "alpha", completed=True),
+        _segment(2, "bravo", completed=True),
+        _segment(3, "charlie", completed=True),
+        _segment(4, "tail", completed=False),
+      ),
+    ]
+  )
+  emitter = FakeEmitter()
+  harness = _service(client=client, emitter=emitter)
+  service = harness.service
+
+  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await service.wait_for_background_tasks()
+
+  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await service.wait_for_background_tasks()
+
+  assert client.flush_calls == [True, True]
+  assert emitter.emitted == ["alpha", "bravo charlie"]
+
+
+@pytest.mark.asyncio
+async def test_reconnected_session_resets_connection_cursor_before_next_recording() -> None:
+  client = FakeClient(
+    flush_results=[
+      _message(
+        _segment(1, "alpha", completed=True),
+        _segment(2, "tail", completed=False),
+      ),
+      _message(
+        _segment(1, "fresh", completed=True),
+        _segment(2, "tail", completed=False),
+      ),
+    ]
+  )
+  emitter = FakeEmitter()
+  harness = _service(client=client, emitter=emitter)
+  service = harness.service
+
+  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await service.wait_for_background_tasks()
+
+  await service.handle_client_event(
+    ReconnectingEvent(stream="stream-1", attempt=2, retry_delay_s=10.0)
+  )
+  await service.handle_client_event(ReconnectedEvent(stream="stream-1"))
+
+  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  await service.wait_for_background_tasks()
+
+  assert client.flush_calls == [True, True]
+  assert emitter.emitted == ["alpha", "fresh"]
 
 
 @pytest.mark.asyncio
