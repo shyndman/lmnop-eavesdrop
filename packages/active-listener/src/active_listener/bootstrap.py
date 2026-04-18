@@ -6,12 +6,12 @@ from active_listener.dbus_service import AppStateService, NoopDbusService
 from active_listener.emitter import PydotoolTextEmitter, TextEmitter
 from active_listener.input import KeyboardInput, resolve_keyboard
 from active_listener.rewrite import LlmRewriteClient
-from active_listener.service import (
+from active_listener.service import ActiveListenerService
+from active_listener.service_ports import (
   ActiveListenerClient,
   ActiveListenerLogger,
   ActiveListenerRewriteClient,
   ActiveListenerRuntimeError,
-  ActiveListenerService,
 )
 from active_listener.settings import ActiveListenerConfig, LlmRewriteConfig
 from active_listener.state import ForegroundPhase

@@ -1,20 +1,18 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
-from typing import Protocol
 
-import active_listener.rewrite as rewrite_module
 from active_listener.dbus_service import AppStateService
 from active_listener.emitter import TextEmitter
-from active_listener.input import KeyboardInput, RecordingGrabRelease
-from active_listener.reducer import (
-  RecordingReducerState,
-  append_segment_text,
-  reduce_new_segments,
-  render_text,
+from active_listener.input import KeyboardInput
+from active_listener.recording_finalizer import RecordingFinalizer
+from active_listener.recording_session import RecordingSession
+from active_listener.runtime_signals import ClientSignal, KeyboardSignal, RuntimeSignal
+from active_listener.service_ports import (
+  ActiveListenerClient,
+  ActiveListenerLogger,
+  ActiveListenerRewriteClient,
 )
 from active_listener.settings import ActiveListenerConfig
 from active_listener.state import (
@@ -32,94 +30,8 @@ from eavesdrop.client import (
   ReconnectingEvent,
   TranscriptionEvent,
 )
-from eavesdrop.wire import TranscriptionMessage
 
 UNKNOWN_DISCONNECT_REASON = "unknown disconnect reason"
-PipelineStep = Callable[[str], Awaitable[str]]
-
-
-class ActiveListenerClient(Protocol):
-  """Protocol for the live transcription client dependency."""
-
-  async def connect(self) -> None:
-    """Establish the live connection."""
-    ...
-
-  async def disconnect(self) -> None:
-    """Close the live connection."""
-    ...
-
-  async def start_streaming(self) -> None:
-    """Begin microphone capture and upstream streaming."""
-    ...
-
-  async def stop_streaming(self) -> None:
-    """Stop microphone capture for the active recording."""
-    ...
-
-  async def cancel_utterance(self) -> None:
-    """Discard the current live utterance without closing the session."""
-    ...
-
-  async def flush(self, *, force_complete: bool = True) -> TranscriptionMessage:
-    """Request a committed transcription flush from the server."""
-    ...
-
-  def __aiter__(
-    self,
-  ) -> AsyncIterator[
-    ConnectedEvent | DisconnectedEvent | ReconnectingEvent | ReconnectedEvent | TranscriptionEvent
-  ]:
-    """Iterate ordered client lifecycle events."""
-    ...
-
-
-class ActiveListenerLogger(Protocol):
-  """Minimal structured logger API used by active-listener."""
-
-  def info(self, event: str, **kwargs: object) -> None:
-    """Emit an informational event."""
-    ...
-
-  def warning(self, event: str, **kwargs: object) -> None:
-    """Emit a warning event."""
-    ...
-
-  def exception(self, event: str, **kwargs: object) -> None:
-    """Emit an exception event with stack trace."""
-
-
-class ActiveListenerRewriteClient(Protocol):
-  async def rewrite_text(
-    self,
-    *,
-    model_name: str,
-    instructions: str,
-    transcript: str,
-  ) -> str: ...
-
-
-@dataclass(frozen=True)
-class KeyboardSignal:
-  """Signal carrying a workstation keyboard action into app policy."""
-
-  action: KeyboardAction
-
-
-@dataclass(frozen=True)
-class ClientSignal:
-  """Signal carrying a live client event into app policy."""
-
-  event: (
-    ConnectedEvent | DisconnectedEvent | ReconnectingEvent | ReconnectedEvent | TranscriptionEvent
-  )
-
-
-RuntimeSignal = KeyboardSignal | ClientSignal
-
-
-class ActiveListenerRuntimeError(RuntimeError):
-  """Raised when the service cannot satisfy runtime prerequisites."""
 
 
 @dataclass
@@ -135,12 +47,26 @@ class ActiveListenerService:
   dbus_service: AppStateService
   phase: ForegroundPhase = ForegroundPhase.IDLE
   disconnect_generation: int = 0
-  _connection_last_id: int | None = None
-  _recording_reducer_state: RecordingReducerState | None = None
-  _recording_grab_stack: AsyncExitStack | None = None
-  _release_recording_grab: RecordingGrabRelease | None = None
-  _finalization_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+  _recording_session: RecordingSession = field(init=False)
+  _recording_finalizer: RecordingFinalizer = field(init=False)
   _background_tasks: set[asyncio.Task[None]] = field(default_factory=set)
+
+  def __post_init__(self) -> None:
+    self._recording_session = RecordingSession(
+      keyboard=self.keyboard,
+      client=self.client,
+      logger=self.logger,
+    )
+    self._recording_finalizer = RecordingFinalizer(
+      config=self.config,
+      client=self.client,
+      emitter=self.emitter,
+      logger=self.logger,
+      rewrite_client=self.rewrite_client,
+      dbus_service=self.dbus_service,
+      ingest_transcription_message=self._recording_session.ingest_transcription_message,
+      current_disconnect_generation=self._current_disconnect_generation,
+    )
 
   async def run(self) -> None:
     self.logger.info(
@@ -183,7 +109,8 @@ class ActiveListenerService:
     try:
       if self.phase is ForegroundPhase.RECORDING:
         try:
-          await self._exit_recording(next_phase=ForegroundPhase.IDLE)
+          self.phase = ForegroundPhase.IDLE
+          await self._recording_session.stop_recording()
         except Exception as exc:
           cleanup_errors.append(exc)
 
@@ -217,24 +144,25 @@ class ActiveListenerService:
 
     if decision is KeyboardDecision.START_RECORDING:
       await self.client.start_streaming()
-      await self._enter_recording()
+      await self._recording_session.start_recording()
+      self.phase = ForegroundPhase.RECORDING
       await self.dbus_service.set_state(self.phase)
       self.logger.info("recording started")
       return
 
     if decision is KeyboardDecision.CANCEL_RECORDING:
-      await self._exit_recording(next_phase=ForegroundPhase.IDLE)
+      self.phase = ForegroundPhase.IDLE
+      await self._recording_session.stop_recording()
       await self.dbus_service.set_state(self.phase)
       await self.client.cancel_utterance()
       self.logger.info("recording cancelled")
       return
 
-    reducer_state = self._require_recording_reducer_state()
-
-    await self._exit_recording(next_phase=ForegroundPhase.IDLE)
+    self.phase = ForegroundPhase.IDLE
+    reducer_state = await self._recording_session.finish_recording()
     await self.dbus_service.set_state(self.phase)
     finalization_task = asyncio.create_task(
-      self._finalize_recording(
+      self._recording_finalizer.finalize_recording(
         disconnect_generation=self.disconnect_generation,
         reducer_state=reducer_state,
       )
@@ -250,13 +178,12 @@ class ActiveListenerService:
     ),
   ) -> None:
     if isinstance(event, TranscriptionEvent):
-      reducer_state = self._recording_reducer_state
-      if self.phase is ForegroundPhase.RECORDING and reducer_state is not None:
-        self._ingest_transcription_message(state=reducer_state, message=event.message)
+      if self.phase is ForegroundPhase.RECORDING:
+        self._recording_session.ingest_live_transcription_message(event.message)
       return
 
     if isinstance(event, ConnectedEvent | ReconnectedEvent):
-      self._connection_last_id = None
+      self._recording_session.reset_connection_cursor()
 
     decision = decide_client_event(self.phase, event)
 
@@ -300,7 +227,8 @@ class ActiveListenerService:
     disconnect_reason = disconnected_event.reason or UNKNOWN_DISCONNECT_REASON
 
     if decision is ConnectionDecision.ABORT_RECORDING:
-      await self._exit_recording(next_phase=ForegroundPhase.RECONNECTING)
+      self.phase = ForegroundPhase.RECONNECTING
+      await self._recording_session.stop_recording()
       await self.dbus_service.set_state(self.phase)
       await self.dbus_service.recording_aborted(disconnect_reason)
       await self.dbus_service.reconnecting()
@@ -317,127 +245,6 @@ class ActiveListenerService:
       reason=disconnect_reason,
     )
 
-  async def _enter_recording(self) -> None:
-    if self._recording_grab_stack is not None or self._release_recording_grab is not None:
-      raise ActiveListenerRuntimeError("recording grab entered twice")
-
-    grab_stack = AsyncExitStack()
-    try:
-      release_recording_grab = await grab_stack.enter_async_context(self.keyboard.recording_grab())
-    except Exception:
-      await grab_stack.aclose()
-      raise
-
-    self._recording_grab_stack = grab_stack
-    self._release_recording_grab = release_recording_grab
-    self._recording_reducer_state = RecordingReducerState(last_id=self._connection_last_id)
-    self.phase = ForegroundPhase.RECORDING
-
-  async def _exit_recording(self, *, next_phase: ForegroundPhase) -> None:
-    release_recording_grab = self._release_recording_grab
-    grab_stack = self._recording_grab_stack
-
-    if (release_recording_grab is None) != (grab_stack is None):
-      raise ActiveListenerRuntimeError("recording grab ownership is inconsistent")
-
-    self._release_recording_grab = None
-    self._recording_grab_stack = None
-    self._recording_reducer_state = None
-    self.phase = next_phase
-
-    try:
-      if release_recording_grab is not None:
-        release_recording_grab()
-    finally:
-      if grab_stack is not None:
-        await grab_stack.aclose()
-
-    await self.client.stop_streaming()
-
-  def _require_recording_reducer_state(self) -> RecordingReducerState:
-    reducer_state = self._recording_reducer_state
-    if reducer_state is None:
-      raise ActiveListenerRuntimeError("recording finish requested without reducer state")
-    return reducer_state
-
-  def _pipeline_steps(self, *, stream: str) -> tuple[PipelineStep, ...]:
-    if not self.config.llm_rewrite.enabled:
-      return ()
-
-    async def rewrite_with_llm(text: str) -> str:
-      return await self._rewrite_with_llm(text=text, stream=stream)
-
-    return (rewrite_with_llm,)
-
-  async def _run_pipeline(
-    self,
-    *,
-    text: str,
-    steps: tuple[PipelineStep, ...],
-    stream: str,
-  ) -> str | None:
-    for step in steps:
-      try:
-        text = await step(text)
-      except Exception as exc:
-        self.logger.exception(
-          "dictation pipeline step failed",
-          stream=stream,
-          step=step.__name__,
-          reason=str(exc),
-        )
-        await self.dbus_service.pipeline_failed(step.__name__, str(exc))
-        return None
-
-    return text
-
-  async def _rewrite_with_llm(self, *, text: str, stream: str) -> str:
-    prompt_path: str | None = None
-
-    #! This very deliberately happens on each recording run. DO NOT ALTER THIS. Do not ask
-    # about loading up front. Just leave it.
-    loaded_prompt = rewrite_module.load_active_listener_rewrite_prompt(
-      self.config.llm_rewrite.prompt_path
-    )
-    prompt = loaded_prompt.prompt
-    prompt_path = str(loaded_prompt.prompt_path)
-    self.logger.info(
-      "rewrite prompt loaded",
-      stream=stream,
-      prompt_path=prompt_path,
-      model_name=prompt.model_name,
-      prompt_metadata=prompt.metadata,
-    )
-    self.logger.info(
-      "rewrite prompt rendered",
-      stream=stream,
-      prompt_path=prompt_path,
-      model_name=prompt.model_name,
-      instructions=prompt.instructions,
-    )
-    self.logger.info(
-      "rewrite started",
-      stream=stream,
-      base_url=self.config.llm_rewrite.base_url,
-      prompt_path=prompt_path,
-      model_name=prompt.model_name,
-      raw_text=text,
-    )
-    rewritten_text = await self.rewrite_client.rewrite_text(
-      model_name=prompt.model_name,
-      instructions=prompt.instructions,
-      transcript=text,
-    )
-    self.logger.info(
-      "rewrite succeeded",
-      stream=stream,
-      prompt_path=prompt_path,
-      model_name=prompt.model_name,
-      raw_text=text,
-      rewritten_text=rewritten_text,
-    )
-    return rewritten_text
-
   async def _pump_keyboard_actions(self, signal_queue: asyncio.Queue[RuntimeSignal]) -> None:
     async for action in self.keyboard.actions():
       await signal_queue.put(KeyboardSignal(action=action))
@@ -446,69 +253,5 @@ class ActiveListenerService:
     async for event in self.client:
       await signal_queue.put(ClientSignal(event=event))
 
-  def _ingest_transcription_message(
-    self,
-    *,
-    state: RecordingReducerState,
-    message: TranscriptionMessage,
-  ) -> None:
-    reduction = reduce_new_segments(message.segments, state.last_id)
-    if reduction.missing_last_id:
-      self.logger.warning(
-        "transcription reducer sentinel missing",
-        stream=message.stream,
-        last_id=state.last_id,
-      )
-    append_segment_text(state.parts, reduction.segments)
-    state.last_id = reduction.last_id
-    self._connection_last_id = reduction.last_id
-
-  async def _finalize_recording(
-    self,
-    *,
-    disconnect_generation: int,
-    reducer_state: RecordingReducerState,
-  ) -> None:
-    async with self._finalization_lock:
-      try:
-        message = await self.client.flush(force_complete=True)
-      except Exception:
-        self.logger.exception("recording finalization failed")
-        return
-
-      if self.disconnect_generation != disconnect_generation:
-        self.logger.warning("skipping emission after disconnect", stream=message.stream)
-        return
-
-      self._ingest_transcription_message(state=reducer_state, message=message)
-      raw_text = render_text(reducer_state.parts)
-      if not raw_text:
-        self.logger.info("recording finalized without committed text", stream=message.stream)
-        return
-
-      self.logger.info("finalized raw transcript", stream=message.stream, raw_text=raw_text)
-
-      pipeline_steps = self._pipeline_steps(stream=message.stream)
-      final_text = await self._run_pipeline(
-        text=raw_text,
-        steps=pipeline_steps,
-        stream=message.stream,
-      )
-      if final_text is None:
-        return
-
-      emitted_text_source = "raw" if not pipeline_steps else "pipeline"
-
-      try:
-        self.emitter.emit_text(final_text)
-      except Exception:
-        self.logger.exception("text emission failed", stream=message.stream)
-        return
-
-      self.logger.info(
-        "text emitted",
-        stream=message.stream,
-        emitted_text=final_text,
-        text_length=len(final_text),
-        source=emitted_text_source,
-      )
+  def _current_disconnect_generation(self) -> int:
+    return self.disconnect_generation

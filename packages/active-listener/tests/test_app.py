@@ -21,7 +21,8 @@ from active_listener.rewrite import (
   RewriteClientTimeoutError,
   RewritePromptError,
 )
-from active_listener.service import ActiveListenerRuntimeError, ActiveListenerService
+from active_listener.service import ActiveListenerService
+from active_listener.service_ports import ActiveListenerRuntimeError
 from active_listener.settings import ActiveListenerConfig, LlmRewriteConfig
 from active_listener.state import ForegroundPhase, KeyboardAction
 from eavesdrop.client import (

@@ -14,7 +14,7 @@ from active_listener.dbus_service import (
   DbusServiceError,
   NoopDbusService,
 )
-from active_listener.service import ActiveListenerRuntimeError
+from active_listener.service_ports import ActiveListenerRuntimeError
 from active_listener.settings import ActiveListenerConfig, LlmRewriteConfig
 from active_listener.state import ForegroundPhase
 

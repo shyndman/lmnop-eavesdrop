@@ -16,7 +16,7 @@ from active_listener.dbus_service import (
   NoopDbusService,
   SdbusDbusService,
 )
-from active_listener.service import ActiveListenerRuntimeError
+from active_listener.service_ports import ActiveListenerRuntimeError
 from eavesdrop.common import get_logger, setup_logging_from_env
 
 
