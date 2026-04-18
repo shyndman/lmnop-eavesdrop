@@ -33,7 +33,7 @@ export default class ActiveListenerIndicatorExtension extends Extension {
   private indicatorState: IndicatorState = 'absent';
 
   enable(): void {
-    this.button = new PanelMenu.Button(0.0, this.metadata.name, false);
+    this.button = new PanelMenu.Button(0.5, this.metadata.name, false);
 
     this.icon = new St.Icon({
       gicon: this.getStateIcon('absent'),
