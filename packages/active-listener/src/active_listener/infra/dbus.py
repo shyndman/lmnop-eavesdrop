@@ -18,7 +18,7 @@ from sdbus import (
 )
 from sdbus.exceptions import SdBusRequestNameExistsError
 
-from active_listener.state import ForegroundPhase
+from active_listener.app.state import ForegroundPhase
 
 DBUS_BUS_NAME = "ca.lmnop.Eavesdrop.ActiveListener"
 DBUS_OBJECT_PATH = "/ca/lmnop/Eavesdrop/ActiveListener"

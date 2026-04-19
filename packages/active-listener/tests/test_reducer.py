@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from active_listener.reducer import (
+from active_listener.recording.reducer import (
   RecordingReducerState,
   append_segment_text,
   reduce_new_segments,

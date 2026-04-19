@@ -7,4 +7,4 @@ ydotool_socket: "/run/user/1000/.ydotool_socket"
 llm_rewrite:
   enabled: true
   model_path: "models/rewrite.litertlm"
-  prompt_path: "rewrite_prompt.md"
+  prompt_path: "prompts/rewrite_prompt.md"

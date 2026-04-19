@@ -6,16 +6,16 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
-import active_listener.rewrite as rewrite_module
-from active_listener.dbus_service import AppStateService
-from active_listener.emitter import TextEmitter
-from active_listener.reducer import RecordingReducerState, render_text
-from active_listener.service_ports import (
+import active_listener.infra.rewrite as rewrite_module
+from active_listener.app.ports import (
   ActiveListenerClient,
   ActiveListenerLogger,
   ActiveListenerRewriteClient,
 )
-from active_listener.settings import ActiveListenerConfig
+from active_listener.config.models import ActiveListenerConfig
+from active_listener.infra.dbus import AppStateService
+from active_listener.infra.emitter import TextEmitter
+from active_listener.recording.reducer import RecordingReducerState, render_text
 from eavesdrop.wire import TranscriptionMessage
 
 PipelineStep = Callable[[str], Awaitable[str]]

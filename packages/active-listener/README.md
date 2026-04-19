@@ -32,9 +32,9 @@ Rewrite now runs against a local LiteRT `.litertlm` bundle. If `llm_rewrite.enab
 Both `llm_rewrite.model_path` and `llm_rewrite.prompt_path` resolve relative to the config file directory, then normalize to absolute paths before the runtime starts. The seeded sample config uses:
 
 - `model_path: "models/rewrite.litertlm"`
-- `prompt_path: "rewrite_prompt.md"`
+- `prompt_path: "prompts/rewrite_prompt.md"`
 
-That means a copied config at `~/.config/eavesdrop/active-listener.yaml` expects its fallback prompt and model bundle beside that config unless you point them somewhere else.
+That means a copied config at `~/.config/eavesdrop/active-listener.yaml` expects its fallback model bundle beside that config, and its fallback prompt under `prompts/rewrite_prompt.md`, unless you point them somewhere else.
 
 Prompt files are markdown content only. No hidden routing metadata or template rendering remains in the active rewrite path.
 

@@ -10,14 +10,14 @@ from typing import Protocol, cast
 import pytest
 from sdbus import DbusPropertyReadOnlyError
 
-from active_listener.dbus_service import (
+from active_listener.app.state import ForegroundPhase
+from active_listener.infra.dbus import (
   DBUS_BUS_NAME,
   DBUS_OBJECT_PATH,
   ActiveListenerDbusInterface,
   DbusDuplicateInstanceError,
   SdbusDbusService,
 )
-from active_listener.state import ForegroundPhase
 
 requires_user_bus = pytest.mark.skipif(
   os.getenv("DBUS_SESSION_BUS_ADDRESS") in {None, ""},
@@ -68,6 +68,13 @@ async def receive_next_pair_signal(iterator: AsyncIterator[tuple[str, str]]) -> 
   return await anext(iterator)
 
 
+async def connect_test_service_or_skip() -> SdbusDbusService:
+  try:
+    return await SdbusDbusService.connect()
+  except DbusDuplicateInstanceError:
+    pytest.skip("DBus name already owned by another active-listener process")
+
+
 @requires_user_bus
 @pytest.mark.asyncio
 async def test_interface_contract_names_match_spec() -> None:
@@ -116,7 +123,7 @@ async def test_interface_state_is_locally_mutable() -> None:
 @requires_user_bus
 @pytest.mark.asyncio
 async def test_property_is_read_only_over_dbus_and_empty_signals_emit() -> None:
-  service = await SdbusDbusService.connect()
+  service = await connect_test_service_or_skip()
   proxy = ActiveListenerDbusInterface.new_proxy(DBUS_BUS_NAME, DBUS_OBJECT_PATH, bus=service.bus)
 
   try:
@@ -166,7 +173,7 @@ async def test_property_is_read_only_over_dbus_and_empty_signals_emit() -> None:
 @requires_user_bus
 @pytest.mark.asyncio
 async def test_dbus_introspection_matches_locked_contract() -> None:
-  service = await SdbusDbusService.connect()
+  service = await connect_test_service_or_skip()
   proxy = ActiveListenerDbusInterface.new_proxy(DBUS_BUS_NAME, DBUS_OBJECT_PATH, bus=service.bus)
 
   try:
@@ -193,7 +200,7 @@ async def test_dbus_introspection_matches_locked_contract() -> None:
 @requires_user_bus
 @pytest.mark.asyncio
 async def test_duplicate_name_acquisition_maps_to_duplicate_instance_error() -> None:
-  first_service = await SdbusDbusService.connect()
+  first_service = await connect_test_service_or_skip()
 
   try:
     with pytest.raises(DbusDuplicateInstanceError, match="already running"):

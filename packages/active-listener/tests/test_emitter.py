@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from active_listener.emitter import PydotoolTextEmitter
+from active_listener.infra.emitter import PydotoolTextEmitter
 
 
 class RecordingPydotool:
@@ -22,15 +22,23 @@ class RecordingPydotool:
     if socket_path in self.failing_socket_paths:
       raise OSError(f"socket unavailable: {socket_path}")
 
-  def type_string(self, text: str) -> None:
+  def type_string(
+    self,
+    text: str,
+    *,
+    hold_delay_ms: int | None = None,
+    each_char_delay_ms: int | None = None,
+  ) -> None:
+    _ = hold_delay_ms
+    _ = each_char_delay_ms
     self.typed.append(text)
 
 
 def test_emitter_prefers_run_user_uid_socket(monkeypatch: pytest.MonkeyPatch) -> None:
   recorder = RecordingPydotool()
 
-  monkeypatch.setattr("active_listener.emitter.pydotool", recorder)
-  monkeypatch.setattr("active_listener.emitter.os.getuid", lambda: 1234)
+  monkeypatch.setattr("active_listener.infra.emitter.pydotool", recorder)
+  monkeypatch.setattr("active_listener.infra.emitter.os.getuid", lambda: 1234)
 
   emitter = PydotoolTextEmitter()
   emitter.initialize()
@@ -40,7 +48,7 @@ def test_emitter_prefers_run_user_uid_socket(monkeypatch: pytest.MonkeyPatch) ->
 
 def test_emitter_initializes_once_and_types_text(monkeypatch: pytest.MonkeyPatch) -> None:
   recorder = RecordingPydotool()
-  monkeypatch.setattr("active_listener.emitter.pydotool", recorder)
+  monkeypatch.setattr("active_listener.infra.emitter.pydotool", recorder)
 
   emitter = PydotoolTextEmitter(socket_path="/tmp/ydotool.sock")
   emitter.initialize()
@@ -60,9 +68,9 @@ def test_emitter_uses_run_user_socket_when_present(
   _ = preferred.write_text("")
   _ = fallback.write_text("")
 
-  monkeypatch.setattr("active_listener.emitter.pydotool", recorder)
+  monkeypatch.setattr("active_listener.infra.emitter.pydotool", recorder)
   monkeypatch.setattr(
-    "active_listener.emitter._candidate_socket_paths",
+    "active_listener.infra.emitter._candidate_socket_paths",
     lambda: (preferred, fallback),
   )
 
@@ -80,9 +88,9 @@ def test_emitter_falls_back_to_tmp_socket_when_run_user_socket_missing(
   fallback = tmp_path / "tmp.sock"
   recorder.failing_socket_paths.add(str(missing))
 
-  monkeypatch.setattr("active_listener.emitter.pydotool", recorder)
+  monkeypatch.setattr("active_listener.infra.emitter.pydotool", recorder)
   monkeypatch.setattr(
-    "active_listener.emitter._candidate_socket_paths",
+    "active_listener.infra.emitter._candidate_socket_paths",
     lambda: (missing, fallback),
   )
 
@@ -100,9 +108,9 @@ def test_emitter_uses_default_init_when_no_socket_exists(
   missing_two = tmp_path / "missing-two.sock"
   recorder.failing_socket_paths.update({str(missing_one), str(missing_two)})
 
-  monkeypatch.setattr("active_listener.emitter.pydotool", recorder)
+  monkeypatch.setattr("active_listener.infra.emitter.pydotool", recorder)
   monkeypatch.setattr(
-    "active_listener.emitter._candidate_socket_paths",
+    "active_listener.infra.emitter._candidate_socket_paths",
     lambda: (missing_one, missing_two),
   )
 

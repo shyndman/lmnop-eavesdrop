@@ -12,7 +12,7 @@ import evdev
 from evdev.events import InputEvent
 from typing_extensions import override
 
-from active_listener.state import KeyboardAction
+from active_listener.app.state import KeyboardAction
 
 _CONTROL_KEY_CODES = frozenset({evdev.ecodes.KEY_CAPSLOCK, evdev.ecodes.KEY_ESC})
 RecordingGrabRelease = Callable[[], None]

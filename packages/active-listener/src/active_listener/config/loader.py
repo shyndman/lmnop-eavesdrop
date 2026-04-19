@@ -7,7 +7,7 @@ from typing import cast
 
 import yaml
 
-from active_listener.settings import ActiveListenerConfig
+from active_listener.config.models import ActiveListenerConfig
 
 USER_CONFIG_ENV_VAR = "XDG_CONFIG_HOME"
 DEFAULT_USER_CONFIG_DIRNAME = ".config"

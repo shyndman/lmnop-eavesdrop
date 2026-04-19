@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from active_listener.state import KeyboardAction
+from active_listener.app.state import KeyboardAction
 from eavesdrop.client import (
   ConnectedEvent,
   DisconnectedEvent,

@@ -12,19 +12,19 @@ from typing import final
 import pytest
 from typing_extensions import override
 
+from active_listener.app.ports import ActiveListenerRuntimeError
+from active_listener.app.service import ActiveListenerService
+from active_listener.app.state import ForegroundPhase, KeyboardAction
 from active_listener.bootstrap import create_service, run_service
-from active_listener.input import KeyboardInput
-from active_listener.rewrite import (
+from active_listener.config.models import ActiveListenerConfig, LlmRewriteConfig
+from active_listener.infra.keyboard import KeyboardInput
+from active_listener.infra.rewrite import (
   LoadedRewritePrompt,
   LoadedRewritePromptFile,
   RewriteClientError,
   RewriteClientTimeoutError,
   RewritePromptError,
 )
-from active_listener.service import ActiveListenerService
-from active_listener.service_ports import ActiveListenerRuntimeError
-from active_listener.settings import ActiveListenerConfig, LlmRewriteConfig
-from active_listener.state import ForegroundPhase, KeyboardAction
 from eavesdrop.client import (
   DisconnectedEvent,
   ReconnectedEvent,
@@ -1032,7 +1032,7 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
     config=_config(rewrite_enabled=True),
   )
   monkeypatch.setattr(
-    "active_listener.rewrite.load_active_listener_rewrite_prompt",
+    "active_listener.infra.rewrite.load_active_listener_rewrite_prompt",
     _prompt_loader(_loaded_prompt_file(_prompt())),
   )
 
@@ -1077,7 +1077,7 @@ async def test_finalize_recording_drops_text_and_signals_pipeline_failure_when_r
     config=_config(rewrite_enabled=True),
   )
   monkeypatch.setattr(
-    "active_listener.rewrite.load_active_listener_rewrite_prompt",
+    "active_listener.infra.rewrite.load_active_listener_rewrite_prompt",
     _prompt_loader(_loaded_prompt_file(_prompt())),
   )
 
@@ -1117,7 +1117,7 @@ async def test_finalize_recording_skips_rewrite_after_disconnect(
     return _loaded_prompt_file(_prompt())
 
   monkeypatch.setattr(
-    "active_listener.rewrite.load_active_listener_rewrite_prompt", fake_load_prompt
+    "active_listener.infra.rewrite.load_active_listener_rewrite_prompt", fake_load_prompt
   )
 
   await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
@@ -1160,7 +1160,7 @@ async def test_finalize_recording_skips_rewrite_for_empty_text(
     return _loaded_prompt_file(_prompt())
 
   monkeypatch.setattr(
-    "active_listener.rewrite.load_active_listener_rewrite_prompt", fake_load_prompt
+    "active_listener.infra.rewrite.load_active_listener_rewrite_prompt", fake_load_prompt
   )
 
   await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
@@ -1184,7 +1184,7 @@ async def test_rewrite_logging_captures_prompt_failure(monkeypatch: pytest.Monke
   )
   harness = _service(client=client, config=_config(rewrite_enabled=True))
   monkeypatch.setattr(
-    "active_listener.rewrite.load_active_listener_rewrite_prompt",
+    "active_listener.infra.rewrite.load_active_listener_rewrite_prompt",
     _failing_prompt_loader(
       RewritePromptError("bad prompt", prompt_path=Path("/tmp/override/system.md"))
     ),
@@ -1221,7 +1221,7 @@ async def test_rewrite_logging_uses_resolved_prompt_path(monkeypatch: pytest.Mon
   )
   harness = _service(client=client, config=_config(rewrite_enabled=True))
   monkeypatch.setattr(
-    "active_listener.rewrite.load_active_listener_rewrite_prompt",
+    "active_listener.infra.rewrite.load_active_listener_rewrite_prompt",
     _prompt_loader(_loaded_prompt_file(_prompt(), prompt_path="/tmp/override/system.md")),
   )
 
@@ -1259,7 +1259,7 @@ async def test_rewrite_logging_captures_timeout(monkeypatch: pytest.MonkeyPatch)
     config=_config(rewrite_enabled=True),
   )
   monkeypatch.setattr(
-    "active_listener.rewrite.load_active_listener_rewrite_prompt",
+    "active_listener.infra.rewrite.load_active_listener_rewrite_prompt",
     _prompt_loader(_loaded_prompt_file(_prompt(), prompt_path="/tmp/override/system.md")),
   )
 
@@ -1299,7 +1299,7 @@ async def test_rewrite_logging_captures_success_payloads(monkeypatch: pytest.Mon
     config=_config(rewrite_enabled=True),
   )
   monkeypatch.setattr(
-    "active_listener.rewrite.load_active_listener_rewrite_prompt",
+    "active_listener.infra.rewrite.load_active_listener_rewrite_prompt",
     _prompt_loader(
       _loaded_prompt_file(
         _prompt(),

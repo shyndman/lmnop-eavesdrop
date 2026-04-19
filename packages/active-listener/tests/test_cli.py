@@ -8,15 +8,15 @@ from pathlib import Path
 import pytest
 
 from active_listener import main
+from active_listener.app.ports import ActiveListenerRuntimeError
+from active_listener.app.state import ForegroundPhase
 from active_listener.cli import ActiveListenerCommand, build_app_state_service, env_int, require_env
-from active_listener.dbus_service import (
+from active_listener.config.models import ActiveListenerConfig, LlmRewriteConfig
+from active_listener.infra.dbus import (
   DbusDuplicateInstanceError,
   DbusServiceError,
   NoopDbusService,
 )
-from active_listener.service_ports import ActiveListenerRuntimeError
-from active_listener.settings import ActiveListenerConfig, LlmRewriteConfig
-from active_listener.state import ForegroundPhase
 
 
 class RecordingLogger:

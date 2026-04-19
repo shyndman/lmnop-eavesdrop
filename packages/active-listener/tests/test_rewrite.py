@@ -8,8 +8,8 @@ from typing import cast, final
 
 import pytest
 
-import active_listener.rewrite as rewrite_module
-from active_listener.rewrite import (
+import active_listener.infra.rewrite as rewrite_module
+from active_listener.infra.rewrite import (
   LlmRewriteClient,
   LoadedRewritePromptFile,
   RewriteClientError,
@@ -146,7 +146,7 @@ def test_load_active_listener_rewrite_prompt_prefers_user_override(
   configured_prompt_path = tmp_path / "configured.md"
   _ = configured_prompt_path.write_text("Fallback prompt\n", encoding="utf-8")
   monkeypatch.setattr(
-    "active_listener.rewrite.resolve_active_listener_override_prompt_path",
+    "active_listener.infra.rewrite.resolve_active_listener_override_prompt_path",
     fake_override_prompt_path,
   )
 
@@ -170,7 +170,7 @@ def test_load_active_listener_rewrite_prompt_falls_back_without_override(
   configured_prompt_path = tmp_path / "configured.md"
   _ = configured_prompt_path.write_text("Fallback prompt\n", encoding="utf-8")
   monkeypatch.setattr(
-    "active_listener.rewrite.resolve_active_listener_override_prompt_path",
+    "active_listener.infra.rewrite.resolve_active_listener_override_prompt_path",
     fake_override_prompt_path,
   )
 
@@ -194,7 +194,7 @@ def test_load_active_listener_rewrite_prompt_reloads_override_each_time(
   override_path = config_dir / "system.md"
   _ = override_path.parent.mkdir(parents=True)
   monkeypatch.setattr(
-    "active_listener.rewrite.resolve_active_listener_override_prompt_path",
+    "active_listener.infra.rewrite.resolve_active_listener_override_prompt_path",
     fake_override_prompt_path,
   )
 

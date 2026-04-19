@@ -3,19 +3,13 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 
-from active_listener.dbus_service import AppStateService
-from active_listener.emitter import TextEmitter
-from active_listener.input import KeyboardInput
-from active_listener.recording_finalizer import RecordingFinalizer
-from active_listener.recording_session import RecordingSession
-from active_listener.runtime_signals import ClientSignal, KeyboardSignal, RuntimeSignal
-from active_listener.service_ports import (
+from active_listener.app.ports import (
   ActiveListenerClient,
   ActiveListenerLogger,
   ActiveListenerRewriteClient,
 )
-from active_listener.settings import ActiveListenerConfig
-from active_listener.state import (
+from active_listener.app.signals import ClientSignal, KeyboardSignal, RuntimeSignal
+from active_listener.app.state import (
   ConnectionDecision,
   ForegroundPhase,
   KeyboardAction,
@@ -23,6 +17,12 @@ from active_listener.state import (
   decide_client_event,
   decide_keyboard_action,
 )
+from active_listener.config.models import ActiveListenerConfig
+from active_listener.infra.dbus import AppStateService
+from active_listener.infra.emitter import TextEmitter
+from active_listener.infra.keyboard import KeyboardInput
+from active_listener.recording.finalizer import RecordingFinalizer
+from active_listener.recording.session import RecordingSession
 from eavesdrop.client import (
   ConnectedEvent,
   DisconnectedEvent,

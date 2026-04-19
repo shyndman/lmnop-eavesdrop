@@ -8,13 +8,13 @@ from dataclasses import dataclass, field
 import pytest
 from evdev.events import InputEvent
 
-from active_listener.input import (
+from active_listener.app.state import KeyboardAction
+from active_listener.infra.keyboard import (
   EvdevKeyboard,
   KeyboardResolutionError,
   action_from_event,
   resolve_keyboard,
 )
-from active_listener.state import KeyboardAction
 
 
 @dataclass

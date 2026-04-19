@@ -2,19 +2,19 @@ from __future__ import annotations
 
 from typing import Callable
 
-from active_listener.dbus_service import AppStateService, NoopDbusService
-from active_listener.emitter import PydotoolTextEmitter, TextEmitter
-from active_listener.input import KeyboardInput, resolve_keyboard
-from active_listener.rewrite import DisabledRewriteClient, LlmRewriteClient
-from active_listener.service import ActiveListenerService
-from active_listener.service_ports import (
+from active_listener.app.ports import (
   ActiveListenerClient,
   ActiveListenerLogger,
   ActiveListenerRewriteClient,
   ActiveListenerRuntimeError,
 )
-from active_listener.settings import ActiveListenerConfig, LlmRewriteConfig
-from active_listener.state import ForegroundPhase
+from active_listener.app.service import ActiveListenerService
+from active_listener.app.state import ForegroundPhase
+from active_listener.config.models import ActiveListenerConfig, LlmRewriteConfig
+from active_listener.infra.dbus import AppStateService, NoopDbusService
+from active_listener.infra.emitter import PydotoolTextEmitter, TextEmitter
+from active_listener.infra.keyboard import KeyboardInput, resolve_keyboard
+from active_listener.infra.rewrite import DisabledRewriteClient, LlmRewriteClient
 from eavesdrop.client import EavesdropClient
 from eavesdrop.common import get_logger
 

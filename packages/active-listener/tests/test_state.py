@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from active_listener.state import (
+from active_listener.app.state import (
   ConnectionDecision,
   ForegroundPhase,
   KeyboardAction,

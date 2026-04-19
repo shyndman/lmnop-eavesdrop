@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from active_listener.config import (
+from active_listener.config.loader import (
   load_active_listener_config,
   resolve_default_active_listener_config_path,
 )

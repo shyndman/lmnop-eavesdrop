@@ -5,16 +5,16 @@ from __future__ import annotations
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 
-from active_listener.input import KeyboardInput, RecordingGrabRelease
-from active_listener.reducer import (
-  RecordingReducerState,
-  append_segment_text,
-  reduce_new_segments,
-)
-from active_listener.service_ports import (
+from active_listener.app.ports import (
   ActiveListenerClient,
   ActiveListenerLogger,
   ActiveListenerRuntimeError,
+)
+from active_listener.infra.keyboard import KeyboardInput, RecordingGrabRelease
+from active_listener.recording.reducer import (
+  RecordingReducerState,
+  append_segment_text,
+  reduce_new_segments,
 )
 from eavesdrop.wire import TranscriptionMessage
 
