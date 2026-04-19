@@ -1,3 +1,4 @@
+import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import St from 'gi://St';
@@ -17,6 +18,17 @@ const SYSTEMD_DBUS_OBJECT_PATH = '/org/freedesktop/systemd1';
 const SYSTEMD_DBUS_INTERFACE_NAME = 'org.freedesktop.systemd1.Manager';
 const ACTIVE_LISTENER_SERVICE_NAME = 'active-listener.service';
 const SYSTEMD_JOB_MODE = 'replace';
+const OVERLAY_MESSAGE = 'Overlay PoC';
+const OVERLAY_DISPLAY_DURATION_MS = 2000;
+const OVERLAY_BOTTOM_MARGIN_PX = 96;
+const OVERLAY_ANIMATION_DURATION_MS = 180;
+
+type ActorEaseOptions = {
+  duration: number;
+  mode: Clutter.AnimationMode;
+  opacity?: number;
+  onComplete?: () => void;
+};
 
 type IndicatorState = 'absent' | 'idle' | 'recording';
 type SystemdMethodName = 'RestartUnit' | 'StopUnit';
@@ -32,6 +44,13 @@ export default class ActiveListenerIndicatorExtension extends Extension {
   private busWatchId: number | null = null;
   private restartServiceItem: PopupMenu.PopupMenuItem | null = null;
   private stopServiceItem: PopupMenu.PopupMenuItem | null = null;
+  private overlay: St.Widget | null = null;
+  private overlayLabel: St.Label | null = null;
+  private overlayTimeoutId: number | null = null;
+  private readonly overlayActor = (actor: St.Widget): St.Widget & {
+    ease(options: ActorEaseOptions): void;
+    remove_all_transitions(): void;
+  } => actor as St.Widget & { ease(options: ActorEaseOptions): void; remove_all_transitions(): void };
   private indicatorState: IndicatorState = 'absent';
 
   enable(): void {
@@ -44,6 +63,7 @@ export default class ActiveListenerIndicatorExtension extends Extension {
     });
     this.button.add_child(this.icon);
     this.addMenuItems();
+    this.createOverlay();
 
     Main.panel.addToStatusArea(this.uuid, this.button);
 
@@ -68,6 +88,15 @@ export default class ActiveListenerIndicatorExtension extends Extension {
     }
 
     this.detachProxy();
+    this.clearOverlayTimeout();
+
+    if (this.overlay !== null) {
+      Main.layoutManager.removeChrome(this.overlay);
+      this.overlay.destroy();
+      this.overlay = null;
+    }
+
+    this.overlayLabel = null;
     this.icon = null;
     this.restartServiceItem = null;
     this.stopServiceItem = null;
@@ -90,6 +119,11 @@ export default class ActiveListenerIndicatorExtension extends Extension {
       this.openPreferences();
     });
 
+    const showOverlayItem = new PopupMenu.PopupMenuItem('Show overlay');
+    showOverlayItem.connect('activate', () => {
+      this.showOverlay(OVERLAY_MESSAGE);
+    });
+
     this.restartServiceItem = new PopupMenu.PopupMenuItem('Restart service');
     this.restartServiceItem.connect('activate', () => {
       void this.runServiceAction('RestartUnit');
@@ -101,9 +135,108 @@ export default class ActiveListenerIndicatorExtension extends Extension {
     });
 
     this.button.menu.addMenuItem(preferencesItem);
+    this.button.menu.addMenuItem(showOverlayItem);
     this.button.menu.addMenuItem(this.restartServiceItem);
     this.button.menu.addMenuItem(this.stopServiceItem);
     this.updateMenuSensitivity();
+  }
+
+  private createOverlay(): void {
+    if (this.overlay !== null) {
+      return;
+    }
+
+    this.overlayLabel = new St.Label({
+      text: OVERLAY_MESSAGE,
+      x_align: Clutter.ActorAlign.CENTER,
+      y_align: Clutter.ActorAlign.CENTER,
+      style:
+        'color: white;' +
+        'font-size: 24px;' +
+        'font-weight: 700;' +
+        'width: 100%;' +
+        'text-align: center;',
+    });
+
+    this.overlay = new St.Widget({
+      layout_manager: new Clutter.BinLayout(),
+      visible: false,
+      reactive: false,
+      can_focus: false,
+      opacity: 0,
+      style:
+        'background-color: rgba(255, 0, 255, 0.8);' +
+        'border-radius: 999px;' +
+        'padding: 20px 32px;' +
+        'min-width: 420px;' +
+        'min-height: 72px;',
+    });
+    this.overlay.add_child(this.overlayLabel);
+
+    Main.layoutManager.addChrome(this.overlay, { trackFullscreen: true });
+    this.overlay.set_position(-10000, -10000);
+  }
+
+  private showOverlay(message: string): void {
+    if (this.overlay === null || this.overlayLabel === null) {
+      return;
+    }
+
+    const monitor = Main.layoutManager.primaryMonitor;
+    if (monitor === null) {
+      return;
+    }
+
+    this.clearOverlayTimeout();
+    this.overlayLabel.text = message;
+
+    const [, overlayWidth] = this.overlay.get_preferred_width(-1);
+    const [, overlayHeight] = this.overlay.get_preferred_height(overlayWidth);
+    const x = Math.floor(monitor.x + (monitor.width - overlayWidth) / 2);
+    const y = Math.floor(monitor.y + monitor.height - overlayHeight - OVERLAY_BOTTOM_MARGIN_PX);
+
+    const overlayActor = this.overlayActor(this.overlay);
+    overlayActor.remove_all_transitions();
+    this.overlay.set_position(x, y);
+    this.overlay.opacity = 0;
+    this.overlay.show();
+    overlayActor.ease({
+      opacity: 255,
+      duration: OVERLAY_ANIMATION_DURATION_MS,
+      mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+    });
+
+    this.overlayTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, OVERLAY_DISPLAY_DURATION_MS, () => {
+      this.hideOverlay();
+      this.overlayTimeoutId = null;
+      return GLib.SOURCE_REMOVE;
+    });
+  }
+
+  private hideOverlay(): void {
+    if (this.overlay === null) {
+      return;
+    }
+
+    const overlayActor = this.overlayActor(this.overlay);
+    overlayActor.remove_all_transitions();
+    overlayActor.ease({
+      opacity: 0,
+      duration: OVERLAY_ANIMATION_DURATION_MS,
+      mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+      onComplete: () => {
+        this.overlay?.hide();
+      },
+    });
+  }
+
+  private clearOverlayTimeout(): void {
+    if (this.overlayTimeoutId === null) {
+      return;
+    }
+
+    GLib.Source.remove(this.overlayTimeoutId);
+    this.overlayTimeoutId = null;
   }
 
   private attachProxy(): void {
