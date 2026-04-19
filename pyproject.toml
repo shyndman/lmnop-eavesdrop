@@ -13,6 +13,7 @@ members = [
 ]
 
 [tool.basedpyright]
+typeCheckingMode = "recommended"
 include = [
   "packages/server/src",
   "packages/server/tests",
