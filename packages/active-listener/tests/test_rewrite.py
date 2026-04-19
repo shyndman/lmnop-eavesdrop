@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
+from types import SimpleNamespace
+from typing import cast, final
 
 import pytest
-from typing_extensions import override
 
+import active_listener.rewrite as rewrite_module
 from active_listener.rewrite import (
   LlmRewriteClient,
   LoadedRewritePromptFile,
   RewriteClientError,
-  RewriteClientTimeoutError,
   RewritePromptError,
   load_active_listener_rewrite_prompt,
   load_rewrite_prompt,
@@ -20,123 +20,114 @@ from active_listener.rewrite import (
 )
 
 
-class StubRunResult:
-  def __init__(self, output: str) -> None:
-    self.output: str = output
+@final
+class StubConversation:
+  def __init__(self, *, messages: list[rewrite_module.LiteRtMessage], response: object) -> None:
+    self.messages: list[rewrite_module.LiteRtMessage] = messages
+    self.response: object = response
+    self.sent_prompts: list[str] = []
+    self.entered: bool = False
+    self.exited: bool = False
+
+  def __enter__(self) -> StubConversation:
+    self.entered = True
+    return self
+
+  def __exit__(
+    self,
+    exc_type: type[BaseException] | None,
+    exc: BaseException | None,
+    traceback: object | None,
+  ) -> bool | None:
+    _ = exc_type
+    _ = exc
+    _ = traceback
+    self.exited = True
+    return None
+
+  def send_message(self, prompt: str) -> rewrite_module.LiteRtResponse:
+    self.sent_prompts.append(prompt)
+    if isinstance(self.response, Exception):
+      raise self.response
+    return cast(rewrite_module.LiteRtResponse, self.response)
 
 
-class StubAgent:
-  created: list[dict[str, object]] = []
-  next_result: str = "rewritten text"
-  next_error: Exception | None = None
-
-  def __init__(self, model: object, *, instructions: str) -> None:
-    self.model: object = model
-    self.instructions: str = instructions
-    self.__class__.created.append({"model": model, "instructions": instructions})
-
-  async def run(self, transcript: str) -> StubRunResult:
-    if self.__class__.next_error is not None:
-      raise self.__class__.next_error
-    if self.__class__.next_result == "":
-      return StubRunResult(output="")
-    return StubRunResult(output=f"{self.__class__.next_result}:{transcript}")
+@final
+class StubBackend:
+  CPU: str = "cpu"
 
 
-class StubOpenAIProvider:
-  created: list[dict[str, str]] = []
+@final
+class StubEngine:
+  created: list[StubEngine] = []
+  conversations: list[StubConversation] = []
+  responses: list[object] = []
+  init_error: Exception | None = None
+  close_calls: int = 0
 
-  def __init__(self, *, base_url: str, api_key: str) -> None:
-    self.base_url: str = base_url
-    self.api_key: str = api_key
-    self.__class__.created.append({"base_url": base_url, "api_key": api_key})
+  def __init__(self, model_path: str, *, backend: object) -> None:
+    if self.__class__.init_error is not None:
+      raise self.__class__.init_error
 
+    self.model_path: str = model_path
+    self.backend: object = backend
+    self.__class__.created.append(self)
 
-class StubOpenAIChatModel:
-  created: list[dict[str, object]] = []
+  def __enter__(self) -> StubEngine:
+    return self
 
-  def __init__(self, model_name: str, *, provider: object) -> None:
-    self.model_name: str = model_name
-    self.provider: object = provider
-    self.__class__.created.append({"model_name": model_name, "provider": provider})
+  def __exit__(
+    self,
+    exc_type: type[BaseException] | None,
+    exc: BaseException | None,
+    traceback: object | None,
+  ) -> bool | None:
+    _ = exc_type
+    _ = exc
+    _ = traceback
+    self.__class__.close_calls += 1
+    return None
+
+  def create_conversation(
+    self,
+    *,
+    messages: list[rewrite_module.LiteRtMessage],
+  ) -> StubConversation:
+    response = self.__class__.responses.pop(0)
+    conversation = StubConversation(messages=messages, response=response)
+    self.__class__.conversations.append(conversation)
+    return conversation
 
 
 @pytest.fixture(autouse=True)
 def reset_stubs() -> None:
-  StubAgent.created.clear()
-  StubAgent.next_result = "rewritten text"
-  StubAgent.next_error = None
-  StubOpenAIProvider.created.clear()
-  StubOpenAIChatModel.created.clear()
+  StubEngine.created.clear()
+  StubEngine.conversations.clear()
+  StubEngine.responses.clear()
+  StubEngine.init_error = None
+  StubEngine.close_calls = 0
 
 
-def test_load_rewrite_prompt_parses_front_matter_and_metadata(tmp_path: Path) -> None:
+def test_dependency_import_resolves() -> None:
+  assert "litert_lm" in rewrite_module.__dict__
+
+
+def test_load_rewrite_prompt_reads_markdown_contents(tmp_path: Path) -> None:
   prompt_path = tmp_path / "rewrite_prompt.md"
-  _ = prompt_path.write_text(
-    """---
-model: llama3
-voice: concise
-related_words:
-  - alpha
-  - bravo
----
-Voice: {{ voice }}
-Words: {{ related_words | join(', ') }}
-""",
-    encoding="utf-8",
-  )
+  expected_contents = "# Rewrite this transcript\n\nKeep the commands intact.\n"
+  _ = prompt_path.write_text(expected_contents, encoding="utf-8")
 
   prompt = load_rewrite_prompt(str(prompt_path))
 
-  assert prompt.model_name == "llama3"
-  assert prompt.metadata == {"voice": "concise", "related_words": ["alpha", "bravo"]}
-  assert prompt.instructions == "Voice: concise\nWords: alpha, bravo"
+  assert prompt.instructions == expected_contents
 
 
-def test_load_rewrite_prompt_requires_model(tmp_path: Path) -> None:
+def test_load_rewrite_prompt_rejects_empty_contents(tmp_path: Path) -> None:
   prompt_path = tmp_path / "rewrite_prompt.md"
-  _ = prompt_path.write_text("---\nvoice: concise\n---\nHello\n", encoding="utf-8")
+  _ = prompt_path.write_text("  \n\n", encoding="utf-8")
 
-  with pytest.raises(RewritePromptError, match="must define 'model'"):
+  with pytest.raises(RewritePromptError, match="rewrite prompt is empty"):
     _ = load_rewrite_prompt(str(prompt_path))
-
-
-def test_load_rewrite_prompt_raises_for_malformed_front_matter(tmp_path: Path) -> None:
-  prompt_path = tmp_path / "rewrite_prompt.md"
-  _ = prompt_path.write_text("---\nmodel: [unterminated\n---\nHello\n", encoding="utf-8")
-
-  with pytest.raises(RewritePromptError, match="failed to load rewrite prompt"):
-    _ = load_rewrite_prompt(str(prompt_path))
-
-
-def test_load_rewrite_prompt_raises_for_missing_template_variable(tmp_path: Path) -> None:
-  prompt_path = tmp_path / "rewrite_prompt.md"
-  _ = prompt_path.write_text(
-    "---\nmodel: llama3\n---\nHello {{ missing_value }}\n",
-    encoding="utf-8",
-  )
-
-  with pytest.raises(RewritePromptError, match="failed to render rewrite prompt"):
-    _ = load_rewrite_prompt(str(prompt_path))
-
-
-def test_load_rewrite_prompt_renders_list_metadata(tmp_path: Path) -> None:
-  prompt_path = tmp_path / "rewrite_prompt.md"
-  _ = prompt_path.write_text(
-    """---
-model: llama3
-related_words:
-  - alpha
-  - bravo
----
-{{ related_words | join(' / ') }}
-""",
-    encoding="utf-8",
-  )
-
-  prompt = load_rewrite_prompt(str(prompt_path))
-
-  assert prompt.instructions == "alpha / bravo"
 
 
 def test_load_active_listener_rewrite_prompt_prefers_user_override(
@@ -150,12 +141,10 @@ def test_load_active_listener_rewrite_prompt_prefers_user_override(
 
   override_path = config_dir / "system.md"
   _ = override_path.parent.mkdir(parents=True)
-  _ = override_path.write_text("---\nmodel: override\n---\nOverride prompt\n", encoding="utf-8")
+  _ = override_path.write_text("Override prompt\n", encoding="utf-8")
 
   configured_prompt_path = tmp_path / "configured.md"
-  _ = configured_prompt_path.write_text(
-    "---\nmodel: fallback\n---\nFallback prompt\n", encoding="utf-8"
-  )
+  _ = configured_prompt_path.write_text("Fallback prompt\n", encoding="utf-8")
   monkeypatch.setattr(
     "active_listener.rewrite.resolve_active_listener_override_prompt_path",
     fake_override_prompt_path,
@@ -179,9 +168,7 @@ def test_load_active_listener_rewrite_prompt_falls_back_without_override(
     return config_dir / "system.md"
 
   configured_prompt_path = tmp_path / "configured.md"
-  _ = configured_prompt_path.write_text(
-    "---\nmodel: fallback\n---\nFallback prompt\n", encoding="utf-8"
-  )
+  _ = configured_prompt_path.write_text("Fallback prompt\n", encoding="utf-8")
   monkeypatch.setattr(
     "active_listener.rewrite.resolve_active_listener_override_prompt_path",
     fake_override_prompt_path,
@@ -190,7 +177,7 @@ def test_load_active_listener_rewrite_prompt_falls_back_without_override(
   loaded_prompt = load_active_listener_rewrite_prompt(str(configured_prompt_path))
 
   assert loaded_prompt == LoadedRewritePromptFile(
-    prompt_path=configured_prompt_path,
+    prompt_path=configured_prompt_path.resolve(),
     prompt=load_rewrite_prompt(configured_prompt_path),
   )
 
@@ -211,18 +198,14 @@ def test_load_active_listener_rewrite_prompt_reloads_override_each_time(
     fake_override_prompt_path,
   )
 
-  _ = override_path.write_text("---\nmodel: override\n---\nfirst prompt\n", encoding="utf-8")
-  first_loaded_prompt = load_active_listener_rewrite_prompt(
-    "packages/active-listener/src/active_listener/rewrite_prompt.md"
-  )
+  _ = override_path.write_text("first prompt\n", encoding="utf-8")
+  first_loaded_prompt = load_active_listener_rewrite_prompt(str(tmp_path / "configured.md"))
 
-  _ = override_path.write_text("---\nmodel: override\n---\nsecond prompt\n", encoding="utf-8")
-  second_loaded_prompt = load_active_listener_rewrite_prompt(
-    "packages/active-listener/src/active_listener/rewrite_prompt.md"
-  )
+  _ = override_path.write_text("second prompt\n", encoding="utf-8")
+  second_loaded_prompt = load_active_listener_rewrite_prompt(str(tmp_path / "configured.md"))
 
-  assert first_loaded_prompt.prompt.instructions == "first prompt"
-  assert second_loaded_prompt.prompt.instructions == "second prompt"
+  assert first_loaded_prompt.prompt.instructions == "first prompt\n"
+  assert second_loaded_prompt.prompt.instructions == "second prompt\n"
   assert first_loaded_prompt.prompt_path == second_loaded_prompt.prompt_path == override_path
 
 
@@ -263,78 +246,109 @@ def test_resolve_active_listener_override_prompt_path_uses_home_config_dir_when_
 
 
 @pytest.mark.asyncio
-async def test_rewrite_client_returns_plain_text_output(monkeypatch: pytest.MonkeyPatch) -> None:
-  monkeypatch.setattr("active_listener.rewrite.OpenAIProvider", StubOpenAIProvider)
-  monkeypatch.setattr("active_listener.rewrite.OpenAIChatModel", StubOpenAIChatModel)
-  monkeypatch.setattr("active_listener.rewrite.Agent", StubAgent)
-
-  client = LlmRewriteClient(base_url="http://localhost:11434/v1", timeout_s=30)
-  rewritten = await client.rewrite_text(
-    model_name="llama3",
-    instructions="Rewrite this transcript.",
-    transcript="alpha",
+async def test_rewrite_client_uses_fresh_conversation_per_request(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  monkeypatch.setattr(
+    rewrite_module,
+    "litert_lm",
+    SimpleNamespace(Engine=StubEngine, Backend=StubBackend),
+  )
+  StubEngine.responses.extend(
+    [
+      {"content": [{"type": "text", "text": " rewritten alpha "}]},
+      {"content": [{"type": "text", "text": "rewritten beta"}]},
+    ]
   )
 
-  assert rewritten == "rewritten text:alpha"
-  assert StubOpenAIProvider.created == [
-    {"base_url": "http://localhost:11434/v1", "api_key": "ollama"}
+  client = LlmRewriteClient(model_path="/tmp/rewrite/model.litertlm")
+  first = await client.rewrite_text(instructions="Prompt A", transcript="alpha")
+  second = await client.rewrite_text(instructions="Prompt B", transcript="beta")
+  await client.close()
+
+  assert first == "rewritten alpha"
+  assert second == "rewritten beta"
+  assert len(StubEngine.created) == 1
+  assert StubEngine.created[0].model_path == "/tmp/rewrite/model.litertlm"
+  assert len(StubEngine.conversations) == 2
+  assert StubEngine.conversations[0].messages == [
+    {"role": "system", "content": [{"type": "text", "text": "Prompt A"}]}
   ]
-  assert StubOpenAIChatModel.created[0]["model_name"] == "llama3"
-  assert StubAgent.created[0]["instructions"] == "Rewrite this transcript."
+  assert StubEngine.conversations[1].messages == [
+    {"role": "system", "content": [{"type": "text", "text": "Prompt B"}]}
+  ]
+  assert StubEngine.conversations[0].sent_prompts == ["alpha"]
+  assert StubEngine.conversations[1].sent_prompts == ["beta"]
+  assert StubEngine.close_calls == 1
 
 
 @pytest.mark.asyncio
-async def test_rewrite_client_propagates_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-  class HangingAgent(StubAgent):
-    @override
-    async def run(self, transcript: str) -> StubRunResult:
-      _ = transcript
-      await asyncio.sleep(1.1)
-      return StubRunResult(output="too late")
+async def test_rewrite_client_extracts_documented_response_shape(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  monkeypatch.setattr(
+    rewrite_module,
+    "litert_lm",
+    SimpleNamespace(Engine=StubEngine, Backend=StubBackend),
+  )
+  StubEngine.responses.append(
+    {
+      "content": [
+        {"type": "text", "text": "Hello"},
+        {"type": "image"},
+        {"type": "text", "text": ", world"},
+      ]
+    }
+  )
 
-  monkeypatch.setattr("active_listener.rewrite.OpenAIProvider", StubOpenAIProvider)
-  monkeypatch.setattr("active_listener.rewrite.OpenAIChatModel", StubOpenAIChatModel)
-  monkeypatch.setattr("active_listener.rewrite.Agent", HangingAgent)
+  client = LlmRewriteClient(model_path="/tmp/rewrite/model.litertlm")
+  rewritten = await client.rewrite_text(instructions="Rewrite this transcript.", transcript="alpha")
 
-  client = LlmRewriteClient(base_url="http://localhost:11434/v1", timeout_s=1)
-
-  with pytest.raises(RewriteClientTimeoutError, match="timed out"):
-    _ = await client.rewrite_text(
-      model_name="llama3",
-      instructions="Rewrite this transcript.",
-      transcript="alpha",
-    )
+  assert rewritten == "Hello, world"
 
 
 @pytest.mark.asyncio
 async def test_rewrite_client_rejects_empty_output(monkeypatch: pytest.MonkeyPatch) -> None:
-  monkeypatch.setattr("active_listener.rewrite.OpenAIProvider", StubOpenAIProvider)
-  monkeypatch.setattr("active_listener.rewrite.OpenAIChatModel", StubOpenAIChatModel)
-  monkeypatch.setattr("active_listener.rewrite.Agent", StubAgent)
-  StubAgent.next_result = ""
+  monkeypatch.setattr(
+    rewrite_module,
+    "litert_lm",
+    SimpleNamespace(Engine=StubEngine, Backend=StubBackend),
+  )
+  StubEngine.responses.append({"content": [{"type": "text", "text": "   "}]})
 
-  client = LlmRewriteClient(base_url="http://localhost:11434/v1", timeout_s=30)
+  client = LlmRewriteClient(model_path="/tmp/rewrite/model.litertlm")
 
   with pytest.raises(RewriteClientError, match="empty output"):
-    _ = await client.rewrite_text(
-      model_name="llama3",
-      instructions="Rewrite this transcript.",
-      transcript="alpha",
-    )
+    _ = await client.rewrite_text(instructions="Rewrite this transcript.", transcript="alpha")
 
 
 @pytest.mark.asyncio
 async def test_rewrite_client_propagates_model_errors(monkeypatch: pytest.MonkeyPatch) -> None:
-  monkeypatch.setattr("active_listener.rewrite.OpenAIProvider", StubOpenAIProvider)
-  monkeypatch.setattr("active_listener.rewrite.OpenAIChatModel", StubOpenAIChatModel)
-  monkeypatch.setattr("active_listener.rewrite.Agent", StubAgent)
-  StubAgent.next_error = RuntimeError("boom")
+  monkeypatch.setattr(
+    rewrite_module,
+    "litert_lm",
+    SimpleNamespace(Engine=StubEngine, Backend=StubBackend),
+  )
+  StubEngine.responses.append(RuntimeError("boom"))
 
-  client = LlmRewriteClient(base_url="http://localhost:11434/v1", timeout_s=30)
+  client = LlmRewriteClient(model_path="/tmp/rewrite/model.litertlm")
 
   with pytest.raises(RewriteClientError, match="rewrite request failed"):
-    _ = await client.rewrite_text(
-      model_name="llama3",
-      instructions="Rewrite this transcript.",
-      transcript="alpha",
-    )
+    _ = await client.rewrite_text(instructions="Rewrite this transcript.", transcript="alpha")
+
+
+def test_rewrite_client_fails_fast_when_engine_initialization_fails(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  monkeypatch.setattr(
+    rewrite_module,
+    "litert_lm",
+    SimpleNamespace(Engine=StubEngine, Backend=StubBackend),
+  )
+  StubEngine.init_error = RuntimeError("bad bundle")
+
+  with pytest.raises(
+    RewriteClientError,
+    match="failed to initialize LiteRT rewrite model: /tmp/rewrite/model.litertlm",
+  ):
+    _ = LlmRewriteClient(model_path="/tmp/rewrite/model.litertlm")

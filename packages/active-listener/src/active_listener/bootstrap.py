@@ -5,7 +5,7 @@ from typing import Callable
 from active_listener.dbus_service import AppStateService, NoopDbusService
 from active_listener.emitter import PydotoolTextEmitter, TextEmitter
 from active_listener.input import KeyboardInput, resolve_keyboard
-from active_listener.rewrite import LlmRewriteClient
+from active_listener.rewrite import DisabledRewriteClient, LlmRewriteClient
 from active_listener.service import ActiveListenerService
 from active_listener.service_ports import (
   ActiveListenerClient,
@@ -48,6 +48,9 @@ async def create_service(
   resolved_client_factory = client_factory or build_client
   resolved_emitter_factory = emitter_factory or build_emitter
   resolved_rewrite_client_factory = rewrite_client_factory or build_rewrite_client
+  client: ActiveListenerClient | None = None
+  rewrite_client: ActiveListenerRewriteClient | None = None
+  connect_started = False
 
   try:
     keyboard = keyboard_resolver(config.keyboard_name)
@@ -59,9 +62,16 @@ async def create_service(
     emitter = resolved_emitter_factory(config.ydotool_socket)
     client = resolved_client_factory(config)
     rewrite_client = resolved_rewrite_client_factory(config.llm_rewrite)
+    connect_started = True
     await client.connect()
   except Exception as exc:
-    keyboard.close()
+    await cleanup_startup_prerequisites(
+      keyboard=keyboard,
+      client=client,
+      rewrite_client=rewrite_client,
+      disconnect_client=connect_started,
+      logger=logger,
+    )
     logger.exception(
       "startup prerequisite failed",
       keyboard_name=config.keyboard_name,
@@ -200,4 +210,30 @@ def build_emitter(socket_path: str | None) -> TextEmitter:
 
 
 def build_rewrite_client(config: LlmRewriteConfig) -> ActiveListenerRewriteClient:
-  return LlmRewriteClient(base_url=config.base_url, timeout_s=config.timeout_s)
+  if not config.enabled:
+    return DisabledRewriteClient()
+
+  return LlmRewriteClient(model_path=config.model_path)
+
+
+async def cleanup_startup_prerequisites(
+  *,
+  keyboard: KeyboardInput,
+  client: ActiveListenerClient | None,
+  rewrite_client: ActiveListenerRewriteClient | None,
+  disconnect_client: bool,
+  logger: ActiveListenerLogger,
+) -> None:
+  if disconnect_client and client is not None:
+    try:
+      await client.disconnect()
+    except Exception:
+      logger.exception("startup client cleanup failed")
+
+  if rewrite_client is not None:
+    try:
+      await rewrite_client.close()
+    except Exception:
+      logger.exception("startup rewrite cleanup failed")
+
+  keyboard.close()

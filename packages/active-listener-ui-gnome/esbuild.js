@@ -10,14 +10,7 @@ const distDir = resolve(outDir, 'dist');
 const assetsDir = resolve(distDir, 'assets');
 const metadataPath = resolve(__dirname, 'metadata.json');
 const sourceIconPath = resolve(__dirname, '..', '..', 'assets', 'reel-to-reel.svg');
-const fallbackPromptSourcePath = resolve(
-  __dirname,
-  '..',
-  'active-listener',
-  'src',
-  'active_listener',
-  'rewrite_prompt.md',
-);
+const fallbackPromptSourcePath = resolve(__dirname, 'assets', 'rewrite_prompt.md');
 const fallbackPromptDistPath = resolve(assetsDir, 'rewrite_prompt.md');
 const metadata = JSON.parse(readFileSync(metadataPath, 'utf8'));
 const iconTemplate = readFileSync(sourceIconPath, 'utf8');

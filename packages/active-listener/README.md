@@ -25,6 +25,21 @@ The canonical runtime paths are:
 
 If you still have a legacy prompt override at `~/.config/active-listener/system.md`, move it to `~/.config/eavesdrop/active-listener.system.md`. The install task copies it forward only when the new file does not exist yet.
 
+## Rewrite model and prompt files
+
+Rewrite now runs against a local LiteRT `.litertlm` bundle. If `llm_rewrite.enabled` is `true`, the service must be able to open `llm_rewrite.model_path` during startup or it will fail fast.
+
+Both `llm_rewrite.model_path` and `llm_rewrite.prompt_path` resolve relative to the config file directory, then normalize to absolute paths before the runtime starts. The seeded sample config uses:
+
+- `model_path: "models/rewrite.litertlm"`
+- `prompt_path: "rewrite_prompt.md"`
+
+That means a copied config at `~/.config/eavesdrop/active-listener.yaml` expects its fallback prompt and model bundle beside that config unless you point them somewhere else.
+
+Prompt files are markdown content only. No hidden routing metadata or template rendering remains in the active rewrite path.
+
+GNOME prefs still edits `~/.config/eavesdrop/active-listener.system.md`. Active Listener reloads that override on every rewrite request, so prompt edits take effect on the next recording without restarting the service.
+
 ## Uninstall the user service
 
 Run from the repo root:

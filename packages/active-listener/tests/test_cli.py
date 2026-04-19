@@ -84,9 +84,8 @@ def _write_config(
   rewrite_block = llm_rewrite_block or (
     "llm_rewrite:\n"
     "  enabled: true\n"
-    '  base_url: "http://localhost:11434/v1"\n'
-    "  timeout_s: 30\n"
-    '  prompt_path: "packages/active-listener/src/active_listener/rewrite_prompt.md"\n'
+    '  model_path: "models/rewrite.litertlm"\n'
+    '  prompt_path: "prompts/rewrite_prompt.md"\n'
   )
   ydotool_value = "null" if ydotool_socket is None else f'"{ydotool_socket}"'
   _ = path.write_text(
@@ -186,9 +185,8 @@ async def test_command_run_uses_config_file_values(
         ydotool_socket="/tmp/config.sock",
         llm_rewrite=LlmRewriteConfig(
           enabled=True,
-          base_url="http://localhost:11434/v1",
-          timeout_s=30,
-          prompt_path="packages/active-listener/src/active_listener/rewrite_prompt.md",
+          model_path=str(config_path.parent / "models" / "rewrite.litertlm"),
+          prompt_path=str(config_path.parent / "prompts" / "rewrite_prompt.md"),
         ),
       ),
       dbus_service,
@@ -225,6 +223,12 @@ async def test_command_run_uses_default_xdg_config_path_when_flag_is_not_set(
 
   assert captured[0].host == "default-host"
   assert captured[0].port == 9191
+  assert captured[0].llm_rewrite.model_path == str(
+    config_path.parent / "models" / "rewrite.litertlm"
+  )
+  assert captured[0].llm_rewrite.prompt_path == str(
+    config_path.parent / "prompts" / "rewrite_prompt.md"
+  )
 
 
 @pytest.mark.asyncio
@@ -351,6 +355,45 @@ async def test_command_run_raises_for_missing_required_rewrite_fields(
   command = ActiveListenerCommand(config_path=str(config_path))
 
   with pytest.raises(ValueError, match="llm_rewrite") as exc_info:
+    await command.run()
+
+  assert dbus_service.signals == [("FatalError", str(exc_info.value))]
+  assert dbus_service.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_command_run_rejects_removed_rewrite_fields(
+  monkeypatch: pytest.MonkeyPatch,
+  tmp_path: Path,
+) -> None:
+  config_path = tmp_path / "config.yaml"
+  _write_config(
+    config_path,
+    llm_rewrite_block=(
+      "llm_rewrite:\n"
+      "  enabled: true\n"
+      '  model_path: "models/rewrite.litertlm"\n'
+      '  prompt_path: "prompts/rewrite_prompt.md"\n'
+      '  base_url: "http://localhost:11434/v1"\n'
+      "  timeout_s: 30\n"
+    ),
+  )
+  dbus_service = FakeDbusService()
+
+  async def fake_run_service(_config: ActiveListenerConfig, *, dbus_service: object) -> None:
+    _ = dbus_service
+    raise AssertionError("run_service should not be called")
+
+  async def fake_build_app_state_service(*, no_dbus: bool) -> FakeDbusService:
+    assert no_dbus is False
+    return dbus_service
+
+  monkeypatch.setattr("active_listener.cli.build_app_state_service", fake_build_app_state_service)
+  monkeypatch.setattr("active_listener.cli.run_service", fake_run_service)
+
+  command = ActiveListenerCommand(config_path=str(config_path))
+
+  with pytest.raises(ValueError, match="base_url|timeout_s") as exc_info:
     await command.run()
 
   assert dbus_service.signals == [("FatalError", str(exc_info.value))]

@@ -34,9 +34,7 @@ def load_active_listener_config(
   config_path: str | None = None,
   overrides: Mapping[str, object | None],
 ) -> ActiveListenerConfig:
-  resolved_path = (
-    Path(config_path) if config_path is not None else resolve_default_active_listener_config_path()
-  )
+  resolved_path = resolve_active_listener_config_path(config_path)
   config_data = load_active_listener_config_file(resolved_path)
   merged_config = dict(config_data)
 
@@ -44,7 +42,53 @@ def load_active_listener_config(
     if value is not None:
       merged_config[field_name] = value
 
-  return ActiveListenerConfig.model_validate(merged_config, strict=True)
+  normalized_config = normalize_active_listener_config_paths(
+    merged_config,
+    config_dir=resolved_path.parent,
+  )
+
+  return ActiveListenerConfig.model_validate(normalized_config, strict=True)
+
+
+def resolve_active_listener_config_path(config_path: str | None) -> Path:
+  if config_path is None:
+    return resolve_default_active_listener_config_path()
+
+  return Path(config_path).expanduser().resolve()
+
+
+def normalize_active_listener_config_paths(
+  config_data: Mapping[str, object],
+  *,
+  config_dir: Path,
+) -> dict[str, object]:
+  normalized_config = dict(config_data)
+  raw_rewrite_config = normalized_config.get("llm_rewrite")
+  if not isinstance(raw_rewrite_config, Mapping):
+    return normalized_config
+
+  normalized_rewrite_config = dict(cast(Mapping[str, object], raw_rewrite_config))
+  normalized_rewrite_config["model_path"] = normalize_config_path_value(
+    normalized_rewrite_config.get("model_path"),
+    config_dir=config_dir,
+  )
+  normalized_rewrite_config["prompt_path"] = normalize_config_path_value(
+    normalized_rewrite_config.get("prompt_path"),
+    config_dir=config_dir,
+  )
+  normalized_config["llm_rewrite"] = normalized_rewrite_config
+  return normalized_config
+
+
+def normalize_config_path_value(value: object, *, config_dir: Path) -> object:
+  if not isinstance(value, str):
+    return value
+
+  configured_path = Path(value).expanduser()
+  if not configured_path.is_absolute():
+    configured_path = config_dir / configured_path
+
+  return str(configured_path)
 
 
 def load_active_listener_config_file(path: Path) -> dict[str, object]:

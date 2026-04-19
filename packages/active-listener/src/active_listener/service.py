@@ -118,6 +118,11 @@ class ActiveListenerService:
         await self.client.disconnect()
       except Exception as exc:
         cleanup_errors.append(exc)
+
+      try:
+        await self.rewrite_client.close()
+      except Exception as exc:
+        cleanup_errors.append(exc)
     finally:
       self.keyboard.close()
 

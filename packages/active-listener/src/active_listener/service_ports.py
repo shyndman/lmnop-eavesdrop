@@ -70,10 +70,11 @@ class ActiveListenerRewriteClient(Protocol):
   async def rewrite_text(
     self,
     *,
-    model_name: str,
     instructions: str,
     transcript: str,
   ) -> str: ...
+
+  async def close(self) -> None: ...
 
 
 class ActiveListenerRuntimeError(RuntimeError):

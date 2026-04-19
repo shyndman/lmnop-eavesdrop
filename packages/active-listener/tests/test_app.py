@@ -72,9 +72,8 @@ AppEvent = DisconnectedEvent | ReconnectedEvent | ReconnectingEvent | Transcript
 def _rewrite_config(*, enabled: bool = False) -> LlmRewriteConfig:
   return LlmRewriteConfig(
     enabled=enabled,
-    base_url="http://localhost:11434/v1",
-    timeout_s=30,
-    prompt_path="packages/active-listener/src/active_listener/rewrite_prompt.md",
+    model_path="/tmp/rewrite/model.litertlm",
+    prompt_path="/tmp/rewrite/system.md",
   )
 
 
@@ -90,14 +89,9 @@ def _config(*, rewrite_enabled: bool = False) -> ActiveListenerConfig:
 
 def _prompt(
   *,
-  metadata: dict[str, object] | None = None,
   instructions: str = "Rewrite this transcript.",
 ) -> LoadedRewritePrompt:
-  return LoadedRewritePrompt(
-    model_name="llama3",
-    metadata=metadata or {},
-    instructions=instructions,
-  )
+  return LoadedRewritePrompt(instructions=instructions)
 
 
 def _loaded_prompt_file(
@@ -294,17 +288,16 @@ class FakeRewriteClient:
   rewritten_text: str = "rewritten text"
   error: Exception | None = None
   calls: list[dict[str, str]] = field(default_factory=list)
+  close_calls: int = 0
 
   async def rewrite_text(
     self,
     *,
-    model_name: str,
     instructions: str,
     transcript: str,
   ) -> str:
     self.calls.append(
       {
-        "model_name": model_name,
         "instructions": instructions,
         "transcript": transcript,
       }
@@ -312,6 +305,9 @@ class FakeRewriteClient:
     if self.error is not None:
       raise self.error
     return self.rewritten_text
+
+  async def close(self) -> None:
+    self.close_calls += 1
 
 
 def _segment(segment_id: int, text: str, *, completed: bool) -> Segment:
@@ -425,6 +421,7 @@ async def test_create_service_fails_fast_on_keyboard_resolution_error() -> None:
 async def test_create_service_fails_fast_on_connect_error() -> None:
   keyboard = FakeKeyboard()
   client = FailingConnectClient()
+  rewrite_client = FakeRewriteClient()
 
   with pytest.raises(ActiveListenerRuntimeError, match="server unavailable"):
     _ = await create_service(
@@ -432,6 +429,24 @@ async def test_create_service_fails_fast_on_connect_error() -> None:
       keyboard_resolver=lambda _name: keyboard,
       client_factory=lambda _config: client,
       emitter_factory=lambda _socket: FakeEmitter(),
+      rewrite_client_factory=lambda _config: rewrite_client,
+    )
+
+  assert keyboard.close_calls == 1
+  assert rewrite_client.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_create_service_fails_fast_when_rewrite_client_cannot_initialize() -> None:
+  keyboard = FakeKeyboard()
+
+  with pytest.raises(ActiveListenerRuntimeError, match="bad model"):
+    _ = await create_service(
+      _config(rewrite_enabled=True),
+      keyboard_resolver=lambda _name: keyboard,
+      client_factory=lambda _config: FakeClient(),
+      emitter_factory=lambda _socket: FakeEmitter(),
+      rewrite_client_factory=lambda _config: (_ for _ in ()).throw(RewriteClientError("bad model")),
     )
 
   assert keyboard.close_calls == 1
@@ -557,6 +572,7 @@ async def test_close_releases_keyboard_even_when_disconnect_raises() -> None:
   with pytest.raises(RuntimeError, match="disconnect failed"):
     await service.close()
 
+  assert harness.rewrite_client.close_calls == 1
   assert harness.keyboard.close_calls == 1
   assert harness.keyboard.grabbed is False
 
@@ -572,6 +588,7 @@ async def test_close_still_disconnects_when_stop_streaming_fails() -> None:
     await service.close()
 
   assert harness.client.disconnect_calls == 1
+  assert harness.rewrite_client.close_calls == 1
   assert harness.keyboard.close_calls == 1
   assert harness.keyboard.grabbed is False
 
@@ -1016,7 +1033,7 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
   )
   monkeypatch.setattr(
     "active_listener.rewrite.load_active_listener_rewrite_prompt",
-    _prompt_loader(_loaded_prompt_file(_prompt(metadata={"voice": "concise"}))),
+    _prompt_loader(_loaded_prompt_file(_prompt())),
   )
 
   await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
@@ -1026,7 +1043,6 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
   assert harness.emitter.emitted == ["rewritten alpha"]
   assert rewrite_client.calls == [
     {
-      "model_name": "llama3",
       "instructions": "Rewrite this transcript.",
       "transcript": "alpha",
     }
@@ -1206,11 +1222,7 @@ async def test_rewrite_logging_uses_resolved_prompt_path(monkeypatch: pytest.Mon
   harness = _service(client=client, config=_config(rewrite_enabled=True))
   monkeypatch.setattr(
     "active_listener.rewrite.load_active_listener_rewrite_prompt",
-    _prompt_loader(
-      _loaded_prompt_file(
-        _prompt(metadata={"voice": "concise"}), prompt_path="/tmp/override/system.md"
-      )
-    ),
+    _prompt_loader(_loaded_prompt_file(_prompt(), prompt_path="/tmp/override/system.md")),
   )
 
   await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
@@ -1223,8 +1235,7 @@ async def test_rewrite_logging_uses_resolved_prompt_path(monkeypatch: pytest.Mon
       fields={
         "stream": "stream-1",
         "prompt_path": "/tmp/override/system.md",
-        "model_name": "llama3",
-        "prompt_metadata": {"voice": "concise"},
+        "instructions": "Rewrite this transcript.",
       },
     )
     in harness.logger.info_records
@@ -1291,7 +1302,7 @@ async def test_rewrite_logging_captures_success_payloads(monkeypatch: pytest.Mon
     "active_listener.rewrite.load_active_listener_rewrite_prompt",
     _prompt_loader(
       _loaded_prompt_file(
-        _prompt(metadata={"voice": "concise"}),
+        _prompt(),
         prompt_path="/tmp/override/system.md",
       )
     ),
@@ -1313,8 +1324,8 @@ async def test_rewrite_logging_captures_success_payloads(monkeypatch: pytest.Mon
       event="rewrite succeeded",
       fields={
         "stream": "stream-1",
+        "model_path": "/tmp/rewrite/model.litertlm",
         "prompt_path": "/tmp/override/system.md",
-        "model_name": "llama3",
         "raw_text": "alpha",
         "rewritten_text": "rewritten alpha",
       },

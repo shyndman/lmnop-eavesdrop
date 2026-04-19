@@ -95,7 +95,7 @@ export default class ActiveListenerPreferences extends ExtensionPreferences {
     const rewriteGroup = new Adw.PreferencesGroup({
       title: 'Rewrite',
       description:
-        'Active Listener reads the override file first on each rewrite request. If it is absent, prefs seeds this editor from the packaged default prompt.',
+        'Active Listener reads the override file first on each rewrite request. If it is absent, prefs seeds this editor from the bundled markdown fallback prompt.',
     });
 
     rewriteGroup.add(this.createPromptPathSection());
@@ -135,7 +135,7 @@ export default class ActiveListenerPreferences extends ExtensionPreferences {
       margin_bottom: 6,
     });
     const title = new Gtk.Label({
-      label: 'Prompt override file',
+      label: 'Markdown prompt override file',
       xalign: 0,
     });
     const pathLabel = new Gtk.Label({

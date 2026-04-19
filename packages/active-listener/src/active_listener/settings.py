@@ -6,11 +6,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class LlmRewriteConfig(BaseModel):
-  model_config: ClassVar[ConfigDict] = ConfigDict(strict=True)
+  model_config: ClassVar[ConfigDict] = ConfigDict(strict=True, extra="forbid")
 
   enabled: bool
-  base_url: str = Field(min_length=1)
-  timeout_s: int = Field(default=30, ge=1)
+  model_path: str = Field(min_length=1)
   prompt_path: str = Field(min_length=1)
 
 
@@ -31,7 +30,7 @@ class ActiveListenerConfig(BaseModel):
   :type llm_rewrite: LlmRewriteConfig
   """
 
-  model_config: ClassVar[ConfigDict] = ConfigDict(strict=True)
+  model_config: ClassVar[ConfigDict] = ConfigDict(strict=True, extra="forbid")
 
   keyboard_name: str = Field(min_length=1)
   host: str = Field(min_length=1)

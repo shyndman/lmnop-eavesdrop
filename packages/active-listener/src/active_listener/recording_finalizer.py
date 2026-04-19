@@ -122,6 +122,7 @@ class RecordingFinalizer:
 
   async def _rewrite_with_llm(self, *, text: str, stream: str) -> str:
     prompt_path: str | None = None
+    model_path = self.config.llm_rewrite.model_path
 
     #! This very deliberately happens on each recording run. DO NOT ALTER THIS. Do not ask
     # about loading up front. Just leave it.
@@ -134,34 +135,24 @@ class RecordingFinalizer:
       "rewrite prompt loaded",
       stream=stream,
       prompt_path=prompt_path,
-      model_name=prompt.model_name,
-      prompt_metadata=prompt.metadata,
-    )
-    self.logger.info(
-      "rewrite prompt rendered",
-      stream=stream,
-      prompt_path=prompt_path,
-      model_name=prompt.model_name,
       instructions=prompt.instructions,
     )
     self.logger.info(
       "rewrite started",
       stream=stream,
-      base_url=self.config.llm_rewrite.base_url,
+      model_path=model_path,
       prompt_path=prompt_path,
-      model_name=prompt.model_name,
       raw_text=text,
     )
     rewritten_text = await self.rewrite_client.rewrite_text(
-      model_name=prompt.model_name,
       instructions=prompt.instructions,
       transcript=text,
     )
     self.logger.info(
       "rewrite succeeded",
       stream=stream,
+      model_path=model_path,
       prompt_path=prompt_path,
-      model_name=prompt.model_name,
       raw_text=text,
       rewritten_text=rewritten_text,
     )
