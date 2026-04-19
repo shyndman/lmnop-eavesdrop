@@ -83,4 +83,4 @@ class PydotoolTextEmitter:
     if not self._initialized:
       raise RuntimeError("PydotoolTextEmitter.initialize() must run before emit_text()")
 
-    pydotool.type_string(text)
+    pydotool.type_string(text, hold_delay_ms=10, each_char_delay_ms=10)
