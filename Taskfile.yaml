@@ -97,6 +97,33 @@ tasks:
           exit 1
         fi
 
+  prepare-active-listener-ui-gnome:
+    desc: Install active-listener-ui-gnome dependencies
+    dir: packages/active-listener-ui-gnome
+    cmds:
+      - pnpm install --frozen-lockfile
+
+  build-active-listener-ui-gnome:
+    desc: Build the active-listener-ui-gnome extension bundle
+    deps: [prepare-active-listener-ui-gnome]
+    dir: packages/active-listener-ui-gnome
+    cmds:
+      - pnpm run build
+
+  install-active-listener-ui-gnome:
+    desc: Build and install the active-listener-ui-gnome GNOME Shell extension
+    deps: [prepare-active-listener-ui-gnome]
+    dir: packages/active-listener-ui-gnome
+    cmds:
+      - pnpm run install:extension
+
+  test-active-listener-ui-gnome:
+    desc: Launch the active-listener-ui-gnome nested Wayland GNOME Shell test session
+    deps: [prepare-active-listener-ui-gnome]
+    dir: packages/active-listener-ui-gnome
+    cmds:
+      - pnpm run wayland:test
+
   prepare-client-lib:
     desc: Install client library dependencies
     dir: packages/client
