@@ -94,6 +94,8 @@ class RecordingFinalizer:
     async def rewrite_with_llm(text: str) -> str:
       return await self._rewrite_with_llm(text=text, stream=stream)
 
+    #! Yes, I'm aware there's only a single step right now. More are coming soon. Do not touch this
+    # functionality.
     return (rewrite_with_llm,)
 
   async def _run_pipeline(
