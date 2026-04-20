@@ -22,6 +22,8 @@ const OVERLAY_MESSAGE = 'Overlay PoC';
 const OVERLAY_DISPLAY_DURATION_MS = 2000;
 const OVERLAY_BOTTOM_MARGIN_PX = 96;
 const OVERLAY_ANIMATION_DURATION_MS = 180;
+const RECORDING_SPIN_DURATION_MS = 1200;
+const RECORDING_SPIN_TRANSITION_NAME = 'recording-spin';
 
 type ActorEaseOptions = {
   duration: number;
@@ -89,6 +91,7 @@ export default class ActiveListenerIndicatorExtension extends Extension {
 
     this.detachProxy();
     this.clearOverlayTimeout();
+    this.stopRecordingAnimation();
 
     if (this.overlay !== null) {
       Main.layoutManager.removeChrome(this.overlay);
@@ -340,17 +343,66 @@ export default class ActiveListenerIndicatorExtension extends Extension {
   }
 
   private updateIndicator(state: IndicatorState): void {
-    const stateChanged = state !== this.indicatorState;
+    const previousState = this.indicatorState;
+    const stateChanged = state !== previousState;
     this.indicatorState = state;
     this.updateMenuSensitivity();
 
-    if (this.icon === null || !stateChanged) {
+    if (this.icon === null) {
       return;
     }
 
-    this.icon.gicon = this.getStateIcon(state);
-    this.icon.accessible_name = `Active Listener ${state}`;
+    if (previousState === 'recording' && state !== 'recording') {
+      this.stopRecordingAnimation();
+    }
+
+    if (stateChanged) {
+      this.icon.gicon = this.getStateIcon(state);
+      this.icon.accessible_name = `Active Listener ${state}`;
+    }
+
+    if (previousState !== 'recording' && state === 'recording') {
+      this.startRecordingAnimation();
+    }
+
+    if (!stateChanged) {
+      return;
+    }
+
     console.debug(`Active Listener indicator state ${state}`);
+  }
+
+  private startRecordingAnimation(): void {
+    if (this.icon === null) {
+      return;
+    }
+
+    this.icon.remove_transition(RECORDING_SPIN_TRANSITION_NAME);
+    this.icon.remove_all_transitions();
+    this.icon.set_pivot_point(0.5, 0.5);
+    this.icon.rotation_angle_z = 0;
+
+    const transition = Clutter.PropertyTransition.new_for_actor(this.icon, 'rotation-angle-z');
+    transition.set_from(0);
+    transition.set_to(360);
+    transition.set_duration(RECORDING_SPIN_DURATION_MS);
+    transition.set_progress_mode(Clutter.AnimationMode.LINEAR);
+    transition.set_repeat_count(-1);
+    this.icon.add_transition(RECORDING_SPIN_TRANSITION_NAME, transition);
+
+    console.debug('Active Listener indicator started recording animation');
+  }
+
+  private stopRecordingAnimation(): void {
+    if (this.icon === null) {
+      return;
+    }
+
+    this.icon.remove_transition(RECORDING_SPIN_TRANSITION_NAME);
+    this.icon.remove_all_transitions();
+    this.icon.rotation_angle_z = 0;
+
+    console.debug('Active Listener indicator stopped recording animation');
   }
 
   private updateMenuSensitivity(): void {
