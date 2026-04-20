@@ -155,10 +155,6 @@ class GnomeShellExtensionTextEmitter:
         object_path=CLIPBOARD_OBJECT_PATH,
         bus=bus,
       )
-      _logger.debug("validating windows proxy", object_path=WINDOWS_OBJECT_PATH)
-      _ = windows.get_focused_window_sync()
-      _logger.debug("validating clipboard proxy", object_path=CLIPBOARD_OBJECT_PATH)
-      _ = clipboard.get_current_content()
     except Exception:
       if bus is not None:
         bus.close()

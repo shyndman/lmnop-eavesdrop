@@ -129,7 +129,7 @@ def _install_proxies(
   )
 
 
-def test_emitter_initializes_once_and_validates_both_proxies(
+def test_emitter_initializes_once_without_validating_proxies(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
   bus = RecordingBus()
@@ -141,16 +141,14 @@ def test_emitter_initializes_once_and_validates_both_proxies(
   emitter.initialize()
   emitter.initialize()
 
-  assert windows.focused_window_calls == 1
-  assert clipboard.get_current_content_calls == 1
+  assert windows.focused_window_calls == 0
+  assert clipboard.get_current_content_calls == 0
   assert bus.close_calls == 0
 
 
 def test_emitter_uses_ctrl_shift_v_for_kitty(monkeypatch: pytest.MonkeyPatch) -> None:
   bus = RecordingBus()
-  windows = RecordingWindowsProxy(
-    [_focused_window_payload(), _focused_window_payload(wm_class="kitty")]
-  )
+  windows = RecordingWindowsProxy([_focused_window_payload(wm_class="kitty")])
   clipboard = RecordingClipboardProxy()
   _install_proxies(monkeypatch, bus=bus, windows=windows, clipboard=clipboard)
 
@@ -164,12 +162,7 @@ def test_emitter_uses_ctrl_shift_v_for_kitty(monkeypatch: pytest.MonkeyPatch) ->
 
 def test_emitter_uses_ctrl_v_for_non_kitty(monkeypatch: pytest.MonkeyPatch) -> None:
   bus = RecordingBus()
-  windows = RecordingWindowsProxy(
-    [
-      _focused_window_payload(),
-      _focused_window_payload(window_id=77, wm_class="org.gnome.dspy"),
-    ]
-  )
+  windows = RecordingWindowsProxy([_focused_window_payload(window_id=77)])
   clipboard = RecordingClipboardProxy()
   _install_proxies(monkeypatch, bus=bus, windows=windows, clipboard=clipboard)
 
@@ -187,7 +180,6 @@ def test_emitter_snapshots_focused_window_once_per_emission(
   bus = RecordingBus()
   windows = RecordingWindowsProxy(
     [
-      _focused_window_payload(window_id=1),
       _focused_window_payload(window_id=99, wm_class="kitty"),
       _focused_window_payload(window_id=1234),
     ]
@@ -199,7 +191,7 @@ def test_emitter_snapshots_focused_window_once_per_emission(
   emitter.initialize()
   emitter.emit_text("a" * 801)
 
-  assert windows.focused_window_calls == 2
+  assert windows.focused_window_calls == 1
   assert windows.shortcut_calls == [
     (99, "v", "CONTROL|SHIFT"),
     (99, "v", "CONTROL|SHIFT"),
@@ -269,7 +261,7 @@ def test_emitter_raises_for_invalid_focused_window_payload(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
   bus = RecordingBus()
-  windows = RecordingWindowsProxy([_focused_window_payload(), "not-json"])
+  windows = RecordingWindowsProxy(["not-json"])
   clipboard = RecordingClipboardProxy()
   _install_proxies(monkeypatch, bus=bus, windows=windows, clipboard=clipboard)
 
