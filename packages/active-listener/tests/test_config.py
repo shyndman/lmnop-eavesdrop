@@ -24,7 +24,6 @@ def _write_config(
         'host: "config.local"',
         "port: 9090",
         'audio_device: "config-device"',
-        'ydotool_socket: "/tmp/config.sock"',
         "",
         "llm_rewrite:",
         "  enabled: true",
@@ -81,12 +80,8 @@ def test_load_active_listener_config_resolves_relative_rewrite_paths_against_con
 
   config = load_active_listener_config(config_path=str(config_path), overrides={})
 
-  assert config.llm_rewrite.model_path == str(
-    config_path.parent / "models" / "rewrite.litertlm"
-  )
-  assert config.llm_rewrite.prompt_path == str(
-    config_path.parent / "prompts" / "rewrite_prompt.md"
-  )
+  assert config.llm_rewrite.model_path == str(config_path.parent / "models" / "rewrite.litertlm")
+  assert config.llm_rewrite.prompt_path == str(config_path.parent / "prompts" / "rewrite_prompt.md")
 
 
 def test_load_active_listener_config_preserves_absolute_rewrite_paths(tmp_path: Path) -> None:
@@ -116,12 +111,8 @@ def test_load_active_listener_config_uses_default_xdg_path_for_relative_rewrite_
 
   config = load_active_listener_config(config_path=None, overrides={})
 
-  assert config.llm_rewrite.model_path == str(
-    config_path.parent / "models" / "rewrite.litertlm"
-  )
-  assert config.llm_rewrite.prompt_path == str(
-    config_path.parent / "prompts" / "rewrite_prompt.md"
-  )
+  assert config.llm_rewrite.model_path == str(config_path.parent / "models" / "rewrite.litertlm")
+  assert config.llm_rewrite.prompt_path == str(config_path.parent / "prompts" / "rewrite_prompt.md")
 
 
 def test_load_active_listener_config_preserves_absolute_symlink_model_path(tmp_path: Path) -> None:

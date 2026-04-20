@@ -78,7 +78,6 @@ def _write_config(
   host: str = "config.local",
   port: int = 9090,
   audio_device: str = "config-device",
-  ydotool_socket: str | None = "/tmp/config.sock",
   llm_rewrite_block: str | None = None,
 ) -> None:
   rewrite_block = llm_rewrite_block or (
@@ -87,7 +86,6 @@ def _write_config(
     '  model_path: "models/rewrite.litertlm"\n'
     '  prompt_path: "prompts/rewrite_prompt.md"\n'
   )
-  ydotool_value = "null" if ydotool_socket is None else f'"{ydotool_socket}"'
   _ = path.write_text(
     "\n".join(
       [
@@ -95,7 +93,6 @@ def _write_config(
         f'host: "{host}"',
         f"port: {port}",
         f'audio_device: "{audio_device}"',
-        f"ydotool_socket: {ydotool_value}",
         "",
         rewrite_block.rstrip(),
         "",
@@ -182,7 +179,6 @@ async def test_command_run_uses_config_file_values(
         host="config.local",
         port=9090,
         audio_device="config-device",
-        ydotool_socket="/tmp/config.sock",
         llm_rewrite=LlmRewriteConfig(
           enabled=True,
           model_path=str(config_path.parent / "models" / "rewrite.litertlm"),

@@ -24,8 +24,6 @@ class ActiveListenerConfig(BaseModel):
   :type port: int
   :param audio_device: PortAudio capture device name passed to the client.
   :type audio_device: str
-  :param ydotool_socket: Optional custom ydotool daemon socket path.
-  :type ydotool_socket: str | None
   :param llm_rewrite: Nested rewrite configuration.
   :type llm_rewrite: LlmRewriteConfig
   """
@@ -36,5 +34,4 @@ class ActiveListenerConfig(BaseModel):
   host: str = Field(min_length=1)
   port: int = Field(ge=1, le=65535)
   audio_device: str = Field(min_length=1)
-  ydotool_socket: str | None = None
   llm_rewrite: LlmRewriteConfig

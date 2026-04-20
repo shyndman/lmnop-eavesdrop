@@ -14,9 +14,19 @@ That task:
 
 - installs `active-listener.service` into `~/.config/systemd/user/active-listener.service`
 - enables it for `graphical-session.target`
-- orders startup after `ydotoold.service`
 - keeps restart behavior best-effort with `Restart=on-failure`
 - seeds `~/.config/eavesdrop/active-listener.yaml` from `packages/active-listener/config.yaml` when the XDG config file does not exist yet
+
+## Vicinae GNOME extension dependency
+
+`active-listener` now pastes committed text through Vicinae's GNOME Shell extension D-Bus services. `ydotoold` is no longer part of the runtime path.
+
+The extension must be installed and exporting these session-bus objects under `org.gnome.Shell`:
+
+- `/org/gnome/Shell/Extensions/Windows` (`org.gnome.Shell.Extensions.Windows`)
+- `/org/gnome/Shell/Extensions/Clipboard` (`org.gnome.Shell.Extensions.Clipboard`)
+
+Reference implementation: <https://github.com/dagimg-dot/vicinae-gnome-extension>
 
 The canonical runtime paths are:
 
@@ -64,7 +74,14 @@ Follow logs:
 journalctl --user -u active-listener.service -f
 ```
 
-The service is owned by `graphical-session.target`, so a fresh graphical login is the normal auto-start path. `ydotoold.service` is ordered ahead of `active-listener.service`, but ordering is not readiness: if workstation prerequisites are transiently unavailable, systemd retry behavior is expected to recover the service.
+Check the Vicinae D-Bus objects:
+
+```bash
+gdbus introspect --session --dest org.gnome.Shell --object-path /org/gnome/Shell/Extensions/Windows
+gdbus introspect --session --dest org.gnome.Shell --object-path /org/gnome/Shell/Extensions/Clipboard
+```
+
+The service is owned by `graphical-session.target`, so a fresh graphical login is the normal auto-start path. If GNOME Shell or the Vicinae extension is transiently unavailable during login, systemd retry behavior is expected to recover the service.
 
 ## Manual development run
 

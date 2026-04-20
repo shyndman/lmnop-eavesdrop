@@ -2,7 +2,6 @@ keyboard_name: "AT Translated Set 2 keyboard"
 host: "home-brainbox"
 port: 9090
 audio_device: "default"
-ydotool_socket: "/run/user/1000/.ydotool_socket"
 
 llm_rewrite:
   enabled: true

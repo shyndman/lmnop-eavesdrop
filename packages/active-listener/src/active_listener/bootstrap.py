@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 from active_listener.app.ports import (
   ActiveListenerClient,
@@ -12,7 +12,7 @@ from active_listener.app.service import ActiveListenerService
 from active_listener.app.state import ForegroundPhase
 from active_listener.config.models import ActiveListenerConfig, LlmRewriteConfig
 from active_listener.infra.dbus import AppStateService, NoopDbusService
-from active_listener.infra.emitter import PydotoolTextEmitter, TextEmitter
+from active_listener.infra.emitter import GnomeShellExtensionTextEmitter, TextEmitter
 from active_listener.infra.keyboard import KeyboardInput, resolve_keyboard
 from active_listener.infra.rewrite import DisabledRewriteClient, LlmRewriteClient
 from eavesdrop.client import EavesdropClient
@@ -25,7 +25,7 @@ async def create_service(
   dbus_service: AppStateService | None = None,
   keyboard_resolver: Callable[[str], KeyboardInput] = resolve_keyboard,
   client_factory: Callable[[ActiveListenerConfig], ActiveListenerClient] | None = None,
-  emitter_factory: Callable[[str | None], TextEmitter] | None = None,
+  emitter_factory: Callable[[], TextEmitter] | None = None,
   rewrite_client_factory: Callable[[LlmRewriteConfig], ActiveListenerRewriteClient] | None = None,
 ) -> ActiveListenerService:
   """Construct a fully initialized service instance.
@@ -37,7 +37,7 @@ async def create_service(
   :param client_factory: Factory for the live transcriber dependency.
   :type client_factory: Callable[[ActiveListenerConfig], ActiveListenerClient] | None
   :param emitter_factory: Factory for the text emitter dependency.
-  :type emitter_factory: Callable[[str | None], TextEmitter] | None
+  :type emitter_factory: Callable[[], TextEmitter] | None
   :returns: Ready-to-run service instance.
   :rtype: ActiveListenerService
   :raises ActiveListenerRuntimeError: If startup prerequisites cannot be satisfied.
@@ -59,7 +59,7 @@ async def create_service(
     raise ActiveListenerRuntimeError(str(exc)) from exc
 
   try:
-    emitter = resolved_emitter_factory(config.ydotool_socket)
+    emitter = resolved_emitter_factory()
     client = resolved_client_factory(config)
     rewrite_client = resolved_rewrite_client_factory(config.llm_rewrite)
     connect_started = True
@@ -104,7 +104,7 @@ async def run_service(
   dbus_service: AppStateService | None = None,
   keyboard_resolver: Callable[[str], KeyboardInput] = resolve_keyboard,
   client_factory: Callable[[ActiveListenerConfig], ActiveListenerClient] | None = None,
-  emitter_factory: Callable[[str | None], TextEmitter] | None = None,
+  emitter_factory: Callable[[], TextEmitter] | None = None,
   rewrite_client_factory: Callable[[LlmRewriteConfig], ActiveListenerRewriteClient] | None = None,
 ) -> None:
   """Create and run the long-lived active-listener service.
@@ -116,7 +116,7 @@ async def run_service(
   :param client_factory: Factory for the live transcriber dependency.
   :type client_factory: Callable[[ActiveListenerConfig], ActiveListenerClient] | None
   :param emitter_factory: Factory for the text emitter dependency.
-  :type emitter_factory: Callable[[str | None], TextEmitter] | None
+  :type emitter_factory: Callable[[], TextEmitter] | None
   :returns: None
   :rtype: None
   """
@@ -195,16 +195,14 @@ def build_client(config: ActiveListenerConfig) -> ActiveListenerClient:
   )
 
 
-def build_emitter(socket_path: str | None) -> TextEmitter:
+def build_emitter() -> TextEmitter:
   """Build and initialize the text emission boundary.
 
-  :param socket_path: Optional custom ydotool daemon socket path.
-  :type socket_path: str | None
   :returns: Initialized text emitter.
   :rtype: TextEmitter
   """
 
-  emitter = PydotoolTextEmitter(socket_path=socket_path)
+  emitter = GnomeShellExtensionTextEmitter()
   emitter.initialize()
   return emitter
 

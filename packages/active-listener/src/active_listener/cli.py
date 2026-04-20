@@ -98,10 +98,6 @@ class ActiveListenerCommand(Command):
     default=None,
     help="PortAudio capture device name override.",
   )
-  ydotool_socket: str | None = arg(
-    default=None,
-    help="Optional ydotool daemon socket path override.",
-  )
   no_dbus: bool = arg(
     default=False,
     help="Disable DBus app-state publishing.",
@@ -126,7 +122,6 @@ class ActiveListenerCommand(Command):
           "host": self.host,
           "port": self.port,
           "audio_device": self.audio_device,
-          "ydotool_socket": self.ydotool_socket,
         },
       )
     except Exception as exc:

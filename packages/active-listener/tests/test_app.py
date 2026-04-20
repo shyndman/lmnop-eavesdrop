@@ -399,7 +399,7 @@ async def test_create_service_connects_client_and_initializes_emitter() -> None:
     dbus_service=dbus_service,
     keyboard_resolver=lambda _name: keyboard,
     client_factory=lambda _config: client,
-    emitter_factory=lambda _socket: (emitter.initialize(), emitter)[1],
+    emitter_factory=lambda: (emitter.initialize(), emitter)[1],
   )
 
   assert service.phase is ForegroundPhase.IDLE
@@ -428,7 +428,7 @@ async def test_create_service_fails_fast_on_connect_error() -> None:
       _config(),
       keyboard_resolver=lambda _name: keyboard,
       client_factory=lambda _config: client,
-      emitter_factory=lambda _socket: FakeEmitter(),
+      emitter_factory=lambda: FakeEmitter(),
       rewrite_client_factory=lambda _config: rewrite_client,
     )
 
@@ -445,7 +445,7 @@ async def test_create_service_fails_fast_when_rewrite_client_cannot_initialize()
       _config(rewrite_enabled=True),
       keyboard_resolver=lambda _name: keyboard,
       client_factory=lambda _config: FakeClient(),
-      emitter_factory=lambda _socket: FakeEmitter(),
+      emitter_factory=lambda: FakeEmitter(),
       rewrite_client_factory=lambda _config: (_ for _ in ()).throw(RewriteClientError("bad model")),
     )
 
@@ -606,7 +606,7 @@ async def test_run_service_emits_fatal_error_once_on_startup_failure() -> None:
       dbus_service=dbus_service,
       keyboard_resolver=fail_keyboard_resolver,
       client_factory=lambda _config: FakeClient(),
-      emitter_factory=lambda _socket: FakeEmitter(),
+      emitter_factory=lambda: FakeEmitter(),
       rewrite_client_factory=lambda _config: FakeRewriteClient(),
     )
 
@@ -627,7 +627,7 @@ async def test_run_service_emits_fatal_error_once_on_runtime_failure() -> None:
       dbus_service=dbus_service,
       keyboard_resolver=lambda _name: keyboard,
       client_factory=lambda _config: client,
-      emitter_factory=lambda _socket: FakeEmitter(),
+      emitter_factory=lambda: FakeEmitter(),
       rewrite_client_factory=lambda _config: FakeRewriteClient(),
     )
 
