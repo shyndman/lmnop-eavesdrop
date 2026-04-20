@@ -12,6 +12,7 @@ const DBUS_BUS_NAME = 'ca.lmnop.Eavesdrop.ActiveListener';
 const DBUS_OBJECT_PATH = '/ca/lmnop/Eavesdrop/ActiveListener';
 const DBUS_INTERFACE_NAME = 'ca.lmnop.Eavesdrop.ActiveListener1';
 const DBUS_STATE_PROPERTY = 'State';
+const DBUS_TRANSCRIPTION_UPDATED_SIGNAL = 'TranscriptionUpdated';
 const DBUS_PIPELINE_FAILED_SIGNAL = 'PipelineFailed';
 const SYSTEMD_DBUS_BUS_NAME = 'org.freedesktop.systemd1';
 const SYSTEMD_DBUS_OBJECT_PATH = '/org/freedesktop/systemd1';
@@ -33,6 +34,8 @@ type ActorEaseOptions = {
 };
 
 type IndicatorState = 'absent' | 'idle' | 'recording';
+type DbusOverlaySegment = [number | bigint, string];
+type DbusTranscriptionUpdatedPayload = [DbusOverlaySegment[], DbusOverlaySegment];
 type SystemdMethodName = 'RestartUnit' | 'StopUnit';
 
 const DBUS_PROXY_FLAGS = Gio.DBusProxyFlags.DO_NOT_AUTO_START_AT_CONSTRUCTION;
@@ -54,6 +57,8 @@ export default class ActiveListenerIndicatorExtension extends Extension {
     remove_all_transitions(): void;
   } => actor as St.Widget & { ease(options: ActorEaseOptions): void; remove_all_transitions(): void };
   private indicatorState: IndicatorState = 'absent';
+  private completedTranscriptParts: string[] = [];
+  private incompleteTranscriptText = '';
 
   enable(): void {
     this.button = new PanelMenu.Button(0.5, this.metadata.name, false);
@@ -91,6 +96,7 @@ export default class ActiveListenerIndicatorExtension extends Extension {
 
     this.detachProxy();
     this.clearOverlayTimeout();
+    this.resetTranscriptOverlay();
     this.stopRecordingAnimation();
 
     if (this.overlay !== null) {
@@ -180,7 +186,7 @@ export default class ActiveListenerIndicatorExtension extends Extension {
     this.overlay.set_position(-10000, -10000);
   }
 
-  private showOverlay(message: string): void {
+  private showOverlay(message: string, autoHide: boolean = true): void {
     if (this.overlay === null || this.overlayLabel === null) {
       return;
     }
@@ -208,6 +214,10 @@ export default class ActiveListenerIndicatorExtension extends Extension {
       duration: OVERLAY_ANIMATION_DURATION_MS,
       mode: Clutter.AnimationMode.EASE_OUT_QUAD,
     });
+
+    if (!autoHide) {
+      return;
+    }
 
     this.overlayTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, OVERLAY_DISPLAY_DURATION_MS, () => {
       this.hideOverlay();
@@ -286,6 +296,11 @@ export default class ActiveListenerIndicatorExtension extends Extension {
   }
 
   private handleProxySignal(signalName: string, parameters: GLib.Variant): void {
+    if (signalName === DBUS_TRANSCRIPTION_UPDATED_SIGNAL) {
+      this.handleTranscriptionUpdated(parameters);
+      return;
+    }
+
     if (signalName !== DBUS_PIPELINE_FAILED_SIGNAL) {
       return;
     }
@@ -294,6 +309,21 @@ export default class ActiveListenerIndicatorExtension extends Extension {
     const detail = `${step}: ${reason}`;
     console.error(`Active Listener pipeline failed ${detail}`);
     Main.notifyError('Active Listener pipeline failed', detail);
+  }
+
+  private handleTranscriptionUpdated(parameters: GLib.Variant): void {
+    const [completedSegments, incompleteSegment] = parameters.deepUnpack() as DbusTranscriptionUpdatedPayload;
+
+    for (const [, text] of completedSegments) {
+      const normalizedText = text.trim();
+      if (normalizedText.length > 0) {
+        this.completedTranscriptParts.push(normalizedText);
+      }
+    }
+
+    const [, incompleteText] = incompleteSegment;
+    this.incompleteTranscriptText = incompleteText.trim();
+    this.renderTranscriptOverlay();
   }
 
   private syncIndicatorState(): void {
@@ -353,6 +383,7 @@ export default class ActiveListenerIndicatorExtension extends Extension {
     }
 
     if (previousState === 'recording' && state !== 'recording') {
+      this.resetTranscriptOverlay();
       this.stopRecordingAnimation();
     }
 
@@ -362,6 +393,7 @@ export default class ActiveListenerIndicatorExtension extends Extension {
     }
 
     if (previousState !== 'recording' && state === 'recording') {
+      this.resetTranscriptOverlay();
       this.startRecordingAnimation();
     }
 
@@ -370,6 +402,27 @@ export default class ActiveListenerIndicatorExtension extends Extension {
     }
 
     console.debug(`Active Listener indicator state ${state}`);
+  }
+
+  private renderTranscriptOverlay(): void {
+    const transcriptParts = [...this.completedTranscriptParts];
+    if (this.incompleteTranscriptText.length > 0) {
+      transcriptParts.push(this.incompleteTranscriptText);
+    }
+
+    const transcript = transcriptParts.join(' ');
+    if (transcript.length === 0) {
+      this.hideOverlay();
+      return;
+    }
+
+    this.showOverlay(transcript, false);
+  }
+
+  private resetTranscriptOverlay(): void {
+    this.completedTranscriptParts = [];
+    this.incompleteTranscriptText = '';
+    this.hideOverlay();
   }
 
   private startRecordingAnimation(): void {

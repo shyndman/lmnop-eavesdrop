@@ -49,13 +49,25 @@ class StubCommand:
 @dataclass
 class FakeDbusService:
   states: list[ForegroundPhase] = field(default_factory=lambda: [ForegroundPhase.STARTING])
-  signals: list[tuple[str, str | None]] = field(default_factory=list)
+  signals: list[tuple[str, object | None]] = field(default_factory=list)
   close_calls: int = 0
 
   async def set_state(self, state: ForegroundPhase) -> None:
     self.states.append(state)
 
+  async def transcription_updated(
+    self,
+    completed_segments: list[tuple[int, str]],
+    incomplete_segment: tuple[int, str],
+  ) -> None:
+    _ = completed_segments
+    _ = incomplete_segment
+
   async def recording_aborted(self, reason: str) -> None:
+    _ = reason
+
+  async def pipeline_failed(self, step: str, reason: str) -> None:
+    _ = step
     _ = reason
 
   async def fatal_error(self, reason: str) -> None:

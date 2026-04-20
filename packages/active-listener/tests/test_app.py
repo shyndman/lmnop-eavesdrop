@@ -67,6 +67,7 @@ class LogRecord:
 
 
 AppEvent = DisconnectedEvent | ReconnectedEvent | ReconnectingEvent | TranscriptionEvent
+DbusOverlaySegment = tuple[int, str]
 
 
 def _rewrite_config(*, enabled: bool = False) -> LlmRewriteConfig:
@@ -186,6 +187,13 @@ class FakeDbusService:
     if self.states and self.states[-1] is state:
       return
     self.states.append(state)
+
+  async def transcription_updated(
+    self,
+    completed_segments: list[DbusOverlaySegment],
+    incomplete_segment: DbusOverlaySegment,
+  ) -> None:
+    self.signals.append(("TranscriptionUpdated", (completed_segments, incomplete_segment)))
 
   async def recording_aborted(self, reason: str) -> None:
     self.signals.append(("RecordingAborted", reason))
@@ -731,6 +739,9 @@ async def test_transcription_events_are_consumed_only_while_recording() -> None:
   assert service.phase is ForegroundPhase.IDLE
   assert client.stop_calls == 1
   assert client.flush_calls == [True]
+  assert harness.dbus_service.signals == [
+    ("TranscriptionUpdated", ([(1, "alpha")], (2, "draft"))),
+  ]
   assert emitter.emitted == ["alpha bravo"]
   assert harness.keyboard.ungrab_calls == 1
   assert "recording finished" in harness.logger.info_messages

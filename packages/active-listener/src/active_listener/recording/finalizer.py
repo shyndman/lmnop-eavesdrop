@@ -15,11 +15,18 @@ from active_listener.app.ports import (
 from active_listener.config.models import ActiveListenerConfig
 from active_listener.infra.dbus import AppStateService
 from active_listener.infra.emitter import TextEmitter
-from active_listener.recording.reducer import RecordingReducerState, render_text
+from active_listener.recording.reducer import (
+  RecordingReducerState,
+  TranscriptionUpdate,
+  render_text,
+)
 from eavesdrop.wire import TranscriptionMessage
 
 PipelineStep = Callable[[str], Awaitable[str]]
-RecordingMessageIngestor = Callable[[RecordingReducerState, TranscriptionMessage], None]
+RecordingMessageIngestor = Callable[
+  [RecordingReducerState, TranscriptionMessage],
+  TranscriptionUpdate | None,
+]
 DisconnectGenerationReader = Callable[[], int]
 
 
@@ -54,7 +61,7 @@ class RecordingFinalizer:
         self.logger.warning("skipping emission after disconnect", stream=message.stream)
         return
 
-      self.ingest_transcription_message(reducer_state, message)
+      _ = self.ingest_transcription_message(reducer_state, message)
       raw_text = render_text(reducer_state.parts)
       if not raw_text:
         self.logger.info("recording finalized without committed text", stream=message.stream)

@@ -184,7 +184,18 @@ class ActiveListenerService:
   ) -> None:
     if isinstance(event, TranscriptionEvent):
       if self.phase is ForegroundPhase.RECORDING:
-        self._recording_session.ingest_live_transcription_message(event.message)
+        transcription_update = self._recording_session.ingest_live_transcription_message(
+          event.message
+        )
+        if transcription_update is not None:
+          completed_segments = [
+            (segment.id, segment.text) for segment in transcription_update.completed_segments
+          ]
+          incomplete_segment = transcription_update.incomplete_segment
+          await self.dbus_service.transcription_updated(
+            completed_segments=completed_segments,
+            incomplete_segment=(incomplete_segment.id, incomplete_segment.text),
+          )
       return
 
     if isinstance(event, ConnectedEvent | ReconnectedEvent):

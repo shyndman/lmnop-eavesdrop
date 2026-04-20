@@ -36,6 +36,12 @@ class DbusSignalEmitter(Protocol):
 class AppStateService(Protocol):
   async def set_state(self, state: ForegroundPhase) -> None: ...
 
+  async def transcription_updated(
+    self,
+    completed_segments: list[tuple[int, str]],
+    incomplete_segment: tuple[int, str],
+  ) -> None: ...
+
   async def recording_aborted(self, reason: str) -> None: ...
 
   async def pipeline_failed(self, step: str, reason: str) -> None: ...
@@ -62,6 +68,7 @@ if TYPE_CHECKING:
   class ActiveListenerDbusInterface:
     _state: str = ""
     state: object = object()
+    transcription_updated: object = object()
     recording_aborted: object = object()
     pipeline_failed: object = object()
     fatal_error: object = object()
@@ -114,6 +121,14 @@ else:
         self._state = value
 
       state.setter_private(set_local_state)
+
+      @dbus_signal_async(
+        signal_signature="a(ts)(ts)",
+        signal_args_names=("completed_segments", "incomplete_segment"),
+        signal_name="TranscriptionUpdated",
+      )
+      def transcription_updated(self) -> tuple[list[tuple[int, str]], tuple[int, str]]:
+        raise NotImplementedError
 
       @dbus_signal_async(
         signal_signature="s",
@@ -169,6 +184,7 @@ else:
 
       namespace["__init__"] = __init__
       namespace["state"] = state
+      namespace["transcription_updated"] = transcription_updated
       namespace["recording_aborted"] = recording_aborted
       namespace["pipeline_failed"] = pipeline_failed
       namespace["fatal_error"] = fatal_error
@@ -191,6 +207,14 @@ else:
 class NoopDbusService:
   async def set_state(self, state: ForegroundPhase) -> None:
     _ = state
+
+  async def transcription_updated(
+    self,
+    completed_segments: list[tuple[int, str]],
+    incomplete_segment: tuple[int, str],
+  ) -> None:
+    _ = completed_segments
+    _ = incomplete_segment
 
   async def recording_aborted(self, reason: str) -> None:
     _ = reason
@@ -243,6 +267,15 @@ class SdbusDbusService:
 
   async def set_state(self, state: ForegroundPhase) -> None:
     await self.interface.set_state(state)
+
+  async def transcription_updated(
+    self,
+    completed_segments: list[tuple[int, str]],
+    incomplete_segment: tuple[int, str],
+  ) -> None:
+    cast(DbusSignalEmitter, self.interface.transcription_updated).emit(
+      (completed_segments, incomplete_segment)
+    )
 
   async def recording_aborted(self, reason: str) -> None:
     cast(DbusSignalEmitter, self.interface.recording_aborted).emit(reason)

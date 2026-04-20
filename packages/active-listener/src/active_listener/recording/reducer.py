@@ -23,11 +23,41 @@ class RecordingReducerState:
 
 
 @dataclass(frozen=True)
+class OverlaySegment:
+  """Minimal transcript segment payload published to the local overlay.
+
+  :ivar id: Stable segment identifier.
+  :vartype id: int
+  :ivar text: Stripped transcript text ready for display.
+  :vartype text: str
+  """
+
+  id: int
+  text: str
+
+
+@dataclass(frozen=True)
+class TranscriptionUpdate:
+  """Live transcript delta surfaced to UI integrations.
+
+  :ivar completed_segments: Newly completed transcript segments since the last window.
+  :vartype completed_segments: list[OverlaySegment]
+  :ivar incomplete_segment: Current in-progress tail segment.
+  :vartype incomplete_segment: OverlaySegment
+  """
+
+  completed_segments: list[OverlaySegment]
+  incomplete_segment: OverlaySegment
+
+
+@dataclass(frozen=True)
 class SegmentReduction:
   """Committed segments extracted from the latest window.
 
   :ivar segments: Newly committed non-tail segments.
   :vartype segments: list[Segment]
+  :ivar incomplete_segment: Current in-progress tail segment.
+  :vartype incomplete_segment: Segment | None
   :ivar last_id: Identifier to store for the next reduction.
   :vartype last_id: int | None
   :ivar missing_last_id: True when the previous sentinel was absent.
@@ -35,6 +65,7 @@ class SegmentReduction:
   """
 
   segments: list[Segment]
+  incomplete_segment: Segment | None
   last_id: int | None
   missing_last_id: bool
 
@@ -56,9 +87,23 @@ def reduce_new_segments(
   :rtype: SegmentReduction
   """
 
+  incomplete_segment = segments[-1] if segments else None
   committed_prefix = list(segments[:-1])
+  if incomplete_segment is None:
+    return SegmentReduction(
+      segments=[],
+      incomplete_segment=None,
+      last_id=last_id,
+      missing_last_id=False,
+    )
+
   if not committed_prefix:
-    return SegmentReduction(segments=[], last_id=last_id, missing_last_id=False)
+    return SegmentReduction(
+      segments=[],
+      incomplete_segment=incomplete_segment,
+      last_id=last_id,
+      missing_last_id=False,
+    )
 
   missing_last_id = False
   new_segments = committed_prefix
@@ -74,8 +119,35 @@ def reduce_new_segments(
 
   return SegmentReduction(
     segments=new_segments,
+    incomplete_segment=incomplete_segment,
     last_id=committed_prefix[-1].id,
     missing_last_id=missing_last_id,
+  )
+
+
+def build_transcription_update(reduction: SegmentReduction) -> TranscriptionUpdate | None:
+  """Build a display-ready live transcript delta from a reduced window.
+
+  :param reduction: Reduced transcription window with committed delta and tail state.
+  :type reduction: SegmentReduction
+  :returns: Overlay-ready transcript update, or None when no tail segment exists.
+  :rtype: TranscriptionUpdate | None
+  """
+
+  incomplete_segment = reduction.incomplete_segment
+  if incomplete_segment is None:
+    return None
+
+  return TranscriptionUpdate(
+    completed_segments=[
+      OverlaySegment(id=segment.id, text=segment.text.strip())
+      for segment in reduction.segments
+      if segment.text.strip()
+    ],
+    incomplete_segment=OverlaySegment(
+      id=incomplete_segment.id,
+      text=incomplete_segment.text.strip(),
+    ),
   )
 
 

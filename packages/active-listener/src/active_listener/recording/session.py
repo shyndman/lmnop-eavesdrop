@@ -13,7 +13,9 @@ from active_listener.app.ports import (
 from active_listener.infra.keyboard import KeyboardInput, RecordingGrabRelease
 from active_listener.recording.reducer import (
   RecordingReducerState,
+  TranscriptionUpdate,
   append_segment_text,
+  build_transcription_update,
   reduce_new_segments,
 )
 from eavesdrop.wire import TranscriptionMessage
@@ -61,15 +63,18 @@ class RecordingSession:
     await self._exit_recording()
     return reducer_state
 
-  def ingest_live_transcription_message(self, message: TranscriptionMessage) -> None:
+  def ingest_live_transcription_message(
+    self,
+    message: TranscriptionMessage,
+  ) -> TranscriptionUpdate | None:
     reducer_state = self._require_recording_reducer_state()
-    self.ingest_transcription_message(reducer_state, message)
+    return self.ingest_transcription_message(reducer_state, message)
 
   def ingest_transcription_message(
     self,
     state: RecordingReducerState,
     message: TranscriptionMessage,
-  ) -> None:
+  ) -> TranscriptionUpdate | None:
     reduction = reduce_new_segments(message.segments, state.last_id)
     if reduction.missing_last_id:
       self.logger.warning(
@@ -80,6 +85,7 @@ class RecordingSession:
     append_segment_text(state.parts, reduction.segments)
     state.last_id = reduction.last_id
     self._connection_last_id = reduction.last_id
+    return build_transcription_update(reduction)
 
   async def _exit_recording(self) -> None:
     release_recording_grab = self._release_recording_grab

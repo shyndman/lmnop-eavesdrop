@@ -43,6 +43,10 @@ class PairSignalProxy(Protocol):
   def __aiter__(self) -> AsyncIterator[tuple[str, str]]: ...
 
 
+class TranscriptionUpdatedSignalProxy(Protocol):
+  def __aiter__(self) -> AsyncIterator[tuple[list[tuple[int, str]], tuple[int, str]]]: ...
+
+
 class PropertyDescriptor(Protocol):
   property_name: str
   property_setter_is_public: bool
@@ -68,6 +72,12 @@ async def receive_next_pair_signal(iterator: AsyncIterator[tuple[str, str]]) -> 
   return await anext(iterator)
 
 
+async def receive_next_transcription_update(
+  iterator: AsyncIterator[tuple[list[tuple[int, str]], tuple[int, str]]],
+) -> tuple[list[tuple[int, str]], tuple[int, str]]:
+  return await anext(iterator)
+
+
 async def connect_test_service_or_skip() -> SdbusDbusService:
   try:
     return await SdbusDbusService.connect()
@@ -82,6 +92,10 @@ async def test_interface_contract_names_match_spec() -> None:
   recording_aborted_signal = cast(
     SignalDescriptor,
     ActiveListenerDbusInterface.__dict__["recording_aborted"],
+  )
+  transcription_updated_signal = cast(
+    SignalDescriptor,
+    ActiveListenerDbusInterface.__dict__["transcription_updated"],
   )
   pipeline_failed_signal = cast(
     SignalDescriptor,
@@ -102,6 +116,7 @@ async def test_interface_contract_names_match_spec() -> None:
 
   assert state_descriptor.property_name == "State"
   assert state_descriptor.property_setter_is_public is False
+  assert transcription_updated_signal.signal_name == "TranscriptionUpdated"
   assert recording_aborted_signal.signal_name == "RecordingAborted"
   assert pipeline_failed_signal.signal_name == "PipelineFailed"
   assert fatal_error_signal.signal_name == "FatalError"
@@ -144,21 +159,36 @@ async def test_property_is_read_only_over_dbus_and_empty_signals_emit() -> None:
       assert await state_proxy.get_async() == state.value
 
     fatal_error_iter = cast(StringSignalProxy, proxy.fatal_error).__aiter__()
+    transcription_updated_iter = cast(
+      TranscriptionUpdatedSignalProxy,
+      proxy.transcription_updated,
+    ).__aiter__()
     pipeline_failed_iter = cast(PairSignalProxy, proxy.pipeline_failed).__aiter__()
     reconnecting_iter = cast(EmptySignalProxy, proxy.reconnecting).__aiter__()
     reconnected_iter = cast(EmptySignalProxy, proxy.reconnected).__aiter__()
     fatal_error_task = asyncio.create_task(receive_next_string_signal(fatal_error_iter))
+    transcription_updated_task = asyncio.create_task(
+      receive_next_transcription_update(transcription_updated_iter)
+    )
     pipeline_failed_task = asyncio.create_task(receive_next_pair_signal(pipeline_failed_iter))
     reconnecting_task = asyncio.create_task(receive_next_signal(reconnecting_iter))
     reconnected_task = asyncio.create_task(receive_next_signal(reconnected_iter))
     await asyncio.sleep(0.05)
 
     await service.fatal_error("boom")
+    await service.transcription_updated(
+      completed_segments=[(1, "alpha"), (2, "bravo")],
+      incomplete_segment=(3, "draft"),
+    )
     await service.pipeline_failed("rewrite_with_llm", "timed out")
     await service.reconnecting()
     await service.reconnected()
 
     assert await asyncio.wait_for(fatal_error_task, timeout=2) == "boom"
+    assert await asyncio.wait_for(transcription_updated_task, timeout=2) == (
+      [(1, "alpha"), (2, "bravo")],
+      (3, "draft"),
+    )
     assert await asyncio.wait_for(pipeline_failed_task, timeout=2) == (
       "rewrite_with_llm",
       "timed out",
@@ -187,12 +217,13 @@ async def test_dbus_introspection_matches_locked_contract() -> None:
     assert DBUS_OBJECT_PATH == "/ca/lmnop/Eavesdrop/ActiveListener"
     assert 'interface name="ca.lmnop.Eavesdrop.ActiveListener1"' in introspection_xml
     assert '<property name="State" type="s" access="read">' in introspection_xml
+    assert '<signal name="TranscriptionUpdated">' in introspection_xml
     assert '<signal name="RecordingAborted">' in introspection_xml
     assert '<signal name="PipelineFailed">' in introspection_xml
     assert '<signal name="FatalError">' in introspection_xml
     assert '<signal name="Reconnecting">' in introspection_xml
     assert '<signal name="Reconnected">' in introspection_xml
-    assert interface_block.count("<signal name=") == 5
+    assert interface_block.count("<signal name=") == 6
   finally:
     await service.close()
 
