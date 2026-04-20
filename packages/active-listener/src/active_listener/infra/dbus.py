@@ -42,6 +42,8 @@ class AppStateService(Protocol):
     incomplete_segment: tuple[int, str],
   ) -> None: ...
 
+  async def spectrum_updated(self, bars: bytes) -> None: ...
+
   async def recording_aborted(self, reason: str) -> None: ...
 
   async def pipeline_failed(self, step: str, reason: str) -> None: ...
@@ -69,6 +71,7 @@ if TYPE_CHECKING:
     _state: str = ""
     state: object = object()
     transcription_updated: object = object()
+    spectrum_updated: object = object()
     recording_aborted: object = object()
     pipeline_failed: object = object()
     fatal_error: object = object()
@@ -131,6 +134,14 @@ else:
         raise NotImplementedError
 
       @dbus_signal_async(
+        signal_signature="ay",
+        signal_args_names=("bars",),
+        signal_name="SpectrumUpdated",
+      )
+      def spectrum_updated(self) -> bytes:
+        raise NotImplementedError
+
+      @dbus_signal_async(
         signal_signature="s",
         signal_args_names=("reason",),
         signal_name="RecordingAborted",
@@ -185,6 +196,7 @@ else:
       namespace["__init__"] = __init__
       namespace["state"] = state
       namespace["transcription_updated"] = transcription_updated
+      namespace["spectrum_updated"] = spectrum_updated
       namespace["recording_aborted"] = recording_aborted
       namespace["pipeline_failed"] = pipeline_failed
       namespace["fatal_error"] = fatal_error
@@ -215,6 +227,9 @@ class NoopDbusService:
   ) -> None:
     _ = completed_segments
     _ = incomplete_segment
+
+  async def spectrum_updated(self, bars: bytes) -> None:
+    _ = bars
 
   async def recording_aborted(self, reason: str) -> None:
     _ = reason
@@ -276,6 +291,9 @@ class SdbusDbusService:
     cast(DbusSignalEmitter, self.interface.transcription_updated).emit(
       (completed_segments, incomplete_segment)
     )
+
+  async def spectrum_updated(self, bars: bytes) -> None:
+    cast(DbusSignalEmitter, self.interface.spectrum_updated).emit(bars)
 
   async def recording_aborted(self, reason: str) -> None:
     cast(DbusSignalEmitter, self.interface.recording_aborted).emit(reason)

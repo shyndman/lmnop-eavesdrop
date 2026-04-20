@@ -13,6 +13,7 @@ const DBUS_OBJECT_PATH = '/ca/lmnop/Eavesdrop/ActiveListener';
 const DBUS_INTERFACE_NAME = 'ca.lmnop.Eavesdrop.ActiveListener1';
 const DBUS_STATE_PROPERTY = 'State';
 const DBUS_TRANSCRIPTION_UPDATED_SIGNAL = 'TranscriptionUpdated';
+const DBUS_SPECTRUM_UPDATED_SIGNAL = 'SpectrumUpdated';
 const DBUS_PIPELINE_FAILED_SIGNAL = 'PipelineFailed';
 const SYSTEMD_DBUS_BUS_NAME = 'org.freedesktop.systemd1';
 const SYSTEMD_DBUS_OBJECT_PATH = '/org/freedesktop/systemd1';
@@ -23,6 +24,11 @@ const OVERLAY_MESSAGE = 'Overlay PoC';
 const OVERLAY_DISPLAY_DURATION_MS = 2000;
 const OVERLAY_BOTTOM_MARGIN_PX = 96;
 const OVERLAY_ANIMATION_DURATION_MS = 180;
+const SPECTRUM_BAR_COUNT = 50;
+const SPECTRUM_BAR_WIDTH_PX = 6;
+const SPECTRUM_BAR_GAP_PX = 2;
+const SPECTRUM_BAR_MAX_HEIGHT_PX = 56;
+const SPECTRUM_BAR_MIN_HEIGHT_PX = 4;
 const RECORDING_SPIN_DURATION_MS = 1200;
 const RECORDING_SPIN_TRANSITION_NAME = 'recording-spin';
 
@@ -50,7 +56,11 @@ export default class ActiveListenerIndicatorExtension extends Extension {
   private restartServiceItem: PopupMenu.PopupMenuItem | null = null;
   private stopServiceItem: PopupMenu.PopupMenuItem | null = null;
   private overlay: St.Widget | null = null;
+  private overlayContent: St.BoxLayout | null = null;
   private overlayLabel: St.Label | null = null;
+  private spectrumContainer: St.BoxLayout | null = null;
+  private spectrumBars: St.Widget[] = [];
+  private spectrumLevels: Uint8Array<ArrayBufferLike> = new Uint8Array(SPECTRUM_BAR_COUNT);
   private overlayTimeoutId: number | null = null;
   private readonly overlayActor = (actor: St.Widget): St.Widget & {
     ease(options: ActorEaseOptions): void;
@@ -105,7 +115,11 @@ export default class ActiveListenerIndicatorExtension extends Extension {
       this.overlay = null;
     }
 
+    this.overlayContent = null;
     this.overlayLabel = null;
+    this.spectrumContainer = null;
+    this.spectrumBars = [];
+    this.spectrumLevels = new Uint8Array(SPECTRUM_BAR_COUNT);
     this.icon = null;
     this.restartServiceItem = null;
     this.stopServiceItem = null;
@@ -167,8 +181,33 @@ export default class ActiveListenerIndicatorExtension extends Extension {
         'text-align: center;',
     });
 
-    this.overlay = new St.Widget({
-      layout_manager: new Clutter.BinLayout(),
+    this.spectrumContainer = new St.BoxLayout({
+      x_align: Clutter.ActorAlign.CENTER,
+      y_align: Clutter.ActorAlign.END,
+      style: `spacing: ${SPECTRUM_BAR_GAP_PX}px;`,
+    });
+    this.spectrumBars = [];
+    for (let index = 0; index < SPECTRUM_BAR_COUNT; index += 1) {
+      const bar = new St.Widget({
+        reactive: false,
+        can_focus: false,
+        style: this.buildSpectrumBarStyle(SPECTRUM_BAR_MIN_HEIGHT_PX, 0),
+      });
+      this.spectrumBars.push(bar);
+      this.spectrumContainer.add_child(bar);
+    }
+
+    this.overlayContent = new St.BoxLayout({
+      vertical: true,
+      x_align: Clutter.ActorAlign.CENTER,
+      y_align: Clutter.ActorAlign.CENTER,
+      style: 'spacing: 16px;',
+    });
+    this.overlayContent.add_child(this.spectrumContainer);
+    this.overlayContent.add_child(this.overlayLabel);
+
+    this.overlay = new St.BoxLayout({
+      vertical: true,
       visible: false,
       reactive: false,
       can_focus: false,
@@ -180,7 +219,8 @@ export default class ActiveListenerIndicatorExtension extends Extension {
         'min-width: 420px;' +
         'min-height: 72px;',
     });
-    this.overlay.add_child(this.overlayLabel);
+    this.overlay.add_child(this.overlayContent);
+    this.clearSpectrumBars();
 
     Main.layoutManager.addChrome(this.overlay, { trackFullscreen: true });
     this.overlay.set_position(-10000, -10000);
@@ -301,6 +341,11 @@ export default class ActiveListenerIndicatorExtension extends Extension {
       return;
     }
 
+    if (signalName === DBUS_SPECTRUM_UPDATED_SIGNAL) {
+      this.handleSpectrumUpdated(parameters);
+      return;
+    }
+
     if (signalName !== DBUS_PIPELINE_FAILED_SIGNAL) {
       return;
     }
@@ -323,7 +368,24 @@ export default class ActiveListenerIndicatorExtension extends Extension {
 
     const [, incompleteText] = incompleteSegment;
     this.incompleteTranscriptText = incompleteText.trim();
-    this.renderTranscriptOverlay();
+    this.renderOverlay();
+  }
+
+  private handleSpectrumUpdated(parameters: GLib.Variant): void {
+    if (this.indicatorState !== 'recording') {
+      return;
+    }
+
+    const spectrumVariant = parameters.get_child_value(0);
+    const byteBuffer = spectrumVariant.get_data_as_bytes();
+    this.spectrumLevels = Uint8Array.from(byteBuffer.toArray());
+
+    if (this.spectrumLevels.length !== SPECTRUM_BAR_COUNT) {
+      return;
+    }
+
+    this.renderSpectrumBars();
+    this.renderOverlay();
   }
 
   private syncIndicatorState(): void {
@@ -383,6 +445,7 @@ export default class ActiveListenerIndicatorExtension extends Extension {
     }
 
     if (previousState === 'recording' && state !== 'recording') {
+      this.clearSpectrumBars();
       this.resetTranscriptOverlay();
       this.stopRecordingAnimation();
     }
@@ -393,6 +456,7 @@ export default class ActiveListenerIndicatorExtension extends Extension {
     }
 
     if (previousState !== 'recording' && state === 'recording') {
+      this.clearSpectrumBars();
       this.resetTranscriptOverlay();
       this.startRecordingAnimation();
     }
@@ -404,14 +468,18 @@ export default class ActiveListenerIndicatorExtension extends Extension {
     console.debug(`Active Listener indicator state ${state}`);
   }
 
-  private renderTranscriptOverlay(): void {
+  private renderOverlay(): void {
     const transcriptParts = [...this.completedTranscriptParts];
     if (this.incompleteTranscriptText.length > 0) {
       transcriptParts.push(this.incompleteTranscriptText);
     }
 
     const transcript = transcriptParts.join(' ');
-    if (transcript.length === 0) {
+    if (this.overlayLabel !== null) {
+      this.overlayLabel.text = transcript;
+    }
+
+    if (transcript.length === 0 && this.indicatorState !== 'recording') {
       this.hideOverlay();
       return;
     }
@@ -422,7 +490,39 @@ export default class ActiveListenerIndicatorExtension extends Extension {
   private resetTranscriptOverlay(): void {
     this.completedTranscriptParts = [];
     this.incompleteTranscriptText = '';
-    this.hideOverlay();
+    this.renderOverlay();
+  }
+
+  private clearSpectrumBars(): void {
+    this.spectrumLevels = new Uint8Array(SPECTRUM_BAR_COUNT);
+    this.renderSpectrumBars();
+  }
+
+  private renderSpectrumBars(): void {
+    if (this.spectrumBars.length !== SPECTRUM_BAR_COUNT) {
+      return;
+    }
+
+    for (let index = 0; index < SPECTRUM_BAR_COUNT; index += 1) {
+      const level = this.spectrumLevels[index] ?? 0;
+      const normalizedLevel = level / 255;
+      const height = Math.max(
+        SPECTRUM_BAR_MIN_HEIGHT_PX,
+        Math.round(normalizedLevel * SPECTRUM_BAR_MAX_HEIGHT_PX),
+      );
+      const bar = this.spectrumBars[index];
+      bar.style = this.buildSpectrumBarStyle(height, normalizedLevel);
+    }
+  }
+
+  private buildSpectrumBarStyle(heightPx: number, level: number): string {
+    const opacity = Math.max(0.15, level);
+    return (
+      `background-color: rgba(255, 255, 255, ${opacity});` +
+      'border-radius: 999px;' +
+      `width: ${SPECTRUM_BAR_WIDTH_PX}px;` +
+      `height: ${heightPx}px;`
+    );
   }
 
   private startRecordingAnimation(): void {

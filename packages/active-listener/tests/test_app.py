@@ -9,13 +9,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import final
 
+import numpy as np
 import pytest
 from typing_extensions import override
 
 from active_listener.app.ports import ActiveListenerRuntimeError
 from active_listener.app.service import ActiveListenerService
 from active_listener.app.state import ForegroundPhase, KeyboardAction
-from active_listener.bootstrap import create_service, run_service
+from active_listener.bootstrap import build_capture_callback, create_service, run_service
 from active_listener.config.models import ActiveListenerConfig, LlmRewriteConfig
 from active_listener.infra.keyboard import KeyboardInput
 from active_listener.infra.rewrite import (
@@ -24,6 +25,11 @@ from active_listener.infra.rewrite import (
   RewriteClientError,
   RewriteClientTimeoutError,
   RewritePromptError,
+)
+from active_listener.recording.spectrum import (
+  SAMPLE_RATE_HZ,
+  SPECTRUM_TICK_INTERVAL_SECONDS,
+  WINDOW_SIZE,
 )
 from eavesdrop.client import (
   DisconnectedEvent,
@@ -101,6 +107,10 @@ def _loaded_prompt_file(
   prompt_path: str = "/tmp/rewrite/system.md",
 ) -> LoadedRewritePromptFile:
   return LoadedRewritePromptFile(prompt_path=Path(prompt_path), prompt=prompt)
+
+
+async def _hold_open(signal: asyncio.Event) -> None:
+  await signal.wait()
 
 
 def _prompt_loader(
@@ -181,12 +191,14 @@ class FakeEmitter:
 class FakeDbusService:
   states: list[ForegroundPhase] = field(default_factory=list)
   signals: list[tuple[str, object | None]] = field(default_factory=list)
+  events: list[tuple[str, object | None]] = field(default_factory=list)
   close_calls: int = 0
 
   async def set_state(self, state: ForegroundPhase) -> None:
     if self.states and self.states[-1] is state:
       return
     self.states.append(state)
+    self.events.append(("State", state))
 
   async def transcription_updated(
     self,
@@ -194,21 +206,31 @@ class FakeDbusService:
     incomplete_segment: DbusOverlaySegment,
   ) -> None:
     self.signals.append(("TranscriptionUpdated", (completed_segments, incomplete_segment)))
+    self.events.append(("TranscriptionUpdated", (completed_segments, incomplete_segment)))
+
+  async def spectrum_updated(self, bars: bytes) -> None:
+    self.signals.append(("SpectrumUpdated", bars))
+    self.events.append(("SpectrumUpdated", bars))
 
   async def recording_aborted(self, reason: str) -> None:
     self.signals.append(("RecordingAborted", reason))
+    self.events.append(("RecordingAborted", reason))
 
   async def pipeline_failed(self, step: str, reason: str) -> None:
     self.signals.append(("PipelineFailed", (step, reason)))
+    self.events.append(("PipelineFailed", (step, reason)))
 
   async def fatal_error(self, reason: str) -> None:
     self.signals.append(("FatalError", reason))
+    self.events.append(("FatalError", reason))
 
   async def reconnecting(self) -> None:
     self.signals.append(("Reconnecting", None))
+    self.events.append(("Reconnecting", None))
 
   async def reconnected(self) -> None:
     self.signals.append(("Reconnected", None))
+    self.events.append(("Reconnected", None))
 
   async def close(self) -> None:
     self.close_calls += 1
@@ -260,6 +282,39 @@ class FakeClient:
   async def _iterate_events(self) -> AsyncIterator[AppEvent]:
     for event in self.events:
       yield event
+
+
+@dataclass
+class FakeSpectrumAnalyzer:
+  start_calls: int = 0
+  stop_calls: int = 0
+  ingested: list[bytes] = field(default_factory=list)
+  _task: asyncio.Task[None] | None = None
+  _release: asyncio.Event = field(default_factory=asyncio.Event)
+
+  def start(self) -> asyncio.Task[None]:
+    self.start_calls += 1
+    if self._task is None or self._task.done():
+      self._release = asyncio.Event()
+      self._task = asyncio.create_task(_hold_open(self._release))
+    return self._task
+
+  async def stop(self) -> None:
+    self.stop_calls += 1
+    self._release.set()
+    if self._task is not None:
+      await asyncio.gather(self._task, return_exceptions=True)
+      self._task = None
+
+  def ingest(self, chunk: bytes) -> None:
+    self.ingested.append(chunk)
+
+
+@dataclass
+class ExplodingSpectrumAnalyzer:
+  def ingest(self, chunk: bytes) -> None:
+    _ = chunk
+    raise RuntimeError("spectrum boom")
 
 
 @final
@@ -346,6 +401,12 @@ def _transcription_event(message: TranscriptionMessage) -> TranscriptionEvent:
   return TranscriptionEvent(stream=message.stream, message=message)
 
 
+def _sine_wave_bytes(frequency_hz: float, sample_count: int) -> bytes:
+  sample_positions = np.arange(sample_count, dtype=np.float32) / SAMPLE_RATE_HZ
+  samples = np.sin(2.0 * np.pi * frequency_hz * sample_positions).astype(np.float32)
+  return samples.tobytes()
+
+
 @dataclass(frozen=True)
 class ServiceHarness:
   """Concrete service bundle used by app-policy tests."""
@@ -368,6 +429,7 @@ def _service(
   rewrite_client: FakeRewriteClient | None = None,
   dbus_service: FakeDbusService | None = None,
   config: ActiveListenerConfig | None = None,
+  spectrum_analyzer: FakeSpectrumAnalyzer | None = None,
 ) -> ServiceHarness:
   resolved_client = client or FakeClient()
   resolved_keyboard = keyboard or FakeKeyboard()
@@ -383,6 +445,7 @@ def _service(
     logger=resolved_logger,
     rewrite_client=resolved_rewrite_client,
     dbus_service=resolved_dbus_service,
+    spectrum_analyzer=spectrum_analyzer or FakeSpectrumAnalyzer(),
   )
   return ServiceHarness(
     service,
@@ -406,7 +469,7 @@ async def test_create_service_connects_client_and_initializes_emitter() -> None:
     _config(),
     dbus_service=dbus_service,
     keyboard_resolver=lambda _name: keyboard,
-    client_factory=lambda _config: client,
+    client_factory=lambda _config, _on_capture: client,
     emitter_factory=lambda: (emitter.initialize(), emitter)[1],
   )
 
@@ -414,6 +477,31 @@ async def test_create_service_connects_client_and_initializes_emitter() -> None:
   assert client.connect_calls == 1
   assert emitter.initialize_calls == 1
   assert dbus_service.states == [ForegroundPhase.IDLE]
+
+
+@pytest.mark.asyncio
+async def test_create_service_passes_capture_callback_into_client_factory() -> None:
+  keyboard = FakeKeyboard()
+  emitter = FakeEmitter()
+  captured_callbacks: list[Callable[[bytes], None]] = []
+
+  def client_factory(
+    _config: ActiveListenerConfig,
+    on_capture: Callable[[bytes], None],
+  ) -> FakeClient:
+    captured_callbacks.append(on_capture)
+    return FakeClient()
+
+  service = await create_service(
+    _config(),
+    dbus_service=FakeDbusService(),
+    keyboard_resolver=lambda _name: keyboard,
+    client_factory=client_factory,
+    emitter_factory=lambda: (emitter.initialize(), emitter)[1],
+  )
+
+  assert service.phase is ForegroundPhase.IDLE
+  assert len(captured_callbacks) == 1
 
 
 @pytest.mark.asyncio
@@ -435,7 +523,7 @@ async def test_create_service_fails_fast_on_connect_error() -> None:
     _ = await create_service(
       _config(),
       keyboard_resolver=lambda _name: keyboard,
-      client_factory=lambda _config: client,
+      client_factory=lambda _config, _on_capture: client,
       emitter_factory=lambda: FakeEmitter(),
       rewrite_client_factory=lambda _config: rewrite_client,
     )
@@ -452,7 +540,7 @@ async def test_create_service_fails_fast_when_rewrite_client_cannot_initialize()
     _ = await create_service(
       _config(rewrite_enabled=True),
       keyboard_resolver=lambda _name: keyboard,
-      client_factory=lambda _config: FakeClient(),
+      client_factory=lambda _config, _on_capture: FakeClient(),
       emitter_factory=lambda: FakeEmitter(),
       rewrite_client_factory=lambda _config: (_ for _ in ()).throw(RewriteClientError("bad model")),
     )
@@ -462,7 +550,8 @@ async def test_create_service_fails_fast_when_rewrite_client_cannot_initialize()
 
 @pytest.mark.asyncio
 async def test_start_and_cancel_recording_toggle_grab_and_streaming() -> None:
-  harness = _service()
+  spectrum_analyzer = FakeSpectrumAnalyzer()
+  harness = _service(spectrum_analyzer=spectrum_analyzer)
   service = harness.service
 
   await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
@@ -474,6 +563,9 @@ async def test_start_and_cancel_recording_toggle_grab_and_streaming() -> None:
   assert harness.client.cancel_calls == 1
   assert harness.keyboard.grab_calls == 1
   assert harness.keyboard.ungrab_calls == 1
+  assert spectrum_analyzer.start_calls == 1
+  assert spectrum_analyzer.stop_calls == 1
+  assert service._spectrum_task is None
   assert harness.logger.info_messages == ["recording started", "recording cancelled"]
 
 
@@ -521,7 +613,8 @@ async def test_caps_lock_is_suppressed_while_reconnecting() -> None:
 
 @pytest.mark.asyncio
 async def test_disconnect_during_recording_forces_local_abort() -> None:
-  harness = _service()
+  spectrum_analyzer = FakeSpectrumAnalyzer()
+  harness = _service(spectrum_analyzer=spectrum_analyzer)
   service = harness.service
   await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
 
@@ -535,6 +628,8 @@ async def test_disconnect_during_recording_forces_local_abort() -> None:
     ("RecordingAborted", "socket closed"),
     ("Reconnecting", None),
   ]
+  assert spectrum_analyzer.stop_calls == 1
+  assert service._spectrum_task is None
   assert harness.logger.warning_messages == ["recording aborted by disconnect"]
 
 
@@ -572,7 +667,8 @@ async def test_finish_clears_foreground_state_before_stop_streaming_returns() ->
 
 @pytest.mark.asyncio
 async def test_close_releases_keyboard_even_when_disconnect_raises() -> None:
-  harness = _service(client=FailingDisconnectClient())
+  spectrum_analyzer = FakeSpectrumAnalyzer()
+  harness = _service(client=FailingDisconnectClient(), spectrum_analyzer=spectrum_analyzer)
   service = harness.service
 
   await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
@@ -583,6 +679,58 @@ async def test_close_releases_keyboard_even_when_disconnect_raises() -> None:
   assert harness.rewrite_client.close_calls == 1
   assert harness.keyboard.close_calls == 1
   assert harness.keyboard.grabbed is False
+  assert spectrum_analyzer.stop_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_capture_callback_failures_are_logged_locally() -> None:
+  logger = RecordingLogger()
+  on_capture = build_capture_callback(
+    spectrum_analyzer=ExplodingSpectrumAnalyzer(),
+    logger=logger,
+  )
+
+  on_capture(b"chunk")
+
+  assert logger.exception_messages == ["spectrum capture callback failed"]
+
+
+@pytest.mark.asyncio
+async def test_spectrum_emission_flows_through_dbus_while_recording() -> None:
+  keyboard = FakeKeyboard()
+  emitter = FakeEmitter()
+  dbus_service = FakeDbusService()
+  captured_callbacks: list[Callable[[bytes], None]] = []
+
+  def client_factory(
+    _config: ActiveListenerConfig,
+    on_capture: Callable[[bytes], None],
+  ) -> FakeClient:
+    captured_callbacks.append(on_capture)
+    return FakeClient()
+
+  service = await create_service(
+    _config(),
+    dbus_service=dbus_service,
+    keyboard_resolver=lambda _name: keyboard,
+    client_factory=client_factory,
+    emitter_factory=lambda: (emitter.initialize(), emitter)[1],
+    rewrite_client_factory=lambda _config: FakeRewriteClient(),
+  )
+
+  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  captured_callbacks[0](_sine_wave_bytes(440.0, WINDOW_SIZE * 2))
+  await asyncio.sleep(SPECTRUM_TICK_INTERVAL_SECONDS * 3)
+  await service.handle_keyboard_action(KeyboardAction.CANCEL)
+
+  state_index = dbus_service.events.index(("State", ForegroundPhase.RECORDING))
+  spectrum_event = next(
+    event for event in dbus_service.events if event[0] == "SpectrumUpdated"
+  )
+
+  assert state_index < dbus_service.events.index(spectrum_event)
+  assert isinstance(spectrum_event[1], bytes)
+  assert len(spectrum_event[1]) == 50
 
 
 @pytest.mark.asyncio
@@ -613,7 +761,7 @@ async def test_run_service_emits_fatal_error_once_on_startup_failure() -> None:
       _config(),
       dbus_service=dbus_service,
       keyboard_resolver=fail_keyboard_resolver,
-      client_factory=lambda _config: FakeClient(),
+      client_factory=lambda _config, _on_capture: FakeClient(),
       emitter_factory=lambda: FakeEmitter(),
       rewrite_client_factory=lambda _config: FakeRewriteClient(),
     )
@@ -634,7 +782,7 @@ async def test_run_service_emits_fatal_error_once_on_runtime_failure() -> None:
       _config(),
       dbus_service=dbus_service,
       keyboard_resolver=lambda _name: keyboard,
-      client_factory=lambda _config: client,
+      client_factory=lambda _config, _on_capture: client,
       emitter_factory=lambda: FakeEmitter(),
       rewrite_client_factory=lambda _config: FakeRewriteClient(),
     )

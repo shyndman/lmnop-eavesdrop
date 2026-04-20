@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Protocol
 
 from active_listener.app.ports import (
   ActiveListenerClient,
@@ -15,8 +16,13 @@ from active_listener.infra.dbus import AppStateService, NoopDbusService
 from active_listener.infra.emitter import GnomeShellExtensionTextEmitter, TextEmitter
 from active_listener.infra.keyboard import KeyboardInput, resolve_keyboard
 from active_listener.infra.rewrite import DisabledRewriteClient, LlmRewriteClient
+from active_listener.recording.spectrum import SpectrumAnalyzer
 from eavesdrop.client import EavesdropClient
 from eavesdrop.common import get_logger
+
+
+class SpectrumCaptureSink(Protocol):
+  def ingest(self, chunk: bytes) -> None: ...
 
 
 async def create_service(
@@ -24,7 +30,8 @@ async def create_service(
   *,
   dbus_service: AppStateService | None = None,
   keyboard_resolver: Callable[[str], KeyboardInput] = resolve_keyboard,
-  client_factory: Callable[[ActiveListenerConfig], ActiveListenerClient] | None = None,
+  client_factory: Callable[[ActiveListenerConfig, Callable[[bytes], None]], ActiveListenerClient]
+  | None = None,
   emitter_factory: Callable[[], TextEmitter] | None = None,
   rewrite_client_factory: Callable[[LlmRewriteConfig], ActiveListenerRewriteClient] | None = None,
 ) -> ActiveListenerService:
@@ -48,6 +55,14 @@ async def create_service(
   resolved_client_factory = client_factory or build_client
   resolved_emitter_factory = emitter_factory or build_emitter
   resolved_rewrite_client_factory = rewrite_client_factory or build_rewrite_client
+  spectrum_analyzer = SpectrumAnalyzer(
+    publish=lambda bars: publish_spectrum_frame(
+      dbus_service=resolved_dbus_service,
+      logger=logger,
+      bars=bars,
+    )
+  )
+  on_capture = build_capture_callback(spectrum_analyzer=spectrum_analyzer, logger=logger)
   client: ActiveListenerClient | None = None
   rewrite_client: ActiveListenerRewriteClient | None = None
   connect_started = False
@@ -60,7 +75,7 @@ async def create_service(
 
   try:
     emitter = resolved_emitter_factory()
-    client = resolved_client_factory(config)
+    client = resolved_client_factory(config, on_capture)
     rewrite_client = resolved_rewrite_client_factory(config.llm_rewrite)
     connect_started = True
     await client.connect()
@@ -95,6 +110,7 @@ async def create_service(
     logger=logger,
     rewrite_client=rewrite_client,
     dbus_service=resolved_dbus_service,
+    spectrum_analyzer=spectrum_analyzer,
   )
 
 
@@ -103,7 +119,8 @@ async def run_service(
   *,
   dbus_service: AppStateService | None = None,
   keyboard_resolver: Callable[[str], KeyboardInput] = resolve_keyboard,
-  client_factory: Callable[[ActiveListenerConfig], ActiveListenerClient] | None = None,
+  client_factory: Callable[[ActiveListenerConfig, Callable[[bytes], None]], ActiveListenerClient]
+  | None = None,
   emitter_factory: Callable[[], TextEmitter] | None = None,
   rewrite_client_factory: Callable[[LlmRewriteConfig], ActiveListenerRewriteClient] | None = None,
 ) -> None:
@@ -179,7 +196,10 @@ async def emit_fatal_error_if_possible(
     logger.exception(f"{failure_kind} fatal publication failed", reason=reason)
 
 
-def build_client(config: ActiveListenerConfig) -> ActiveListenerClient:
+def build_client(
+  config: ActiveListenerConfig,
+  on_capture: Callable[[bytes], None],
+) -> ActiveListenerClient:
   """Build the live transcriber client for the configured workstation.
 
   :param config: Validated runtime configuration.
@@ -192,7 +212,34 @@ def build_client(config: ActiveListenerConfig) -> ActiveListenerClient:
     host=config.host,
     port=config.port,
     audio_device=config.audio_device,
+    on_capture=on_capture,
   )
+
+
+def build_capture_callback(
+  *,
+  spectrum_analyzer: SpectrumCaptureSink,
+  logger: ActiveListenerLogger,
+) -> Callable[[bytes], None]:
+  def on_capture(chunk: bytes) -> None:
+    try:
+      spectrum_analyzer.ingest(chunk)
+    except Exception:
+      logger.exception("spectrum capture callback failed", byte_count=len(chunk))
+
+  return on_capture
+
+
+async def publish_spectrum_frame(
+  *,
+  dbus_service: AppStateService,
+  logger: ActiveListenerLogger,
+  bars: bytes,
+) -> None:
+  try:
+    await dbus_service.spectrum_updated(bars)
+  except Exception:
+    logger.exception("spectrum publication failed", bar_count=len(bars))
 
 
 def build_emitter() -> TextEmitter:

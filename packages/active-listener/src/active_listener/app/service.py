@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from typing import Protocol
 
 from active_listener.app.ports import (
   ActiveListenerClient,
@@ -23,6 +24,7 @@ from active_listener.infra.emitter import TextEmitter
 from active_listener.infra.keyboard import KeyboardInput
 from active_listener.recording.finalizer import RecordingFinalizer
 from active_listener.recording.session import RecordingSession
+from active_listener.recording.spectrum import SpectrumAnalyzer
 from eavesdrop.client import (
   ConnectedEvent,
   DisconnectedEvent,
@@ -32,6 +34,20 @@ from eavesdrop.client import (
 )
 
 UNKNOWN_DISCONNECT_REASON = "unknown disconnect reason"
+
+
+class SpectrumRuntime(Protocol):
+  def start(self) -> asyncio.Task[None]: ...
+
+  async def stop(self) -> None: ...
+
+
+async def _publish_noop_spectrum(_bars: bytes) -> None:
+  return None
+
+
+def _build_noop_spectrum_analyzer() -> SpectrumAnalyzer:
+  return SpectrumAnalyzer(publish=_publish_noop_spectrum)
 
 
 @dataclass
@@ -45,11 +61,13 @@ class ActiveListenerService:
   logger: ActiveListenerLogger
   rewrite_client: ActiveListenerRewriteClient
   dbus_service: AppStateService
+  spectrum_analyzer: SpectrumRuntime = field(default_factory=_build_noop_spectrum_analyzer)
   phase: ForegroundPhase = ForegroundPhase.IDLE
   disconnect_generation: int = 0
   _recording_session: RecordingSession = field(init=False)
   _recording_finalizer: RecordingFinalizer = field(init=False)
   _background_tasks: set[asyncio.Task[None]] = field(default_factory=set)
+  _spectrum_task: asyncio.Task[None] | None = field(default=None, init=False)
 
   def __post_init__(self) -> None:
     self._recording_session = RecordingSession(
@@ -98,6 +116,8 @@ class ActiveListenerService:
       await self.close()
 
   async def close(self) -> None:
+    await self._stop_spectrum_analysis()
+
     for task in list(self._background_tasks):
       _ = task.cancel()
     if self._background_tasks:
@@ -148,15 +168,21 @@ class ActiveListenerService:
       return
 
     if decision is KeyboardDecision.START_RECORDING:
-      await self.client.start_streaming()
-      await self._recording_session.start_recording()
-      self.phase = ForegroundPhase.RECORDING
-      await self.dbus_service.set_state(self.phase)
-      self.logger.info("recording started")
-      return
+      self._start_spectrum_analysis()
+      try:
+        await self.client.start_streaming()
+        await self._recording_session.start_recording()
+        self.phase = ForegroundPhase.RECORDING
+        await self.dbus_service.set_state(self.phase)
+        self.logger.info("recording started")
+        return
+      except Exception:
+        await self._stop_spectrum_analysis()
+        raise
 
     if decision is KeyboardDecision.CANCEL_RECORDING:
       self.phase = ForegroundPhase.IDLE
+      await self._stop_spectrum_analysis()
       await self._recording_session.stop_recording()
       await self.dbus_service.set_state(self.phase)
       await self.client.cancel_utterance()
@@ -165,6 +191,7 @@ class ActiveListenerService:
 
     self.phase = ForegroundPhase.IDLE
     reducer_state = await self._recording_session.finish_recording()
+    await self._stop_spectrum_analysis()
     await self.dbus_service.set_state(self.phase)
     finalization_task = asyncio.create_task(
       self._recording_finalizer.finalize_recording(
@@ -237,13 +264,13 @@ class ActiveListenerService:
 
     self.disconnect_generation += 1
     self.phase = ForegroundPhase.RECONNECTING
-    await self.dbus_service.set_state(self.phase)
     disconnected_event = event
     assert isinstance(disconnected_event, DisconnectedEvent)
     disconnect_reason = disconnected_event.reason or UNKNOWN_DISCONNECT_REASON
 
     if decision is ConnectionDecision.ABORT_RECORDING:
       self.phase = ForegroundPhase.RECONNECTING
+      await self._stop_spectrum_analysis()
       await self._recording_session.stop_recording()
       await self.dbus_service.set_state(self.phase)
       await self.dbus_service.recording_aborted(disconnect_reason)
@@ -254,6 +281,8 @@ class ActiveListenerService:
         reason=disconnect_reason,
       )
       return
+
+    await self.dbus_service.set_state(self.phase)
 
     self.logger.warning(
       "client disconnected",
@@ -271,3 +300,23 @@ class ActiveListenerService:
 
   def _current_disconnect_generation(self) -> int:
     return self.disconnect_generation
+
+  def _start_spectrum_analysis(self) -> None:
+    spectrum_task = self.spectrum_analyzer.start()
+    if spectrum_task is self._spectrum_task:
+      return
+
+    self._spectrum_task = spectrum_task
+    self._background_tasks.add(spectrum_task)
+    spectrum_task.add_done_callback(self._background_tasks.discard)
+    spectrum_task.add_done_callback(self._clear_spectrum_task)
+
+  async def _stop_spectrum_analysis(self) -> None:
+    await self.spectrum_analyzer.stop()
+    if self._spectrum_task is not None:
+      self._background_tasks.discard(self._spectrum_task)
+      self._spectrum_task = None
+
+  def _clear_spectrum_task(self, task: asyncio.Task[None]) -> None:
+    if self._spectrum_task is task:
+      self._spectrum_task = None

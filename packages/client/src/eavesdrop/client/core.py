@@ -7,7 +7,7 @@ and context manager protocols for streaming transcription results.
 
 import asyncio
 import secrets
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -61,6 +61,7 @@ class EavesdropClient:
     stream_names: list[str] | None = None,
     audio_device: str | None = None,
     transcription_options: UserTranscriptionOptions | None = None,
+    on_capture: Callable[[bytes], None] | None = None,
   ):
     """Initialize EavesdropClient.
 
@@ -79,6 +80,7 @@ class EavesdropClient:
     self._transcription_options: UserTranscriptionOptions = (
       transcription_options or UserTranscriptionOptions()
     )
+    self._on_capture = on_capture
 
     # Internal state
     self._stream_name: str | None = None
@@ -129,6 +131,7 @@ class EavesdropClient:
     host: str = "localhost",
     port: int = 9090,
     audio_device: str = "default",
+    on_capture: Callable[[bytes], None] | None = None,
     word_timestamps: bool | None = None,
     initial_prompt: str | None = None,
     hotwords: list[str] | None = None,
@@ -164,6 +167,7 @@ class EavesdropClient:
       port=port,
       audio_device=audio_device,
       transcription_options=transcription_options,
+      on_capture=on_capture,
     )
 
   @classmethod
@@ -702,6 +706,8 @@ class EavesdropClient:
         audio_data = await self._audio_capture.get_audio_data(timeout=0.1)
         if audio_data:
           await self._connection.send_audio_data(audio_data)
+          if self._on_capture is not None:
+            self._on_capture(audio_data)
     except asyncio.CancelledError:
       raise
     except Exception:

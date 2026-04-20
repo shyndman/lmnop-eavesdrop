@@ -126,6 +126,28 @@ class RecordingAudioCapture:
     return None
 
 
+class ScriptedAudioCapture:
+  """Feeds deterministic audio chunks into the client streaming loop."""
+
+  def __init__(self, chunks: list[bytes], client: EavesdropClient) -> None:
+    self._chunks = list(chunks)
+    self._client = client
+
+  def start_recording(self) -> None:
+    return None
+
+  def stop_recording(self) -> None:
+    return None
+
+  async def get_audio_data(self, timeout: float = 0.1) -> bytes | None:
+    _ = timeout
+    if self._chunks:
+      return self._chunks.pop(0)
+
+    self._client._streaming = False
+    return None
+
+
 class RecordingConnection:
   """Typed connection test double for the streaming loop entrypoint."""
 
@@ -644,6 +666,49 @@ async def test_cancel_utterance_waits_for_stream_stop_before_sending_control(
 
   client._message_task.cancel()
   await asyncio.gather(client._message_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_audio_streaming_loop_delivers_capture_callback_in_send_order() -> None:
+  """Capture callbacks must receive the exact sent bytes after websocket send order."""
+
+  received_chunks: list[bytes] = []
+  client = EavesdropClient.transcriber(
+    audio_device="default",
+    on_capture=received_chunks.append,
+  )
+  connection = RecordingConnection()
+  client._connected = True
+  client._streaming = True
+  client._connection = cast(WebSocketConnection, cast(object, connection))
+  client._audio_capture = cast(
+    AudioCapture,
+    cast(object, ScriptedAudioCapture([b"alpha", b"bravo"], client)),
+  )
+
+  await client._audio_streaming_loop()
+
+  assert connection.audio_chunks == [b"alpha", b"bravo"]
+  assert received_chunks == connection.audio_chunks
+
+
+@pytest.mark.asyncio
+async def test_audio_streaming_loop_skips_capture_callback_when_unset() -> None:
+  """Streaming must remain a no-op for capture delivery when no callback is configured."""
+
+  client = EavesdropClient.transcriber(audio_device="default")
+  connection = RecordingConnection()
+  client._connected = True
+  client._streaming = True
+  client._connection = cast(WebSocketConnection, cast(object, connection))
+  client._audio_capture = cast(
+    AudioCapture,
+    cast(object, ScriptedAudioCapture([b"alpha"], client)),
+  )
+
+  await client._audio_streaming_loop()
+
+  assert connection.audio_chunks == [b"alpha"]
 
 
 @pytest.mark.asyncio
