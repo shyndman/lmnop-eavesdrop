@@ -19,6 +19,7 @@ from sdbus import (
 from sdbus.exceptions import SdBusRequestNameExistsError
 
 from active_listener.app.state import ForegroundPhase
+from active_listener.recording.spectrum import QuantizedSpectrumFrame
 
 DBUS_BUS_NAME = "ca.lmnop.Eavesdrop.ActiveListener"
 DBUS_OBJECT_PATH = "/ca/lmnop/Eavesdrop/ActiveListener"
@@ -42,7 +43,7 @@ class AppStateService(Protocol):
     incomplete_segment: tuple[int, str],
   ) -> None: ...
 
-  async def spectrum_updated(self, bars: bytes) -> None: ...
+  async def spectrum_updated(self, bars: QuantizedSpectrumFrame) -> None: ...
 
   async def recording_aborted(self, reason: str) -> None: ...
 
@@ -138,7 +139,7 @@ else:
         signal_args_names=("bars",),
         signal_name="SpectrumUpdated",
       )
-      def spectrum_updated(self) -> bytes:
+      def spectrum_updated(self) -> QuantizedSpectrumFrame:
         raise NotImplementedError
 
       @dbus_signal_async(
@@ -228,7 +229,7 @@ class NoopDbusService:
     _ = completed_segments
     _ = incomplete_segment
 
-  async def spectrum_updated(self, bars: bytes) -> None:
+  async def spectrum_updated(self, bars: QuantizedSpectrumFrame) -> None:
     _ = bars
 
   async def recording_aborted(self, reason: str) -> None:
@@ -292,7 +293,7 @@ class SdbusDbusService:
       (completed_segments, incomplete_segment)
     )
 
-  async def spectrum_updated(self, bars: bytes) -> None:
+  async def spectrum_updated(self, bars: QuantizedSpectrumFrame) -> None:
     cast(DbusSignalEmitter, self.interface.spectrum_updated).emit(bars)
 
   async def recording_aborted(self, reason: str) -> None:

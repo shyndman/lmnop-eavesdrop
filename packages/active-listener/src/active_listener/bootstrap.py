@@ -24,13 +24,17 @@ from active_listener.infra.rewrite import (
   LiteRtRewriteClient,
   PydanticAiRewriteClient,
 )
-from active_listener.recording.spectrum import SpectrumAnalyzer
+from active_listener.recording.spectrum import (
+  Float32PcmChunk,
+  QuantizedSpectrumFrame,
+  SpectrumAnalyzer,
+)
 from eavesdrop.client import EavesdropClient
 from eavesdrop.common import get_logger
 
 
 class SpectrumCaptureSink(Protocol):
-  def ingest(self, chunk: bytes) -> None: ...
+  def ingest(self, chunk: Float32PcmChunk) -> None: ...
 
 
 async def create_service(
@@ -38,8 +42,9 @@ async def create_service(
   *,
   dbus_service: AppStateService | None = None,
   keyboard_resolver: Callable[[str], KeyboardInput] = resolve_keyboard,
-  client_factory: Callable[[ActiveListenerConfig, Callable[[bytes], None]], ActiveListenerClient]
-  | None = None,
+  client_factory: (
+    Callable[[ActiveListenerConfig, Callable[[Float32PcmChunk], None]], ActiveListenerClient] | None
+  ) = None,
   emitter_factory: Callable[[], TextEmitter] | None = None,
   rewrite_client_factory: Callable[[LlmRewriteConfig | None], ActiveListenerRewriteClient]
   | None = None,
@@ -128,8 +133,9 @@ async def run_service(
   *,
   dbus_service: AppStateService | None = None,
   keyboard_resolver: Callable[[str], KeyboardInput] = resolve_keyboard,
-  client_factory: Callable[[ActiveListenerConfig, Callable[[bytes], None]], ActiveListenerClient]
-  | None = None,
+  client_factory: (
+    Callable[[ActiveListenerConfig, Callable[[Float32PcmChunk], None]], ActiveListenerClient] | None
+  ) = None,
   emitter_factory: Callable[[], TextEmitter] | None = None,
   rewrite_client_factory: Callable[[LlmRewriteConfig | None], ActiveListenerRewriteClient]
   | None = None,
@@ -208,7 +214,7 @@ async def emit_fatal_error_if_possible(
 
 def build_client(
   config: ActiveListenerConfig,
-  on_capture: Callable[[bytes], None],
+  on_capture: Callable[[Float32PcmChunk], None],
 ) -> ActiveListenerClient:
   """Build the live transcriber client for the configured workstation.
 
@@ -230,8 +236,8 @@ def build_capture_callback(
   *,
   spectrum_analyzer: SpectrumCaptureSink,
   logger: ActiveListenerLogger,
-) -> Callable[[bytes], None]:
-  def on_capture(chunk: bytes) -> None:
+) -> Callable[[Float32PcmChunk], None]:
+  def on_capture(chunk: Float32PcmChunk) -> None:
     try:
       spectrum_analyzer.ingest(chunk)
     except Exception:
@@ -244,7 +250,7 @@ async def publish_spectrum_frame(
   *,
   dbus_service: AppStateService,
   logger: ActiveListenerLogger,
-  bars: bytes,
+  bars: QuantizedSpectrumFrame,
 ) -> None:
   try:
     await dbus_service.spectrum_updated(bars)
