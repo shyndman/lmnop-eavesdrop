@@ -6,10 +6,11 @@ import asyncio
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 
+from structlog.stdlib import BoundLogger
+
 import active_listener.infra.rewrite as rewrite_module
 from active_listener.app.ports import (
   ActiveListenerClient,
-  ActiveListenerLogger,
   ActiveListenerRewriteClient,
 )
 from active_listener.config.models import ActiveListenerConfig
@@ -37,7 +38,7 @@ class RecordingFinalizer:
   config: ActiveListenerConfig
   client: ActiveListenerClient
   emitter: TextEmitter
-  logger: ActiveListenerLogger
+  logger: BoundLogger
   rewrite_client: ActiveListenerRewriteClient
   dbus_service: AppStateService
   ingest_transcription_message: RecordingMessageIngestor

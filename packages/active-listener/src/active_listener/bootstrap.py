@@ -3,9 +3,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Protocol
 
+from structlog.stdlib import BoundLogger
+
 from active_listener.app.ports import (
   ActiveListenerClient,
-  ActiveListenerLogger,
   ActiveListenerRewriteClient,
   ActiveListenerRuntimeError,
 )
@@ -193,7 +194,7 @@ async def emit_fatal_error_if_possible(
   *,
   dbus_service: AppStateService,
   reason: str,
-  logger: ActiveListenerLogger,
+  logger: BoundLogger,
   failure_kind: str,
 ) -> None:
   """Publish a one-shot fatal event when DBus is live.
@@ -235,7 +236,7 @@ def build_client(
 def build_capture_callback(
   *,
   spectrum_analyzer: SpectrumCaptureSink,
-  logger: ActiveListenerLogger,
+  logger: BoundLogger,
 ) -> Callable[[Float32PcmChunk], None]:
   def on_capture(chunk: Float32PcmChunk) -> None:
     try:
@@ -249,7 +250,7 @@ def build_capture_callback(
 async def publish_spectrum_frame(
   *,
   dbus_service: AppStateService,
-  logger: ActiveListenerLogger,
+  logger: BoundLogger,
   bars: QuantizedSpectrumFrame,
 ) -> None:
   try:
@@ -287,7 +288,7 @@ async def cleanup_startup_prerequisites(
   client: ActiveListenerClient | None,
   rewrite_client: ActiveListenerRewriteClient | None,
   disconnect_client: bool,
-  logger: ActiveListenerLogger,
+  logger: BoundLogger,
 ) -> None:
   if disconnect_client and client is not None:
     try:

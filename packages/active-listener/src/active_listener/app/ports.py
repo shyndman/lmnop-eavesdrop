@@ -51,21 +51,6 @@ class ActiveListenerClient(Protocol):
     ...
 
 
-class ActiveListenerLogger(Protocol):
-  """Minimal structured logger API used by active-listener."""
-
-  def info(self, event: str, **kwargs: object) -> None:
-    """Emit an informational event."""
-    ...
-
-  def warning(self, event: str, **kwargs: object) -> None:
-    """Emit a warning event."""
-    ...
-
-  def exception(self, event: str, **kwargs: object) -> None:
-    """Emit an exception event with stack trace."""
-
-
 class ActiveListenerRewriteClient(Protocol):
   async def rewrite_text(
     self,

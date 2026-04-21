@@ -20,10 +20,13 @@ from sdbus.exceptions import SdBusRequestNameExistsError
 
 from active_listener.app.state import ForegroundPhase
 from active_listener.recording.spectrum import QuantizedSpectrumFrame
+from eavesdrop.common import get_logger
 
 DBUS_BUS_NAME = "ca.lmnop.Eavesdrop.ActiveListener"
 DBUS_OBJECT_PATH = "/ca/lmnop/Eavesdrop/ActiveListener"
 DBUS_INTERFACE_NAME = "ca.lmnop.Eavesdrop.ActiveListener1"
+
+_logger = get_logger("al/dbus")
 
 
 class DbusExportHandle(Protocol):
@@ -226,8 +229,11 @@ class NoopDbusService:
     completed_segments: list[tuple[int, str]],
     incomplete_segment: tuple[int, str],
   ) -> None:
-    _ = completed_segments
-    _ = incomplete_segment
+    _logger.debug(
+      "dropping transcription update because dbus is disabled",
+      completed_segment_count=len(completed_segments),
+      incomplete_segment_id=incomplete_segment[0],
+    )
 
   async def spectrum_updated(self, bars: QuantizedSpectrumFrame) -> None:
     _ = bars
@@ -289,6 +295,11 @@ class SdbusDbusService:
     completed_segments: list[tuple[int, str]],
     incomplete_segment: tuple[int, str],
   ) -> None:
+    _logger.debug(
+      "emitting transcription update on dbus",
+      completed_segment_count=len(completed_segments),
+      incomplete_segment_id=incomplete_segment[0],
+    )
     cast(DbusSignalEmitter, self.interface.transcription_updated).emit(
       (completed_segments, incomplete_segment)
     )

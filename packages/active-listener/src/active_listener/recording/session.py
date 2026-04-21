@@ -5,9 +5,10 @@ from __future__ import annotations
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 
+from structlog.stdlib import BoundLogger
+
 from active_listener.app.ports import (
   ActiveListenerClient,
-  ActiveListenerLogger,
   ActiveListenerRuntimeError,
 )
 from active_listener.infra.keyboard import KeyboardInput, RecordingGrabRelease
@@ -27,7 +28,7 @@ class RecordingSession:
 
   keyboard: KeyboardInput
   client: ActiveListenerClient
-  logger: ActiveListenerLogger
+  logger: BoundLogger
   _connection_last_id: int | None = None
   _recording_reducer_state: RecordingReducerState | None = None
   _recording_grab_stack: AsyncExitStack | None = None
@@ -38,6 +39,10 @@ class RecordingSession:
     return self._recording_reducer_state is not None
 
   def reset_connection_cursor(self) -> None:
+    self.logger.debug(
+      "transcription connection cursor reset",
+      previous_last_id=self._connection_last_id,
+    )
     self._connection_last_id = None
 
   async def start_recording(self) -> None:
@@ -54,6 +59,10 @@ class RecordingSession:
     self._recording_grab_stack = grab_stack
     self._release_recording_grab = release_recording_grab
     self._recording_reducer_state = RecordingReducerState(last_id=self._connection_last_id)
+    self.logger.debug(
+      "recording session started",
+      seeded_last_id=self._connection_last_id,
+    )
 
   async def stop_recording(self) -> None:
     await self._exit_recording()
@@ -61,6 +70,11 @@ class RecordingSession:
   async def finish_recording(self) -> RecordingReducerState:
     reducer_state = self._require_recording_reducer_state()
     await self._exit_recording()
+    self.logger.debug(
+      "recording session finished",
+      last_id=reducer_state.last_id,
+      committed_part_count=len(reducer_state.parts),
+    )
     return reducer_state
 
   def ingest_live_transcription_message(
@@ -75,6 +89,13 @@ class RecordingSession:
     state: RecordingReducerState,
     message: TranscriptionMessage,
   ) -> TranscriptionUpdate | None:
+    self.logger.debug(
+      "reducing transcription window",
+      stream=message.stream,
+      prior_last_id=state.last_id,
+      segment_count=len(message.segments),
+      flush_complete=message.flush_complete is True,
+    )
     reduction = reduce_new_segments(message.segments, state.last_id)
     if reduction.missing_last_id:
       self.logger.warning(
@@ -85,7 +106,22 @@ class RecordingSession:
     append_segment_text(state.parts, reduction.segments)
     state.last_id = reduction.last_id
     self._connection_last_id = reduction.last_id
-    return build_transcription_update(reduction)
+    transcription_update = build_transcription_update(reduction)
+    incomplete_segment = reduction.incomplete_segment
+    self.logger.debug(
+      "transcription window reduced",
+      stream=message.stream,
+      new_last_id=reduction.last_id,
+      new_segment_ids=[segment.id for segment in reduction.segments],
+      incomplete_segment_id=None if incomplete_segment is None else incomplete_segment.id,
+      incomplete_segment_text=None
+      if incomplete_segment is None
+      else incomplete_segment.text.strip(),
+      committed_segment_count=len(reduction.segments),
+      committed_part_count=len(state.parts),
+      overlay_update=transcription_update is not None,
+    )
+    return transcription_update
 
   async def _exit_recording(self) -> None:
     release_recording_grab = self._release_recording_grab

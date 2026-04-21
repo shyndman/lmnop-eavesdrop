@@ -4,9 +4,10 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from structlog.stdlib import BoundLogger
+
 from active_listener.app.ports import (
   ActiveListenerClient,
-  ActiveListenerLogger,
   ActiveListenerRewriteClient,
 )
 from active_listener.app.signals import ClientSignal, KeyboardSignal, RuntimeSignal
@@ -58,7 +59,7 @@ class ActiveListenerService:
   keyboard: KeyboardInput
   client: ActiveListenerClient
   emitter: TextEmitter
-  logger: ActiveListenerLogger
+  logger: BoundLogger
   rewrite_client: ActiveListenerRewriteClient
   dbus_service: AppStateService
   spectrum_analyzer: SpectrumRuntime = field(default_factory=_build_noop_spectrum_analyzer)
@@ -210,19 +211,7 @@ class ActiveListenerService:
     ),
   ) -> None:
     if isinstance(event, TranscriptionEvent):
-      if self.phase is ForegroundPhase.RECORDING:
-        transcription_update = self._recording_session.ingest_live_transcription_message(
-          event.message
-        )
-        if transcription_update is not None:
-          completed_segments = [
-            (segment.id, segment.text) for segment in transcription_update.completed_segments
-          ]
-          incomplete_segment = transcription_update.incomplete_segment
-          await self.dbus_service.transcription_updated(
-            completed_segments=completed_segments,
-            incomplete_segment=(incomplete_segment.id, incomplete_segment.text),
-          )
+      await self._handle_transcription_event(event)
       return
 
     if isinstance(event, ConnectedEvent | ReconnectedEvent):
@@ -288,6 +277,53 @@ class ActiveListenerService:
       "client disconnected",
       stream=disconnected_event.stream,
       reason=disconnect_reason,
+    )
+
+  async def _handle_transcription_event(self, event: TranscriptionEvent) -> None:
+    message = event.message
+    self.logger.debug(
+      "live transcription event received",
+      stream=message.stream,
+      phase=self.phase.value,
+      flush_complete=message.flush_complete is True,
+      segment_count=len(message.segments),
+    )
+
+    if self.phase is not ForegroundPhase.RECORDING:
+      self.logger.debug(
+        "live transcription event ignored",
+        stream=message.stream,
+        phase=self.phase.value,
+      )
+      return
+
+    transcription_update = self._recording_session.ingest_live_transcription_message(message)
+    if transcription_update is None:
+      self.logger.debug(
+        "live transcription event reduced without overlay update",
+        stream=message.stream,
+      )
+      return
+
+    completed_segments = [
+      (segment.id, segment.text) for segment in transcription_update.completed_segments
+    ]
+    incomplete_segment = transcription_update.incomplete_segment
+    self.logger.debug(
+      "publishing live transcription update",
+      stream=message.stream,
+      completed_segments=completed_segments,
+      incomplete_segment=(incomplete_segment.id, incomplete_segment.text),
+    )
+    await self.dbus_service.transcription_updated(
+      completed_segments=completed_segments,
+      incomplete_segment=(incomplete_segment.id, incomplete_segment.text),
+    )
+    self.logger.debug(
+      "live transcription update published",
+      stream=message.stream,
+      completed_segment_count=len(completed_segments),
+      incomplete_segment_id=incomplete_segment.id,
     )
 
   async def _pump_keyboard_actions(self, signal_queue: asyncio.Queue[RuntimeSignal]) -> None:

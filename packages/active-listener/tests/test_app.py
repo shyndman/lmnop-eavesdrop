@@ -7,10 +7,11 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import final
+from typing import cast, final
 
 import numpy as np
 import pytest
+from structlog.stdlib import BoundLogger
 from typing_extensions import override
 
 from active_listener.app.ports import ActiveListenerRuntimeError
@@ -48,12 +49,18 @@ class RecordingLogger:
   """Structured logger stand-in for app-policy assertions."""
 
   def __init__(self) -> None:
+    self.debug_messages: list[str] = []
     self.info_messages: list[str] = []
     self.warning_messages: list[str] = []
     self.exception_messages: list[str] = []
+    self.debug_records: list[LogRecord] = []
     self.info_records: list[LogRecord] = []
     self.warning_records: list[LogRecord] = []
     self.exception_records: list[LogRecord] = []
+
+  def debug(self, event: str, **kwargs: object) -> None:
+    self.debug_messages.append(event)
+    self.debug_records.append(LogRecord(event=event, fields=kwargs))
 
   def info(self, event: str, **kwargs: object) -> None:
     self.info_messages.append(event)
@@ -448,7 +455,7 @@ def _service(
     keyboard=resolved_keyboard,
     client=resolved_client,
     emitter=resolved_emitter,
-    logger=resolved_logger,
+    logger=cast(BoundLogger, cast(object, resolved_logger)),
     rewrite_client=resolved_rewrite_client,
     dbus_service=resolved_dbus_service,
     spectrum_analyzer=spectrum_analyzer or FakeSpectrumAnalyzer(),
@@ -691,7 +698,7 @@ async def test_capture_callback_failures_are_logged_locally() -> None:
   logger = RecordingLogger()
   on_capture = build_capture_callback(
     spectrum_analyzer=ExplodingSpectrumAnalyzer(),
-    logger=logger,
+    logger=cast(BoundLogger, cast(object, logger)),
   )
 
   on_capture(b"chunk")
@@ -894,6 +901,47 @@ async def test_transcription_events_are_consumed_only_while_recording() -> None:
   ]
   assert emitter.emitted == ["alpha bravo "]
   assert harness.keyboard.ungrab_calls == 1
+  assert (
+    LogRecord(
+      event="live transcription event ignored",
+      fields={"stream": "stream-1", "phase": "idle"},
+    )
+    in harness.logger.debug_records
+  )
+  assert (
+    LogRecord(
+      event="live transcription event received",
+      fields={
+        "stream": "stream-1",
+        "phase": "recording",
+        "flush_complete": False,
+        "segment_count": 2,
+      },
+    )
+    in harness.logger.debug_records
+  )
+  assert (
+    LogRecord(
+      event="publishing live transcription update",
+      fields={
+        "stream": "stream-1",
+        "completed_segments": [(1, "alpha")],
+        "incomplete_segment": (2, "draft"),
+      },
+    )
+    in harness.logger.debug_records
+  )
+  assert (
+    LogRecord(
+      event="live transcription update published",
+      fields={
+        "stream": "stream-1",
+        "completed_segment_count": 1,
+        "incomplete_segment_id": 2,
+      },
+    )
+    in harness.logger.debug_records
+  )
   assert "recording finished" in harness.logger.info_messages
   assert harness.logger.info_messages[-1] == "text emitted"
 
