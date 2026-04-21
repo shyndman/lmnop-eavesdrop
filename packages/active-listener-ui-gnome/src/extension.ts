@@ -76,6 +76,8 @@ type OverlayActor = St.Widget & {
   remove_all_transitions(): void;
 };
 
+type OverlayMonitor = NonNullable<typeof Main.layoutManager.primaryMonitor>;
+
 type IndicatorState = 'absent' | 'idle' | 'recording';
 type DbusOverlaySegment = [number | bigint, string];
 type DbusTranscriptionUpdatedPayload = [DbusOverlaySegment[], DbusOverlaySegment];
@@ -321,7 +323,7 @@ export default class ActiveListenerIndicatorExtension extends Extension {
       return;
     }
 
-    const monitor = Main.layoutManager.primaryMonitor;
+    const monitor = this.getOverlayMonitor();
     if (monitor === null) {
       return;
     }
@@ -329,7 +331,7 @@ export default class ActiveListenerIndicatorExtension extends Extension {
     this.clearOverlayTimeout();
 
     const x = Math.floor(monitor.x + (monitor.width - OVERLAY_WIDTH_PX) / 2);
-    const y = this.getAnchoredOverlayY(this.overlay.height);
+    const y = this.getAnchoredOverlayY(this.overlay.height, monitor);
 
     if (this.overlay.visible) {
       this.overlay.set_position(x, y);
@@ -813,8 +815,16 @@ export default class ActiveListenerIndicatorExtension extends Extension {
     return Math.max(OVERLAY_HEIGHT_PX, transcriptHeight + OVERLAY_TEXT_OFFSET_Y_PX * 2);
   }
 
-  private getAnchoredOverlayY(height: number): number {
-    const monitor = Main.layoutManager.primaryMonitor;
+  private getOverlayMonitor(): OverlayMonitor | null {
+    const focusedWindow = global.display.get_focus_window();
+    const focusedMonitor = focusedWindow === null
+      ? undefined
+      : Main.layoutManager.monitors[focusedWindow.get_monitor()];
+
+    return focusedMonitor ?? Main.layoutManager.primaryMonitor;
+  }
+
+  private getAnchoredOverlayY(height: number, monitor: OverlayMonitor | null = this.getOverlayMonitor()): number {
     if (monitor === null) {
       return -10000;
     }
