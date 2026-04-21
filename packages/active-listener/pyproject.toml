@@ -16,6 +16,7 @@ dependencies = [
     "numpy<2",
     "pydantic>=2",
     "pydantic-ai>=1.84.1",
+    "pydantic-ai-slim[openrouter]>=1.84.1",
     "pyyaml>=6",
     "sdbus>=0.12.0",
     "structlog>=25.4.0",
