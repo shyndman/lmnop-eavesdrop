@@ -59,7 +59,7 @@ const SPECTRUM_BAR_CORNER_RADIUS_PX = 7;
 const SPECTRUM_BAR_STYLE =
   `background-color: ${SPECTRUM_BAR_COLOR};` +
   `border-radius: ${SPECTRUM_BAR_CORNER_RADIUS_PX}px;`;
-const RECORDING_SPIN_DURATION_MS = 1200;
+const RECORDING_SPIN_DURATION_MS = 2400;
 const RECORDING_SPIN_TRANSITION_NAME = 'recording-spin';
 
 type ActorEaseOptions = {
