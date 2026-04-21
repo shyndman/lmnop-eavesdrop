@@ -8,15 +8,26 @@ from active_listener.config.loader import (
   load_active_listener_config,
   resolve_default_active_listener_config_path,
 )
+from active_listener.config.models import (
+  LiteRtRewriteProvider,
+  LlmRewriteConfig,
+  PydanticAiRewriteProvider,
+)
 
 
 def _write_config(
   path: Path,
   *,
-  model_path: str = "models/rewrite.litertlm",
   prompt_path: str = "prompts/rewrite_prompt.md",
+  provider_block: str | None = None,
 ) -> None:
   path.parent.mkdir(parents=True, exist_ok=True)
+  resolved_provider_block = _litert_provider_block() if provider_block is None else provider_block
+  llm_rewrite_lines = [
+    "llm_rewrite:",
+    f'  prompt_path: "{prompt_path}"',
+    *resolved_provider_block.splitlines(),
+  ]
   _ = path.write_text(
     "\n".join(
       [
@@ -25,14 +36,31 @@ def _write_config(
         "port: 9090",
         'audio_device: "config-device"',
         "",
-        "llm_rewrite:",
-        "  enabled: true",
-        f'  model_path: "{model_path}"',
-        f'  prompt_path: "{prompt_path}"',
+        *llm_rewrite_lines,
         "",
       ]
     ),
     encoding="utf-8",
+  )
+
+
+def _litert_provider_block(*, model_path: str = "models/rewrite.litertlm") -> str:
+  return "\n".join(
+    [
+      "  provider:",
+      "    type: litert",
+      f'    model_path: "{model_path}"',
+    ]
+  )
+
+
+def _pydantic_ai_provider_block(*, model: str = "openai:gpt-4.1-mini") -> str:
+  return "\n".join(
+    [
+      "  provider:",
+      "    type: pydantic_ai",
+      f'    model: "{model}"',
+    ]
   )
 
 
@@ -80,8 +108,13 @@ def test_load_active_listener_config_resolves_relative_rewrite_paths_against_con
 
   config = load_active_listener_config(config_path=str(config_path), overrides={})
 
-  assert config.llm_rewrite.model_path == str(config_path.parent / "models" / "rewrite.litertlm")
-  assert config.llm_rewrite.prompt_path == str(config_path.parent / "prompts" / "rewrite_prompt.md")
+  assert config.llm_rewrite == LlmRewriteConfig(
+    prompt_path=str(config_path.parent / "prompts" / "rewrite_prompt.md"),
+    provider=LiteRtRewriteProvider(
+      type="litert",
+      model_path=str(config_path.parent / "models" / "rewrite.litertlm"),
+    ),
+  )
 
 
 def test_load_active_listener_config_preserves_absolute_rewrite_paths(tmp_path: Path) -> None:
@@ -90,14 +123,16 @@ def test_load_active_listener_config_preserves_absolute_rewrite_paths(tmp_path: 
   config_path = tmp_path / "configs" / "active-listener.yaml"
   _write_config(
     config_path,
-    model_path=str(model_path),
     prompt_path=str(prompt_path),
+    provider_block=_litert_provider_block(model_path=str(model_path)),
   )
 
   config = load_active_listener_config(config_path=str(config_path), overrides={})
 
-  assert config.llm_rewrite.model_path == str(model_path)
-  assert config.llm_rewrite.prompt_path == str(prompt_path)
+  assert config.llm_rewrite == LlmRewriteConfig(
+    prompt_path=str(prompt_path),
+    provider=LiteRtRewriteProvider(type="litert", model_path=str(model_path)),
+  )
 
 
 def test_load_active_listener_config_uses_default_xdg_path_for_relative_rewrite_paths(
@@ -111,8 +146,13 @@ def test_load_active_listener_config_uses_default_xdg_path_for_relative_rewrite_
 
   config = load_active_listener_config(config_path=None, overrides={})
 
-  assert config.llm_rewrite.model_path == str(config_path.parent / "models" / "rewrite.litertlm")
-  assert config.llm_rewrite.prompt_path == str(config_path.parent / "prompts" / "rewrite_prompt.md")
+  assert config.llm_rewrite == LlmRewriteConfig(
+    prompt_path=str(config_path.parent / "prompts" / "rewrite_prompt.md"),
+    provider=LiteRtRewriteProvider(
+      type="litert",
+      model_path=str(config_path.parent / "models" / "rewrite.litertlm"),
+    ),
+  )
 
 
 def test_load_active_listener_config_preserves_absolute_symlink_model_path(tmp_path: Path) -> None:
@@ -124,8 +164,72 @@ def test_load_active_listener_config_preserves_absolute_symlink_model_path(tmp_p
   symlink_model_path.symlink_to(real_model_path)
 
   config_path = tmp_path / "configs" / "active-listener.yaml"
-  _write_config(config_path, model_path=str(symlink_model_path))
+  _write_config(
+    config_path, provider_block=_litert_provider_block(model_path=str(symlink_model_path))
+  )
 
   config = load_active_listener_config(config_path=str(config_path), overrides={})
 
-  assert config.llm_rewrite.model_path == str(symlink_model_path)
+  assert config.llm_rewrite == LlmRewriteConfig(
+    prompt_path=str(config_path.parent / "prompts" / "rewrite_prompt.md"),
+    provider=LiteRtRewriteProvider(type="litert", model_path=str(symlink_model_path)),
+  )
+
+
+def test_load_active_listener_config_disables_rewrite_when_block_missing(tmp_path: Path) -> None:
+  config_path = tmp_path / "configs" / "active-listener.yaml"
+  config_path.parent.mkdir(parents=True, exist_ok=True)
+  _ = config_path.write_text(
+    "\n".join(
+      [
+        'keyboard_name: "Config Keyboard"',
+        'host: "config.local"',
+        "port: 9090",
+        'audio_device: "config-device"',
+        "",
+      ]
+    ),
+    encoding="utf-8",
+  )
+
+  config = load_active_listener_config(config_path=str(config_path), overrides={})
+
+  assert config.llm_rewrite is None
+
+
+def test_load_active_listener_config_loads_pydantic_ai_provider(tmp_path: Path) -> None:
+  config_path = tmp_path / "configs" / "active-listener.yaml"
+  _write_config(
+    config_path, provider_block=_pydantic_ai_provider_block(model="openai:gpt-4.1-mini")
+  )
+
+  config = load_active_listener_config(config_path=str(config_path), overrides={})
+
+  assert config.llm_rewrite == LlmRewriteConfig(
+    prompt_path=str(config_path.parent / "prompts" / "rewrite_prompt.md"),
+    provider=PydanticAiRewriteProvider(type="pydantic_ai", model="openai:gpt-4.1-mini"),
+  )
+
+
+def test_load_active_listener_config_rejects_missing_provider(tmp_path: Path) -> None:
+  config_path = tmp_path / "configs" / "active-listener.yaml"
+  _write_config(config_path, provider_block="")
+
+  with pytest.raises(ValueError, match="provider"):
+    _ = load_active_listener_config(config_path=str(config_path), overrides={})
+
+
+def test_load_active_listener_config_rejects_missing_provider_type(tmp_path: Path) -> None:
+  config_path = tmp_path / "configs" / "active-listener.yaml"
+  _write_config(
+    config_path,
+    provider_block="\n".join(
+      [
+        "  provider:",
+        '    model_path: "models/rewrite.litertlm"',
+      ]
+    ),
+  )
+
+  with pytest.raises(ValueError, match="type"):
+    _ = load_active_listener_config(config_path=str(config_path), overrides={})

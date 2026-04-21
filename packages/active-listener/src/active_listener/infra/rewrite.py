@@ -8,6 +8,8 @@ from types import TracebackType
 from typing import Literal, NotRequired, Protocol, TypedDict, cast, final
 
 import litert_lm
+from pydantic_ai import Agent
+from pydantic_ai.run import AgentRunResult
 
 USER_CONFIG_ENV_VAR = "XDG_CONFIG_HOME"
 DEFAULT_USER_CONFIG_DIRNAME = ".config"
@@ -90,16 +92,14 @@ class RewriteClientTimeoutError(RewriteClientError):
 
 
 @final
-class LlmRewriteClient:
+class LiteRtRewriteClient:
   def __init__(self, *, model_path: str) -> None:
     self.model_path: str = model_path
     self._engine: LiteRtEngine = self._open_engine(model_path)
     try:
       _ = self._engine.__enter__()
     except Exception as exc:
-      raise RewriteClientError(
-        f"failed to initialize LiteRT rewrite model: {model_path}"
-      ) from exc
+      raise RewriteClientError(f"failed to initialize LiteRT rewrite model: {model_path}") from exc
     self._closed: bool = False
 
   async def rewrite_text(
@@ -132,9 +132,38 @@ class LlmRewriteClient:
     try:
       return cast(LiteRtEngine, litert_lm.Engine(model_path, backend=litert_lm.Backend.CPU))
     except Exception as exc:
-      raise RewriteClientError(
-        f"failed to initialize LiteRT rewrite model: {model_path}"
-      ) from exc
+      raise RewriteClientError(f"failed to initialize LiteRT rewrite model: {model_path}") from exc
+
+
+@final
+class PydanticAiRewriteClient:
+  def __init__(self, *, model: str) -> None:
+    self.model: str = model
+    self._agent: Agent[None, str] = Agent(output_type=str)
+
+  async def rewrite_text(
+    self,
+    *,
+    instructions: str,
+    transcript: str,
+  ) -> str:
+    try:
+      response: AgentRunResult[str] = await self._agent.run(
+        transcript,
+        instructions=instructions,
+        model=self.model,
+      )
+    except Exception as exc:
+      raise RewriteClientError("rewrite request failed") from exc
+
+    rewritten_text = response.output.strip()
+    if rewritten_text == "":
+      raise RewriteClientError("rewrite model returned empty output")
+
+    return rewritten_text
+
+  async def close(self) -> None:
+    return None
 
 
 @dataclass(frozen=True)
@@ -159,7 +188,6 @@ def load_active_listener_rewrite_prompt(configured_prompt_path: str) -> LoadedRe
   return LoadedRewritePromptFile(prompt_path=prompt_path, prompt=prompt)
 
 
-
 def resolve_active_listener_prompt_path(configured_prompt_path: str) -> Path:
   override_prompt_path = resolve_active_listener_override_prompt_path()
   if override_prompt_path.exists():
@@ -168,10 +196,8 @@ def resolve_active_listener_prompt_path(configured_prompt_path: str) -> Path:
   return resolve_prompt_path(configured_prompt_path)
 
 
-
 def resolve_active_listener_override_prompt_path() -> Path:
   return resolve_user_config_dir() / EAVESDROP_CONFIG_DIRNAME / ACTIVE_LISTENER_PROMPT_FILENAME
-
 
 
 def resolve_user_config_dir() -> Path:
@@ -180,7 +206,6 @@ def resolve_user_config_dir() -> Path:
     return Path(configured_path)
 
   return Path.home() / DEFAULT_USER_CONFIG_DIRNAME
-
 
 
 def load_rewrite_prompt(prompt_path: str | Path) -> LoadedRewritePrompt:
@@ -200,13 +225,11 @@ def load_rewrite_prompt(prompt_path: str | Path) -> LoadedRewritePrompt:
   return LoadedRewritePrompt(instructions=instructions)
 
 
-
 def build_system_message(instructions: str) -> LiteRtMessage:
   return {
     "role": "system",
     "content": [{"type": "text", "text": instructions}],
   }
-
 
 
 def extract_rewrite_output(response: LiteRtResponse) -> str:
@@ -227,7 +250,6 @@ def extract_rewrite_output(response: LiteRtResponse) -> str:
     raise RewriteClientError("rewrite model returned empty output")
 
   return rewritten_text
-
 
 
 def resolve_prompt_path(raw_path: str | Path) -> Path:

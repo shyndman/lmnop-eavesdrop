@@ -11,11 +11,19 @@ from active_listener.app.ports import (
 )
 from active_listener.app.service import ActiveListenerService
 from active_listener.app.state import ForegroundPhase
-from active_listener.config.models import ActiveListenerConfig, LlmRewriteConfig
+from active_listener.config.models import (
+  ActiveListenerConfig,
+  LiteRtRewriteProvider,
+  LlmRewriteConfig,
+)
 from active_listener.infra.dbus import AppStateService, NoopDbusService
 from active_listener.infra.emitter import GnomeShellExtensionTextEmitter, TextEmitter
 from active_listener.infra.keyboard import KeyboardInput, resolve_keyboard
-from active_listener.infra.rewrite import DisabledRewriteClient, LlmRewriteClient
+from active_listener.infra.rewrite import (
+  DisabledRewriteClient,
+  LiteRtRewriteClient,
+  PydanticAiRewriteClient,
+)
 from active_listener.recording.spectrum import SpectrumAnalyzer
 from eavesdrop.client import EavesdropClient
 from eavesdrop.common import get_logger
@@ -33,7 +41,8 @@ async def create_service(
   client_factory: Callable[[ActiveListenerConfig, Callable[[bytes], None]], ActiveListenerClient]
   | None = None,
   emitter_factory: Callable[[], TextEmitter] | None = None,
-  rewrite_client_factory: Callable[[LlmRewriteConfig], ActiveListenerRewriteClient] | None = None,
+  rewrite_client_factory: Callable[[LlmRewriteConfig | None], ActiveListenerRewriteClient]
+  | None = None,
 ) -> ActiveListenerService:
   """Construct a fully initialized service instance.
 
@@ -122,7 +131,8 @@ async def run_service(
   client_factory: Callable[[ActiveListenerConfig, Callable[[bytes], None]], ActiveListenerClient]
   | None = None,
   emitter_factory: Callable[[], TextEmitter] | None = None,
-  rewrite_client_factory: Callable[[LlmRewriteConfig], ActiveListenerRewriteClient] | None = None,
+  rewrite_client_factory: Callable[[LlmRewriteConfig | None], ActiveListenerRewriteClient]
+  | None = None,
 ) -> None:
   """Create and run the long-lived active-listener service.
 
@@ -254,11 +264,15 @@ def build_emitter() -> TextEmitter:
   return emitter
 
 
-def build_rewrite_client(config: LlmRewriteConfig) -> ActiveListenerRewriteClient:
-  if not config.enabled:
+def build_rewrite_client(config: LlmRewriteConfig | None) -> ActiveListenerRewriteClient:
+  if config is None:
     return DisabledRewriteClient()
 
-  return LlmRewriteClient(model_path=config.model_path)
+  provider = config.provider
+  if isinstance(provider, LiteRtRewriteProvider):
+    return LiteRtRewriteClient(model_path=provider.model_path)
+
+  return PydanticAiRewriteClient(model=provider.model)
 
 
 async def cleanup_startup_prerequisites(

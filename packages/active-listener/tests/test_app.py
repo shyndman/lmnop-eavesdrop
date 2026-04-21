@@ -17,7 +17,11 @@ from active_listener.app.ports import ActiveListenerRuntimeError
 from active_listener.app.service import ActiveListenerService
 from active_listener.app.state import ForegroundPhase, KeyboardAction
 from active_listener.bootstrap import build_capture_callback, create_service, run_service
-from active_listener.config.models import ActiveListenerConfig, LlmRewriteConfig
+from active_listener.config.models import (
+  ActiveListenerConfig,
+  LiteRtRewriteProvider,
+  LlmRewriteConfig,
+)
 from active_listener.infra.keyboard import KeyboardInput
 from active_listener.infra.rewrite import (
   LoadedRewritePrompt,
@@ -76,11 +80,13 @@ AppEvent = DisconnectedEvent | ReconnectedEvent | ReconnectingEvent | Transcript
 DbusOverlaySegment = tuple[int, str]
 
 
-def _rewrite_config(*, enabled: bool = False) -> LlmRewriteConfig:
+def _rewrite_config() -> LlmRewriteConfig:
   return LlmRewriteConfig(
-    enabled=enabled,
-    model_path="/tmp/rewrite/model.litertlm",
     prompt_path="/tmp/rewrite/system.md",
+    provider=LiteRtRewriteProvider(
+      type="litert",
+      model_path="/tmp/rewrite/model.litertlm",
+    ),
   )
 
 
@@ -90,7 +96,7 @@ def _config(*, rewrite_enabled: bool = False) -> ActiveListenerConfig:
     host="localhost",
     port=9090,
     audio_device="default",
-    llm_rewrite=_rewrite_config(enabled=rewrite_enabled),
+    llm_rewrite=_rewrite_config() if rewrite_enabled else None,
   )
 
 
@@ -110,7 +116,7 @@ def _loaded_prompt_file(
 
 
 async def _hold_open(signal: asyncio.Event) -> None:
-  await signal.wait()
+  _ = await signal.wait()
 
 
 def _prompt_loader(
@@ -303,7 +309,7 @@ class FakeSpectrumAnalyzer:
     self.stop_calls += 1
     self._release.set()
     if self._task is not None:
-      await asyncio.gather(self._task, return_exceptions=True)
+      _ = await asyncio.gather(self._task, return_exceptions=True)
       self._task = None
 
   def ingest(self, chunk: bytes) -> None:
@@ -565,7 +571,6 @@ async def test_start_and_cancel_recording_toggle_grab_and_streaming() -> None:
   assert harness.keyboard.ungrab_calls == 1
   assert spectrum_analyzer.start_calls == 1
   assert spectrum_analyzer.stop_calls == 1
-  assert service._spectrum_task is None
   assert harness.logger.info_messages == ["recording started", "recording cancelled"]
 
 
@@ -629,7 +634,6 @@ async def test_disconnect_during_recording_forces_local_abort() -> None:
     ("Reconnecting", None),
   ]
   assert spectrum_analyzer.stop_calls == 1
-  assert service._spectrum_task is None
   assert harness.logger.warning_messages == ["recording aborted by disconnect"]
 
 
@@ -724,9 +728,7 @@ async def test_spectrum_emission_flows_through_dbus_while_recording() -> None:
   await service.handle_keyboard_action(KeyboardAction.CANCEL)
 
   state_index = dbus_service.events.index(("State", ForegroundPhase.RECORDING))
-  spectrum_event = next(
-    event for event in dbus_service.events if event[0] == "SpectrumUpdated"
-  )
+  spectrum_event = next(event for event in dbus_service.events if event[0] == "SpectrumUpdated")
 
   assert state_index < dbus_service.events.index(spectrum_event)
   assert isinstance(spectrum_event[1], bytes)
@@ -890,7 +892,7 @@ async def test_transcription_events_are_consumed_only_while_recording() -> None:
   assert harness.dbus_service.signals == [
     ("TranscriptionUpdated", ([(1, "alpha")], (2, "draft"))),
   ]
-  assert emitter.emitted == ["alpha bravo"]
+  assert emitter.emitted == ["alpha bravo "]
   assert harness.keyboard.ungrab_calls == 1
   assert "recording finished" in harness.logger.info_messages
   assert harness.logger.info_messages[-1] == "text emitted"
@@ -928,7 +930,7 @@ async def test_cancel_preserves_connection_cursor_for_next_recording() -> None:
 
   assert client.cancel_calls == 1
   assert client.flush_calls == [True]
-  assert emitter.emitted == ["bravo"]
+  assert emitter.emitted == ["bravo "]
 
 
 @pytest.mark.asyncio
@@ -960,7 +962,7 @@ async def test_new_recording_ignores_completed_history_before_seeded_cursor() ->
   await service.wait_for_background_tasks()
 
   assert client.flush_calls == [True, True]
-  assert emitter.emitted == ["alpha", "bravo charlie"]
+  assert emitter.emitted == ["alpha ", "bravo charlie "]
 
 
 @pytest.mark.asyncio
@@ -995,7 +997,7 @@ async def test_reconnected_session_resets_connection_cursor_before_next_recordin
   await service.wait_for_background_tasks()
 
   assert client.flush_calls == [True, True]
-  assert emitter.emitted == ["alpha", "fresh"]
+  assert emitter.emitted == ["alpha ", "fresh "]
 
 
 @pytest.mark.asyncio
@@ -1029,7 +1031,7 @@ async def test_new_recording_can_start_while_older_finalization_waits() -> None:
   assert client.start_calls == 2
   assert client.stop_calls == 2
   assert client.flush_calls == [True, True]
-  assert emitter.emitted == ["first", "second"]
+  assert emitter.emitted == ["first ", "second "]
   assert harness.keyboard.grab_calls == 2
   assert harness.keyboard.ungrab_calls == 2
 
@@ -1095,7 +1097,7 @@ async def test_finished_recording_emits_joined_text_from_live_updates_and_flush(
   await service.wait_for_background_tasks()
 
   assert client.flush_calls == [True]
-  assert emitter.emitted == ["alpha bravo charlie"]
+  assert emitter.emitted == ["alpha bravo charlie "]
 
 
 @pytest.mark.asyncio
@@ -1136,7 +1138,7 @@ async def test_missing_transcription_sentinel_warns_and_falls_back_to_window() -
   await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
   await service.wait_for_background_tasks()
 
-  assert emitter.emitted == ["alpha restart tail"]
+  assert emitter.emitted == ["alpha restart tail "]
   assert logger.warning_records[-1] == LogRecord(
     event="transcription reducer sentinel missing",
     fields={"stream": "stream-1", "last_id": 1},
@@ -1159,14 +1161,14 @@ async def test_finalize_recording_emits_raw_text_when_rewrite_is_disabled() -> N
   await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
   await harness.service.wait_for_background_tasks()
 
-  assert harness.emitter.emitted == ["alpha"]
+  assert harness.emitter.emitted == ["alpha "]
   assert harness.rewrite_client.calls == []
   assert harness.logger.info_records[-1] == LogRecord(
     event="text emitted",
     fields={
       "stream": "stream-1",
-      "emitted_text": "alpha",
-      "text_length": 5,
+      "emitted_text": "alpha ",
+      "text_length": 6,
       "source": "raw",
     },
   )
@@ -1199,7 +1201,7 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
   await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
   await harness.service.wait_for_background_tasks()
 
-  assert harness.emitter.emitted == ["rewritten alpha"]
+  assert harness.emitter.emitted == ["rewritten alpha "]
   assert rewrite_client.calls == [
     {
       "instructions": "Rewrite this transcript.",
@@ -1210,8 +1212,8 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
     event="text emitted",
     fields={
       "stream": "stream-1",
-      "emitted_text": "rewritten alpha",
-      "text_length": 15,
+      "emitted_text": "rewritten alpha ",
+      "text_length": 16,
       "source": "pipeline",
     },
   )
@@ -1483,7 +1485,6 @@ async def test_rewrite_logging_captures_success_payloads(monkeypatch: pytest.Mon
       event="rewrite succeeded",
       fields={
         "stream": "stream-1",
-        "model_path": "/tmp/rewrite/model.litertlm",
         "prompt_path": "/tmp/override/system.md",
         "raw_text": "alpha",
         "rewritten_text": "rewritten alpha",

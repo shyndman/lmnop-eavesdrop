@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 
 import active_listener.infra.rewrite as rewrite_module
@@ -78,7 +78,7 @@ class RecordingFinalizer:
       if final_text is None:
         return
 
-      emitted_text_source = "raw" if not pipeline_steps else "pipeline"
+      emitted_text_source = "pipeline" if self.config.llm_rewrite is not None else "raw"
 
       try:
         self.emitter.emit_text(final_text)
@@ -94,22 +94,35 @@ class RecordingFinalizer:
         source=emitted_text_source,
       )
 
-  def _pipeline_steps(self, *, stream: str) -> tuple[PipelineStep, ...]:
-    if not self.config.llm_rewrite.enabled:
-      return ()
-
+  def _pipeline_steps(self, *, stream: str) -> list[PipelineStep]:
     async def rewrite_with_llm(text: str) -> str:
       return await self._rewrite_with_llm(text=text, stream=stream)
 
-    #! Yes, I'm aware there's only a single step right now. More are coming soon. Do not touch this
-    # functionality.
-    return (rewrite_with_llm,)
+    async def append_trailing_space(text: str) -> str:
+      return f"{text} "
+
+    steps: list[PipelineStep] = [
+      self._replace_symbols,
+    ]
+
+    if self.config.llm_rewrite is not None:
+      steps.append(rewrite_with_llm)
+
+    steps.append(append_trailing_space)
+
+    return steps
+
+  async def _replace_symbols(self, text: str) -> str:
+    #! This is a bit of a hack, but it allows us to avoid having to deal with the complexity of
+    #! tokenization in the LLM rewrite step. By replacing these symbols with words, we can ensure
+    #! that the LLM rewrite step doesn't mess with them in unexpected ways.
+    return text.replace("&", " and ").replace("#", " hashtag ").replace("%", " percent ")
 
   async def _run_pipeline(
     self,
     *,
     text: str,
-    steps: tuple[PipelineStep, ...],
+    steps: Iterable[PipelineStep],
     stream: str,
   ) -> str | None:
     for step in steps:
@@ -128,14 +141,15 @@ class RecordingFinalizer:
     return text
 
   async def _rewrite_with_llm(self, *, text: str, stream: str) -> str:
+    rewrite_config = self.config.llm_rewrite
+    if rewrite_config is None:
+      raise rewrite_module.RewriteClientError("rewrite is disabled")
+
     prompt_path: str | None = None
-    model_path = self.config.llm_rewrite.model_path
 
     #! This very deliberately happens on each recording run. DO NOT ALTER THIS. Do not ask
     # about loading up front. Just leave it.
-    loaded_prompt = rewrite_module.load_active_listener_rewrite_prompt(
-      self.config.llm_rewrite.prompt_path
-    )
+    loaded_prompt = rewrite_module.load_active_listener_rewrite_prompt(rewrite_config.prompt_path)
     prompt = loaded_prompt.prompt
     prompt_path = str(loaded_prompt.prompt_path)
     self.logger.info(
@@ -147,7 +161,6 @@ class RecordingFinalizer:
     self.logger.info(
       "rewrite started",
       stream=stream,
-      model_path=model_path,
       prompt_path=prompt_path,
       raw_text=text,
     )
@@ -158,7 +171,6 @@ class RecordingFinalizer:
     self.logger.info(
       "rewrite succeeded",
       stream=stream,
-      model_path=model_path,
       prompt_path=prompt_path,
       raw_text=text,
       rewritten_text=rewritten_text,

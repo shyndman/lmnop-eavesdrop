@@ -1,16 +1,35 @@
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import Annotated, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+class LiteRtRewriteProvider(BaseModel):
+  model_config: ClassVar[ConfigDict] = ConfigDict(strict=True, extra="forbid")
+
+  type: Literal["litert"]
+  model_path: str = Field(min_length=1)
+
+
+class PydanticAiRewriteProvider(BaseModel):
+  model_config: ClassVar[ConfigDict] = ConfigDict(strict=True, extra="forbid")
+
+  type: Literal["pydantic_ai"]
+  model: str = Field(min_length=1)
+
+
+RewriteProvider = Annotated[
+  LiteRtRewriteProvider | PydanticAiRewriteProvider,
+  Field(discriminator="type"),
+]
 
 
 class LlmRewriteConfig(BaseModel):
   model_config: ClassVar[ConfigDict] = ConfigDict(strict=True, extra="forbid")
 
-  enabled: bool
-  model_path: str = Field(min_length=1)
   prompt_path: str = Field(min_length=1)
+  provider: RewriteProvider
 
 
 class ActiveListenerConfig(BaseModel):
@@ -25,7 +44,7 @@ class ActiveListenerConfig(BaseModel):
   :param audio_device: PortAudio capture device name passed to the client.
   :type audio_device: str
   :param llm_rewrite: Nested rewrite configuration.
-  :type llm_rewrite: LlmRewriteConfig
+  :type llm_rewrite: LlmRewriteConfig | None
   """
 
   model_config: ClassVar[ConfigDict] = ConfigDict(strict=True, extra="forbid")
@@ -34,4 +53,4 @@ class ActiveListenerConfig(BaseModel):
   host: str = Field(min_length=1)
   port: int = Field(ge=1, le=65535)
   audio_device: str = Field(min_length=1)
-  llm_rewrite: LlmRewriteConfig
+  llm_rewrite: LlmRewriteConfig | None = None

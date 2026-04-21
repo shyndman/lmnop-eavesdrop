@@ -11,7 +11,11 @@ from active_listener import main
 from active_listener.app.ports import ActiveListenerRuntimeError
 from active_listener.app.state import ForegroundPhase
 from active_listener.cli import ActiveListenerCommand, build_app_state_service, env_int, require_env
-from active_listener.config.models import ActiveListenerConfig, LlmRewriteConfig
+from active_listener.config.models import (
+  ActiveListenerConfig,
+  LiteRtRewriteProvider,
+  LlmRewriteConfig,
+)
 from active_listener.infra.dbus import (
   DbusDuplicateInstanceError,
   DbusServiceError,
@@ -94,9 +98,10 @@ def _write_config(
 ) -> None:
   rewrite_block = llm_rewrite_block or (
     "llm_rewrite:\n"
-    "  enabled: true\n"
-    '  model_path: "models/rewrite.litertlm"\n'
     '  prompt_path: "prompts/rewrite_prompt.md"\n'
+    "  provider:\n"
+    "    type: litert\n"
+    '    model_path: "models/rewrite.litertlm"\n'
   )
   _ = path.write_text(
     "\n".join(
@@ -192,9 +197,11 @@ async def test_command_run_uses_config_file_values(
         port=9090,
         audio_device="config-device",
         llm_rewrite=LlmRewriteConfig(
-          enabled=True,
-          model_path=str(config_path.parent / "models" / "rewrite.litertlm"),
           prompt_path=str(config_path.parent / "prompts" / "rewrite_prompt.md"),
+          provider=LiteRtRewriteProvider(
+            type="litert",
+            model_path=str(config_path.parent / "models" / "rewrite.litertlm"),
+          ),
         ),
       ),
       dbus_service,
@@ -231,11 +238,12 @@ async def test_command_run_uses_default_xdg_config_path_when_flag_is_not_set(
 
   assert captured[0].host == "default-host"
   assert captured[0].port == 9191
-  assert captured[0].llm_rewrite.model_path == str(
-    config_path.parent / "models" / "rewrite.litertlm"
-  )
-  assert captured[0].llm_rewrite.prompt_path == str(
-    config_path.parent / "prompts" / "rewrite_prompt.md"
+  assert captured[0].llm_rewrite == LlmRewriteConfig(
+    prompt_path=str(config_path.parent / "prompts" / "rewrite_prompt.md"),
+    provider=LiteRtRewriteProvider(
+      type="litert",
+      model_path=str(config_path.parent / "models" / "rewrite.litertlm"),
+    ),
   )
 
 
@@ -345,7 +353,7 @@ async def test_command_run_raises_for_missing_required_rewrite_fields(
   config_path = tmp_path / "config.yaml"
   _write_config(
     config_path,
-    llm_rewrite_block="llm_rewrite:\n  enabled: true\n",
+    llm_rewrite_block='llm_rewrite:\n  prompt_path: "prompts/rewrite_prompt.md"\n',
   )
   dbus_service = FakeDbusService()
 
@@ -379,11 +387,12 @@ async def test_command_run_rejects_removed_rewrite_fields(
     config_path,
     llm_rewrite_block=(
       "llm_rewrite:\n"
-      "  enabled: true\n"
-      '  model_path: "models/rewrite.litertlm"\n'
       '  prompt_path: "prompts/rewrite_prompt.md"\n'
-      '  base_url: "http://localhost:11434/v1"\n'
-      "  timeout_s: 30\n"
+      "  provider:\n"
+      "    type: litert\n"
+      '    model_path: "models/rewrite.litertlm"\n'
+      '    base_url: "http://localhost:11434/v1"\n'
+      "    timeout_s: 30\n"
     ),
   )
   dbus_service = FakeDbusService()

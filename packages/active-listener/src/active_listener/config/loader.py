@@ -68,14 +68,20 @@ def normalize_active_listener_config_paths(
     return normalized_config
 
   normalized_rewrite_config = dict(cast(Mapping[str, object], raw_rewrite_config))
-  normalized_rewrite_config["model_path"] = normalize_config_path_value(
-    normalized_rewrite_config.get("model_path"),
-    config_dir=config_dir,
-  )
   normalized_rewrite_config["prompt_path"] = normalize_config_path_value(
     normalized_rewrite_config.get("prompt_path"),
     config_dir=config_dir,
   )
+  raw_provider_config = normalized_rewrite_config.get("provider")
+  if isinstance(raw_provider_config, Mapping):
+    normalized_provider_config = dict(cast(Mapping[str, object], raw_provider_config))
+    if normalized_provider_config.get("type") == "litert":
+      normalized_provider_config["model_path"] = normalize_config_path_value(
+        normalized_provider_config.get("model_path"),
+        config_dir=config_dir,
+      )
+    normalized_rewrite_config["provider"] = normalized_provider_config
+
   normalized_config["llm_rewrite"] = normalized_rewrite_config
   return normalized_config
 
