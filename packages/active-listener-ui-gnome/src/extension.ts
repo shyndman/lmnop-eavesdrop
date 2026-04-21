@@ -25,25 +25,32 @@ const OVERLAY_DISPLAY_DURATION_MS = 2000;
 const OVERLAY_BOTTOM_MARGIN_PX = 96;
 const OVERLAY_ANIMATION_DURATION_MS = 180;
 const OVERLAY_WIDTH_PX = 1000;
+const OVERLAY_HEIGHT_PX = 120;
 const OVERLAY_CORNER_RADIUS_PX = 32;
-const OVERLAY_PADDING_VERTICAL_PX = 28;
-const OVERLAY_PADDING_HORIZONTAL_PX = 36;
-const OVERLAY_CONTENT_WIDTH_PX = OVERLAY_WIDTH_PX - OVERLAY_PADDING_HORIZONTAL_PX * 2;
-const OVERLAY_CONTENT_GAP_PX = 32;
-const OVERLAY_BACKGROUND_STYLE = 'rgba(11, 13, 16, 0.82)';
+const OVERLAY_BACKGROUND_COLOR = 'rgba(11, 13, 16, 0.82)';
+const OVERLAY_TEXT_OFFSET_X_PX = 36;
+const OVERLAY_TEXT_OFFSET_Y_PX = 28;
+const OVERLAY_TEXT_WIDTH_PX = OVERLAY_WIDTH_PX - OVERLAY_TEXT_OFFSET_X_PX * 2;
+const OVERLAY_TEXT_HEIGHT_PX = 64;
 const OVERLAY_TEXT_COLOR = '#F5F7FA';
 const OVERLAY_INCOMPLETE_TEXT_ALPHA = '45%';
 const OVERLAY_FONT_FAMILY = 'Inter';
-const OVERLAY_FONT_SIZE_PX = 36;
+const OVERLAY_FONT_SIZE_PX = 24;
+const OVERLAY_LINE_HEIGHT = 1.35;
 const SPECTRUM_BAR_COUNT = 50;
-const SPECTRUM_FRAME_BACKGROUND_COLOR = '#241732';
+const SPECTRUM_FRAME_OFFSET_X_PX = 11;
+const SPECTRUM_FRAME_WIDTH_PX = 977;
 const SPECTRUM_FRAME_PADDING_VERTICAL_PX = 12;
 const SPECTRUM_FRAME_PADDING_HORIZONTAL_PX = 16;
-const SPECTRUM_BAR_WIDTH_PX = 10;
-const SPECTRUM_BAR_GAP_PX = 8;
-const SPECTRUM_BAR_MAX_HEIGHT_PX = 72;
-const SPECTRUM_BAR_MIN_HEIGHT_PX = 10;
+const SPECTRUM_BAR_COLOR = '#241732';
+const SPECTRUM_BAR_WIDTH_PX = 5;
+const SPECTRUM_BAR_GAP_PX = 14;
+const SPECTRUM_BAR_MAX_HEIGHT_PX = 97;
+const SPECTRUM_BAR_MIN_HEIGHT_PX = 5;
 const SPECTRUM_BAR_CORNER_RADIUS_PX = 7;
+const SPECTRUM_BAR_STYLE =
+  `background-color: ${SPECTRUM_BAR_COLOR};` +
+  `border-radius: ${SPECTRUM_BAR_CORNER_RADIUS_PX}px;`;
 const RECORDING_SPIN_DURATION_MS = 1200;
 const RECORDING_SPIN_TRANSITION_NAME = 'recording-spin';
 
@@ -102,10 +109,8 @@ export default class ActiveListenerIndicatorExtension extends Extension {
   private restartServiceItem: PopupMenu.PopupMenuItem | null = null;
   private stopServiceItem: PopupMenu.PopupMenuItem | null = null;
   private overlay: St.Widget | null = null;
-  private overlayContent: St.BoxLayout | null = null;
   private overlayLabel: St.Label | null = null;
   private spectrumFrame: St.BoxLayout | null = null;
-  private spectrumContainer: St.BoxLayout | null = null;
   private spectrumBars: St.Widget[] = [];
   private spectrumLevels: Uint8Array<ArrayBufferLike> = new Uint8Array(SPECTRUM_BAR_COUNT);
   private overlayTimeoutId: number | null = null;
@@ -162,10 +167,8 @@ export default class ActiveListenerIndicatorExtension extends Extension {
       this.overlay = null;
     }
 
-    this.overlayContent = null;
     this.overlayLabel = null;
     this.spectrumFrame = null;
-    this.spectrumContainer = null;
     this.spectrumBars = [];
     this.spectrumLevels = new Uint8Array(SPECTRUM_BAR_COUNT);
     this.icon = null;
@@ -220,68 +223,60 @@ export default class ActiveListenerIndicatorExtension extends Extension {
 
     this.overlayLabel = new St.Label({
       text: OVERLAY_MESSAGE,
-      x_align: Clutter.ActorAlign.CENTER,
-      y_align: Clutter.ActorAlign.CENTER,
+      x: OVERLAY_TEXT_OFFSET_X_PX,
+      y: OVERLAY_TEXT_OFFSET_Y_PX,
+      width: OVERLAY_TEXT_WIDTH_PX,
+      height: OVERLAY_TEXT_HEIGHT_PX,
+      clip_to_allocation: true,
       style:
         `color: ${OVERLAY_TEXT_COLOR};` +
         `font-family: ${OVERLAY_FONT_FAMILY};` +
         `font-size: ${OVERLAY_FONT_SIZE_PX}px;` +
+        `line-height: ${OVERLAY_LINE_HEIGHT};` +
         'font-weight: 500;' +
-        `width: ${OVERLAY_CONTENT_WIDTH_PX}px;` +
         'text-align: center;',
     });
     this.getOverlayClutterText()?.set_line_wrap(true);
 
-    this.spectrumContainer = new St.BoxLayout({
-      x_align: Clutter.ActorAlign.CENTER,
-      y_align: Clutter.ActorAlign.END,
-      style: `spacing: ${SPECTRUM_BAR_GAP_PX}px;`,
+    this.spectrumFrame = new St.BoxLayout({
+      x: SPECTRUM_FRAME_OFFSET_X_PX,
+      width: SPECTRUM_FRAME_WIDTH_PX,
+      height: OVERLAY_HEIGHT_PX,
+      clip_to_allocation: true,
+      style:
+        `border-radius: ${OVERLAY_CORNER_RADIUS_PX}px;` +
+        `spacing: ${SPECTRUM_BAR_GAP_PX}px;` +
+        `padding: ${SPECTRUM_FRAME_PADDING_VERTICAL_PX}px ${SPECTRUM_FRAME_PADDING_HORIZONTAL_PX}px;`,
     });
     this.spectrumBars = [];
     for (let index = 0; index < SPECTRUM_BAR_COUNT; index += 1) {
       const bar = new St.Widget({
         reactive: false,
         can_focus: false,
-        style: this.buildSpectrumBarStyle(SPECTRUM_BAR_MIN_HEIGHT_PX, 0),
+        width: SPECTRUM_BAR_WIDTH_PX,
+        height: SPECTRUM_BAR_MIN_HEIGHT_PX,
+        y_align: Clutter.ActorAlign.END,
+        style: SPECTRUM_BAR_STYLE,
       });
       this.spectrumBars.push(bar);
-      this.spectrumContainer.add_child(bar);
+      this.spectrumFrame.add_child(bar);
     }
 
-    this.spectrumFrame = new St.BoxLayout({
-      x_align: Clutter.ActorAlign.CENTER,
-      y_align: Clutter.ActorAlign.CENTER,
-      style:
-        `background-color: ${SPECTRUM_FRAME_BACKGROUND_COLOR};` +
-        `border-radius: ${OVERLAY_CORNER_RADIUS_PX}px;` +
-        `padding: ${SPECTRUM_FRAME_PADDING_VERTICAL_PX}px ${SPECTRUM_FRAME_PADDING_HORIZONTAL_PX}px;` +
-        `width: ${OVERLAY_CONTENT_WIDTH_PX}px;`,
-    });
-    this.spectrumFrame.add_child(this.spectrumContainer);
-
-    this.overlayContent = new St.BoxLayout({
-      vertical: true,
-      x_align: Clutter.ActorAlign.CENTER,
-      y_align: Clutter.ActorAlign.CENTER,
-      style:
-        `spacing: ${OVERLAY_CONTENT_GAP_PX}px;` +
-        `width: ${OVERLAY_CONTENT_WIDTH_PX}px;`,
-    });
-    this.overlayContent.add_child(this.spectrumFrame);
-    this.overlayContent.add_child(this.overlayLabel);
-
-    this.overlay = new St.BoxLayout({
-      vertical: true,
+    this.overlay = new St.Widget({
       visible: false,
       reactive: false,
       can_focus: false,
       opacity: 0,
+      width: OVERLAY_WIDTH_PX,
+      height: OVERLAY_HEIGHT_PX,
+      clip_to_allocation: true,
+      layout_manager: new Clutter.FixedLayout(),
       style:
-        `background-color: ${OVERLAY_BACKGROUND_STYLE};` +
-        `border-radius: ${OVERLAY_CORNER_RADIUS_PX}px;` +
-        `padding: ${OVERLAY_PADDING_VERTICAL_PX}px ${OVERLAY_PADDING_HORIZONTAL_PX}px;`,
+        `background-color: ${OVERLAY_BACKGROUND_COLOR};` +
+        `border-radius: ${OVERLAY_CORNER_RADIUS_PX}px;`,
     });
-    this.overlay.add_child(this.overlayContent);
+    this.overlay.add_child(this.spectrumFrame);
+    this.overlay.add_child(this.overlayLabel);
     this.clearSpectrumBars();
     this.setOverlayText(OVERLAY_MESSAGE, '');
 
@@ -290,7 +285,7 @@ export default class ActiveListenerIndicatorExtension extends Extension {
   }
 
   private showOverlay(autoHide: boolean = true): void {
-    if (this.overlay === null || this.overlayLabel === null) {
+    if (this.overlay === null) {
       return;
     }
 
@@ -301,10 +296,8 @@ export default class ActiveListenerIndicatorExtension extends Extension {
 
     this.clearOverlayTimeout();
 
-    const [, overlayWidth] = this.overlay.get_preferred_width(-1);
-    const [, overlayHeight] = this.overlay.get_preferred_height(overlayWidth);
-    const x = Math.floor(monitor.x + (monitor.width - overlayWidth) / 2);
-    const y = Math.floor(monitor.y + monitor.height - overlayHeight - OVERLAY_BOTTOM_MARGIN_PX);
+    const x = Math.floor(monitor.x + (monitor.width - OVERLAY_WIDTH_PX) / 2);
+    const y = Math.floor(monitor.y + monitor.height - OVERLAY_HEIGHT_PX - OVERLAY_BOTTOM_MARGIN_PX);
 
     const overlayActor = this.overlayActor(this.overlay);
     overlayActor.remove_all_transitions();
@@ -567,23 +560,12 @@ export default class ActiveListenerIndicatorExtension extends Extension {
     for (let index = 0; index < SPECTRUM_BAR_COUNT; index += 1) {
       const level = this.spectrumLevels[index] ?? 0;
       const normalizedLevel = level / 255;
-      const height = Math.max(
-        SPECTRUM_BAR_MIN_HEIGHT_PX,
-        Math.round(normalizedLevel * SPECTRUM_BAR_MAX_HEIGHT_PX),
-      );
+      const height =
+        SPECTRUM_BAR_MIN_HEIGHT_PX +
+        Math.round(normalizedLevel * (SPECTRUM_BAR_MAX_HEIGHT_PX - SPECTRUM_BAR_MIN_HEIGHT_PX));
       const bar = this.spectrumBars[index];
-      bar.style = this.buildSpectrumBarStyle(height, normalizedLevel);
+      bar.height = height;
     }
-  }
-
-  private buildSpectrumBarStyle(heightPx: number, level: number): string {
-    const opacity = Math.max(0.4, 0.55 + level * 0.45);
-    return (
-      `background-color: rgba(109, 84, 144, ${opacity});` +
-      `border-radius: ${SPECTRUM_BAR_CORNER_RADIUS_PX}px;` +
-      `width: ${SPECTRUM_BAR_WIDTH_PX}px;` +
-      `height: ${heightPx}px;`
-    );
   }
 
   private getOverlayClutterText(): OverlayClutterText | null {
