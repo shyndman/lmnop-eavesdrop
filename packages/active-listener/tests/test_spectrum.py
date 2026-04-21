@@ -29,12 +29,28 @@ def _publish_recorder(frames: list[bytes]) -> Callable[[bytes], Awaitable[None]]
   return publish
 
 
+def _peak_bar(frame: bytes) -> int:
+  return max(frame)
+
+
 @pytest.mark.asyncio
 async def test_low_frequency_interpolation_eliminates_dead_low_bands() -> None:
   frame = compute_spectrum_frame(_sine_wave(70.0, WINDOW_SIZE))
 
   assert len(frame) == SPECTRUM_BAR_COUNT
   assert max(frame[:8]) > 0
+
+
+def test_moderate_tone_retains_headroom() -> None:
+  frame = compute_spectrum_frame(_sine_wave(440.0, WINDOW_SIZE) * np.float32(0.1))
+
+  assert _peak_bar(frame) < 255
+
+
+def test_tone_fifty_percent_louder_can_saturate() -> None:
+  frame = compute_spectrum_frame(_sine_wave(440.0, WINDOW_SIZE) * np.float32(0.15))
+
+  assert _peak_bar(frame) == 255
 
 
 @pytest.mark.asyncio
