@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 import pytest
 from evdev.events import InputEvent
 
-from active_listener.app.state import KeyboardAction
+from active_listener.app.state import AppAction
 from active_listener.infra.keyboard import (
   EvdevKeyboard,
   KeyboardResolutionError,
@@ -59,8 +59,8 @@ def test_action_from_event_filters_non_key_down_events() -> None:
 
 
 def test_action_from_event_maps_caps_lock_and_escape() -> None:
-  assert action_from_event(_key_event(58, 1)) is KeyboardAction.START_OR_FINISH
-  assert action_from_event(_key_event(1, 1)) is KeyboardAction.CANCEL
+  assert action_from_event(_key_event(58, 1)) is AppAction.START_OR_FINISH
+  assert action_from_event(_key_event(1, 1)) is AppAction.CANCEL
 
 
 @pytest.mark.asyncio
@@ -80,7 +80,7 @@ async def test_evdev_keyboard_actions_only_emit_normalized_hotkeys() -> None:
 
   actions = [action async for action in keyboard.actions()]
 
-  assert actions == [KeyboardAction.START_OR_FINISH, KeyboardAction.CANCEL]
+  assert actions == [AppAction.START_OR_FINISH, AppAction.CANCEL]
 
 
 @pytest.mark.asyncio
@@ -99,10 +99,10 @@ async def test_grab_transitions_do_not_split_hotkey_press_release_pairs() -> Non
 
   action_iterator = keyboard.actions().__aiter__()
 
-  assert await action_iterator.__anext__() is KeyboardAction.START_OR_FINISH
+  assert await action_iterator.__anext__() is AppAction.START_OR_FINISH
   keyboard.grab()
 
-  assert await action_iterator.__anext__() is KeyboardAction.CANCEL
+  assert await action_iterator.__anext__() is AppAction.CANCEL
   keyboard.ungrab()
 
   with pytest.raises(StopAsyncIteration):

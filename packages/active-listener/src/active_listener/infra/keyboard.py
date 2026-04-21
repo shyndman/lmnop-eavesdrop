@@ -12,7 +12,7 @@ import evdev
 from evdev.events import InputEvent
 from typing_extensions import override
 
-from active_listener.app.state import KeyboardAction
+from active_listener.app.state import AppAction
 
 _CONTROL_KEY_CODES = frozenset({evdev.ecodes.KEY_CAPSLOCK, evdev.ecodes.KEY_ESC})
 RecordingGrabRelease = Callable[[], None]
@@ -21,7 +21,7 @@ RecordingGrabRelease = Callable[[], None]
 class KeyboardInput(Protocol):
   """Protocol for the active-listener keyboard boundary."""
 
-  def actions(self) -> AsyncIterator[KeyboardAction]:
+  def actions(self) -> AsyncIterator[AppAction]:
     """Yield normalized hotkey actions from the workstation."""
     ...
 
@@ -107,11 +107,11 @@ class EvdevKeyboard:
   _pending_ungrab: bool = False
   _pressed_hotkeys: set[int] = field(default_factory=set)
 
-  async def actions(self) -> AsyncIterator[KeyboardAction]:
+  async def actions(self) -> AsyncIterator[AppAction]:
     """Yield normalized key-down actions from the evdev stream.
 
     :returns: Async iterator of normalized hotkey actions.
-    :rtype: AsyncIterator[KeyboardAction]
+    :rtype: AsyncIterator[AppAction]
     """
 
     async for event in self.device.async_read_loop():
@@ -286,22 +286,22 @@ class _RecordingGrab(AbstractAsyncContextManager[RecordingGrabRelease]):
     self.keyboard.ungrab()
 
 
-def action_from_event(event: InputEvent) -> KeyboardAction | None:
+def action_from_event(event: InputEvent) -> AppAction | None:
   """Translate one raw evdev event into a normalized hotkey action.
 
   :param event: Raw evdev input event.
   :type event: InputEvent
   :returns: Normalized hotkey action, or ``None`` for irrelevant events.
-  :rtype: KeyboardAction | None
+  :rtype: AppAction | None
   """
 
   if event.type != evdev.ecodes.EV_KEY or event.value != 1:
     return None
 
   if event.code == evdev.ecodes.KEY_CAPSLOCK:
-    return KeyboardAction.START_OR_FINISH
+    return AppAction.START_OR_FINISH
   if event.code == evdev.ecodes.KEY_ESC:
-    return KeyboardAction.CANCEL
+    return AppAction.CANCEL
   return None
 
 

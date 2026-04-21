@@ -16,7 +16,7 @@ from typing_extensions import override
 
 from active_listener.app.ports import ActiveListenerRuntimeError
 from active_listener.app.service import ActiveListenerService
-from active_listener.app.state import ForegroundPhase, KeyboardAction
+from active_listener.app.state import AppAction, AppActionDecision, ForegroundPhase
 from active_listener.bootstrap import build_capture_callback, create_service, run_service
 from active_listener.config.models import (
   ActiveListenerConfig,
@@ -150,9 +150,9 @@ class FakeKeyboard:
   ungrab_calls: int = 0
   close_calls: int = 0
   grabbed: bool = False
-  queued_actions: list[KeyboardAction] = field(default_factory=list)
+  queued_actions: list[AppAction] = field(default_factory=list)
 
-  async def actions(self) -> AsyncIterator[KeyboardAction]:
+  async def actions(self) -> AsyncIterator[AppAction]:
     for action in self.queued_actions:
       yield action
 
@@ -567,10 +567,12 @@ async def test_start_and_cancel_recording_toggle_grab_and_streaming() -> None:
   harness = _service(spectrum_analyzer=spectrum_analyzer)
   service = harness.service
 
-  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
-  await service.handle_keyboard_action(KeyboardAction.CANCEL)
+  start_decision = await service.handle_action(AppAction.START_OR_FINISH)
+  cancel_decision = await service.handle_action(AppAction.CANCEL)
 
   assert service.phase is ForegroundPhase.IDLE
+  assert start_decision is AppActionDecision.START_RECORDING
+  assert cancel_decision is AppActionDecision.CANCEL_RECORDING
   assert harness.client.start_calls == 1
   assert harness.client.stop_calls == 1
   assert harness.client.cancel_calls == 1
@@ -586,10 +588,10 @@ async def test_cancel_clears_foreground_state_before_stop_streaming_returns() ->
   harness = _service(client=FailingStopClient())
   service = harness.service
 
-  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
 
   with pytest.raises(RuntimeError, match="stop failed"):
-    await service.handle_keyboard_action(KeyboardAction.CANCEL)
+    _ = await service.handle_action(AppAction.CANCEL)
 
   assert service.phase is ForegroundPhase.IDLE
   assert harness.client.cancel_calls == 0
@@ -602,9 +604,10 @@ async def test_escape_is_ignored_while_idle() -> None:
   harness = _service()
   service = harness.service
 
-  await service.handle_keyboard_action(KeyboardAction.CANCEL)
+  decision = await service.handle_action(AppAction.CANCEL)
 
   assert service.phase is ForegroundPhase.IDLE
+  assert decision is AppActionDecision.IGNORE
   assert harness.client.stop_calls == 0
   assert harness.keyboard.ungrab_calls == 0
   assert harness.logger.info_messages == ["cancel ignored while idle"]
@@ -616,8 +619,9 @@ async def test_caps_lock_is_suppressed_while_reconnecting() -> None:
   service = harness.service
   service.phase = ForegroundPhase.RECONNECTING
 
-  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  decision = await service.handle_action(AppAction.START_OR_FINISH)
 
+  assert decision is AppActionDecision.SUPPRESS_RECONNECTING_START
   assert harness.client.start_calls == 0
   assert harness.keyboard.grab_calls == 0
   assert harness.logger.info_messages == ["recording start suppressed while reconnecting"]
@@ -628,7 +632,7 @@ async def test_disconnect_during_recording_forces_local_abort() -> None:
   spectrum_analyzer = FakeSpectrumAnalyzer()
   harness = _service(spectrum_analyzer=spectrum_analyzer)
   service = harness.service
-  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
 
   await service.handle_client_event(DisconnectedEvent(stream="stream-1", reason="socket closed"))
 
@@ -647,7 +651,7 @@ async def test_disconnect_during_recording_forces_local_abort() -> None:
 @pytest.mark.asyncio
 async def test_disconnect_without_reason_uses_truthful_dbus_fallback() -> None:
   harness = _service()
-  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
 
   await harness.service.handle_client_event(DisconnectedEvent(stream="stream-1", reason=None))
 
@@ -666,10 +670,10 @@ async def test_finish_clears_foreground_state_before_stop_streaming_returns() ->
   harness = _service(client=FailingStopClient())
   service = harness.service
 
-  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
 
   with pytest.raises(RuntimeError, match="stop failed"):
-    await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+    _ = await service.handle_action(AppAction.START_OR_FINISH)
 
   assert service.phase is ForegroundPhase.IDLE
   assert harness.keyboard.grabbed is False
@@ -682,7 +686,7 @@ async def test_close_releases_keyboard_even_when_disconnect_raises() -> None:
   harness = _service(client=FailingDisconnectClient(), spectrum_analyzer=spectrum_analyzer)
   service = harness.service
 
-  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
 
   with pytest.raises(RuntimeError, match="disconnect failed"):
     await service.close()
@@ -729,10 +733,10 @@ async def test_spectrum_emission_flows_through_dbus_while_recording() -> None:
     rewrite_client_factory=lambda _config: FakeRewriteClient(),
   )
 
-  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
   captured_callbacks[0](_sine_wave_bytes(440.0, WINDOW_SIZE * 2))
   await asyncio.sleep(SPECTRUM_TICK_INTERVAL_SECONDS * 3)
-  await service.handle_keyboard_action(KeyboardAction.CANCEL)
+  _ = await service.handle_action(AppAction.CANCEL)
 
   state_index = dbus_service.events.index(("State", ForegroundPhase.RECORDING))
   spectrum_event = next(event for event in dbus_service.events if event[0] == "SpectrumUpdated")
@@ -747,7 +751,7 @@ async def test_close_still_disconnects_when_stop_streaming_fails() -> None:
   harness = _service(client=FailingStopClient())
   service = harness.service
 
-  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
 
   with pytest.raises(RuntimeError, match="stop failed"):
     await service.close()
@@ -782,7 +786,7 @@ async def test_run_service_emits_fatal_error_once_on_startup_failure() -> None:
 
 @pytest.mark.asyncio
 async def test_run_service_emits_fatal_error_once_on_runtime_failure() -> None:
-  keyboard = FakeKeyboard(queued_actions=[KeyboardAction.START_OR_FINISH, KeyboardAction.CANCEL])
+  keyboard = FakeKeyboard(queued_actions=[AppAction.START_OR_FINISH, AppAction.CANCEL])
   client = FailingStopClient()
   dbus_service = FakeDbusService()
 
@@ -833,10 +837,12 @@ async def test_start_and_finish_publish_recording_and_idle_states() -> None:
   )
   harness = _service(client=client)
 
-  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
-  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  start_decision = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  finish_decision = await harness.service.handle_action(AppAction.START_OR_FINISH)
   await harness.service.wait_for_background_tasks()
 
+  assert start_decision is AppActionDecision.START_RECORDING
+  assert finish_decision is AppActionDecision.FINISH_RECORDING
   assert harness.dbus_service.states == [ForegroundPhase.RECORDING, ForegroundPhase.IDLE]
   assert harness.dbus_service.signals == []
   assert client.cancel_calls == 0
@@ -880,7 +886,7 @@ async def test_transcription_events_are_consumed_only_while_recording() -> None:
       )
     )
   )
-  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
   await service.handle_client_event(
     _transcription_event(
       _message(
@@ -890,7 +896,7 @@ async def test_transcription_events_are_consumed_only_while_recording() -> None:
       )
     )
   )
-  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
   await service.wait_for_background_tasks()
 
   assert service.phase is ForegroundPhase.IDLE
@@ -961,7 +967,7 @@ async def test_cancel_preserves_connection_cursor_for_next_recording() -> None:
   harness = _service(client=client, emitter=emitter)
   service = harness.service
 
-  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
   await service.handle_client_event(
     _transcription_event(
       _message(
@@ -971,9 +977,9 @@ async def test_cancel_preserves_connection_cursor_for_next_recording() -> None:
       )
     )
   )
-  await service.handle_keyboard_action(KeyboardAction.CANCEL)
-  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
-  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  _ = await service.handle_action(AppAction.CANCEL)
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
   await service.wait_for_background_tasks()
 
   assert client.cancel_calls == 1
@@ -1001,12 +1007,12 @@ async def test_new_recording_ignores_completed_history_before_seeded_cursor() ->
   harness = _service(client=client, emitter=emitter)
   service = harness.service
 
-  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
-  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
   await service.wait_for_background_tasks()
 
-  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
-  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
   await service.wait_for_background_tasks()
 
   assert client.flush_calls == [True, True]
@@ -1031,8 +1037,8 @@ async def test_reconnected_session_resets_connection_cursor_before_next_recordin
   harness = _service(client=client, emitter=emitter)
   service = harness.service
 
-  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
-  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
   await service.wait_for_background_tasks()
 
   await service.handle_client_event(
@@ -1040,8 +1046,8 @@ async def test_reconnected_session_resets_connection_cursor_before_next_recordin
   )
   await service.handle_client_event(ReconnectedEvent(stream="stream-1"))
 
-  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
-  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
   await service.wait_for_background_tasks()
 
   assert client.flush_calls == [True, True]
@@ -1064,10 +1070,10 @@ async def test_new_recording_can_start_while_older_finalization_waits() -> None:
   harness = _service(client=client, emitter=emitter)
   service = harness.service
 
-  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
-  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
-  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
-  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
   pending_flush.set_result(
     _message(
       _segment(2, "first", completed=True),
@@ -1092,8 +1098,8 @@ async def test_disconnect_during_background_finalization_skips_emission() -> Non
   harness = _service(client=client, emitter=emitter)
   service = harness.service
 
-  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
-  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
   await service.handle_client_event(DisconnectedEvent(stream="stream-1", reason="socket closed"))
   pending_flush.set_result(_message(_segment(1, "alpha", completed=True)))
   await service.wait_for_background_tasks()
@@ -1121,7 +1127,7 @@ async def test_finished_recording_emits_joined_text_from_live_updates_and_flush(
   harness = _service(client=client, emitter=emitter)
   service = harness.service
 
-  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
   await service.handle_client_event(
     _transcription_event(
       _message(
@@ -1141,7 +1147,7 @@ async def test_finished_recording_emits_joined_text_from_live_updates_and_flush(
       )
     )
   )
-  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
   await service.wait_for_background_tasks()
 
   assert client.flush_calls == [True]
@@ -1164,7 +1170,7 @@ async def test_missing_transcription_sentinel_warns_and_falls_back_to_window() -
   harness = _service(client=client, emitter=emitter, logger=logger)
   service = harness.service
 
-  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
   await service.handle_client_event(
     _transcription_event(
       _message(
@@ -1183,7 +1189,7 @@ async def test_missing_transcription_sentinel_warns_and_falls_back_to_window() -
       )
     )
   )
-  await service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
   await service.wait_for_background_tasks()
 
   assert emitter.emitted == ["alpha restart tail "]
@@ -1205,8 +1211,8 @@ async def test_finalize_recording_emits_raw_text_when_rewrite_is_disabled() -> N
   )
   harness = _service(client=client)
 
-  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
-  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
   await harness.service.wait_for_background_tasks()
 
   assert harness.emitter.emitted == ["alpha "]
@@ -1245,8 +1251,8 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
     _prompt_loader(_loaded_prompt_file(_prompt())),
   )
 
-  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
-  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
   await harness.service.wait_for_background_tasks()
 
   assert harness.emitter.emitted == ["rewritten alpha "]
@@ -1290,8 +1296,8 @@ async def test_finalize_recording_drops_text_and_signals_pipeline_failure_when_r
     _prompt_loader(_loaded_prompt_file(_prompt())),
   )
 
-  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
-  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
   await harness.service.wait_for_background_tasks()
 
   assert harness.emitter.emitted == []
@@ -1329,8 +1335,8 @@ async def test_finalize_recording_skips_rewrite_after_disconnect(
     "active_listener.infra.rewrite.load_active_listener_rewrite_prompt", fake_load_prompt
   )
 
-  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
-  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
   await harness.service.handle_client_event(
     DisconnectedEvent(stream="stream-1", reason="socket closed")
   )
@@ -1372,8 +1378,8 @@ async def test_finalize_recording_skips_rewrite_for_empty_text(
     "active_listener.infra.rewrite.load_active_listener_rewrite_prompt", fake_load_prompt
   )
 
-  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
-  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
   await harness.service.wait_for_background_tasks()
 
   assert prompt_load_calls == []
@@ -1399,8 +1405,8 @@ async def test_rewrite_logging_captures_prompt_failure(monkeypatch: pytest.Monke
     ),
   )
 
-  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
-  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
   await harness.service.wait_for_background_tasks()
 
   assert harness.emitter.emitted == []
@@ -1434,8 +1440,8 @@ async def test_rewrite_logging_uses_resolved_prompt_path(monkeypatch: pytest.Mon
     _prompt_loader(_loaded_prompt_file(_prompt(), prompt_path="/tmp/override/system.md")),
   )
 
-  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
-  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
   await harness.service.wait_for_background_tasks()
 
   assert (
@@ -1472,8 +1478,8 @@ async def test_rewrite_logging_captures_timeout(monkeypatch: pytest.MonkeyPatch)
     _prompt_loader(_loaded_prompt_file(_prompt(), prompt_path="/tmp/override/system.md")),
   )
 
-  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
-  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
   await harness.service.wait_for_background_tasks()
 
   assert harness.emitter.emitted == []
@@ -1517,8 +1523,8 @@ async def test_rewrite_logging_captures_success_payloads(monkeypatch: pytest.Mon
     ),
   )
 
-  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
-  await harness.service.handle_keyboard_action(KeyboardAction.START_OR_FINISH)
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
   await harness.service.wait_for_background_tasks()
 
   assert (

@@ -3,44 +3,44 @@
 from __future__ import annotations
 
 from active_listener.app.state import (
+  AppAction,
+  AppActionDecision,
   ConnectionDecision,
   ForegroundPhase,
-  KeyboardAction,
-  KeyboardDecision,
+  decide_app_action,
   decide_client_event,
-  decide_keyboard_action,
 )
 from eavesdrop.client import ConnectedEvent, DisconnectedEvent, ReconnectedEvent, ReconnectingEvent
 
 
 def test_idle_to_recording_start_decision() -> None:
-  decision = decide_keyboard_action(ForegroundPhase.IDLE, KeyboardAction.START_OR_FINISH)
+  decision = decide_app_action(ForegroundPhase.IDLE, AppAction.START_OR_FINISH)
 
-  assert decision is KeyboardDecision.START_RECORDING
+  assert decision is AppActionDecision.START_RECORDING
 
 
 def test_recording_to_idle_cancel_decision() -> None:
-  decision = decide_keyboard_action(ForegroundPhase.RECORDING, KeyboardAction.CANCEL)
+  decision = decide_app_action(ForegroundPhase.RECORDING, AppAction.CANCEL)
 
-  assert decision is KeyboardDecision.CANCEL_RECORDING
+  assert decision is AppActionDecision.CANCEL_RECORDING
 
 
 def test_recording_to_idle_finish_decision() -> None:
-  decision = decide_keyboard_action(ForegroundPhase.RECORDING, KeyboardAction.START_OR_FINISH)
+  decision = decide_app_action(ForegroundPhase.RECORDING, AppAction.START_OR_FINISH)
 
-  assert decision is KeyboardDecision.FINISH_RECORDING
+  assert decision is AppActionDecision.FINISH_RECORDING
 
 
 def test_idle_cancel_is_ignored() -> None:
-  decision = decide_keyboard_action(ForegroundPhase.IDLE, KeyboardAction.CANCEL)
+  decision = decide_app_action(ForegroundPhase.IDLE, AppAction.CANCEL)
 
-  assert decision is KeyboardDecision.IGNORE
+  assert decision is AppActionDecision.IGNORE
 
 
 def test_reconnecting_start_is_suppressed() -> None:
-  decision = decide_keyboard_action(ForegroundPhase.RECONNECTING, KeyboardAction.START_OR_FINISH)
+  decision = decide_app_action(ForegroundPhase.RECONNECTING, AppAction.START_OR_FINISH)
 
-  assert decision is KeyboardDecision.SUPPRESS_RECONNECTING_START
+  assert decision is AppActionDecision.SUPPRESS_RECONNECTING_START
 
 
 def test_disconnected_while_idle_enters_reconnecting() -> None:

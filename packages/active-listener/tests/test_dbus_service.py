@@ -5,12 +5,13 @@ from __future__ import annotations
 import asyncio
 import os
 from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
 from typing import Protocol, cast
 
 import pytest
 from sdbus import DbusPropertyReadOnlyError
 
-from active_listener.app.state import ForegroundPhase
+from active_listener.app.state import AppAction, AppActionDecision, ForegroundPhase, StartOrFinishResult
 from active_listener.infra.dbus import (
   DBUS_BUS_NAME,
   DBUS_OBJECT_PATH,
@@ -61,8 +62,26 @@ class SignalDescriptor(Protocol):
   signal_name: str
 
 
+class MethodDescriptor(Protocol):
+  method_name: str
+
+
 class IntrospectableProxy(Protocol):
   async def dbus_introspect(self) -> str: ...
+
+
+class StartOrFinishProxy(Protocol):
+  async def start_or_finish_recording(self) -> str: ...
+
+
+@dataclass
+class FakeRecordingControl:
+  decisions: list[AppActionDecision]
+  actions: list[AppAction] = field(default_factory=list)
+
+  async def handle_action(self, action: AppAction) -> AppActionDecision:
+    self.actions.append(action)
+    return self.decisions.pop(0)
 
 
 async def receive_next_signal(iterator: AsyncIterator[None]) -> None:
@@ -98,6 +117,10 @@ async def connect_test_service_or_skip() -> SdbusDbusService:
 @pytest.mark.asyncio
 async def test_interface_contract_names_match_spec() -> None:
   state_descriptor = cast(PropertyDescriptor, ActiveListenerDbusInterface.__dict__["state"])
+  start_or_finish_method = cast(
+    MethodDescriptor,
+    ActiveListenerDbusInterface.__dict__["start_or_finish_recording"],
+  )
   recording_aborted_signal = cast(
     SignalDescriptor,
     ActiveListenerDbusInterface.__dict__["recording_aborted"],
@@ -129,6 +152,7 @@ async def test_interface_contract_names_match_spec() -> None:
 
   assert state_descriptor.property_name == "State"
   assert state_descriptor.property_setter_is_public is False
+  assert start_or_finish_method.method_name == "StartOrFinishRecording"
   assert transcription_updated_signal.signal_name == "TranscriptionUpdated"
   assert spectrum_updated_signal.signal_name == "SpectrumUpdated"
   assert recording_aborted_signal.signal_name == "RecordingAborted"
@@ -229,6 +253,35 @@ async def test_property_is_read_only_over_dbus_and_empty_signals_emit() -> None:
 
 @requires_user_bus
 @pytest.mark.asyncio
+async def test_start_or_finish_recording_returns_locked_results() -> None:
+  service = await connect_test_service_or_skip()
+  proxy = ActiveListenerDbusInterface.new_proxy(DBUS_BUS_NAME, DBUS_OBJECT_PATH, bus=service.bus)
+  control = FakeRecordingControl(
+    decisions=[
+      AppActionDecision.START_RECORDING,
+      AppActionDecision.FINISH_RECORDING,
+      AppActionDecision.SUPPRESS_RECONNECTING_START,
+    ]
+  )
+  service.attach_recording_control(control)
+
+  try:
+    method_proxy = cast(StartOrFinishProxy, proxy)
+
+    assert await method_proxy.start_or_finish_recording() == StartOrFinishResult.STARTED.value
+    assert await method_proxy.start_or_finish_recording() == StartOrFinishResult.FINISHED.value
+    assert await method_proxy.start_or_finish_recording() == StartOrFinishResult.IGNORED.value
+    assert control.actions == [
+      AppAction.START_OR_FINISH,
+      AppAction.START_OR_FINISH,
+      AppAction.START_OR_FINISH,
+    ]
+  finally:
+    await service.close()
+
+
+@requires_user_bus
+@pytest.mark.asyncio
 async def test_dbus_introspection_matches_locked_contract() -> None:
   service = await connect_test_service_or_skip()
   proxy = ActiveListenerDbusInterface.new_proxy(DBUS_BUS_NAME, DBUS_OBJECT_PATH, bus=service.bus)
@@ -243,6 +296,8 @@ async def test_dbus_introspection_matches_locked_contract() -> None:
     assert DBUS_BUS_NAME == "ca.lmnop.Eavesdrop.ActiveListener"
     assert DBUS_OBJECT_PATH == "/ca/lmnop/Eavesdrop/ActiveListener"
     assert 'interface name="ca.lmnop.Eavesdrop.ActiveListener1"' in introspection_xml
+    assert '<method name="StartOrFinishRecording">' in introspection_xml
+    assert '<arg type="s" direction="out" name="result"/>' in interface_block
     assert '<property name="State" type="s" access="read">' in introspection_xml
     assert '<signal name="TranscriptionUpdated">' in introspection_xml
     assert '<signal name="SpectrumUpdated">' in introspection_xml

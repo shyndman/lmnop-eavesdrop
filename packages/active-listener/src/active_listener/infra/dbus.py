@@ -10,6 +10,7 @@ from sdbus import (
   DbusInterfaceCommonAsync,
   DbusPropertyEmitsChangeFlag,
   SdBus,
+  dbus_method_async,
   dbus_property_async,
   dbus_signal_async,
   request_default_bus_name_async,
@@ -18,7 +19,12 @@ from sdbus import (
 )
 from sdbus.exceptions import SdBusRequestNameExistsError
 
-from active_listener.app.state import ForegroundPhase
+from active_listener.app.state import (
+  AppAction,
+  AppActionDecision,
+  ForegroundPhase,
+  StartOrFinishResult,
+)
 from active_listener.recording.spectrum import QuantizedSpectrumFrame
 from eavesdrop.common import get_logger
 
@@ -35,6 +41,10 @@ class DbusExportHandle(Protocol):
 
 class DbusSignalEmitter(Protocol):
   def emit(self, payload: object | None) -> None: ...
+
+
+class RecordingControl(Protocol):
+  async def handle_action(self, action: AppAction) -> AppActionDecision: ...
 
 
 class AppStateService(Protocol):
@@ -73,6 +83,7 @@ if TYPE_CHECKING:
 
   class ActiveListenerDbusInterface:
     _state: str = ""
+    _recording_control: RecordingControl | None = None
     state: object = object()
     transcription_updated: object = object()
     spectrum_updated: object = object()
@@ -90,6 +101,13 @@ if TYPE_CHECKING:
       raise NotImplementedError
 
     async def current_state(self) -> str:
+      raise NotImplementedError
+
+    def set_recording_control(self, control: RecordingControl) -> None:
+      _ = control
+      raise NotImplementedError
+
+    async def start_or_finish_recording(self) -> str:
       raise NotImplementedError
 
     def export_to_dbus(self, object_path: str, bus: SdBus | None = None) -> DbusExportHandle:
@@ -115,6 +133,7 @@ else:
       def __init__(self, initial_state: ForegroundPhase) -> None:
         DbusInterfaceCommonAsync.__init__(self)
         self._state = initial_state.value
+        self._recording_control = None
 
       @dbus_property_async(
         property_signature="s",
@@ -128,6 +147,9 @@ else:
         self._state = value
 
       state.setter_private(set_local_state)
+
+      def set_recording_control(self, control: RecordingControl) -> None:
+        self._recording_control = control
 
       @dbus_signal_async(
         signal_signature="a(ts)(ts)",
@@ -177,6 +199,23 @@ else:
       def reconnected(self) -> None:
         raise NotImplementedError
 
+      @dbus_method_async(
+        input_signature="",
+        result_signature="s",
+        result_args_names=("result",),
+        method_name="StartOrFinishRecording",
+      )
+      async def start_or_finish_recording(self) -> str:
+        if self._recording_control is None:
+          raise RuntimeError("recording control unavailable")
+
+        decision = await self._recording_control.handle_action(AppAction.START_OR_FINISH)
+        if decision is AppActionDecision.START_RECORDING:
+          return StartOrFinishResult.STARTED.value
+        if decision is AppActionDecision.FINISH_RECORDING:
+          return StartOrFinishResult.FINISHED.value
+        return StartOrFinishResult.IGNORED.value
+
       async def set_state(self, state: ForegroundPhase) -> None:
         if state.value == self._state:
           return
@@ -199,6 +238,7 @@ else:
 
       namespace["__init__"] = __init__
       namespace["state"] = state
+      namespace["set_recording_control"] = set_recording_control
       namespace["transcription_updated"] = transcription_updated
       namespace["spectrum_updated"] = spectrum_updated
       namespace["recording_aborted"] = recording_aborted
@@ -206,6 +246,7 @@ else:
       namespace["fatal_error"] = fatal_error
       namespace["reconnecting"] = reconnecting
       namespace["reconnected"] = reconnected
+      namespace["start_or_finish_recording"] = start_or_finish_recording
       namespace["set_state"] = set_state
       namespace["current_state"] = current_state
 
@@ -289,6 +330,9 @@ class SdbusDbusService:
 
   async def set_state(self, state: ForegroundPhase) -> None:
     await self.interface.set_state(state)
+
+  def attach_recording_control(self, control: RecordingControl) -> None:
+    self.interface.set_recording_control(control)
 
   async def transcription_updated(
     self,

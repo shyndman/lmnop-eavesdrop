@@ -17,7 +17,7 @@ from active_listener.config.models import (
   LiteRtRewriteProvider,
   LlmRewriteConfig,
 )
-from active_listener.infra.dbus import AppStateService, NoopDbusService
+from active_listener.infra.dbus import AppStateService, NoopDbusService, SdbusDbusService
 from active_listener.infra.emitter import GnomeShellExtensionTextEmitter, TextEmitter
 from active_listener.infra.keyboard import KeyboardInput, resolve_keyboard
 from active_listener.infra.rewrite import (
@@ -116,8 +116,7 @@ async def create_service(
     host=config.host,
     port=config.port,
   )
-  await resolved_dbus_service.set_state(ForegroundPhase.IDLE)
-  return ActiveListenerService(
+  service = ActiveListenerService(
     config=config,
     keyboard=keyboard,
     client=client,
@@ -127,6 +126,10 @@ async def create_service(
     dbus_service=resolved_dbus_service,
     spectrum_analyzer=spectrum_analyzer,
   )
+  if isinstance(resolved_dbus_service, SdbusDbusService):
+    resolved_dbus_service.attach_recording_control(service)
+  await resolved_dbus_service.set_state(ForegroundPhase.IDLE)
+  return service
 
 
 async def run_service(

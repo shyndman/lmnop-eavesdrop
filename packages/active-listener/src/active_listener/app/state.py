@@ -7,7 +7,7 @@ from enum import StrEnum
 from eavesdrop.client import ConnectedEvent, DisconnectedEvent, ReconnectedEvent, ReconnectingEvent
 
 
-class KeyboardAction(StrEnum):
+class AppAction(StrEnum):
   """Normalized workstation actions consumed by app policy."""
 
   START_OR_FINISH = "start_or_finish"
@@ -23,14 +23,22 @@ class ForegroundPhase(StrEnum):
   RECONNECTING = "reconnecting"
 
 
-class KeyboardDecision(StrEnum):
-  """Pure keyboard decisions produced from the current foreground phase."""
+class AppActionDecision(StrEnum):
+  """Pure app-action decisions produced from the current foreground phase."""
 
   START_RECORDING = "start_recording"
   FINISH_RECORDING = "finish_recording"
   CANCEL_RECORDING = "cancel_recording"
   IGNORE = "ignore"
   SUPPRESS_RECONNECTING_START = "suppress_reconnecting_start"
+
+
+class StartOrFinishResult(StrEnum):
+  """Public start/finish outcomes exposed across the DBus boundary."""
+
+  STARTED = "started"
+  FINISHED = "finished"
+  IGNORED = "ignored"
 
 
 class ConnectionDecision(StrEnum):
@@ -44,31 +52,31 @@ class ConnectionDecision(StrEnum):
   IGNORE = "ignore"
 
 
-def decide_keyboard_action(phase: ForegroundPhase, action: KeyboardAction) -> KeyboardDecision:
-  """Translate a normalized hotkey into a foreground policy decision.
+def decide_app_action(phase: ForegroundPhase, action: AppAction) -> AppActionDecision:
+  """Translate a normalized app action into a foreground policy decision.
 
   :param phase: Current foreground phase.
   :type phase: ForegroundPhase
-  :param action: Normalized hotkey action.
-  :type action: KeyboardAction
+  :param action: Normalized app action.
+  :type action: AppAction
   :returns: Policy decision for the input action.
-  :rtype: KeyboardDecision
+  :rtype: AppActionDecision
   """
 
   if phase is ForegroundPhase.IDLE:
-    if action is KeyboardAction.START_OR_FINISH:
-      return KeyboardDecision.START_RECORDING
-    return KeyboardDecision.IGNORE
+    if action is AppAction.START_OR_FINISH:
+      return AppActionDecision.START_RECORDING
+    return AppActionDecision.IGNORE
 
   if phase is ForegroundPhase.RECORDING:
-    if action is KeyboardAction.START_OR_FINISH:
-      return KeyboardDecision.FINISH_RECORDING
-    return KeyboardDecision.CANCEL_RECORDING
+    if action is AppAction.START_OR_FINISH:
+      return AppActionDecision.FINISH_RECORDING
+    return AppActionDecision.CANCEL_RECORDING
 
-  if phase is ForegroundPhase.RECONNECTING and action is KeyboardAction.START_OR_FINISH:
-    return KeyboardDecision.SUPPRESS_RECONNECTING_START
+  if phase is ForegroundPhase.RECONNECTING and action is AppAction.START_OR_FINISH:
+    return AppActionDecision.SUPPRESS_RECONNECTING_START
 
-  return KeyboardDecision.IGNORE
+  return AppActionDecision.IGNORE
 
 
 def decide_client_event(

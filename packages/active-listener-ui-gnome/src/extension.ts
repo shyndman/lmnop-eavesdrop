@@ -17,11 +17,18 @@ import {
   type TransitionPlan,
 } from './transcript-animation.js';
 import { buildTranscriptAttributeSpecs } from './transcript-attributes.js';
+import {
+  deriveIndicatorState,
+  deriveMenuControlState,
+  resolveStartOrFinishCommandResponse,
+  type IndicatorState,
+} from './recording-menu-control.js';
 
 const DBUS_BUS_NAME = 'ca.lmnop.Eavesdrop.ActiveListener';
 const DBUS_OBJECT_PATH = '/ca/lmnop/Eavesdrop/ActiveListener';
 const DBUS_INTERFACE_NAME = 'ca.lmnop.Eavesdrop.ActiveListener1';
 const DBUS_STATE_PROPERTY = 'State';
+const DBUS_START_OR_FINISH_RECORDING_METHOD = 'StartOrFinishRecording';
 const DBUS_TRANSCRIPTION_UPDATED_SIGNAL = 'TranscriptionUpdated';
 const DBUS_SPECTRUM_UPDATED_SIGNAL = 'SpectrumUpdated';
 const DBUS_PIPELINE_FAILED_SIGNAL = 'PipelineFailed';
@@ -79,7 +86,6 @@ type OverlayActor = St.Widget & {
 
 type OverlayMonitor = NonNullable<typeof Main.layoutManager.primaryMonitor>;
 
-type IndicatorState = 'absent' | 'idle' | 'recording';
 type DbusOverlaySegment = [number | bigint, string];
 type DbusTranscriptionUpdatedPayload = [DbusOverlaySegment[], DbusOverlaySegment];
 type SystemdMethodName = 'RestartUnit' | 'StopUnit';
@@ -104,6 +110,7 @@ export default class ActiveListenerIndicatorExtension extends Extension {
   private proxyPropertiesSignalId: number | null = null;
   private proxyDbusSignalId: number | null = null;
   private busWatchId: number | null = null;
+  private recordingControlItem: PopupMenu.PopupMenuItem | null = null;
   private restartServiceItem: PopupMenu.PopupMenuItem | null = null;
   private stopServiceItem: PopupMenu.PopupMenuItem | null = null;
   private overlay: St.Widget | null = null;
@@ -118,6 +125,8 @@ export default class ActiveListenerIndicatorExtension extends Extension {
   private pendingTranscriptSwapMeasurement: TranscriptSwapMeasurement | null = null;
   private readonly overlayActor = (actor: St.Widget): OverlayActor => actor as OverlayActor;
   private indicatorState: IndicatorState = 'absent';
+  private servicePresent = false;
+  private servicePhase: string | null = null;
   private completedTranscriptParts: string[] = [];
   private incompleteTranscriptText = '';
 
@@ -144,7 +153,7 @@ export default class ActiveListenerIndicatorExtension extends Extension {
       },
       () => {
         this.detachProxy();
-        this.updateIndicator('absent');
+        this.updateServiceState(false, null);
       },
     );
   }
@@ -176,8 +185,11 @@ export default class ActiveListenerIndicatorExtension extends Extension {
     this.transcriptAnimationController = null;
     this.pendingTranscriptSwapMeasurement = null;
     this.icon = null;
+    this.recordingControlItem = null;
     this.restartServiceItem = null;
     this.stopServiceItem = null;
+    this.servicePresent = false;
+    this.servicePhase = null;
 
     this.button?.destroy();
     this.button = null;
@@ -191,6 +203,11 @@ export default class ActiveListenerIndicatorExtension extends Extension {
     if (!(this.button.menu instanceof PopupMenu.PopupMenu)) {
       return;
     }
+
+    this.recordingControlItem = new PopupMenu.PopupMenuItem('No Service');
+    this.recordingControlItem.connect('activate', () => {
+      this.runRecordingControlAction();
+    });
 
     const preferencesItem = new PopupMenu.PopupMenuItem('Preferences');
     preferencesItem.connect('activate', () => {
@@ -213,6 +230,7 @@ export default class ActiveListenerIndicatorExtension extends Extension {
       void this.runServiceAction('StopUnit');
     });
 
+    this.button.menu.addMenuItem(this.recordingControlItem);
     this.button.menu.addMenuItem(preferencesItem);
     this.button.menu.addMenuItem(showOverlayItem);
     this.button.menu.addMenuItem(this.restartServiceItem);
@@ -412,7 +430,7 @@ export default class ActiveListenerIndicatorExtension extends Extension {
       );
     } catch (error) {
       console.error('Active Listener indicator failed to create DBus proxy', error);
-      this.updateIndicator('absent');
+      this.updateServiceState(false, null);
       return;
     }
 
@@ -495,13 +513,51 @@ export default class ActiveListenerIndicatorExtension extends Extension {
 
   private syncIndicatorState(): void {
     if (this.proxy === null) {
-      this.updateIndicator('absent');
+      this.updateServiceState(false, null);
       return;
     }
 
     const value = this.proxy.get_cached_property(DBUS_STATE_PROPERTY)?.deepUnpack();
-    const nextState = value === 'recording' ? 'recording' : 'idle';
-    this.updateIndicator(nextState);
+    this.updateServiceState(true, typeof value === 'string' ? value : null);
+  }
+
+  private updateServiceState(servicePresent: boolean, phase: string | null): void {
+    this.servicePresent = servicePresent;
+    this.servicePhase = phase;
+    this.updateIndicator(deriveIndicatorState(servicePresent, phase));
+  }
+
+  private runRecordingControlAction(): void {
+    const proxy = this.proxy;
+    if (proxy === null) {
+      return;
+    }
+
+    proxy.call(
+      DBUS_START_OR_FINISH_RECORDING_METHOD,
+      null,
+      Gio.DBusCallFlags.NONE,
+      -1,
+      null,
+      (source, result) => {
+        const response = resolveStartOrFinishCommandResponse(() => {
+          if (source === null || result === null) {
+            throw new Error('Active Listener command returned no result');
+          }
+
+          const reply = source.call_finish(result);
+          return reply.deepUnpack() as [string];
+        });
+
+        if (response.kind === 'failure') {
+          console.error('Active Listener command failed', response.detail);
+          Main.notifyError(response.title, response.detail);
+          return;
+        }
+
+        console.debug(`Active Listener command result ${response.result}`);
+      },
+    );
   }
 
   private async runServiceAction(methodName: SystemdMethodName): Promise<void> {
@@ -877,12 +933,18 @@ export default class ActiveListenerIndicatorExtension extends Extension {
   }
 
   private updateMenuSensitivity(): void {
+    if (this.recordingControlItem !== null) {
+      const controlState = deriveMenuControlState(this.servicePresent, this.servicePhase);
+      this.recordingControlItem.label.set_text(controlState.label);
+      this.recordingControlItem.sensitive = controlState.enabled;
+    }
+
     if (this.restartServiceItem !== null) {
       this.restartServiceItem.sensitive = true;
     }
 
     if (this.stopServiceItem !== null) {
-      this.stopServiceItem.sensitive = this.indicatorState !== 'absent';
+      this.stopServiceItem.sensitive = this.servicePresent;
     }
   }
 

@@ -10,14 +10,14 @@ from active_listener.app.ports import (
   ActiveListenerClient,
   ActiveListenerRewriteClient,
 )
-from active_listener.app.signals import ClientSignal, KeyboardSignal, RuntimeSignal
+from active_listener.app.signals import AppActionSignal, ClientSignal, RuntimeSignal
 from active_listener.app.state import (
+  AppAction,
+  AppActionDecision,
   ConnectionDecision,
   ForegroundPhase,
-  KeyboardAction,
-  KeyboardDecision,
+  decide_app_action,
   decide_client_event,
-  decide_keyboard_action,
 )
 from active_listener.config.models import ActiveListenerConfig
 from active_listener.infra.dbus import AppStateService
@@ -105,8 +105,8 @@ class ActiveListenerService:
     try:
       while True:
         signal = await signal_queue.get()
-        if isinstance(signal, KeyboardSignal):
-          await self.handle_keyboard_action(signal.action)
+        if isinstance(signal, AppActionSignal):
+          _ = await self.handle_action(signal.action)
         else:
           await self.handle_client_event(signal.event)
     finally:
@@ -156,19 +156,19 @@ class ActiveListenerService:
     if self._background_tasks:
       _ = await asyncio.gather(*list(self._background_tasks), return_exceptions=True)
 
-  async def handle_keyboard_action(self, action: KeyboardAction) -> None:
-    decision = decide_keyboard_action(self.phase, action)
+  async def handle_action(self, action: AppAction) -> AppActionDecision:
+    decision = decide_app_action(self.phase, action)
 
-    if decision is KeyboardDecision.IGNORE:
-      if action is KeyboardAction.CANCEL:
+    if decision is AppActionDecision.IGNORE:
+      if action is AppAction.CANCEL:
         self.logger.info("cancel ignored while idle")
-      return
+      return decision
 
-    if decision is KeyboardDecision.SUPPRESS_RECONNECTING_START:
+    if decision is AppActionDecision.SUPPRESS_RECONNECTING_START:
       self.logger.info("recording start suppressed while reconnecting")
-      return
+      return decision
 
-    if decision is KeyboardDecision.START_RECORDING:
+    if decision is AppActionDecision.START_RECORDING:
       self._start_spectrum_analysis()
       try:
         await self.client.start_streaming()
@@ -176,19 +176,19 @@ class ActiveListenerService:
         self.phase = ForegroundPhase.RECORDING
         await self.dbus_service.set_state(self.phase)
         self.logger.info("recording started")
-        return
+        return decision
       except Exception:
         await self._stop_spectrum_analysis()
         raise
 
-    if decision is KeyboardDecision.CANCEL_RECORDING:
+    if decision is AppActionDecision.CANCEL_RECORDING:
       self.phase = ForegroundPhase.IDLE
       await self._stop_spectrum_analysis()
       await self._recording_session.stop_recording()
       await self.dbus_service.set_state(self.phase)
       await self.client.cancel_utterance()
       self.logger.info("recording cancelled")
-      return
+      return decision
 
     self.phase = ForegroundPhase.IDLE
     reducer_state = await self._recording_session.finish_recording()
@@ -203,6 +203,7 @@ class ActiveListenerService:
     self._background_tasks.add(finalization_task)
     finalization_task.add_done_callback(self._background_tasks.discard)
     self.logger.info("recording finished", background_finalization=True)
+    return decision
 
   async def handle_client_event(
     self,
@@ -328,7 +329,7 @@ class ActiveListenerService:
 
   async def _pump_keyboard_actions(self, signal_queue: asyncio.Queue[RuntimeSignal]) -> None:
     async for action in self.keyboard.actions():
-      await signal_queue.put(KeyboardSignal(action=action))
+      await signal_queue.put(AppActionSignal(action=action))
 
   async def _pump_client_events(self, signal_queue: asyncio.Queue[RuntimeSignal]) -> None:
     async for event in self.client:
