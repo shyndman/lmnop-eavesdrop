@@ -16,6 +16,7 @@ import {
   type ByteAlphaRun,
   type TransitionPlan,
 } from './transcript-animation.js';
+import { buildTranscriptAttributeSpecs } from './transcript-attributes.js';
 
 const DBUS_BUS_NAME = 'ca.lmnop.Eavesdrop.ActiveListener';
 const DBUS_OBJECT_PATH = '/ca/lmnop/Eavesdrop/ActiveListener';
@@ -664,6 +665,7 @@ export default class ActiveListenerIndicatorExtension extends Extension {
     }
 
     const shouldContinue = transitionController.tick(this.getNowMs());
+    console.debug('Active Listener transcript animation refresh', transitionController.getSnapshot());
     if (!shouldContinue) {
       this.stopTranscriptAnimation();
       return;
@@ -710,15 +712,20 @@ export default class ActiveListenerIndicatorExtension extends Extension {
   private applyTranscriptAlphaRuns(runs: ByteAlphaRun[]): void {
     const overlayClutterText = this.getOverlayClutterText();
     if (overlayClutterText === null || runs.length === 0) {
+      console.debug('Active Listener transcript attrs cleared', { runs });
       this.clearTranscriptAttributes();
       return;
     }
 
     const attrs = Pango.AttrList.new();
-    for (const run of runs) {
-      const attr = Pango.attr_foreground_alpha_new(Math.max(0, Math.min(run.alpha, PANGO_ALPHA_MAX)));
-      attr.start_index = run.startByte;
-      attr.end_index = run.endByte;
+    const attributeSpecs = buildTranscriptAttributeSpecs(overlayClutterText.get_text(), runs, OVERLAY_TEXT_COLOR);
+    console.debug('Active Listener transcript attrs applied', { text: overlayClutterText.get_text(), runs, attributeSpecs });
+    for (const spec of attributeSpecs) {
+      const attr = spec.kind === 'foreground-color'
+        ? Pango.attr_foreground_new(spec.red, spec.green, spec.blue)
+        : Pango.attr_foreground_alpha_new(Math.max(0, Math.min(spec.alpha, PANGO_ALPHA_MAX)));
+      attr.start_index = spec.startByte;
+      attr.end_index = spec.endByte;
       attrs.insert(attr);
     }
 
