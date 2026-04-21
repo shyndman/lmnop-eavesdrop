@@ -24,11 +24,26 @@ const OVERLAY_MESSAGE = 'Overlay PoC';
 const OVERLAY_DISPLAY_DURATION_MS = 2000;
 const OVERLAY_BOTTOM_MARGIN_PX = 96;
 const OVERLAY_ANIMATION_DURATION_MS = 180;
+const OVERLAY_WIDTH_PX = 1000;
+const OVERLAY_CORNER_RADIUS_PX = 32;
+const OVERLAY_PADDING_VERTICAL_PX = 28;
+const OVERLAY_PADDING_HORIZONTAL_PX = 36;
+const OVERLAY_CONTENT_WIDTH_PX = OVERLAY_WIDTH_PX - OVERLAY_PADDING_HORIZONTAL_PX * 2;
+const OVERLAY_CONTENT_GAP_PX = 32;
+const OVERLAY_BACKGROUND_STYLE = 'rgba(11, 13, 16, 0.82)';
+const OVERLAY_TEXT_COLOR = '#F5F7FA';
+const OVERLAY_INCOMPLETE_TEXT_ALPHA = '45%';
+const OVERLAY_FONT_FAMILY = 'Inter';
+const OVERLAY_FONT_SIZE_PX = 36;
 const SPECTRUM_BAR_COUNT = 50;
-const SPECTRUM_BAR_WIDTH_PX = 6;
-const SPECTRUM_BAR_GAP_PX = 2;
-const SPECTRUM_BAR_MAX_HEIGHT_PX = 56;
-const SPECTRUM_BAR_MIN_HEIGHT_PX = 4;
+const SPECTRUM_FRAME_BACKGROUND_COLOR = '#241732';
+const SPECTRUM_FRAME_PADDING_VERTICAL_PX = 12;
+const SPECTRUM_FRAME_PADDING_HORIZONTAL_PX = 16;
+const SPECTRUM_BAR_WIDTH_PX = 10;
+const SPECTRUM_BAR_GAP_PX = 8;
+const SPECTRUM_BAR_MAX_HEIGHT_PX = 72;
+const SPECTRUM_BAR_MIN_HEIGHT_PX = 10;
+const SPECTRUM_BAR_CORNER_RADIUS_PX = 7;
 const RECORDING_SPIN_DURATION_MS = 1200;
 const RECORDING_SPIN_TRANSITION_NAME = 'recording-spin';
 
@@ -43,8 +58,39 @@ type IndicatorState = 'absent' | 'idle' | 'recording';
 type DbusOverlaySegment = [number | bigint, string];
 type DbusTranscriptionUpdatedPayload = [DbusOverlaySegment[], DbusOverlaySegment];
 type SystemdMethodName = 'RestartUnit' | 'StopUnit';
+type OverlayClutterText = Clutter.Text & {
+  set_line_wrap(lineWrap: boolean): void;
+  set_markup(markup: string | null): void;
+};
 
 const DBUS_PROXY_FLAGS = Gio.DBusProxyFlags.DO_NOT_AUTO_START_AT_CONSTRUCTION;
+
+const escapeMarkupText = (text: string): string =>
+  text
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&apos;');
+
+const buildOverlayTextMarkup = (completedText: string, incompleteText: string): string => {
+  const completedMarkup = escapeMarkupText(completedText);
+  const incompleteMarkup = escapeMarkupText(incompleteText);
+
+  if (incompleteMarkup.length === 0) {
+    return completedMarkup;
+  }
+
+  const incompleteSpan =
+    `<span foreground="${OVERLAY_TEXT_COLOR}" alpha="${OVERLAY_INCOMPLETE_TEXT_ALPHA}">` +
+    `${incompleteMarkup}</span>`;
+
+  if (completedMarkup.length === 0) {
+    return incompleteSpan;
+  }
+
+  return `${completedMarkup} ${incompleteSpan}`;
+};
 
 export default class ActiveListenerIndicatorExtension extends Extension {
   private button: PanelMenu.Button | null = null;
@@ -58,6 +104,7 @@ export default class ActiveListenerIndicatorExtension extends Extension {
   private overlay: St.Widget | null = null;
   private overlayContent: St.BoxLayout | null = null;
   private overlayLabel: St.Label | null = null;
+  private spectrumFrame: St.BoxLayout | null = null;
   private spectrumContainer: St.BoxLayout | null = null;
   private spectrumBars: St.Widget[] = [];
   private spectrumLevels: Uint8Array<ArrayBufferLike> = new Uint8Array(SPECTRUM_BAR_COUNT);
@@ -117,6 +164,7 @@ export default class ActiveListenerIndicatorExtension extends Extension {
 
     this.overlayContent = null;
     this.overlayLabel = null;
+    this.spectrumFrame = null;
     this.spectrumContainer = null;
     this.spectrumBars = [];
     this.spectrumLevels = new Uint8Array(SPECTRUM_BAR_COUNT);
@@ -144,7 +192,8 @@ export default class ActiveListenerIndicatorExtension extends Extension {
 
     const showOverlayItem = new PopupMenu.PopupMenuItem('Show overlay');
     showOverlayItem.connect('activate', () => {
-      this.showOverlay(OVERLAY_MESSAGE);
+      this.setOverlayText(OVERLAY_MESSAGE, '');
+      this.showOverlay();
     });
 
     this.restartServiceItem = new PopupMenu.PopupMenuItem('Restart service');
@@ -174,12 +223,14 @@ export default class ActiveListenerIndicatorExtension extends Extension {
       x_align: Clutter.ActorAlign.CENTER,
       y_align: Clutter.ActorAlign.CENTER,
       style:
-        'color: white;' +
-        'font-size: 24px;' +
-        'font-weight: 700;' +
-        'width: 100%;' +
+        `color: ${OVERLAY_TEXT_COLOR};` +
+        `font-family: ${OVERLAY_FONT_FAMILY};` +
+        `font-size: ${OVERLAY_FONT_SIZE_PX}px;` +
+        'font-weight: 500;' +
+        `width: ${OVERLAY_CONTENT_WIDTH_PX}px;` +
         'text-align: center;',
     });
+    this.getOverlayClutterText()?.set_line_wrap(true);
 
     this.spectrumContainer = new St.BoxLayout({
       x_align: Clutter.ActorAlign.CENTER,
@@ -197,13 +248,26 @@ export default class ActiveListenerIndicatorExtension extends Extension {
       this.spectrumContainer.add_child(bar);
     }
 
+    this.spectrumFrame = new St.BoxLayout({
+      x_align: Clutter.ActorAlign.CENTER,
+      y_align: Clutter.ActorAlign.CENTER,
+      style:
+        `background-color: ${SPECTRUM_FRAME_BACKGROUND_COLOR};` +
+        `border-radius: ${OVERLAY_CORNER_RADIUS_PX}px;` +
+        `padding: ${SPECTRUM_FRAME_PADDING_VERTICAL_PX}px ${SPECTRUM_FRAME_PADDING_HORIZONTAL_PX}px;` +
+        `width: ${OVERLAY_CONTENT_WIDTH_PX}px;`,
+    });
+    this.spectrumFrame.add_child(this.spectrumContainer);
+
     this.overlayContent = new St.BoxLayout({
       vertical: true,
       x_align: Clutter.ActorAlign.CENTER,
       y_align: Clutter.ActorAlign.CENTER,
-      style: 'spacing: 16px;',
+      style:
+        `spacing: ${OVERLAY_CONTENT_GAP_PX}px;` +
+        `width: ${OVERLAY_CONTENT_WIDTH_PX}px;`,
     });
-    this.overlayContent.add_child(this.spectrumContainer);
+    this.overlayContent.add_child(this.spectrumFrame);
     this.overlayContent.add_child(this.overlayLabel);
 
     this.overlay = new St.BoxLayout({
@@ -213,20 +277,19 @@ export default class ActiveListenerIndicatorExtension extends Extension {
       can_focus: false,
       opacity: 0,
       style:
-        'background-color: rgba(255, 0, 255, 0.8);' +
-        'border-radius: 999px;' +
-        'padding: 20px 32px;' +
-        'min-width: 420px;' +
-        'min-height: 72px;',
+        `background-color: ${OVERLAY_BACKGROUND_STYLE};` +
+        `border-radius: ${OVERLAY_CORNER_RADIUS_PX}px;` +
+        `padding: ${OVERLAY_PADDING_VERTICAL_PX}px ${OVERLAY_PADDING_HORIZONTAL_PX}px;`,
     });
     this.overlay.add_child(this.overlayContent);
     this.clearSpectrumBars();
+    this.setOverlayText(OVERLAY_MESSAGE, '');
 
     Main.layoutManager.addChrome(this.overlay, { trackFullscreen: true });
     this.overlay.set_position(-10000, -10000);
   }
 
-  private showOverlay(message: string, autoHide: boolean = true): void {
+  private showOverlay(autoHide: boolean = true): void {
     if (this.overlay === null || this.overlayLabel === null) {
       return;
     }
@@ -237,7 +300,6 @@ export default class ActiveListenerIndicatorExtension extends Extension {
     }
 
     this.clearOverlayTimeout();
-    this.overlayLabel.text = message;
 
     const [, overlayWidth] = this.overlay.get_preferred_width(-1);
     const [, overlayHeight] = this.overlay.get_preferred_height(overlayWidth);
@@ -469,22 +531,21 @@ export default class ActiveListenerIndicatorExtension extends Extension {
   }
 
   private renderOverlay(): void {
-    const transcriptParts = [...this.completedTranscriptParts];
+    const completedTranscript = this.completedTranscriptParts.join(' ');
+    const transcriptParts = [completedTranscript];
     if (this.incompleteTranscriptText.length > 0) {
       transcriptParts.push(this.incompleteTranscriptText);
     }
 
-    const transcript = transcriptParts.join(' ');
-    if (this.overlayLabel !== null) {
-      this.overlayLabel.text = transcript;
-    }
+    const transcript = transcriptParts.filter((part) => part.length > 0).join(' ');
+    this.setOverlayText(completedTranscript, this.incompleteTranscriptText);
 
     if (transcript.length === 0 && this.indicatorState !== 'recording') {
       this.hideOverlay();
       return;
     }
 
-    this.showOverlay(transcript, false);
+    this.showOverlay(false);
   }
 
   private resetTranscriptOverlay(): void {
@@ -516,13 +577,26 @@ export default class ActiveListenerIndicatorExtension extends Extension {
   }
 
   private buildSpectrumBarStyle(heightPx: number, level: number): string {
-    const opacity = Math.max(0.15, level);
+    const opacity = Math.max(0.4, 0.55 + level * 0.45);
     return (
-      `background-color: rgba(255, 255, 255, ${opacity});` +
-      'border-radius: 999px;' +
+      `background-color: rgba(109, 84, 144, ${opacity});` +
+      `border-radius: ${SPECTRUM_BAR_CORNER_RADIUS_PX}px;` +
       `width: ${SPECTRUM_BAR_WIDTH_PX}px;` +
       `height: ${heightPx}px;`
     );
+  }
+
+  private getOverlayClutterText(): OverlayClutterText | null {
+    return this.overlayLabel?.get_clutter_text() as OverlayClutterText | null;
+  }
+
+  private setOverlayText(completedText: string, incompleteText: string): void {
+    const overlayClutterText = this.getOverlayClutterText();
+    if (overlayClutterText === null) {
+      return;
+    }
+
+    overlayClutterText.set_markup(buildOverlayTextMarkup(completedText, incompleteText));
   }
 
   private startRecordingAnimation(): void {
