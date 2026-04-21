@@ -37,6 +37,7 @@ async function main() {
     entryPoints: [
       resolve(__dirname, 'src', 'extension.ts'),
       resolve(__dirname, 'src', 'prefs.ts'),
+      resolve(__dirname, 'src', 'recording-menu-control.ts'),
       resolve(__dirname, 'src', 'transcript-attributes.ts'),
       resolve(__dirname, 'src', 'transcript-animation.ts'),
     ],
