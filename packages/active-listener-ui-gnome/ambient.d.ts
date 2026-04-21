@@ -3,6 +3,7 @@ import '@girs/gjs/dom';
 import '@girs/gtk-4.0';
 import '@girs/adw-1';
 import '@girs/gio-2.0';
+import '@girs/pango-1.0';
 import '@girs/gnome-shell/ambient';
 import '@girs/gnome-shell/extensions/global';
 import '@girs/gnome-shell/extensions/prefs/ambient';

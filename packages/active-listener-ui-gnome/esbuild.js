@@ -34,7 +34,11 @@ async function main() {
   mkdirSync(assetsDir, { recursive: true });
 
   await build({
-    entryPoints: [resolve(__dirname, 'src', 'extension.ts'), resolve(__dirname, 'src', 'prefs.ts')],
+    entryPoints: [
+      resolve(__dirname, 'src', 'extension.ts'),
+      resolve(__dirname, 'src', 'prefs.ts'),
+      resolve(__dirname, 'src', 'transcript-animation.ts'),
+    ],
     outdir: distDir,
     format: 'esm',
     platform: 'neutral',

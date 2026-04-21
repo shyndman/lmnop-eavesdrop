@@ -1,12 +1,21 @@
 import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
+import Pango from 'gi://Pango';
 import St from 'gi://St';
 
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
+
+import {
+  PANGO_ALPHA_MAX,
+  TRANSCRIPT_FRAME_INTERVAL_MS,
+  TranscriptAnimationController,
+  type ByteAlphaRun,
+  type TransitionPlan,
+} from './transcript-animation.js';
 
 const DBUS_BUS_NAME = 'ca.lmnop.Eavesdrop.ActiveListener';
 const DBUS_OBJECT_PATH = '/ca/lmnop/Eavesdrop/ActiveListener';
@@ -33,7 +42,6 @@ const OVERLAY_TEXT_OFFSET_Y_PX = 28;
 const OVERLAY_TEXT_WIDTH_PX = OVERLAY_WIDTH_PX - OVERLAY_TEXT_OFFSET_X_PX * 2;
 const OVERLAY_TEXT_HEIGHT_PX = 64;
 const OVERLAY_TEXT_COLOR = '#F5F7FA';
-const OVERLAY_INCOMPLETE_TEXT_ALPHA = '45%';
 const OVERLAY_FONT_FAMILY = 'Inter';
 const OVERLAY_FONT_SIZE_PX = 24;
 const OVERLAY_LINE_HEIGHT = 1.35;
@@ -58,7 +66,14 @@ type ActorEaseOptions = {
   duration: number;
   mode: Clutter.AnimationMode;
   opacity?: number;
+  height?: number;
+  y?: number;
   onComplete?: () => void;
+};
+
+type OverlayActor = St.Widget & {
+  ease(options: ActorEaseOptions): void;
+  remove_all_transitions(): void;
 };
 
 type IndicatorState = 'absent' | 'idle' | 'recording';
@@ -67,37 +82,17 @@ type DbusTranscriptionUpdatedPayload = [DbusOverlaySegment[], DbusOverlaySegment
 type SystemdMethodName = 'RestartUnit' | 'StopUnit';
 type OverlayClutterText = Clutter.Text & {
   set_line_wrap(lineWrap: boolean): void;
-  set_markup(markup: string | null): void;
+  set_text(text: string): void;
+  set_attributes(attrs: Pango.AttrList | null): void;
+  get_attributes(): Pango.AttrList | null;
+};
+
+type TranscriptSwapMeasurement = {
+  transcriptHeight: number;
+  shellHeight: number;
 };
 
 const DBUS_PROXY_FLAGS = Gio.DBusProxyFlags.DO_NOT_AUTO_START_AT_CONSTRUCTION;
-
-const escapeMarkupText = (text: string): string =>
-  text
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&apos;');
-
-const buildOverlayTextMarkup = (completedText: string, incompleteText: string): string => {
-  const completedMarkup = escapeMarkupText(completedText);
-  const incompleteMarkup = escapeMarkupText(incompleteText);
-
-  if (incompleteMarkup.length === 0) {
-    return completedMarkup;
-  }
-
-  const incompleteSpan =
-    `<span foreground="${OVERLAY_TEXT_COLOR}" alpha="${OVERLAY_INCOMPLETE_TEXT_ALPHA}">` +
-    `${incompleteMarkup}</span>`;
-
-  if (completedMarkup.length === 0) {
-    return incompleteSpan;
-  }
-
-  return `${completedMarkup} ${incompleteSpan}`;
-};
 
 export default class ActiveListenerIndicatorExtension extends Extension {
   private button: PanelMenu.Button | null = null;
@@ -109,15 +104,16 @@ export default class ActiveListenerIndicatorExtension extends Extension {
   private restartServiceItem: PopupMenu.PopupMenuItem | null = null;
   private stopServiceItem: PopupMenu.PopupMenuItem | null = null;
   private overlay: St.Widget | null = null;
+  private overlayContent: St.Widget | null = null;
   private overlayLabel: St.Label | null = null;
+  private transcriptClip: St.Widget | null = null;
   private spectrumFrame: St.BoxLayout | null = null;
   private spectrumBars: St.Widget[] = [];
   private spectrumLevels: Uint8Array<ArrayBufferLike> = new Uint8Array(SPECTRUM_BAR_COUNT);
   private overlayTimeoutId: number | null = null;
-  private readonly overlayActor = (actor: St.Widget): St.Widget & {
-    ease(options: ActorEaseOptions): void;
-    remove_all_transitions(): void;
-  } => actor as St.Widget & { ease(options: ActorEaseOptions): void; remove_all_transitions(): void };
+  private transcriptAnimationController: TranscriptAnimationController | null = null;
+  private pendingTranscriptSwapMeasurement: TranscriptSwapMeasurement | null = null;
+  private readonly overlayActor = (actor: St.Widget): OverlayActor => actor as OverlayActor;
   private indicatorState: IndicatorState = 'absent';
   private completedTranscriptParts: string[] = [];
   private incompleteTranscriptText = '';
@@ -158,6 +154,7 @@ export default class ActiveListenerIndicatorExtension extends Extension {
 
     this.detachProxy();
     this.clearOverlayTimeout();
+    this.stopTranscriptAnimation();
     this.resetTranscriptOverlay();
     this.stopRecordingAnimation();
 
@@ -167,10 +164,14 @@ export default class ActiveListenerIndicatorExtension extends Extension {
       this.overlay = null;
     }
 
+    this.overlayContent = null;
     this.overlayLabel = null;
+    this.transcriptClip = null;
     this.spectrumFrame = null;
     this.spectrumBars = [];
     this.spectrumLevels = new Uint8Array(SPECTRUM_BAR_COUNT);
+    this.transcriptAnimationController = null;
+    this.pendingTranscriptSwapMeasurement = null;
     this.icon = null;
     this.restartServiceItem = null;
     this.stopServiceItem = null;
@@ -195,7 +196,7 @@ export default class ActiveListenerIndicatorExtension extends Extension {
 
     const showOverlayItem = new PopupMenu.PopupMenuItem('Show overlay');
     showOverlayItem.connect('activate', () => {
-      this.setOverlayText(OVERLAY_MESSAGE, '');
+      this.installTranscriptTextImmediately(OVERLAY_MESSAGE);
       this.showOverlay();
     });
 
@@ -223,11 +224,7 @@ export default class ActiveListenerIndicatorExtension extends Extension {
 
     this.overlayLabel = new St.Label({
       text: OVERLAY_MESSAGE,
-      x: OVERLAY_TEXT_OFFSET_X_PX,
-      y: OVERLAY_TEXT_OFFSET_Y_PX,
       width: OVERLAY_TEXT_WIDTH_PX,
-      height: OVERLAY_TEXT_HEIGHT_PX,
-      clip_to_allocation: true,
       style:
         `color: ${OVERLAY_TEXT_COLOR};` +
         `font-family: ${OVERLAY_FONT_FAMILY};` +
@@ -237,6 +234,16 @@ export default class ActiveListenerIndicatorExtension extends Extension {
         'text-align: center;',
     });
     this.getOverlayClutterText()?.set_line_wrap(true);
+
+    this.transcriptClip = new St.Widget({
+      x: OVERLAY_TEXT_OFFSET_X_PX,
+      y: OVERLAY_TEXT_OFFSET_Y_PX,
+      width: OVERLAY_TEXT_WIDTH_PX,
+      height: OVERLAY_TEXT_HEIGHT_PX,
+      layout_manager: new Clutter.FixedLayout(),
+    });
+    this.transcriptClip.set_clip_to_allocation(true);
+    this.transcriptClip.add_child(this.overlayLabel);
 
     this.spectrumFrame = new St.BoxLayout({
       x: SPECTRUM_FRAME_OFFSET_X_PX,
@@ -262,6 +269,13 @@ export default class ActiveListenerIndicatorExtension extends Extension {
       this.spectrumFrame.add_child(bar);
     }
 
+    this.overlayContent = new St.Widget({
+      width: OVERLAY_WIDTH_PX,
+      layout_manager: new Clutter.FixedLayout(),
+    });
+    this.overlayContent.add_child(this.spectrumFrame);
+    this.overlayContent.add_child(this.transcriptClip);
+
     this.overlay = new St.Widget({
       visible: false,
       reactive: false,
@@ -275,13 +289,31 @@ export default class ActiveListenerIndicatorExtension extends Extension {
         `background-color: ${OVERLAY_BACKGROUND_COLOR};` +
         `border-radius: ${OVERLAY_CORNER_RADIUS_PX}px;`,
     });
-    this.overlay.add_child(this.spectrumFrame);
-    this.overlay.add_child(this.overlayLabel);
-    this.clearSpectrumBars();
-    this.setOverlayText(OVERLAY_MESSAGE, '');
+    this.overlay.add_child(this.overlayContent);
+
+    this.transcriptAnimationController = new TranscriptAnimationController({
+      installText: (text) => {
+        this.installTranscriptText(text);
+      },
+      applyAlphaRuns: (runs) => {
+        this.applyTranscriptAlphaRuns(runs);
+      },
+      clearAlphaRuns: () => {
+        this.clearTranscriptAttributes();
+      },
+      beforeSwap: () => {
+        this.captureTranscriptSwapMeasurement();
+      },
+      afterSwap: () => {
+        this.startTranscriptSwapHeightTween();
+      },
+    });
 
     Main.layoutManager.addChrome(this.overlay, { trackFullscreen: true });
     this.overlay.set_position(-10000, -10000);
+
+    this.clearSpectrumBars();
+    this.installTranscriptTextImmediately(OVERLAY_MESSAGE);
   }
 
   private showOverlay(autoHide: boolean = true): void {
@@ -297,7 +329,22 @@ export default class ActiveListenerIndicatorExtension extends Extension {
     this.clearOverlayTimeout();
 
     const x = Math.floor(monitor.x + (monitor.width - OVERLAY_WIDTH_PX) / 2);
-    const y = Math.floor(monitor.y + monitor.height - OVERLAY_HEIGHT_PX - OVERLAY_BOTTOM_MARGIN_PX);
+    const y = this.getAnchoredOverlayY(this.overlay.height);
+
+    if (this.overlay.visible) {
+      this.overlay.set_position(x, y);
+      this.overlay.opacity = 255;
+      if (!autoHide) {
+        return;
+      }
+
+      this.overlayTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, OVERLAY_DISPLAY_DURATION_MS, () => {
+        this.hideOverlay();
+        this.overlayTimeoutId = null;
+        return GLib.SOURCE_REMOVE;
+      });
+      return;
+    }
 
     const overlayActor = this.overlayActor(this.overlay);
     overlayActor.remove_all_transitions();
@@ -531,11 +578,17 @@ export default class ActiveListenerIndicatorExtension extends Extension {
     }
 
     const transcript = transcriptParts.filter((part) => part.length > 0).join(' ');
-    this.setOverlayText(completedTranscript, this.incompleteTranscriptText);
 
     if (transcript.length === 0 && this.indicatorState !== 'recording') {
+      this.installTranscriptTextImmediately('');
       this.hideOverlay();
       return;
+    }
+
+    const transitionController = this.transcriptAnimationController;
+    if (transitionController !== null) {
+      transitionController.setCanonicalText(transcript, this.getNowMs());
+      this.refreshTranscriptAnimation();
     }
 
     this.showOverlay(false);
@@ -544,7 +597,14 @@ export default class ActiveListenerIndicatorExtension extends Extension {
   private resetTranscriptOverlay(): void {
     this.completedTranscriptParts = [];
     this.incompleteTranscriptText = '';
-    this.renderOverlay();
+    this.installTranscriptTextImmediately('');
+
+    if (this.indicatorState === 'recording') {
+      this.showOverlay(false);
+      return;
+    }
+
+    this.hideOverlay();
   }
 
   private clearSpectrumBars(): void {
@@ -572,13 +632,198 @@ export default class ActiveListenerIndicatorExtension extends Extension {
     return this.overlayLabel?.get_clutter_text() as OverlayClutterText | null;
   }
 
-  private setOverlayText(completedText: string, incompleteText: string): void {
+  private installTranscriptText(text: string): void {
     const overlayClutterText = this.getOverlayClutterText();
     if (overlayClutterText === null) {
       return;
     }
 
-    overlayClutterText.set_markup(buildOverlayTextMarkup(completedText, incompleteText));
+    overlayClutterText.set_text(text);
+  }
+
+  private installTranscriptTextImmediately(text: string): void {
+    this.stopTranscriptAnimation();
+    this.pendingTranscriptSwapMeasurement = null;
+
+    if (this.transcriptAnimationController !== null) {
+      this.transcriptAnimationController.installImmediate(text);
+    } else {
+      this.clearTranscriptAttributes();
+      this.installTranscriptText(text);
+    }
+
+    this.syncOverlayHeightToInstalledText();
+  }
+
+  private refreshTranscriptAnimation(): void {
+    const transitionController = this.transcriptAnimationController;
+    if (transitionController === null) {
+      return;
+    }
+
+    const shouldContinue = transitionController.tick(this.getNowMs());
+    if (!shouldContinue) {
+      this.stopTranscriptAnimation();
+      return;
+    }
+
+    if (transitionController.getSnapshot().frameSourceId !== null) {
+      return;
+    }
+
+    const sourceId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, TRANSCRIPT_FRAME_INTERVAL_MS, () => {
+      const controller = this.transcriptAnimationController;
+      if (controller === null) {
+        return GLib.SOURCE_REMOVE;
+      }
+
+      const keepRunning = controller.tick(this.getNowMs());
+      if (!keepRunning) {
+        controller.setFrameSourceId(null);
+        return GLib.SOURCE_REMOVE;
+      }
+
+      return GLib.SOURCE_CONTINUE;
+    });
+    transitionController.setFrameSourceId(sourceId);
+  }
+
+  private stopTranscriptAnimation(): void {
+    const transitionController = this.transcriptAnimationController;
+    if (transitionController === null) {
+      return;
+    }
+
+    const frameSourceId = transitionController.getSnapshot().frameSourceId;
+    if (frameSourceId !== null) {
+      GLib.Source.remove(frameSourceId);
+      transitionController.setFrameSourceId(null);
+    }
+  }
+
+  private clearTranscriptAttributes(): void {
+    this.getOverlayClutterText()?.set_attributes(null);
+  }
+
+  private applyTranscriptAlphaRuns(runs: ByteAlphaRun[]): void {
+    const overlayClutterText = this.getOverlayClutterText();
+    if (overlayClutterText === null || runs.length === 0) {
+      this.clearTranscriptAttributes();
+      return;
+    }
+
+    const attrs = Pango.AttrList.new();
+    for (const run of runs) {
+      const attr = Pango.attr_foreground_alpha_new(Math.max(0, Math.min(run.alpha, PANGO_ALPHA_MAX)));
+      attr.start_index = run.startByte;
+      attr.end_index = run.endByte;
+      attrs.insert(attr);
+    }
+
+    overlayClutterText.set_attributes(attrs);
+  }
+
+  private captureTranscriptSwapMeasurement(): void {
+    if (this.transcriptClip === null || this.overlay === null) {
+      return;
+    }
+
+    const transcriptHeight = this.measureTranscriptHeight();
+    const shellHeight = this.measureOverlayShellHeight(transcriptHeight);
+    this.pendingTranscriptSwapMeasurement = {
+      transcriptHeight,
+      shellHeight,
+    };
+
+    const clipActor = this.overlayActor(this.transcriptClip);
+    clipActor.remove_all_transitions();
+    this.transcriptClip.set_height(transcriptHeight);
+
+    const overlayActor = this.overlayActor(this.overlay);
+    overlayActor.remove_all_transitions();
+    this.overlay.set_height(shellHeight);
+    this.overlay.set_y(this.getAnchoredOverlayY(shellHeight));
+  }
+
+  private startTranscriptSwapHeightTween(): void {
+    if (this.transcriptClip === null || this.overlay === null) {
+      return;
+    }
+
+    const previousMeasurement = this.pendingTranscriptSwapMeasurement;
+    this.pendingTranscriptSwapMeasurement = null;
+    if (previousMeasurement === null) {
+      this.syncOverlayHeightToInstalledText();
+      return;
+    }
+
+    const nextTranscriptHeight = this.measureTranscriptHeight();
+    const nextShellHeight = this.measureOverlayShellHeight(nextTranscriptHeight);
+
+    const clipActor = this.overlayActor(this.transcriptClip);
+    clipActor.remove_all_transitions();
+    this.transcriptClip.set_height(previousMeasurement.transcriptHeight);
+    clipActor.ease({
+      height: nextTranscriptHeight,
+      duration: OVERLAY_ANIMATION_DURATION_MS,
+      mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+    });
+
+    const overlayActor = this.overlayActor(this.overlay);
+    overlayActor.remove_all_transitions();
+    this.overlay.set_height(previousMeasurement.shellHeight);
+    this.overlay.set_y(this.getAnchoredOverlayY(previousMeasurement.shellHeight));
+    overlayActor.ease({
+      height: nextShellHeight,
+      y: this.getAnchoredOverlayY(nextShellHeight),
+      duration: OVERLAY_ANIMATION_DURATION_MS,
+      mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+    });
+  }
+
+  private syncOverlayHeightToInstalledText(): void {
+    if (this.transcriptClip === null || this.overlay === null) {
+      return;
+    }
+
+    const transcriptHeight = this.measureTranscriptHeight();
+    const shellHeight = this.measureOverlayShellHeight(transcriptHeight);
+
+    this.overlayActor(this.transcriptClip).remove_all_transitions();
+    this.transcriptClip.set_height(transcriptHeight);
+
+    this.overlayActor(this.overlay).remove_all_transitions();
+    this.overlay.set_height(shellHeight);
+
+    if (this.overlay.visible) {
+      this.overlay.set_y(this.getAnchoredOverlayY(shellHeight));
+    }
+  }
+
+  private measureTranscriptHeight(): number {
+    if (this.overlayLabel === null) {
+      return OVERLAY_TEXT_HEIGHT_PX;
+    }
+
+    const [, naturalHeight] = this.overlayLabel.get_preferred_height(OVERLAY_TEXT_WIDTH_PX);
+    return Math.max(OVERLAY_TEXT_HEIGHT_PX, Math.ceil(naturalHeight));
+  }
+
+  private measureOverlayShellHeight(transcriptHeight: number): number {
+    return Math.max(OVERLAY_HEIGHT_PX, transcriptHeight + OVERLAY_TEXT_OFFSET_Y_PX * 2);
+  }
+
+  private getAnchoredOverlayY(height: number): number {
+    const monitor = Main.layoutManager.primaryMonitor;
+    if (monitor === null) {
+      return -10000;
+    }
+
+    return Math.floor(monitor.y + monitor.height - height - OVERLAY_BOTTOM_MARGIN_PX);
+  }
+
+  private getNowMs(): number {
+    return GLib.get_monotonic_time() / 1000;
   }
 
   private startRecordingAnimation(): void {

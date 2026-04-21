@@ -6,6 +6,8 @@
   "scripts": {
     "build": "node esbuild.js",
     "install:extension": "npm run build && gnome-extensions install --force .out/eavesdrop@shyndman.ca.zip",
+    "validate:transcript-controller": "node scripts/validate-transcript-controller.ts",
+    "validate:transcript-planner": "node scripts/validate-transcript-planner.ts",
     "typecheck": "tsc --noEmit",
     "wayland:test": "npm run install:extension && dbus-run-session gnome-shell --devkit --wayland"
   },
@@ -16,6 +18,7 @@
     "@girs/gjs": "4.0.0-rc.1",
     "@girs/gnome-shell": "^49.1.0",
     "@girs/gtk-4.0": "^4.23.0-4.0.0-rc.1",
+    "@girs/pango-1.0": "1.57.1-4.0.0-rc.4",
     "@girs/st-17": "^17.0.0-4.0.0-rc.1",
     "adm-zip": "^0.5.16",
     "esbuild": "^0.25.10",

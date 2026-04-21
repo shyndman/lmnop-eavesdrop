@@ -1,5 +1,5 @@
 ## 1. Animation planning helpers
-- [ ] 1.1 Add the missing Pango package/type setup, then add a transcript animation helper that returns grapheme spans, common-prefix counts, and transition plans for erase/reveal transitions.
+- [x] 1.1 Add the missing Pango package/type setup, then add a transcript animation helper that returns grapheme spans, common-prefix counts, and transition plans for erase/reveal transitions.
 
       Required setup:
 
@@ -10,7 +10,7 @@
       OverlayClutterText typing updates
       ```
 
-- [ ] 1.1a Validate task 1.1 with:
+- [x] 1.1a Validate task 1.1 with:
 
       ```text
       npm run typecheck
@@ -30,7 +30,7 @@
 
 ## 2. Overlay layout plumbing
 
-- [ ] 2.1 Refactor the GNOME overlay actor tree from:
+- [x] 2.1 Refactor the GNOME overlay actor tree from:
 
       ```text
       overlay
@@ -51,7 +51,7 @@
 
       Then add explicit measurement helpers and shell/clip height tween plumbing at the swap point.
 
-- [ ] 2.1a Validate task 2.1 by running:
+- [x] 2.1a Validate task 2.1 by running:
 
       ```text
       npm run typecheck && npm run build
@@ -61,7 +61,7 @@
 
 ## 3. Transcript transition controller
 
-- [ ] 3.1 Integrate the transcript animation controller into `extension.ts` so it owns:
+- [x] 3.1 Integrate the transcript animation controller into `extension.ts` so it owns:
 
       ```text
       canonicalText
@@ -73,7 +73,7 @@
 
       The controller must fade outgoing tail graphemes out, install the full target text once at swap, fade incoming tail graphemes in, and retarget in-flight updates from `installedText` rather than stale canonical state.
 
-- [ ] 3.1a Validate task 3.1 with a package-local scripted harness covering:
+- [x] 3.1a Validate task 3.1 with a package-local scripted harness covering:
 
       ```text
       erase
