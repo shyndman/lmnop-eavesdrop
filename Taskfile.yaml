@@ -122,7 +122,12 @@ tasks:
     deps: [prepare-active-listener-ui-gnome]
     dir: packages/active-listener-ui-gnome
     cmds:
-      - pnpm run wayland:test
+      - |
+        journalctl --user --follow --output cat --since now \
+          | grep --line-buffered 'Active Listener' &
+        journal_tail_pid=$!
+        trap 'kill "$journal_tail_pid"' EXIT
+        pnpm run wayland:test
 
   prepare-client-lib:
     desc: Install client library dependencies
