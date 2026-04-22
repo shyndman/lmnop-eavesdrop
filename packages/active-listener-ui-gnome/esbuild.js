@@ -1,6 +1,6 @@
 import { build } from 'esbuild';
 import AdmZip from 'adm-zip';
-import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -9,6 +9,7 @@ const outDir = resolve(__dirname, '.out');
 const distDir = resolve(outDir, 'dist');
 const assetsDir = resolve(distDir, 'assets');
 const metadataPath = resolve(__dirname, 'metadata.json');
+const sourceDir = resolve(__dirname, 'src');
 const sourceIconPath = resolve(__dirname, '..', '..', 'assets', 'top-bar-icon.svg');
 const fallbackPromptSourcePath = resolve(__dirname, 'assets', 'rewrite_prompt.md');
 const fallbackPromptDistPath = resolve(assetsDir, 'rewrite_prompt.md');
@@ -20,6 +21,11 @@ const STATE_COLORS = {
   idle: '#8F5FE8',
   recording: '#E14B50',
 };
+
+const sourceEntryPoints = readdirSync(sourceDir)
+  .filter((entry) => entry.endsWith('.ts'))
+  .sort()
+  .map((entry) => resolve(sourceDir, entry));
 
 function writeStateIcon(state, color) {
   const icon = iconTemplate.replace(/fill="[^"]+"/, `fill="${color}"`);
@@ -34,13 +40,7 @@ async function main() {
   mkdirSync(assetsDir, { recursive: true });
 
   await build({
-    entryPoints: [
-      resolve(__dirname, 'src', 'extension.ts'),
-      resolve(__dirname, 'src', 'prefs.ts'),
-      resolve(__dirname, 'src', 'recording-menu-control.ts'),
-      resolve(__dirname, 'src', 'transcript-attributes.ts'),
-      resolve(__dirname, 'src', 'transcript-animation.ts'),
-    ],
+    entryPoints: sourceEntryPoints,
     outdir: distDir,
     format: 'esm',
     platform: 'neutral',

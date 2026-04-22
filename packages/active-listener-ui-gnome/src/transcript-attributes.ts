@@ -1,10 +1,12 @@
-type ByteAlphaRun = {
-  startByte: number;
-  endByte: number;
-  alpha: number;
-};
-
 const PANGO_ALPHA_MAX = 65_535;
+const INCOMPLETE_TRANSCRIPT_OPACITY = 0.54;
+export const INCOMPLETE_TRANSCRIPT_ALPHA = Math.round(PANGO_ALPHA_MAX * INCOMPLETE_TRANSCRIPT_OPACITY);
+const utf8Encoder = new TextEncoder();
+
+export type TranscriptDisplay = {
+  text: string;
+  incompleteStartByte: number | null;
+};
 
 export type TranscriptAttributeSpec =
   | {
@@ -44,12 +46,43 @@ const parseTextColor = (colorHex: string): TranscriptAttributeSpec & { kind: 'fo
   };
 };
 
+export const appendCompletedTranscript = (completedText: string, segmentText: string): string => {
+  const normalizedSegmentText = segmentText.trim();
+  if (normalizedSegmentText.length === 0) {
+    return completedText;
+  }
+
+  if (completedText.length === 0) {
+    return normalizedSegmentText;
+  }
+
+  return `${completedText} ${normalizedSegmentText}`;
+};
+
+export const buildTranscriptDisplay = (
+  completedText: string,
+  incompleteText: string,
+): TranscriptDisplay => {
+  if (incompleteText.length === 0) {
+    return {
+      text: completedText,
+      incompleteStartByte: null,
+    };
+  }
+
+  const separator = completedText.length === 0 ? '' : ' ';
+  const prefix = `${completedText}${separator}`;
+  return {
+    text: `${prefix}${incompleteText}`,
+    incompleteStartByte: utf8Encoder.encode(prefix).byteLength,
+  };
+};
+
 export const buildTranscriptAttributeSpecs = (
-  text: string,
-  runs: ByteAlphaRun[],
+  display: TranscriptDisplay,
   colorHex: string,
 ): TranscriptAttributeSpec[] => {
-  const textByteLength = new TextEncoder().encode(text).byteLength;
+  const textByteLength = utf8Encoder.encode(display.text).byteLength;
   if (textByteLength === 0) {
     return [];
   }
@@ -57,13 +90,15 @@ export const buildTranscriptAttributeSpecs = (
   const foregroundColor = parseTextColor(colorHex);
   foregroundColor.endByte = textByteLength;
 
-  return [
-    foregroundColor,
-    ...runs.map((run) => ({
-      kind: 'foreground-alpha' as const,
-      startByte: run.startByte,
-      endByte: run.endByte,
-      alpha: clamp(run.alpha, 0, PANGO_ALPHA_MAX),
-    })),
-  ];
+  const specs: TranscriptAttributeSpec[] = [foregroundColor];
+  if (display.incompleteStartByte !== null) {
+    specs.push({
+      kind: 'foreground-alpha',
+      startByte: display.incompleteStartByte,
+      endByte: textByteLength,
+      alpha: clamp(INCOMPLETE_TRANSCRIPT_ALPHA, 0, PANGO_ALPHA_MAX),
+    });
+  }
+
+  return specs;
 };

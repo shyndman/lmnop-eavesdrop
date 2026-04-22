@@ -6,15 +6,11 @@ import St from 'gi://St';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
 import {
-  isTranscriptFrameLoggingEnabled,
-  PANGO_ALPHA_MAX,
-  setTranscriptFrameLoggingEnabled,
-  TRANSCRIPT_FRAME_INTERVAL_MS,
-  TRANSCRIPT_LOG_SAMPLE_INTERVAL,
-  TranscriptAnimationController,
-  type ByteAlphaRun,
-} from './transcript-animation.js';
-import { buildTranscriptAttributeSpecs } from './transcript-attributes.js';
+  appendCompletedTranscript,
+  buildTranscriptAttributeSpecs,
+  buildTranscriptDisplay,
+  type TranscriptDisplay,
+} from './transcript-attributes.js';
 import type {
   ActiveListenerServiceState,
   TranscriptionUpdate,
@@ -33,6 +29,7 @@ const OVERLAY_TEXT_OFFSET_Y_PX = 28;
 const OVERLAY_TEXT_WIDTH_PX = OVERLAY_WIDTH_PX - OVERLAY_TEXT_OFFSET_X_PX * 2;
 const OVERLAY_TEXT_HEIGHT_PX = 64;
 const OVERLAY_TEXT_COLOR = '#F5F7FA';
+const TRANSCRIPT_LOG_SAMPLE_INTERVAL = 180;
 const OVERLAY_FONT_FAMILY = 'Inter';
 const OVERLAY_FONT_SIZE_PX = 24;
 const OVERLAY_LINE_HEIGHT = 1.35;
@@ -73,11 +70,6 @@ type OverlayClutterText = Clutter.Text & {
   set_attributes(attrs: Pango.AttrList | null): void;
 };
 
-type TranscriptSwapMeasurement = {
-  transcriptHeight: number;
-  shellHeight: number;
-};
-
 export class TranscriptOverlayController {
   private overlay: St.Widget | null = null;
   private overlayContent: St.Widget | null = null;
@@ -87,18 +79,19 @@ export class TranscriptOverlayController {
   private spectrumBars: St.Widget[] = [];
   private spectrumLevels: Uint8Array<ArrayBufferLike> = new Uint8Array(SPECTRUM_BAR_COUNT);
   private overlayTimeoutId: number | null = null;
-  private transcriptAnimationController: TranscriptAnimationController | null = null;
-  private pendingTranscriptSwapMeasurement: TranscriptSwapMeasurement | null = null;
   private readonly overlayActor = (actor: St.Widget): OverlayActor => actor as OverlayActor;
   private serviceState: ActiveListenerServiceState = {
     indicatorState: 'absent',
     servicePresent: false,
     phase: null,
   };
-  private completedTranscriptParts: string[] = [];
+  private completedTranscriptText = '';
   private incompleteTranscriptText = '';
+  private installedTranscriptDisplay: TranscriptDisplay = {
+    text: '',
+    incompleteStartByte: null,
+  };
   private transcriptEventCounter = 0;
-  private transcriptFrameCounter = 0;
 
   constructor() {
     this.createOverlay();
@@ -106,7 +99,6 @@ export class TranscriptOverlayController {
 
   destroy(): void {
     this.clearOverlayTimeout();
-    this.stopTranscriptAnimation();
     this.resetTranscriptOverlay();
 
     if (this.overlay !== null) {
@@ -121,8 +113,10 @@ export class TranscriptOverlayController {
     this.spectrumFrame = null;
     this.spectrumBars = [];
     this.spectrumLevels = new Uint8Array(SPECTRUM_BAR_COUNT);
-    this.transcriptAnimationController = null;
-    this.pendingTranscriptSwapMeasurement = null;
+    this.installedTranscriptDisplay = {
+      text: '',
+      incompleteStartByte: null,
+    };
   }
 
   setServiceState(serviceState: ActiveListenerServiceState): void {
@@ -147,7 +141,7 @@ export class TranscriptOverlayController {
   }
 
   showPreview(text: string = OVERLAY_MESSAGE): void {
-    this.installTranscriptTextImmediately(text);
+    this.installTranscriptDisplayImmediately(buildTranscriptDisplay(text, ''));
     this.showOverlay();
   }
 
@@ -155,20 +149,17 @@ export class TranscriptOverlayController {
     this.logTranscriptOverlayEvent('received transcription update', {
       completedSegments: update.completedSegments,
       incompleteSegment: update.incompleteSegment,
-      completedTranscriptPartsBefore: [...this.completedTranscriptParts],
+      completedTranscriptTextBefore: this.completedTranscriptText,
       incompleteTranscriptTextBefore: this.incompleteTranscriptText,
     });
 
     for (const { text } of update.completedSegments) {
-      const normalizedText = text.trim();
-      if (normalizedText.length > 0) {
-        this.completedTranscriptParts.push(normalizedText);
-      }
+      this.completedTranscriptText = appendCompletedTranscript(this.completedTranscriptText, text);
     }
 
     this.incompleteTranscriptText = update.incompleteSegment.text.trim();
     this.logTranscriptOverlayEvent('applied transcription update', {
-      completedTranscriptPartsAfter: [...this.completedTranscriptParts],
+      completedTranscriptTextAfter: this.completedTranscriptText,
       incompleteTranscriptTextAfter: this.incompleteTranscriptText,
     });
     this.renderOverlay();
@@ -274,66 +265,35 @@ export class TranscriptOverlayController {
     });
     this.overlay.add_child(this.overlayContent);
 
-    this.transcriptAnimationController = new TranscriptAnimationController({
-      installText: (text) => {
-        this.installTranscriptText(text);
-      },
-      applyAlphaRuns: (runs) => {
-        this.applyTranscriptAlphaRuns(runs);
-      },
-      clearAlphaRuns: () => {
-        this.clearTranscriptAttributes();
-      },
-      beforeSwap: () => {
-        this.captureTranscriptSwapMeasurement();
-      },
-      afterSwap: () => {
-        this.startTranscriptSwapHeightTween();
-      },
-    });
-
     Main.layoutManager.addChrome(this.overlay, { trackFullscreen: true });
     this.overlay.set_position(-10000, -10000);
 
     this.clearSpectrumBars();
-    this.installTranscriptTextImmediately(OVERLAY_MESSAGE);
+    this.installTranscriptDisplayImmediately(buildTranscriptDisplay(OVERLAY_MESSAGE, ''));
   }
 
   private renderOverlay(): void {
-    const completedTranscript = this.completedTranscriptParts.join(' ');
-    const transcriptParts = [completedTranscript];
-    if (this.incompleteTranscriptText.length > 0) {
-      transcriptParts.push(this.incompleteTranscriptText);
-    }
-
-    const transcript = transcriptParts.filter((part) => part.length > 0).join(' ');
+    const transcriptDisplay = buildTranscriptDisplay(this.completedTranscriptText, this.incompleteTranscriptText);
     this.logTranscriptOverlayEvent('render overlay requested', {
       indicatorState: this.serviceState.indicatorState,
       servicePresent: this.serviceState.servicePresent,
       servicePhase: this.serviceState.phase,
-      completedTranscript: this.describeTranscriptTextForLogging(completedTranscript),
+      completedTranscript: this.describeTranscriptTextForLogging(this.completedTranscriptText),
       incompleteTranscript: this.describeTranscriptTextForLogging(this.incompleteTranscriptText),
-      combinedTranscript: this.describeTranscriptTextForLogging(transcript),
-      controllerSnapshot: this.transcriptAnimationController?.getSnapshot() ?? null,
+      combinedTranscript: this.describeTranscriptTextForLogging(transcriptDisplay.text),
+      transcriptDisplay,
+      installedTranscriptDisplay: this.installedTranscriptDisplay,
     });
 
-    if (transcript.length === 0 && this.serviceState.indicatorState !== 'recording') {
+    if (transcriptDisplay.text.length === 0 && this.serviceState.indicatorState !== 'recording') {
       this.logTranscriptOverlayEvent('render overlay hiding because transcript is empty and indicator is not recording');
-      this.installTranscriptTextImmediately('');
+      this.installTranscriptDisplayImmediately(buildTranscriptDisplay('', ''));
       this.hideOverlay();
       return;
     }
 
-    const transitionController = this.transcriptAnimationController;
-    if (transitionController !== null) {
-      const nowMilliseconds = this.getNowMs();
-      const isAnimating = transitionController.setCanonicalText(transcript, nowMilliseconds);
-      this.logTranscriptOverlayEvent('submitted transcript to animation controller', {
-        nowMilliseconds,
-        isAnimating,
-        controllerSnapshot: transitionController.getSnapshot(),
-      });
-      this.refreshTranscriptAnimation();
+    if (!this.isInstalledTranscriptDisplay(transcriptDisplay)) {
+      this.installTranscriptDisplayImmediately(transcriptDisplay);
     }
 
     this.showOverlay(false);
@@ -436,12 +396,12 @@ export class TranscriptOverlayController {
   private resetTranscriptOverlay(): void {
     this.logTranscriptOverlayEvent('reset transcript overlay requested', {
       indicatorState: this.serviceState.indicatorState,
-      completedTranscriptPartsBefore: [...this.completedTranscriptParts],
+      completedTranscriptTextBefore: this.completedTranscriptText,
       incompleteTranscriptTextBefore: this.incompleteTranscriptText,
     });
-    this.completedTranscriptParts = [];
+    this.completedTranscriptText = '';
     this.incompleteTranscriptText = '';
-    this.installTranscriptTextImmediately('');
+    this.installTranscriptDisplayImmediately(buildTranscriptDisplay('', ''));
 
     if (this.serviceState.indicatorState === 'recording') {
       this.showOverlay(false);
@@ -476,148 +436,69 @@ export class TranscriptOverlayController {
     return this.overlayLabel?.get_clutter_text() as OverlayClutterText | null;
   }
 
-  private installTranscriptText(text: string): void {
+  private isInstalledTranscriptDisplay(transcriptDisplay: TranscriptDisplay): boolean {
+    return (
+      transcriptDisplay.text === this.installedTranscriptDisplay.text &&
+      transcriptDisplay.incompleteStartByte === this.installedTranscriptDisplay.incompleteStartByte
+    );
+  }
+
+  private installTranscriptDisplay(transcriptDisplay: TranscriptDisplay): void {
     const overlayClutterText = this.getOverlayClutterText();
     if (overlayClutterText === null) {
       this.logTranscriptOverlayEvent('install transcript text skipped because overlay text actor is unavailable', {
-        text: this.describeTranscriptTextForLogging(text),
+        transcriptDisplay,
       });
       return;
     }
 
-    this.logTranscriptOverlayEvent('installing transcript text', {
-      text: this.describeTranscriptTextForLogging(text),
+    this.logTranscriptOverlayEvent('installing transcript display', {
+      text: this.describeTranscriptTextForLogging(transcriptDisplay.text),
+      transcriptDisplay,
     });
-    overlayClutterText.set_text(text);
+    overlayClutterText.set_text(transcriptDisplay.text);
+    this.applyTranscriptDisplayAttributes(transcriptDisplay);
+    this.installedTranscriptDisplay = { ...transcriptDisplay };
   }
 
-  private installTranscriptTextImmediately(text: string): void {
-    this.logTranscriptOverlayEvent('install transcript text immediately requested', {
-      text: this.describeTranscriptTextForLogging(text),
-      controllerSnapshot: this.transcriptAnimationController?.getSnapshot() ?? null,
+  private installTranscriptDisplayImmediately(transcriptDisplay: TranscriptDisplay): void {
+    this.logTranscriptOverlayEvent('install transcript display immediately requested', {
+      text: this.describeTranscriptTextForLogging(transcriptDisplay.text),
+      transcriptDisplay,
     });
-    this.stopTranscriptAnimation();
-    this.pendingTranscriptSwapMeasurement = null;
-
-    if (this.transcriptAnimationController !== null) {
-      this.transcriptAnimationController.installImmediate(text);
-    } else {
-      this.clearTranscriptAttributes();
-      this.installTranscriptText(text);
-    }
-
+    this.installTranscriptDisplay(transcriptDisplay);
     this.syncOverlayHeightToInstalledText();
   }
 
-  private refreshTranscriptAnimation(): void {
-    const transitionController = this.transcriptAnimationController;
-    if (transitionController === null) {
-      this.logTranscriptOverlayEvent('refresh transcript animation skipped because controller is unavailable');
-      return;
-    }
-
-    const currentFrameNumber = this.transcriptFrameCounter;
-    const shouldContinue = this.runWithTranscriptFrameLogging(currentFrameNumber, () =>
-      transitionController.tick(this.getNowMs()),
-    );
-    this.logTranscriptOverlayFrameEvent('refreshed transcript animation', {
-      frameNumber: currentFrameNumber,
-      shouldContinue,
-      controllerSnapshot: transitionController.getSnapshot(),
-    });
-    this.transcriptFrameCounter += 1;
-    if (!shouldContinue) {
-      this.stopTranscriptAnimation();
-      return;
-    }
-
-    if (transitionController.getSnapshot().frameSourceId !== null) {
-      this.logTranscriptOverlayFrameEvent('transcript animation frame source already exists', {
-        frameNumber: currentFrameNumber,
-        frameSourceId: transitionController.getSnapshot().frameSourceId,
-      });
-      return;
-    }
-
-    const sourceId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, TRANSCRIPT_FRAME_INTERVAL_MS, () => {
-      const controller = this.transcriptAnimationController;
-      if (controller === null) {
-        this.logTranscriptOverlayFrameEvent('transcript animation frame source stopped because controller disappeared');
-        return GLib.SOURCE_REMOVE;
-      }
-
-      const frameNumber = this.transcriptFrameCounter;
-      const keepRunning = this.runWithTranscriptFrameLogging(frameNumber, () => controller.tick(this.getNowMs()));
-      this.logTranscriptOverlayFrameEvent('transcript animation frame source ticked', {
-        frameNumber,
-        keepRunning,
-        controllerSnapshot: controller.getSnapshot(),
-      });
-      this.transcriptFrameCounter += 1;
-      if (!keepRunning) {
-        controller.setFrameSourceId(null);
-        this.logTranscriptOverlayFrameEvent('transcript animation frame source completed', {
-          frameNumber,
-        });
-        return GLib.SOURCE_REMOVE;
-      }
-
-      return GLib.SOURCE_CONTINUE;
-    });
-    transitionController.setFrameSourceId(sourceId);
-    this.logTranscriptOverlayFrameEvent('scheduled transcript animation frame source', {
-      frameNumber: currentFrameNumber,
-      sourceId,
-    });
-  }
-
-  private stopTranscriptAnimation(): void {
-    const transitionController = this.transcriptAnimationController;
-    if (transitionController === null) {
-      return;
-    }
-
-    const frameSourceId = transitionController.getSnapshot().frameSourceId;
-    if (frameSourceId !== null) {
-      this.logTranscriptOverlayFrameEvent('stopping transcript animation frame source', {
-        frameSourceId,
-      });
-      GLib.Source.remove(frameSourceId);
-      transitionController.setFrameSourceId(null);
-    }
-  }
-
   private clearTranscriptAttributes(): void {
-    this.logTranscriptOverlayFrameEvent('clearing transcript attributes');
     this.getOverlayClutterText()?.set_attributes(null);
   }
 
-  private applyTranscriptAlphaRuns(runs: ByteAlphaRun[]): void {
+  private applyTranscriptDisplayAttributes(transcriptDisplay: TranscriptDisplay): void {
     const overlayClutterText = this.getOverlayClutterText();
     if (overlayClutterText === null) {
-      this.logTranscriptOverlayFrameEvent('skipped transcript attribute application because overlay text actor is unavailable', {
-        runs,
+      this.logTranscriptOverlayEvent('skipped transcript attribute application because overlay text actor is unavailable', {
+        transcriptDisplay,
       });
       return;
     }
 
-    if (runs.length === 0) {
-      this.logTranscriptOverlayFrameEvent('clearing transcript attributes because there are no alpha runs');
+    const attributeSpecs = buildTranscriptAttributeSpecs(transcriptDisplay, OVERLAY_TEXT_COLOR);
+    if (attributeSpecs.length === 0) {
       this.clearTranscriptAttributes();
       return;
     }
 
     const attrs = Pango.AttrList.new();
-    const attributeSpecs = buildTranscriptAttributeSpecs(overlayClutterText.get_text(), runs, OVERLAY_TEXT_COLOR);
-    this.logTranscriptOverlayFrameEvent('applying transcript attributes', {
-      text: this.describeTranscriptTextForLogging(overlayClutterText.get_text()),
-      runs,
+    this.logTranscriptOverlayEvent('applying transcript attributes', {
+      text: this.describeTranscriptTextForLogging(transcriptDisplay.text),
+      transcriptDisplay,
       attributeSpecs,
     });
     for (const spec of attributeSpecs) {
       const attr = spec.kind === 'foreground-color'
         ? Pango.attr_foreground_new(spec.red, spec.green, spec.blue)
-        : Pango.attr_foreground_alpha_new(Math.max(0, Math.min(spec.alpha, PANGO_ALPHA_MAX)));
+        : Pango.attr_foreground_alpha_new(spec.alpha);
       attr.start_index = spec.startByte;
       attr.end_index = spec.endByte;
       attrs.insert(attr);
@@ -626,85 +507,15 @@ export class TranscriptOverlayController {
     overlayClutterText.set_attributes(attrs);
   }
 
-  private captureTranscriptSwapMeasurement(): void {
-    if (this.transcriptClip === null || this.overlay === null) {
-      this.logTranscriptOverlayFrameEvent('capture transcript swap measurement skipped because overlay actors are unavailable');
-      return;
-    }
-
-    const transcriptHeight = this.measureTranscriptHeight();
-    const shellHeight = this.measureOverlayShellHeight(transcriptHeight);
-    this.pendingTranscriptSwapMeasurement = {
-      transcriptHeight,
-      shellHeight,
-    };
-    this.logTranscriptOverlayFrameEvent('captured transcript swap measurement', {
-      transcriptHeight,
-      shellHeight,
-    });
-
-    const clipActor = this.overlayActor(this.transcriptClip);
-    clipActor.remove_all_transitions();
-    this.transcriptClip.set_height(transcriptHeight);
-
-    const overlayActor = this.overlayActor(this.overlay);
-    overlayActor.remove_all_transitions();
-    this.overlay.set_height(shellHeight);
-    this.overlay.set_y(this.getAnchoredOverlayY(shellHeight));
-  }
-
-  private startTranscriptSwapHeightTween(): void {
-    if (this.transcriptClip === null || this.overlay === null) {
-      this.logTranscriptOverlayFrameEvent('start transcript swap height tween skipped because overlay actors are unavailable');
-      return;
-    }
-
-    const previousMeasurement = this.pendingTranscriptSwapMeasurement;
-    this.pendingTranscriptSwapMeasurement = null;
-    if (previousMeasurement === null) {
-      this.logTranscriptOverlayFrameEvent('start transcript swap height tween fell back to direct sync because there was no pending measurement');
-      this.syncOverlayHeightToInstalledText();
-      return;
-    }
-
-    const nextTranscriptHeight = this.measureTranscriptHeight();
-    const nextShellHeight = this.measureOverlayShellHeight(nextTranscriptHeight);
-    this.logTranscriptOverlayFrameEvent('starting transcript swap height tween', {
-      previousMeasurement,
-      nextTranscriptHeight,
-      nextShellHeight,
-    });
-
-    const clipActor = this.overlayActor(this.transcriptClip);
-    clipActor.remove_all_transitions();
-    this.transcriptClip.set_height(previousMeasurement.transcriptHeight);
-    clipActor.ease({
-      height: nextTranscriptHeight,
-      duration: OVERLAY_ANIMATION_DURATION_MS,
-      mode: Clutter.AnimationMode.EASE_OUT_QUAD,
-    });
-
-    const overlayActor = this.overlayActor(this.overlay);
-    overlayActor.remove_all_transitions();
-    this.overlay.set_height(previousMeasurement.shellHeight);
-    this.overlay.set_y(this.getAnchoredOverlayY(previousMeasurement.shellHeight));
-    overlayActor.ease({
-      height: nextShellHeight,
-      y: this.getAnchoredOverlayY(nextShellHeight),
-      duration: OVERLAY_ANIMATION_DURATION_MS,
-      mode: Clutter.AnimationMode.EASE_OUT_QUAD,
-    });
-  }
-
   private syncOverlayHeightToInstalledText(): void {
     if (this.transcriptClip === null || this.overlay === null) {
-      this.logTranscriptOverlayFrameEvent('sync overlay height skipped because overlay actors are unavailable');
+      this.logTranscriptOverlayEvent('sync overlay height skipped because overlay actors are unavailable');
       return;
     }
 
     const transcriptHeight = this.measureTranscriptHeight();
     const shellHeight = this.measureOverlayShellHeight(transcriptHeight);
-    this.logTranscriptOverlayFrameEvent('syncing overlay height to installed text', {
+    this.logTranscriptOverlayEvent('syncing overlay height to installed text', {
       transcriptHeight,
       shellHeight,
       overlayVisible: this.overlay.visible,
@@ -723,7 +534,7 @@ export class TranscriptOverlayController {
 
   private measureTranscriptHeight(): number {
     if (this.overlayLabel === null) {
-      this.logTranscriptOverlayFrameEvent('measure transcript height used fallback because overlay label is unavailable', {
+      this.logTranscriptOverlayEvent('measure transcript height used fallback because overlay label is unavailable', {
         fallbackHeight: OVERLAY_TEXT_HEIGHT_PX,
       });
       return OVERLAY_TEXT_HEIGHT_PX;
@@ -731,7 +542,7 @@ export class TranscriptOverlayController {
 
     const [, naturalHeight] = this.overlayLabel.get_preferred_height(OVERLAY_TEXT_WIDTH_PX);
     const measuredHeight = Math.max(OVERLAY_TEXT_HEIGHT_PX, Math.ceil(naturalHeight));
-    this.logTranscriptOverlayFrameEvent('measured transcript height', {
+    this.logTranscriptOverlayEvent('measured transcript height', {
       naturalHeight,
       measuredHeight,
       installedText: this.describeTranscriptTextForLogging(this.overlayLabel.get_text()),
@@ -760,10 +571,6 @@ export class TranscriptOverlayController {
     return Math.floor(monitor.y + monitor.height - height - OVERLAY_BOTTOM_MARGIN_PX);
   }
 
-  private getNowMs(): number {
-    return GLib.get_monotonic_time() / 1000;
-  }
-
   private logTranscriptOverlayEvent(message: string, details: Record<string, unknown> = {}): void {
     if (this.transcriptEventCounter % TRANSCRIPT_LOG_SAMPLE_INTERVAL !== 0) {
       this.transcriptEventCounter += 1;
@@ -772,24 +579,6 @@ export class TranscriptOverlayController {
 
     this.transcriptEventCounter += 1;
     console.error(`Active Listener transcript overlay ${message}`, details);
-  }
-
-  private logTranscriptOverlayFrameEvent(message: string, details: Record<string, unknown> = {}): void {
-    if (!isTranscriptFrameLoggingEnabled()) {
-      return;
-    }
-
-    console.error(`Active Listener transcript overlay ${message}`, details);
-  }
-
-  private runWithTranscriptFrameLogging<T>(frameNumber: number, callback: () => T): T {
-    const shouldEnableFrameLogging = frameNumber % TRANSCRIPT_LOG_SAMPLE_INTERVAL === 0;
-    setTranscriptFrameLoggingEnabled(shouldEnableFrameLogging);
-    try {
-      return callback();
-    } finally {
-      setTranscriptFrameLoggingEnabled(false);
-    }
   }
 
   private describeTranscriptTextForLogging(text: string): Record<string, unknown> {
