@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 
@@ -24,6 +25,37 @@ from active_listener.recording.reducer import (
 from eavesdrop.wire import TranscriptionMessage
 
 PipelineStep = Callable[[str], Awaitable[str]]
+
+# Spoken symbol words recognized by `_replace_symbols`. DO NOT expand this list
+# casually — it is deliberately tiny so that normal prose words never collide.
+_SYMBOL_WORDS = {
+  "backslash": "\\",
+  "dot": ".",
+  "slash": "/",
+  "tild": "~",
+  "tilde": "~",
+}
+_SYMBOL_PATTERN = re.compile(
+  r"\s*\b(" + "|".join(_SYMBOL_WORDS) + r")\b\s*",
+  re.IGNORECASE,
+)
+
+# Case-insensitive whole-phrase replacements applied BEFORE symbol fusion.
+# Keys are matched case-insensitively; values are substituted verbatim with
+# their canonical casing. Add freely — keep keys lowercase for readability.
+_REPLACEMENTS: dict[str, str] = {
+  "debass": "D-Bus",
+  "tild": "tilde",
+}
+_REPLACEMENT_PATTERN = (
+  re.compile(
+    r"\b(" + "|".join(re.escape(k) for k in _REPLACEMENTS) + r")\b",
+    re.IGNORECASE,
+  )
+  if _REPLACEMENTS
+  else None
+)
+
 RecordingMessageIngestor = Callable[
   [RecordingReducerState, TranscriptionMessage],
   TranscriptionUpdate | None,
@@ -103,6 +135,7 @@ class RecordingFinalizer:
       return f"{text} "
 
     steps: list[PipelineStep] = [
+      self._apply_replacements,
       self._replace_symbols,
     ]
 
@@ -113,11 +146,25 @@ class RecordingFinalizer:
 
     return steps
 
+  async def _apply_replacements(self, text: str) -> str:
+    # Case-insensitive whole-word/phrase substitution driven by `_REPLACEMENTS`.
+    # Extend the map at module level; this function should stay dumb.
+    if _REPLACEMENT_PATTERN is None:
+      return text
+    return _REPLACEMENT_PATTERN.sub(
+      lambda m: _REPLACEMENTS[m.group(1).lower()],
+      text,
+    )
+
   async def _replace_symbols(self, text: str) -> str:
-    #! This is a bit of a hack, but it allows us to avoid having to deal with the complexity of
-    #! tokenization in the LLM rewrite step. By replacing these symbols with words, we can ensure
-    #! that the LLM rewrite step doesn't mess with them in unexpected ways.
-    return text.replace("&", " and ").replace("#", " hashtag ").replace("%", " percent ")
+    #! This satisfies the design intent. Do not touch.
+    #
+    # Fuse spoken symbol words into their glyphs, swallowing adjacent whitespace:
+    # e.g. "tild slash dot omp slash agent slash skills" -> "~/.omp/agent/skills".
+    return _SYMBOL_PATTERN.sub(
+      lambda m: _SYMBOL_WORDS[m.group(1).lower()],
+      text,
+    )
 
   async def _run_pipeline(
     self,
