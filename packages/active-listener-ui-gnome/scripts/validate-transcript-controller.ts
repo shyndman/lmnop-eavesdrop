@@ -179,4 +179,78 @@ const createControllerHarness = () => {
   assert(alphaValues.some((alpha) => alpha > 0 && alpha < PANGO_ALPHA_MAX), 'reveal should produce partial alpha runs');
 }
 
+{
+  const harness = createControllerHarness();
+  harness.controller.installImmediate('hello');
+  harness.controller.setCanonicalText('hello there', 0);
+  harness.controller.tick(0);
+
+  const beforeRepeat = harness.controller.getSnapshot();
+  const stillAnimating = harness.controller.setCanonicalText('hello there', 24);
+  const afterRepeat = harness.controller.getSnapshot();
+
+  assert(stillAnimating, 'repeating the same target during reveal should keep the animation running');
+  assert(afterRepeat.phase === beforeRepeat.phase, 'repeating the same target during reveal should preserve the current phase');
+  assert(afterRepeat.plan !== null, 'repeating the same target during reveal should keep the transition plan');
+  assert(
+    JSON.stringify(afterRepeat.activeAlphaRuns) === JSON.stringify(beforeRepeat.activeAlphaRuns),
+    'repeating the same target during reveal should preserve the active alpha runs',
+  );
+  console.log('PASS reveal dedupe');
+}
+
+{
+  const harness = createControllerHarness();
+  harness.controller.installImmediate('alpha beta');
+  harness.controller.setCanonicalText('alpha', 0);
+  harness.controller.tick(48);
+
+  const beforeRepeat = harness.controller.getSnapshot();
+  const stillAnimating = harness.controller.setCanonicalText('alpha', 72);
+  const afterRepeat = harness.controller.getSnapshot();
+
+  assert(stillAnimating, 'repeating the same target during erase should keep the animation running');
+  assert(afterRepeat.phase === beforeRepeat.phase, 'repeating the same target during erase should preserve the current phase');
+  assert(afterRepeat.plan !== null, 'repeating the same target during erase should keep the transition plan');
+  assert(
+    afterRepeat.phaseStartedAtMs === beforeRepeat.phaseStartedAtMs,
+    'repeating the same target during erase should not restart the phase timer',
+  );
+  assert(
+    JSON.stringify(afterRepeat.activeAlphaRuns) === JSON.stringify(beforeRepeat.activeAlphaRuns),
+    'repeating the same target during erase should preserve the active alpha runs',
+  );
+  console.log('PASS erase dedupe');
+}
+
+{
+  const loggedErrors: unknown[][] = [];
+  const originalConsoleError = console.error;
+  console.error = (...args: unknown[]) => {
+    loggedErrors.push(args);
+  };
+
+  try {
+    const harness = createControllerHarness();
+    harness.controller.installImmediate('alpha');
+    harness.controller.setCanonicalText('alpha beta', 0);
+  } finally {
+    console.error = originalConsoleError;
+  }
+
+  const changeLog = loggedErrors.find((args) => {
+    if (args[0] !== 'Active Listener transcript animation canonical text changed') {
+      return false;
+    }
+
+    const details = args[1] as { fromText?: unknown; toText?: unknown };
+    return details.fromText === 'alpha' && details.toText === 'alpha beta';
+  });
+  assert(changeLog !== undefined, 'unequal canonical text updates should emit a transcript change log');
+  const details = changeLog[1] as { fromText?: unknown; toText?: unknown };
+  assert(details.fromText === 'alpha', 'transcript change log should include the full source transcript');
+  assert(details.toText === 'alpha beta', 'transcript change log should include the full target transcript');
+  console.log('PASS change logging');
+}
+
 console.log('Controller converges to latest canonical string.');

@@ -10,8 +10,11 @@ import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 import {
+  isTranscriptFrameLoggingEnabled,
   PANGO_ALPHA_MAX,
+  setTranscriptFrameLoggingEnabled,
   TRANSCRIPT_FRAME_INTERVAL_MS,
+  TRANSCRIPT_LOG_SAMPLE_INTERVAL,
   TranscriptAnimationController,
   type ByteAlphaRun,
   type TransitionPlan,
@@ -129,6 +132,8 @@ export default class ActiveListenerIndicatorExtension extends Extension {
   private servicePhase: string | null = null;
   private completedTranscriptParts: string[] = [];
   private incompleteTranscriptText = '';
+  private transcriptEventCounter = 0;
+  private transcriptFrameCounter = 0;
 
   enable(): void {
     this.button = new PanelMenu.Button(0.5, this.metadata.name, false);
@@ -344,6 +349,7 @@ export default class ActiveListenerIndicatorExtension extends Extension {
 
     const monitor = this.getOverlayMonitor();
     if (monitor === null) {
+      this.logTranscriptOverlayEvent('show overlay skipped because no monitor is available');
       return;
     }
 
@@ -351,10 +357,24 @@ export default class ActiveListenerIndicatorExtension extends Extension {
 
     const x = Math.floor(monitor.x + (monitor.width - OVERLAY_WIDTH_PX) / 2);
     const y = this.getAnchoredOverlayY(this.overlay.height, monitor);
+    this.logTranscriptOverlayEvent('show overlay requested', {
+      autoHide,
+      visible: this.overlay.visible,
+      overlayHeight: this.overlay.height,
+      x,
+      y,
+      monitor,
+    });
 
     if (this.overlay.visible) {
       this.overlay.set_position(x, y);
       this.overlay.opacity = 255;
+      this.logTranscriptOverlayEvent('updated visible overlay position', {
+        autoHide,
+        x,
+        y,
+        overlayHeight: this.overlay.height,
+      });
       if (!autoHide) {
         return;
       }
@@ -394,6 +414,10 @@ export default class ActiveListenerIndicatorExtension extends Extension {
       return;
     }
 
+    this.logTranscriptOverlayEvent('hide overlay requested', {
+      visible: this.overlay.visible,
+      overlayHeight: this.overlay.height,
+    });
     const overlayActor = this.overlayActor(this.overlay);
     overlayActor.remove_all_transitions();
     overlayActor.ease({
@@ -401,6 +425,7 @@ export default class ActiveListenerIndicatorExtension extends Extension {
       duration: OVERLAY_ANIMATION_DURATION_MS,
       mode: Clutter.AnimationMode.EASE_OUT_QUAD,
       onComplete: () => {
+        this.logTranscriptOverlayEvent('hide overlay animation completed');
         this.overlay?.hide();
       },
     });
@@ -459,6 +484,10 @@ export default class ActiveListenerIndicatorExtension extends Extension {
   }
 
   private handleProxySignal(signalName: string, parameters: GLib.Variant): void {
+    this.logTranscriptOverlayEvent('received message bus signal', {
+      signalName,
+      parameterType: parameters.get_type_string(),
+    });
     if (signalName === DBUS_TRANSCRIPTION_UPDATED_SIGNAL) {
       this.handleTranscriptionUpdated(parameters);
       return;
@@ -481,6 +510,12 @@ export default class ActiveListenerIndicatorExtension extends Extension {
 
   private handleTranscriptionUpdated(parameters: GLib.Variant): void {
     const [completedSegments, incompleteSegment] = parameters.deepUnpack() as DbusTranscriptionUpdatedPayload;
+    this.logTranscriptOverlayEvent('received transcription update', {
+      completedSegments,
+      incompleteSegment,
+      completedTranscriptPartsBefore: [...this.completedTranscriptParts],
+      incompleteTranscriptTextBefore: this.incompleteTranscriptText,
+    });
 
     for (const [, text] of completedSegments) {
       const normalizedText = text.trim();
@@ -491,19 +526,34 @@ export default class ActiveListenerIndicatorExtension extends Extension {
 
     const [, incompleteText] = incompleteSegment;
     this.incompleteTranscriptText = incompleteText.trim();
+    this.logTranscriptOverlayEvent('applied transcription update', {
+      completedTranscriptPartsAfter: [...this.completedTranscriptParts],
+      incompleteTranscriptTextAfter: this.incompleteTranscriptText,
+    });
     this.renderOverlay();
   }
 
   private handleSpectrumUpdated(parameters: GLib.Variant): void {
     if (this.indicatorState !== 'recording') {
+      this.logTranscriptOverlayEvent('ignored spectrum update because indicator is not recording', {
+        indicatorState: this.indicatorState,
+      });
       return;
     }
 
     const spectrumVariant = parameters.get_child_value(0);
     const byteBuffer = spectrumVariant.get_data_as_bytes();
     this.spectrumLevels = Uint8Array.from(byteBuffer.toArray());
+    this.logTranscriptOverlayEvent('received spectrum update', {
+      barCount: this.spectrumLevels.length,
+      leadingBars: Array.from(this.spectrumLevels.slice(0, 8)),
+    });
 
     if (this.spectrumLevels.length !== SPECTRUM_BAR_COUNT) {
+      this.logTranscriptOverlayEvent('ignored spectrum update because bar count did not match', {
+        expectedBarCount: SPECTRUM_BAR_COUNT,
+        actualBarCount: this.spectrumLevels.length,
+      });
       return;
     }
 
@@ -522,6 +572,10 @@ export default class ActiveListenerIndicatorExtension extends Extension {
   }
 
   private updateServiceState(servicePresent: boolean, phase: string | null): void {
+    this.logTranscriptOverlayEvent('updated service state', {
+      servicePresent,
+      phase,
+    });
     this.servicePresent = servicePresent;
     this.servicePhase = phase;
     this.updateIndicator(deriveIndicatorState(servicePresent, phase));
@@ -637,8 +691,18 @@ export default class ActiveListenerIndicatorExtension extends Extension {
     }
 
     const transcript = transcriptParts.filter((part) => part.length > 0).join(' ');
+    this.logTranscriptOverlayEvent('render overlay requested', {
+      indicatorState: this.indicatorState,
+      servicePresent: this.servicePresent,
+      servicePhase: this.servicePhase,
+      completedTranscript: this.describeTranscriptTextForLogging(completedTranscript),
+      incompleteTranscript: this.describeTranscriptTextForLogging(this.incompleteTranscriptText),
+      combinedTranscript: this.describeTranscriptTextForLogging(transcript),
+      controllerSnapshot: this.transcriptAnimationController?.getSnapshot() ?? null,
+    });
 
     if (transcript.length === 0 && this.indicatorState !== 'recording') {
+      this.logTranscriptOverlayEvent('render overlay hiding because transcript is empty and indicator is not recording');
       this.installTranscriptTextImmediately('');
       this.hideOverlay();
       return;
@@ -646,7 +710,13 @@ export default class ActiveListenerIndicatorExtension extends Extension {
 
     const transitionController = this.transcriptAnimationController;
     if (transitionController !== null) {
-      transitionController.setCanonicalText(transcript, this.getNowMs());
+      const nowMilliseconds = this.getNowMs();
+      const isAnimating = transitionController.setCanonicalText(transcript, nowMilliseconds);
+      this.logTranscriptOverlayEvent('submitted transcript to animation controller', {
+        nowMilliseconds,
+        isAnimating,
+        controllerSnapshot: transitionController.getSnapshot(),
+      });
       this.refreshTranscriptAnimation();
     }
 
@@ -654,6 +724,11 @@ export default class ActiveListenerIndicatorExtension extends Extension {
   }
 
   private resetTranscriptOverlay(): void {
+    this.logTranscriptOverlayEvent('reset transcript overlay requested', {
+      indicatorState: this.indicatorState,
+      completedTranscriptPartsBefore: [...this.completedTranscriptParts],
+      incompleteTranscriptTextBefore: this.incompleteTranscriptText,
+    });
     this.completedTranscriptParts = [];
     this.incompleteTranscriptText = '';
     this.installTranscriptTextImmediately('');
@@ -694,13 +769,23 @@ export default class ActiveListenerIndicatorExtension extends Extension {
   private installTranscriptText(text: string): void {
     const overlayClutterText = this.getOverlayClutterText();
     if (overlayClutterText === null) {
+      this.logTranscriptOverlayEvent('install transcript text skipped because overlay text actor is unavailable', {
+        text: this.describeTranscriptTextForLogging(text),
+      });
       return;
     }
 
+    this.logTranscriptOverlayEvent('installing transcript text', {
+      text: this.describeTranscriptTextForLogging(text),
+    });
     overlayClutterText.set_text(text);
   }
 
   private installTranscriptTextImmediately(text: string): void {
+    this.logTranscriptOverlayEvent('install transcript text immediately requested', {
+      text: this.describeTranscriptTextForLogging(text),
+      controllerSnapshot: this.transcriptAnimationController?.getSnapshot() ?? null,
+    });
     this.stopTranscriptAnimation();
     this.pendingTranscriptSwapMeasurement = null;
 
@@ -717,35 +802,61 @@ export default class ActiveListenerIndicatorExtension extends Extension {
   private refreshTranscriptAnimation(): void {
     const transitionController = this.transcriptAnimationController;
     if (transitionController === null) {
+      this.logTranscriptOverlayEvent('refresh transcript animation skipped because controller is unavailable');
       return;
     }
 
-    const shouldContinue = transitionController.tick(this.getNowMs());
-    console.debug('Active Listener transcript animation refresh', transitionController.getSnapshot());
+    const currentFrameNumber = this.transcriptFrameCounter;
+    const shouldContinue = this.runWithTranscriptFrameLogging(currentFrameNumber, () => transitionController.tick(this.getNowMs()));
+    this.logTranscriptOverlayFrameEvent('refreshed transcript animation', {
+      frameNumber: currentFrameNumber,
+      shouldContinue,
+      controllerSnapshot: transitionController.getSnapshot(),
+    });
+    this.transcriptFrameCounter += 1;
     if (!shouldContinue) {
       this.stopTranscriptAnimation();
       return;
     }
 
     if (transitionController.getSnapshot().frameSourceId !== null) {
+      this.logTranscriptOverlayFrameEvent('transcript animation frame source already exists', {
+        frameNumber: currentFrameNumber,
+        frameSourceId: transitionController.getSnapshot().frameSourceId,
+      });
       return;
     }
 
     const sourceId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, TRANSCRIPT_FRAME_INTERVAL_MS, () => {
       const controller = this.transcriptAnimationController;
       if (controller === null) {
+        this.logTranscriptOverlayFrameEvent('transcript animation frame source stopped because controller disappeared');
         return GLib.SOURCE_REMOVE;
       }
 
-      const keepRunning = controller.tick(this.getNowMs());
+      const frameNumber = this.transcriptFrameCounter;
+      const keepRunning = this.runWithTranscriptFrameLogging(frameNumber, () => controller.tick(this.getNowMs()));
+      this.logTranscriptOverlayFrameEvent('transcript animation frame source ticked', {
+        frameNumber,
+        keepRunning,
+        controllerSnapshot: controller.getSnapshot(),
+      });
+      this.transcriptFrameCounter += 1;
       if (!keepRunning) {
         controller.setFrameSourceId(null);
+        this.logTranscriptOverlayFrameEvent('transcript animation frame source completed', {
+          frameNumber,
+        });
         return GLib.SOURCE_REMOVE;
       }
 
       return GLib.SOURCE_CONTINUE;
     });
     transitionController.setFrameSourceId(sourceId);
+    this.logTranscriptOverlayFrameEvent('scheduled transcript animation frame source', {
+      frameNumber: currentFrameNumber,
+      sourceId,
+    });
   }
 
   private stopTranscriptAnimation(): void {
@@ -756,26 +867,41 @@ export default class ActiveListenerIndicatorExtension extends Extension {
 
     const frameSourceId = transitionController.getSnapshot().frameSourceId;
     if (frameSourceId !== null) {
+      this.logTranscriptOverlayFrameEvent('stopping transcript animation frame source', {
+        frameSourceId,
+      });
       GLib.Source.remove(frameSourceId);
       transitionController.setFrameSourceId(null);
     }
   }
 
   private clearTranscriptAttributes(): void {
+    this.logTranscriptOverlayFrameEvent('clearing transcript attributes');
     this.getOverlayClutterText()?.set_attributes(null);
   }
 
   private applyTranscriptAlphaRuns(runs: ByteAlphaRun[]): void {
     const overlayClutterText = this.getOverlayClutterText();
-    if (overlayClutterText === null || runs.length === 0) {
-      console.debug('Active Listener transcript attrs cleared', { runs });
+    if (overlayClutterText === null) {
+      this.logTranscriptOverlayFrameEvent('skipped transcript attribute application because overlay text actor is unavailable', {
+        runs,
+      });
+      return;
+    }
+
+    if (runs.length === 0) {
+      this.logTranscriptOverlayFrameEvent('clearing transcript attributes because there are no alpha runs');
       this.clearTranscriptAttributes();
       return;
     }
 
     const attrs = Pango.AttrList.new();
     const attributeSpecs = buildTranscriptAttributeSpecs(overlayClutterText.get_text(), runs, OVERLAY_TEXT_COLOR);
-    console.debug('Active Listener transcript attrs applied', { text: overlayClutterText.get_text(), runs, attributeSpecs });
+    this.logTranscriptOverlayFrameEvent('applying transcript attributes', {
+      text: this.describeTranscriptTextForLogging(overlayClutterText.get_text()),
+      runs,
+      attributeSpecs,
+    });
     for (const spec of attributeSpecs) {
       const attr = spec.kind === 'foreground-color'
         ? Pango.attr_foreground_new(spec.red, spec.green, spec.blue)
@@ -790,6 +916,7 @@ export default class ActiveListenerIndicatorExtension extends Extension {
 
   private captureTranscriptSwapMeasurement(): void {
     if (this.transcriptClip === null || this.overlay === null) {
+      this.logTranscriptOverlayFrameEvent('capture transcript swap measurement skipped because overlay actors are unavailable');
       return;
     }
 
@@ -799,6 +926,10 @@ export default class ActiveListenerIndicatorExtension extends Extension {
       transcriptHeight,
       shellHeight,
     };
+    this.logTranscriptOverlayFrameEvent('captured transcript swap measurement', {
+      transcriptHeight,
+      shellHeight,
+    });
 
     const clipActor = this.overlayActor(this.transcriptClip);
     clipActor.remove_all_transitions();
@@ -812,18 +943,25 @@ export default class ActiveListenerIndicatorExtension extends Extension {
 
   private startTranscriptSwapHeightTween(): void {
     if (this.transcriptClip === null || this.overlay === null) {
+      this.logTranscriptOverlayFrameEvent('start transcript swap height tween skipped because overlay actors are unavailable');
       return;
     }
 
     const previousMeasurement = this.pendingTranscriptSwapMeasurement;
     this.pendingTranscriptSwapMeasurement = null;
     if (previousMeasurement === null) {
+      this.logTranscriptOverlayFrameEvent('start transcript swap height tween fell back to direct sync because there was no pending measurement');
       this.syncOverlayHeightToInstalledText();
       return;
     }
 
     const nextTranscriptHeight = this.measureTranscriptHeight();
     const nextShellHeight = this.measureOverlayShellHeight(nextTranscriptHeight);
+    this.logTranscriptOverlayFrameEvent('starting transcript swap height tween', {
+      previousMeasurement,
+      nextTranscriptHeight,
+      nextShellHeight,
+    });
 
     const clipActor = this.overlayActor(this.transcriptClip);
     clipActor.remove_all_transitions();
@@ -848,11 +986,17 @@ export default class ActiveListenerIndicatorExtension extends Extension {
 
   private syncOverlayHeightToInstalledText(): void {
     if (this.transcriptClip === null || this.overlay === null) {
+      this.logTranscriptOverlayFrameEvent('sync overlay height skipped because overlay actors are unavailable');
       return;
     }
 
     const transcriptHeight = this.measureTranscriptHeight();
     const shellHeight = this.measureOverlayShellHeight(transcriptHeight);
+    this.logTranscriptOverlayFrameEvent('syncing overlay height to installed text', {
+      transcriptHeight,
+      shellHeight,
+      overlayVisible: this.overlay.visible,
+    });
 
     this.overlayActor(this.transcriptClip).remove_all_transitions();
     this.transcriptClip.set_height(transcriptHeight);
@@ -867,11 +1011,20 @@ export default class ActiveListenerIndicatorExtension extends Extension {
 
   private measureTranscriptHeight(): number {
     if (this.overlayLabel === null) {
+      this.logTranscriptOverlayFrameEvent('measure transcript height used fallback because overlay label is unavailable', {
+        fallbackHeight: OVERLAY_TEXT_HEIGHT_PX,
+      });
       return OVERLAY_TEXT_HEIGHT_PX;
     }
 
     const [, naturalHeight] = this.overlayLabel.get_preferred_height(OVERLAY_TEXT_WIDTH_PX);
-    return Math.max(OVERLAY_TEXT_HEIGHT_PX, Math.ceil(naturalHeight));
+    const measuredHeight = Math.max(OVERLAY_TEXT_HEIGHT_PX, Math.ceil(naturalHeight));
+    this.logTranscriptOverlayFrameEvent('measured transcript height', {
+      naturalHeight,
+      measuredHeight,
+      installedText: this.describeTranscriptTextForLogging(this.overlayLabel.get_text()),
+    });
+    return measuredHeight;
   }
 
   private measureOverlayShellHeight(transcriptHeight: number): number {
@@ -897,6 +1050,43 @@ export default class ActiveListenerIndicatorExtension extends Extension {
 
   private getNowMs(): number {
     return GLib.get_monotonic_time() / 1000;
+  }
+
+  private logTranscriptOverlayEvent(message: string, details: Record<string, unknown> = {}): void {
+    if (this.transcriptEventCounter % TRANSCRIPT_LOG_SAMPLE_INTERVAL !== 0) {
+      this.transcriptEventCounter += 1;
+      return;
+    }
+
+    this.transcriptEventCounter += 1;
+    console.error(`Active Listener transcript overlay ${message}`, details);
+  }
+
+  private logTranscriptOverlayFrameEvent(message: string, details: Record<string, unknown> = {}): void {
+    if (!isTranscriptFrameLoggingEnabled()) {
+      return;
+    }
+
+    console.error(`Active Listener transcript overlay ${message}`, details);
+  }
+
+  private runWithTranscriptFrameLogging<T>(frameNumber: number, callback: () => T): T {
+    const shouldEnableFrameLogging = frameNumber % TRANSCRIPT_LOG_SAMPLE_INTERVAL === 0;
+    setTranscriptFrameLoggingEnabled(shouldEnableFrameLogging);
+    try {
+      return callback();
+    } finally {
+      setTranscriptFrameLoggingEnabled(false);
+    }
+  }
+
+  private describeTranscriptTextForLogging(text: string): Record<string, unknown> {
+    const trimmedText = text.trim();
+    return {
+      text,
+      characterCount: text.length,
+      wordCount: trimmedText.length === 0 ? 0 : trimmedText.split(/\s+/u).length,
+    };
   }
 
   private startRecordingAnimation(): void {

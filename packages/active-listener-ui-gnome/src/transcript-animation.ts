@@ -50,10 +50,12 @@ export type TranscriptAnimationSink = {
 
 export const PANGO_ALPHA_MAX = 65_535;
 export const TRANSCRIPT_FRAME_INTERVAL_MS = 16;
+export const TRANSCRIPT_LOG_SAMPLE_INTERVAL = 180;
+const TRANSCRIPT_TIMING_SLOWDOWN_FACTOR = 20;
 export const DEFAULT_TRANSITION_TIMING: TransitionTiming = {
-  eraseStaggerMs: 18,
-  revealStaggerMs: 18,
-  fadeDurationMs: 120,
+  eraseStaggerMs: 18 * TRANSCRIPT_TIMING_SLOWDOWN_FACTOR,
+  revealStaggerMs: 18 * TRANSCRIPT_TIMING_SLOWDOWN_FACTOR,
+  fadeDurationMs: 180 * TRANSCRIPT_TIMING_SLOWDOWN_FACTOR,
 };
 
 const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
@@ -205,6 +207,49 @@ export const buildRevealAlphaRuns = (
     (progress) => toAlpha(progress),
   );
 
+const describeTranscriptTextForLogging = (text: string): Record<string, unknown> => ({
+  text,
+  characterCount: text.length,
+  graphemeCount: buildGraphemeSpans(text).length,
+  byteCount: utf8Encoder.encode(text).byteLength,
+});
+
+let transcriptFrameLoggingEnabled = false;
+let transcriptEventCount = 0;
+
+export const setTranscriptFrameLoggingEnabled = (enabled: boolean): void => {
+  transcriptFrameLoggingEnabled = enabled;
+};
+
+export const isTranscriptFrameLoggingEnabled = (): boolean => transcriptFrameLoggingEnabled;
+
+const logTranscriptAnimationEvent = (message: string, details: Record<string, unknown> = {}): void => {
+  if (transcriptEventCount % TRANSCRIPT_LOG_SAMPLE_INTERVAL !== 0) {
+    transcriptEventCount += 1;
+    return;
+  }
+
+  transcriptEventCount += 1;
+  console.error(`Active Listener transcript animation ${message}`, details);
+};
+
+const logTranscriptTextChange = (fromText: string, toText: string, nowMilliseconds: number | null, phase: TranscriptPhase): void => {
+  console.error('Active Listener transcript animation canonical text changed', {
+    fromText,
+    toText,
+    nowMilliseconds,
+    phase,
+  });
+};
+
+const logTranscriptAnimationFrameEvent = (message: string, details: Record<string, unknown> = {}): void => {
+  if (!transcriptFrameLoggingEnabled) {
+    return;
+  }
+
+  console.error(`Active Listener transcript animation ${message}`, details);
+};
+
 export class TranscriptAnimationController {
   private readonly sink: TranscriptAnimationSink;
   private readonly timing: TransitionTiming;
@@ -239,6 +284,14 @@ export class TranscriptAnimationController {
   }
 
   installImmediate(text: string): void {
+    if (text !== this.state.canonicalText) {
+      logTranscriptTextChange(this.state.canonicalText, text, null, this.state.phase);
+    }
+
+    logTranscriptAnimationEvent('install immediate requested', {
+      text: describeTranscriptTextForLogging(text),
+      previousState: this.getSnapshot(),
+    });
     this.clearAlphaRuns();
     this.sink.installText(text);
     this.state = {
@@ -249,24 +302,52 @@ export class TranscriptAnimationController {
       frameSourceId: this.state.frameSourceId,
       phaseStartedAtMs: 0,
     };
+    logTranscriptAnimationEvent('install immediate completed', {
+      state: this.getSnapshot(),
+    });
   }
 
   setCanonicalText(text: string, nowMs: number): boolean {
-    if (this.state.phase === 'idle' && text === this.state.canonicalText) {
-      return false;
+    if (text === this.state.canonicalText) {
+      logTranscriptAnimationEvent('set canonical text ignored because text did not change', {
+        nowMilliseconds: nowMs,
+        text: describeTranscriptTextForLogging(text),
+        state: this.getSnapshot(),
+      });
+      return this.isAnimating();
     }
 
+    logTranscriptTextChange(this.state.canonicalText, text, nowMs, this.state.phase);
+
+    logTranscriptAnimationEvent('set canonical text requested', {
+      nowMilliseconds: nowMs,
+      nextText: describeTranscriptTextForLogging(text),
+      previousState: this.getSnapshot(),
+    });
     this.state.canonicalText = text;
     this.restartTransition(this.state.installedText, text, nowMs);
+    logTranscriptAnimationEvent('set canonical text completed', {
+      state: this.getSnapshot(),
+    });
     return this.isAnimating();
   }
 
   tick(nowMs: number): boolean {
+    logTranscriptAnimationFrameEvent('tick started', {
+      nowMilliseconds: nowMs,
+      state: this.getSnapshot(),
+    });
     while (this.state.plan !== null) {
       if (this.state.phase === 'erasing-old-tail') {
         const elapsedMs = nowMs - this.state.phaseStartedAtMs;
         const eraseRuns = buildEraseAlphaRuns(this.state.plan, elapsedMs, this.timing);
         this.applyAlphaRuns(eraseRuns);
+        logTranscriptAnimationFrameEvent('erase phase tick applied alpha runs', {
+          elapsedMilliseconds: elapsedMs,
+          phaseDurationMilliseconds: getErasePhaseDurationMs(this.state.plan, this.timing),
+          runs: eraseRuns,
+          state: this.getSnapshot(),
+        });
 
         if (elapsedMs < getErasePhaseDurationMs(this.state.plan, this.timing)) {
           return true;
@@ -280,6 +361,12 @@ export class TranscriptAnimationController {
         const elapsedMs = nowMs - this.state.phaseStartedAtMs;
         const revealRuns = buildRevealAlphaRuns(this.state.plan, elapsedMs, this.timing);
         this.applyAlphaRuns(revealRuns);
+        logTranscriptAnimationFrameEvent('reveal phase tick applied alpha runs', {
+          elapsedMilliseconds: elapsedMs,
+          phaseDurationMilliseconds: getRevealPhaseDurationMs(this.state.plan, this.timing),
+          runs: revealRuns,
+          state: this.getSnapshot(),
+        });
 
         if (elapsedMs < getRevealPhaseDurationMs(this.state.plan, this.timing)) {
           return true;
@@ -292,19 +379,33 @@ export class TranscriptAnimationController {
       return false;
     }
 
+    logTranscriptAnimationFrameEvent('tick finished with no active plan', {
+      state: this.getSnapshot(),
+    });
     return false;
   }
 
   private restartTransition(sourceText: string, targetText: string, nowMs: number): void {
+    logTranscriptAnimationEvent('restart transition requested', {
+      nowMilliseconds: nowMs,
+      sourceText: describeTranscriptTextForLogging(sourceText),
+      targetText: describeTranscriptTextForLogging(targetText),
+    });
     this.clearAlphaRuns();
 
     const plan = buildTransitionPlan(sourceText, targetText);
+    logTranscriptAnimationEvent('restart transition built plan', {
+      plan,
+    });
     if (plan.sourceText === plan.targetText) {
       this.sink.installText(plan.targetText);
       this.state.installedText = plan.targetText;
       this.state.plan = null;
       this.state.phase = 'idle';
       this.state.phaseStartedAtMs = nowMs;
+      logTranscriptAnimationEvent('restart transition completed without animation', {
+        state: this.getSnapshot(),
+      });
       return;
     }
 
@@ -313,13 +414,22 @@ export class TranscriptAnimationController {
     this.state.plan = plan;
     this.state.phase = 'erasing-old-tail';
     this.state.phaseStartedAtMs = nowMs;
+    logTranscriptAnimationEvent('restart transition entered erase phase', {
+      state: this.getSnapshot(),
+    });
   }
 
   private swapToTarget(nowMs: number): void {
     if (this.state.plan === null) {
+      logTranscriptAnimationEvent('swap to target skipped because there is no active plan');
       return;
     }
 
+    logTranscriptAnimationEvent('swap to target started', {
+      nowMilliseconds: nowMs,
+      plan: this.state.plan,
+      stateBeforeSwap: this.getSnapshot(),
+    });
     this.clearAlphaRuns();
     this.sink.beforeSwap?.(this.state.plan);
     this.sink.installText(this.state.plan.targetText);
@@ -327,17 +437,30 @@ export class TranscriptAnimationController {
     this.sink.afterSwap?.(this.state.plan);
     this.state.phase = 'revealing-new-tail';
     this.state.phaseStartedAtMs = nowMs;
+    logTranscriptAnimationEvent('swap to target completed', {
+      state: this.getSnapshot(),
+    });
   }
 
   private finishTransition(): void {
+    logTranscriptAnimationEvent('finish transition started', {
+      stateBeforeFinish: this.getSnapshot(),
+    });
     this.clearAlphaRuns();
     this.state.plan = null;
     this.state.phase = 'idle';
     this.state.installedText = this.state.canonicalText;
+    logTranscriptAnimationEvent('finish transition completed', {
+      state: this.getSnapshot(),
+    });
   }
 
   private applyAlphaRuns(runs: ByteAlphaRun[]): void {
     this.activeAlphaRuns = runs.map((run) => ({ ...run }));
+    logTranscriptAnimationFrameEvent('apply alpha runs requested', {
+      runs,
+      state: this.getSnapshot(),
+    });
     if (runs.length === 0) {
       this.sink.clearAlphaRuns();
       return;
@@ -347,6 +470,9 @@ export class TranscriptAnimationController {
   }
 
   private clearAlphaRuns(): void {
+    logTranscriptAnimationFrameEvent('clear alpha runs requested', {
+      stateBeforeClear: this.getSnapshot(),
+    });
     this.activeAlphaRuns = [];
     this.sink.clearAlphaRuns();
   }
