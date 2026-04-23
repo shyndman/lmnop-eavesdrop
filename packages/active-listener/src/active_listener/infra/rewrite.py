@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from types import TracebackType
 from typing import Literal, NotRequired, Protocol, TypedDict, cast, final
@@ -155,6 +155,10 @@ class PydanticAiRewriteClient:
       )
     except Exception as exc:
       raise RewriteClientError("rewrite request failed") from exc
+
+    model_response = response.response
+    print("OpenRouter usage:", asdict(model_response.usage))
+    print("OpenRouter cost:", model_response.cost())
 
     rewritten_text = response.output.strip()
     if rewritten_text == "":

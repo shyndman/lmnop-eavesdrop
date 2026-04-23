@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import ClassVar, Protocol
+from typing import ClassVar, Protocol, TypeVar
 
 from pydantic import BaseModel, ConfigDict
-from sdbus import DbusInterfaceCommon, SdBus, dbus_method, sd_bus_open_user
+from sdbus import (
+  DbusInterfaceCommon,
+  SdBus,
+  SdBusUnmappedMessageError,
+  dbus_method,
+  sd_bus_open_user,
+)
 
 from eavesdrop.common import get_logger
 
@@ -23,9 +30,11 @@ KITTY_WM_CLASS = "kitty"
 MAX_EMIT_CHUNK_LENGTH = 800
 # Vicinae schedules the actual paste asynchronously after a 100 ms timeout.
 INTER_CHUNK_DELAY_MS = 150
+DISCONNECTED_BUS_ERROR_NAME = "System.Error.ENOTCONN"
 
 
 _logger = get_logger("al/emit")
+ProxyCallResult = TypeVar("ProxyCallResult")
 
 
 class FocusedWindowDisplay(BaseModel):
@@ -119,6 +128,12 @@ def _select_paste_modifiers(wm_class: str) -> str:
   return DEFAULT_PASTE_MODIFIERS
 
 
+def _is_disconnected_bus_error(exc: Exception) -> bool:
+  return isinstance(exc, SdBusUnmappedMessageError) and exc.args[:1] == (
+    DISCONNECTED_BUS_ERROR_NAME,
+  )
+
+
 @dataclass
 class GnomeShellExtensionTextEmitter:
   """Text emitter backed by Vicinae's GNOME Shell D-Bus extension."""
@@ -128,17 +143,7 @@ class GnomeShellExtensionTextEmitter:
   _windows: WindowsExtensionInterface | None = None
   _clipboard: ClipboardExtensionInterface | None = None
 
-  def initialize(self) -> None:
-    """Initialize the GNOME Shell extension backend exactly once.
-
-    :returns: None
-    :rtype: None
-    """
-
-    if self._initialized:
-      _logger.debug("emitter already initialized")
-      return
-
+  def _bind_proxies(self) -> None:
     bus: SdBus | None = None
     try:
       _logger.debug("opening emitter session bus", bus_name=DBUS_BUS_NAME)
@@ -167,6 +172,58 @@ class GnomeShellExtensionTextEmitter:
     self._initialized = True
     _logger.info("emitter initialized")
 
+  def _close_proxies(self) -> None:
+    if self._bus is not None:
+      self._bus.close()
+
+    self._bus = None
+    self._windows = None
+    self._clipboard = None
+    self._initialized = False
+
+  def _rebind_proxies(self, *, operation: str) -> None:
+    _logger.warning("emitter bus disconnected, rebinding proxies", operation=operation)
+    self._close_proxies()
+    self._bind_proxies()
+
+  def _require_windows(self) -> WindowsExtensionInterface:
+    if not self._initialized or self._windows is None:
+      raise RuntimeError("GnomeShellExtensionTextEmitter.initialize() must run before emit_text()")
+    return self._windows
+
+  def _require_clipboard(self) -> ClipboardExtensionInterface:
+    if not self._initialized or self._clipboard is None:
+      raise RuntimeError("GnomeShellExtensionTextEmitter.initialize() must run before emit_text()")
+    return self._clipboard
+
+  def _call_with_rebind(
+    self,
+    *,
+    operation: str,
+    call: Callable[[], ProxyCallResult],
+  ) -> ProxyCallResult:
+    try:
+      return call()
+    except Exception as exc:
+      if not _is_disconnected_bus_error(exc):
+        raise
+
+    self._rebind_proxies(operation=operation)
+    return call()
+
+  def initialize(self) -> None:
+    """Initialize the GNOME Shell extension backend exactly once.
+
+    :returns: None
+    :rtype: None
+    """
+
+    if self._initialized:
+      _logger.debug("emitter already initialized")
+      return
+
+    self._bind_proxies()
+
   def emit_text(self, text: str) -> None:
     """Emit finalized text through the GNOME Shell extension backend.
 
@@ -177,14 +234,14 @@ class GnomeShellExtensionTextEmitter:
     :raises RuntimeError: If ``initialize()`` has not run yet.
     """
 
-    if not self._initialized or self._windows is None or self._clipboard is None:
-      raise RuntimeError("GnomeShellExtensionTextEmitter.initialize() must run before emit_text()")
-
-    windows = self._windows
-    clipboard = self._clipboard
+    _ = self._require_windows()
+    _ = self._require_clipboard()
 
     try:
-      focused_window_payload = windows.get_focused_window_sync()
+      focused_window_payload = self._call_with_rebind(
+        operation="focused_window_snapshot",
+        call=lambda: self._require_windows().get_focused_window_sync(),
+      )
       focused_window = _parse_focused_window(focused_window_payload)
     except Exception:
       _logger.exception("focused window snapshot invalid")
@@ -216,7 +273,10 @@ class GnomeShellExtensionTextEmitter:
         chunk_length=len(chunk),
       )
       try:
-        clipboard.set_content(chunk)
+        self._call_with_rebind(
+          operation="clipboard_set_content",
+          call=lambda: self._require_clipboard().set_content(chunk),
+        )
       except Exception:
         _logger.exception(
           "clipboard chunk write failed",
@@ -238,10 +298,13 @@ class GnomeShellExtensionTextEmitter:
         modifiers=paste_modifiers,
       )
       try:
-        did_send = windows.send_shortcut(
-          focused_window.id,
-          PASTE_KEY,
-          paste_modifiers,
+        did_send = self._call_with_rebind(
+          operation="send_shortcut",
+          call=lambda: self._require_windows().send_shortcut(
+            focused_window.id,
+            PASTE_KEY,
+            paste_modifiers,
+          ),
         )
       except Exception:
         _logger.exception(

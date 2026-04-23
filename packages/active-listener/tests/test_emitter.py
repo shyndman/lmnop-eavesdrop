@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from typing import override
 
 import pytest
 from pydantic import ValidationError
+from sdbus import SdBusUnmappedMessageError
 
 from active_listener.infra.emitter import GnomeShellExtensionTextEmitter
 
@@ -255,6 +257,76 @@ def test_emitter_stops_after_send_shortcut_returns_false(
     (42, "v", "CONTROL"),
     (42, "v", "CONTROL"),
   ]
+
+
+def test_emitter_rebinds_after_disconnected_bus_during_emit(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  @dataclass
+  class DisconnectingWindowsProxy(RecordingWindowsProxy):
+    disconnect_error: Exception | None = None
+
+    @override
+    def get_focused_window_sync(self) -> str:
+      if self.disconnect_error is not None:
+        disconnect_error = self.disconnect_error
+        self.disconnect_error = None
+        raise disconnect_error
+      return super().get_focused_window_sync()
+
+  first_bus = RecordingBus()
+  second_bus = RecordingBus()
+  first_windows = DisconnectingWindowsProxy(
+    [_focused_window_payload()],
+    disconnect_error=SdBusUnmappedMessageError(
+      "System.Error.ENOTCONN",
+      "Transport endpoint is not connected",
+    ),
+  )
+  second_windows = RecordingWindowsProxy([_focused_window_payload(window_id=77)])
+  first_clipboard = RecordingClipboardProxy()
+  second_clipboard = RecordingClipboardProxy()
+  buses = [first_bus, second_bus]
+  windows_proxies = [first_windows, second_windows]
+  clipboard_proxies = [first_clipboard, second_clipboard]
+
+  def open_bus() -> RecordingBus:
+    return buses.pop(0)
+
+  def build_windows_proxy(
+    *, service_name: str, object_path: str, bus: object
+  ) -> RecordingWindowsProxy:
+    _ = service_name
+    _ = object_path
+    _ = bus
+    return windows_proxies.pop(0)
+
+  def build_clipboard_proxy(
+    *, service_name: str, object_path: str, bus: object
+  ) -> RecordingClipboardProxy:
+    _ = service_name
+    _ = object_path
+    _ = bus
+    return clipboard_proxies.pop(0)
+
+  monkeypatch.setattr("active_listener.infra.emitter.sd_bus_open_user", open_bus)
+  monkeypatch.setattr(
+    "active_listener.infra.emitter.WindowsExtensionInterface",
+    build_windows_proxy,
+  )
+  monkeypatch.setattr(
+    "active_listener.infra.emitter.ClipboardExtensionInterface",
+    build_clipboard_proxy,
+  )
+
+  emitter = GnomeShellExtensionTextEmitter()
+  emitter.initialize()
+  emitter.emit_text("hello")
+
+  assert first_bus.close_calls == 1
+  assert second_bus.close_calls == 0
+  assert second_clipboard.set_contents == ["hello"]
+  assert second_windows.shortcut_calls == [(77, "v", "CONTROL")]
 
 
 def test_emitter_raises_for_invalid_focused_window_payload(

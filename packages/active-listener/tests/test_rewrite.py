@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast, final
 
 import pytest
+from pydantic_ai.usage import RunUsage
 
 import active_listener.infra.rewrite as rewrite_module
 from active_listener.infra.rewrite import (
@@ -102,8 +103,29 @@ class StubEngine:
 
 
 @dataclass(frozen=True)
+class StubPydanticAiModelResponse:
+  usage: RunUsage = field(default_factory=RunUsage)
+  cost_result: object | None = None
+
+  def cost(self) -> object:
+    return self.cost_result
+
+
+@dataclass(frozen=True)
 class StubPydanticAiRunResult:
   output: str
+  run_usage: RunUsage = field(default_factory=RunUsage)
+  cost_result: object | None = None
+
+  @property
+  def response(self) -> StubPydanticAiModelResponse:
+    return StubPydanticAiModelResponse(
+      usage=self.run_usage,
+      cost_result=self.cost_result,
+    )
+
+  def usage(self) -> RunUsage:
+    return self.run_usage
 
 
 @final
@@ -409,6 +431,37 @@ async def test_pydantic_ai_rewrite_client_uses_model_and_instructions(
       "model": "openai:gpt-4.1-mini",
     }
   ]
+
+
+@pytest.mark.asyncio
+async def test_pydantic_ai_rewrite_client_prints_openrouter_usage(
+  monkeypatch: pytest.MonkeyPatch,
+  capsys: pytest.CaptureFixture[str],
+) -> None:
+  monkeypatch.setattr(rewrite_module, "Agent", StubAgent)
+  usage = RunUsage(
+    requests=1,
+    input_tokens=12,
+    output_tokens=4,
+    details={"cache_discount": 1},
+  )
+  cost_result = {"total_price": "0.00012"}
+  StubAgent.responses.append(
+    StubPydanticAiRunResult(
+      output=" rewritten alpha ",
+      run_usage=usage,
+      cost_result=cost_result,
+    )
+  )
+
+  client = PydanticAiRewriteClient(model="openai:gpt-4.1-mini")
+
+  _ = await client.rewrite_text(instructions="Prompt A", transcript="alpha")
+
+  assert capsys.readouterr().out == (
+    f"OpenRouter usage: {asdict(usage)}\n"
+    f"OpenRouter cost: {cost_result}\n"
+  )
 
 
 @pytest.mark.asyncio
