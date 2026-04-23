@@ -16,10 +16,23 @@ class RecordingReducerState:
   :vartype last_id: int | None
   :ivar parts: Accumulated committed text parts.
   :vartype parts: list[str]
+  :ivar first_segment_start: Earliest absolute start time among committed text segments.
+  :vartype first_segment_start: float | None
+  :ivar last_segment_end: Latest absolute end time among committed text segments.
+  :vartype last_segment_end: float | None
   """
 
   last_id: int | None = None
   parts: list[str] = field(default_factory=list)
+  first_segment_start: float | None = None
+  last_segment_end: float | None = None
+
+  @property
+  def duration_seconds(self) -> float | None:
+    if self.first_segment_start is None or self.last_segment_end is None:
+      return None
+
+    return self.last_segment_end - self.first_segment_start
 
 
 @dataclass(frozen=True)
@@ -151,11 +164,11 @@ def build_transcription_update(reduction: SegmentReduction) -> TranscriptionUpda
   )
 
 
-def append_segment_text(parts: list[str], segments: Sequence[Segment]) -> None:
-  """Append stripped committed text parts in place.
+def append_segment_text(state: RecordingReducerState, segments: Sequence[Segment]) -> None:
+  """Append stripped committed text parts and timing in place.
 
-  :param parts: Accumulated committed text parts.
-  :type parts: list[str]
+  :param state: Accumulated reducer state for the current recording.
+  :type state: RecordingReducerState
   :param segments: Newly committed segments to ingest.
   :type segments: Sequence[Segment]
   """
@@ -163,7 +176,13 @@ def append_segment_text(parts: list[str], segments: Sequence[Segment]) -> None:
   for segment in segments:
     text = segment.text.strip()
     if text:
-      parts.append(text)
+      state.parts.append(text)
+      segment_start = segment.absolute_start_time
+      segment_end = segment.absolute_end_time
+      if state.first_segment_start is None or segment_start < state.first_segment_start:
+        state.first_segment_start = segment_start
+      if state.last_segment_end is None or segment_end > state.last_segment_end:
+        state.last_segment_end = segment_end
 
 
 def render_text(parts: Sequence[str]) -> str:

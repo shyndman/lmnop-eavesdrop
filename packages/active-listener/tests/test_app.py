@@ -1252,6 +1252,8 @@ async def test_finalize_recording_emits_raw_text_when_rewrite_is_disabled() -> N
       tokens_in=None,
       tokens_out=None,
       cost=None,
+      word_count=1,
+      duration_seconds=0.1,
     )
   ]
   assert harness.logger.info_records[-1] == LogRecord(
@@ -1326,6 +1328,8 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
       tokens_in=12,
       tokens_out=4,
       cost=Decimal("0.00012"),
+      word_count=2,
+      duration_seconds=0.1,
     )
   ]
   assert harness.logger.info_records[-1] == LogRecord(

@@ -160,6 +160,8 @@ class RecordingFinalizer:
             if finalization_state.rewrite_result is not None
             else None
           ),
+          word_count=_count_words(final_text),
+          duration_seconds=reducer_state.duration_seconds,
         )
       )
 
@@ -274,3 +276,7 @@ class RecordingFinalizer:
       rewritten_text=rewrite_result.text,
     )
     return FinalizationState(text=rewrite_result.text, rewrite_result=rewrite_result)
+
+
+def _count_words(text: str) -> int:
+  return len(text.split())

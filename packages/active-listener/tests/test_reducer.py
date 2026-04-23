@@ -13,18 +13,26 @@ from active_listener.recording.reducer import (
 from eavesdrop.wire import Segment
 
 
-def _segment(segment_id: int, text: str) -> Segment:
+def _segment(
+  segment_id: int,
+  text: str,
+  *,
+  start: float = 0.0,
+  end: float = 0.1,
+  time_offset: float = 0.0,
+) -> Segment:
   return Segment(
     id=segment_id,
     seek=0,
-    start=0.0,
-    end=0.1,
+    start=start,
+    end=end,
     text=text,
     tokens=[],
     temperature=0.0,
     avg_logprob=0.0,
     compression_ratio=1.0,
     words=None,
+    time_offset=time_offset,
     completed=True,
   )
 
@@ -107,9 +115,17 @@ def test_append_segment_text_accumulates_stripped_non_empty_parts() -> None:
   state = RecordingReducerState(last_id=None, parts=["existing"])
 
   append_segment_text(
-    state.parts,
-    [_segment(1, "  hello  "), _segment(2, "   "), _segment(3, "world")],
+    state,
+    [
+      _segment(1, "  hello  ", start=0.0, end=0.4, time_offset=10.0),
+      _segment(2, "   ", start=0.4, end=0.7, time_offset=10.0),
+      _segment(3, "world", start=0.1, end=0.6, time_offset=10.5),
+    ],
   )
 
   assert state.parts == ["existing", "hello", "world"]
+  assert state.first_segment_start == 10.0
+  assert state.last_segment_end == 11.1
+  assert state.duration_seconds is not None
+  assert abs(state.duration_seconds - 1.1) < 1e-9
   assert render_text(state.parts) == "existing hello world"

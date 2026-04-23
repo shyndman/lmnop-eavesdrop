@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 from decimal import Decimal
 from pathlib import Path
+from typing import cast
 
 from structlog.stdlib import BoundLogger
 from typing_extensions import override
@@ -16,6 +17,10 @@ from active_listener.app.ports import (
 
 TRANSCRIPT_HISTORY_FILENAME = "active-listener.sqlite3"
 TRANSCRIPT_HISTORY_TABLE = "transcript_history"
+TRANSCRIPT_HISTORY_OPTIONAL_COLUMNS = {
+  "word_count": "INTEGER",
+  "duration_seconds": "REAL",
+}
 
 
 class SqliteTranscriptHistoryStore(ActiveListenerTranscriptHistoryStore):
@@ -43,7 +48,7 @@ class SqliteTranscriptHistoryStore(ActiveListenerTranscriptHistoryStore):
     try:
       database_path.parent.mkdir(parents=True, exist_ok=True)
       with sqlite3.connect(database_path) as connection:
-        self._ensure_schema(connection)
+        ensure_transcript_history_schema(connection)
         _ = connection.execute(
           f"""
           INSERT INTO {TRANSCRIPT_HISTORY_TABLE} (
@@ -52,9 +57,11 @@ class SqliteTranscriptHistoryStore(ActiveListenerTranscriptHistoryStore):
             llm_model,
             tokens_in,
             tokens_out,
-            cost
+            cost,
+            word_count,
+            duration_seconds
           )
-          VALUES (?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
           """,
           (
             record.pre_finalization_text,
@@ -63,6 +70,8 @@ class SqliteTranscriptHistoryStore(ActiveListenerTranscriptHistoryStore):
             record.tokens_in,
             record.tokens_out,
             _serialize_cost(record.cost),
+            record.word_count,
+            record.duration_seconds,
           ),
         )
     except Exception:
@@ -71,21 +80,43 @@ class SqliteTranscriptHistoryStore(ActiveListenerTranscriptHistoryStore):
         database_path=str(database_path),
       )
 
-  def _ensure_schema(self, connection: sqlite3.Connection) -> None:
-    _ = connection.execute(
-      f"""
-      CREATE TABLE IF NOT EXISTS {TRANSCRIPT_HISTORY_TABLE} (
-        id INTEGER PRIMARY KEY,
-        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        pre_finalization_text TEXT NOT NULL,
-        post_finalization_text TEXT NOT NULL,
-        llm_model TEXT,
-        tokens_in INTEGER,
-        tokens_out INTEGER,
-        cost TEXT
-      )
-      """
+
+def ensure_transcript_history_schema(connection: sqlite3.Connection) -> None:
+  _ = connection.execute(
+    f"""
+    CREATE TABLE IF NOT EXISTS {TRANSCRIPT_HISTORY_TABLE} (
+      id INTEGER PRIMARY KEY,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      pre_finalization_text TEXT NOT NULL,
+      post_finalization_text TEXT NOT NULL,
+      llm_model TEXT,
+      tokens_in INTEGER,
+      tokens_out INTEGER,
+      cost TEXT,
+      word_count INTEGER,
+      duration_seconds REAL
     )
+    """
+  )
+
+  existing_columns = _existing_columns(connection)
+  for column_name, column_definition in TRANSCRIPT_HISTORY_OPTIONAL_COLUMNS.items():
+    if column_name in existing_columns:
+      continue
+
+    _ = connection.execute(
+      f"ALTER TABLE {TRANSCRIPT_HISTORY_TABLE} ADD COLUMN {column_name} {column_definition}"
+    )
+
+
+def _existing_columns(connection: sqlite3.Connection) -> set[str]:
+  return {
+    row[1]
+    for row in cast(
+      list[tuple[int, str, str, int, object | None, int]],
+      connection.execute(f"PRAGMA table_info({TRANSCRIPT_HISTORY_TABLE})").fetchall(),
+    )
+  }
 
 
 def resolve_transcript_history_path() -> Path:

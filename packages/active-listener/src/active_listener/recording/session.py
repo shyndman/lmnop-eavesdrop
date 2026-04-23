@@ -103,7 +103,7 @@ class RecordingSession:
         stream=message.stream,
         last_id=state.last_id,
       )
-    append_segment_text(state.parts, reduction.segments)
+    append_segment_text(state, reduction.segments)
     state.last_id = reduction.last_id
     self._connection_last_id = reduction.last_id
     transcription_update = build_transcription_update(reduction)

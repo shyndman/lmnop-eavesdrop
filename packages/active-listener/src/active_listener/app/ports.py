@@ -31,6 +31,10 @@ class RewriteResult:
   :type output_tokens: int | None
   :param cost: Provider-reported request cost.
   :type cost: Decimal | None
+  :param word_count: Word count of the emitted transcript text.
+  :type word_count: int
+  :param duration_seconds: Duration of the committed audio backing the transcript.
+  :type duration_seconds: float | None
   """
 
   text: str
@@ -64,6 +68,8 @@ class FinalizedTranscriptRecord:
   tokens_in: int | None
   tokens_out: int | None
   cost: Decimal | None
+  word_count: int
+  duration_seconds: float | None
 
 
 class ActiveListenerClient(Protocol):

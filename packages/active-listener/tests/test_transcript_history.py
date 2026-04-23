@@ -43,6 +43,8 @@ def test_transcript_history_store_writes_record(
     tokens_in=12,
     tokens_out=4,
     cost=Decimal("0.00012"),
+    word_count=2,
+    duration_seconds=1.25,
   )
 
   monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -54,10 +56,18 @@ def test_transcript_history_store_writes_record(
 
   with sqlite3.connect(str(database_path)) as connection:
     row = cast(
-      tuple[str, str, str, int, int, str] | None,
+      tuple[str, str, str, int, int, str, int, float] | None,
       connection.execute(
         """
-      SELECT pre_finalization_text, post_finalization_text, llm_model, tokens_in, tokens_out, cost
+      SELECT
+        pre_finalization_text,
+        post_finalization_text,
+        llm_model,
+        tokens_in,
+        tokens_out,
+        cost,
+        word_count,
+        duration_seconds
       FROM transcript_history
       """
       ).fetchone(),
@@ -70,6 +80,8 @@ def test_transcript_history_store_writes_record(
     12,
     4,
     "0.00012",
+    2,
+    1.25,
   )
 
 
@@ -100,6 +112,8 @@ def test_transcript_history_store_logs_insert_failures(
       tokens_in=None,
       tokens_out=None,
       cost=None,
+      word_count=1,
+      duration_seconds=0.5,
     )
   )
 
@@ -113,3 +127,53 @@ def test_transcript_history_store_logs_insert_failures(
       },
     )
   ]
+
+
+def test_transcript_history_store_migrates_legacy_database(
+  monkeypatch: pytest.MonkeyPatch,
+  tmp_path: Path,
+) -> None:
+  database_path = tmp_path / ".local" / "share" / "eavesdrop" / "active-listener.sqlite3"
+  database_path.parent.mkdir(parents=True)
+  with sqlite3.connect(str(database_path)) as connection:
+    _ = connection.execute(
+      """
+      CREATE TABLE transcript_history (
+        id INTEGER PRIMARY KEY,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        pre_finalization_text TEXT NOT NULL,
+        post_finalization_text TEXT NOT NULL,
+        llm_model TEXT,
+        tokens_in INTEGER,
+        tokens_out INTEGER,
+        cost TEXT
+      )
+      """
+    )
+
+  logger = HistoryLogger()
+  store = SqliteTranscriptHistoryStore(logger=cast(BoundLogger, cast(object, logger)))
+  monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+  store.record_finalized_transcript(
+    FinalizedTranscriptRecord(
+      pre_finalization_text="alpha",
+      post_finalization_text="alpha ",
+      llm_model=None,
+      tokens_in=None,
+      tokens_out=None,
+      cost=None,
+      word_count=1,
+      duration_seconds=0.5,
+    )
+  )
+
+  with sqlite3.connect(str(database_path)) as connection:
+    row = cast(
+      tuple[int, float] | None,
+      connection.execute(
+        "SELECT word_count, duration_seconds FROM transcript_history ORDER BY id DESC LIMIT 1"
+      ).fetchone(),
+    )
+
+  assert row == (1, 0.5)
