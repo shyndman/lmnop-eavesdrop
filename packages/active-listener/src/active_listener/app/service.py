@@ -9,6 +9,7 @@ from structlog.stdlib import BoundLogger
 from active_listener.app.ports import (
   ActiveListenerClient,
   ActiveListenerRewriteClient,
+  ActiveListenerTranscriptHistoryStore,
 )
 from active_listener.app.signals import AppActionSignal, ClientSignal, RuntimeSignal
 from active_listener.app.state import (
@@ -61,6 +62,7 @@ class ActiveListenerService:
   emitter: TextEmitter
   logger: BoundLogger
   rewrite_client: ActiveListenerRewriteClient
+  history_store: ActiveListenerTranscriptHistoryStore
   dbus_service: AppStateService
   spectrum_analyzer: SpectrumRuntime = field(default_factory=_build_noop_spectrum_analyzer)
   phase: ForegroundPhase = ForegroundPhase.IDLE
@@ -82,6 +84,7 @@ class ActiveListenerService:
       emitter=self.emitter,
       logger=self.logger,
       rewrite_client=self.rewrite_client,
+      history_store=self.history_store,
       dbus_service=self.dbus_service,
       ingest_transcription_message=self._recording_session.ingest_transcription_message,
       current_disconnect_generation=self._current_disconnect_generation,

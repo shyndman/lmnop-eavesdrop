@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import os
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 from types import TracebackType
 from typing import Literal, NotRequired, Protocol, TypedDict, cast, final
@@ -10,6 +11,8 @@ from typing import Literal, NotRequired, Protocol, TypedDict, cast, final
 import litert_lm
 from pydantic_ai import Agent
 from pydantic_ai.run import AgentRunResult
+
+from active_listener.app.ports import RewriteResult
 
 USER_CONFIG_ENV_VAR = "XDG_CONFIG_HOME"
 DEFAULT_USER_CONFIG_DIRNAME = ".config"
@@ -107,7 +110,7 @@ class LiteRtRewriteClient:
     *,
     instructions: str,
     transcript: str,
-  ) -> str:
+  ) -> RewriteResult:
     try:
       with self._engine.create_conversation(
         messages=[build_system_message(instructions)]
@@ -116,7 +119,14 @@ class LiteRtRewriteClient:
     except Exception as exc:
       raise RewriteClientError("rewrite request failed") from exc
 
-    return extract_rewrite_output(response)
+    rewritten_text = extract_rewrite_output(response)
+    return RewriteResult(
+      text=rewritten_text,
+      model=self.model_path,
+      input_tokens=None,
+      output_tokens=None,
+      cost=None,
+    )
 
   async def close(self) -> None:
     if self._closed:
@@ -146,7 +156,7 @@ class PydanticAiRewriteClient:
     *,
     instructions: str,
     transcript: str,
-  ) -> str:
+  ) -> RewriteResult:
     try:
       response: AgentRunResult[str] = await self._agent.run(
         transcript,
@@ -156,15 +166,18 @@ class PydanticAiRewriteClient:
     except Exception as exc:
       raise RewriteClientError("rewrite request failed") from exc
 
-    model_response = response.response
-    print("OpenRouter usage:", asdict(model_response.usage))
-    print("OpenRouter cost:", model_response.cost())
-
     rewritten_text = response.output.strip()
     if rewritten_text == "":
       raise RewriteClientError("rewrite model returned empty output")
 
-    return rewritten_text
+    usage = response.usage()
+    return RewriteResult(
+      text=rewritten_text,
+      model=self.model,
+      input_tokens=usage.input_tokens,
+      output_tokens=usage.output_tokens,
+      cost=_extract_total_cost(response),
+    )
 
   async def close(self) -> None:
     return None
@@ -177,7 +190,7 @@ class DisabledRewriteClient:
     *,
     instructions: str,
     transcript: str,
-  ) -> str:
+  ) -> RewriteResult:
     _ = instructions
     _ = transcript
     raise RewriteClientError("rewrite is disabled")
@@ -254,6 +267,13 @@ def extract_rewrite_output(response: LiteRtResponse) -> str:
     raise RewriteClientError("rewrite model returned empty output")
 
   return rewritten_text
+
+
+def _extract_total_cost(response: AgentRunResult[str]) -> Decimal | None:
+  try:
+    return response.response.cost().total_price
+  except Exception:
+    return None
 
 
 def resolve_prompt_path(raw_path: str | Path) -> Path:

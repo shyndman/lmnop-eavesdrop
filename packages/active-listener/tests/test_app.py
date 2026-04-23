@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from decimal import Decimal
 from pathlib import Path
 from typing import cast, final
 
@@ -14,7 +15,11 @@ import pytest
 from structlog.stdlib import BoundLogger
 from typing_extensions import override
 
-from active_listener.app.ports import ActiveListenerRuntimeError
+from active_listener.app.ports import (
+  ActiveListenerRuntimeError,
+  FinalizedTranscriptRecord,
+  RewriteResult,
+)
 from active_listener.app.service import ActiveListenerService
 from active_listener.app.state import AppAction, AppActionDecision, ForegroundPhase
 from active_listener.bootstrap import build_capture_callback, create_service, run_service
@@ -363,6 +368,9 @@ class FailingStopClient(FakeClient):
 class FakeRewriteClient:
   rewritten_text: str = "rewritten text"
   error: Exception | None = None
+  input_tokens: int | None = None
+  output_tokens: int | None = None
+  cost: Decimal | None = None
   calls: list[dict[str, str]] = field(default_factory=list)
   close_calls: int = 0
 
@@ -371,7 +379,7 @@ class FakeRewriteClient:
     *,
     instructions: str,
     transcript: str,
-  ) -> str:
+  ) -> RewriteResult:
     self.calls.append(
       {
         "instructions": instructions,
@@ -380,10 +388,24 @@ class FakeRewriteClient:
     )
     if self.error is not None:
       raise self.error
-    return self.rewritten_text
+    return RewriteResult(
+      text=self.rewritten_text,
+      model="fake-model",
+      input_tokens=self.input_tokens,
+      output_tokens=self.output_tokens,
+      cost=self.cost,
+    )
 
   async def close(self) -> None:
     self.close_calls += 1
+
+
+@dataclass
+class FakeHistoryStore:
+  records: list[FinalizedTranscriptRecord] = field(default_factory=list)
+
+  def record_finalized_transcript(self, record: FinalizedTranscriptRecord) -> None:
+    self.records.append(record)
 
 
 def _segment(segment_id: int, text: str, *, completed: bool) -> Segment:
@@ -430,6 +452,7 @@ class ServiceHarness:
   emitter: FakeEmitter
   logger: RecordingLogger
   rewrite_client: FakeRewriteClient
+  history_store: FakeHistoryStore
   dbus_service: FakeDbusService
 
 
@@ -440,6 +463,7 @@ def _service(
   emitter: FakeEmitter | None = None,
   logger: RecordingLogger | None = None,
   rewrite_client: FakeRewriteClient | None = None,
+  history_store: FakeHistoryStore | None = None,
   dbus_service: FakeDbusService | None = None,
   config: ActiveListenerConfig | None = None,
   spectrum_analyzer: FakeSpectrumAnalyzer | None = None,
@@ -449,6 +473,7 @@ def _service(
   resolved_emitter = emitter or FakeEmitter()
   resolved_logger = logger or RecordingLogger()
   resolved_rewrite_client = rewrite_client or FakeRewriteClient()
+  resolved_history_store = history_store or FakeHistoryStore()
   resolved_dbus_service = dbus_service or FakeDbusService()
   service = ActiveListenerService(
     config=config or _config(),
@@ -457,6 +482,7 @@ def _service(
     emitter=resolved_emitter,
     logger=cast(BoundLogger, cast(object, resolved_logger)),
     rewrite_client=resolved_rewrite_client,
+    history_store=resolved_history_store,
     dbus_service=resolved_dbus_service,
     spectrum_analyzer=spectrum_analyzer or FakeSpectrumAnalyzer(),
   )
@@ -467,6 +493,7 @@ def _service(
     resolved_emitter,
     resolved_logger,
     resolved_rewrite_client,
+    resolved_history_store,
     resolved_dbus_service,
   )
 
@@ -1217,6 +1244,16 @@ async def test_finalize_recording_emits_raw_text_when_rewrite_is_disabled() -> N
 
   assert harness.emitter.emitted == ["alpha "]
   assert harness.rewrite_client.calls == []
+  assert harness.history_store.records == [
+    FinalizedTranscriptRecord(
+      pre_finalization_text="alpha",
+      post_finalization_text="alpha ",
+      llm_model=None,
+      tokens_in=None,
+      tokens_out=None,
+      cost=None,
+    )
+  ]
   assert harness.logger.info_records[-1] == LogRecord(
     event="text emitted",
     fields={
@@ -1240,10 +1277,29 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
       )
     ]
   )
-  rewrite_client = FakeRewriteClient(rewritten_text="rewritten alpha")
+  rewrite_client = FakeRewriteClient(
+    rewritten_text="rewritten alpha",
+    input_tokens=12,
+    output_tokens=4,
+    cost=Decimal("0.00012"),
+  )
+  emitter = FakeEmitter()
+
+  @dataclass
+  class AssertingHistoryStore(FakeHistoryStore):
+    emitter: FakeEmitter = field(default_factory=FakeEmitter)
+
+    @override
+    def record_finalized_transcript(self, record: FinalizedTranscriptRecord) -> None:
+      assert self.emitter.emitted == ["rewritten alpha "]
+      super().record_finalized_transcript(record)
+
+  history_store = AssertingHistoryStore(emitter=emitter)
   harness = _service(
     client=client,
+    emitter=emitter,
     rewrite_client=rewrite_client,
+    history_store=history_store,
     config=_config(rewrite_enabled=True),
   )
   monkeypatch.setattr(
@@ -1261,6 +1317,16 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
       "instructions": "Rewrite this transcript.",
       "transcript": "alpha",
     }
+  ]
+  assert harness.history_store.records == [
+    FinalizedTranscriptRecord(
+      pre_finalization_text="alpha",
+      post_finalization_text="rewritten alpha ",
+      llm_model="fake-model",
+      tokens_in=12,
+      tokens_out=4,
+      cost=Decimal("0.00012"),
+    )
   ]
   assert harness.logger.info_records[-1] == LogRecord(
     event="text emitted",

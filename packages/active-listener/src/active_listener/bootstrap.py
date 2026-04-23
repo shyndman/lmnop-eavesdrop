@@ -9,6 +9,7 @@ from active_listener.app.ports import (
   ActiveListenerClient,
   ActiveListenerRewriteClient,
   ActiveListenerRuntimeError,
+  ActiveListenerTranscriptHistoryStore,
 )
 from active_listener.app.service import ActiveListenerService
 from active_listener.app.state import ForegroundPhase
@@ -25,6 +26,7 @@ from active_listener.infra.rewrite import (
   LiteRtRewriteClient,
   PydanticAiRewriteClient,
 )
+from active_listener.infra.transcript_history import SqliteTranscriptHistoryStore
 from active_listener.recording.spectrum import (
   Float32PcmChunk,
   QuantizedSpectrumFrame,
@@ -49,6 +51,8 @@ async def create_service(
   emitter_factory: Callable[[], TextEmitter] | None = None,
   rewrite_client_factory: Callable[[LlmRewriteConfig | None], ActiveListenerRewriteClient]
   | None = None,
+  history_store_factory: Callable[[BoundLogger], ActiveListenerTranscriptHistoryStore]
+  | None = None,
 ) -> ActiveListenerService:
   """Construct a fully initialized service instance.
 
@@ -60,6 +64,8 @@ async def create_service(
   :type client_factory: Callable[[ActiveListenerConfig], ActiveListenerClient] | None
   :param emitter_factory: Factory for the text emitter dependency.
   :type emitter_factory: Callable[[], TextEmitter] | None
+  :param history_store_factory: Factory for the transcript history dependency.
+  :type history_store_factory: Callable[[BoundLogger], ActiveListenerTranscriptHistoryStore] | None
   :returns: Ready-to-run service instance.
   :rtype: ActiveListenerService
   :raises ActiveListenerRuntimeError: If startup prerequisites cannot be satisfied.
@@ -70,6 +76,7 @@ async def create_service(
   resolved_client_factory = client_factory or build_client
   resolved_emitter_factory = emitter_factory or build_emitter
   resolved_rewrite_client_factory = rewrite_client_factory or build_rewrite_client
+  resolved_history_store_factory = history_store_factory or build_history_store
   spectrum_analyzer = SpectrumAnalyzer(
     publish=lambda bars: publish_spectrum_frame(
       dbus_service=resolved_dbus_service,
@@ -80,6 +87,7 @@ async def create_service(
   on_capture = build_capture_callback(spectrum_analyzer=spectrum_analyzer, logger=logger)
   client: ActiveListenerClient | None = None
   rewrite_client: ActiveListenerRewriteClient | None = None
+  history_store = resolved_history_store_factory(logger)
   connect_started = False
 
   try:
@@ -123,6 +131,7 @@ async def create_service(
     emitter=emitter,
     logger=logger,
     rewrite_client=rewrite_client,
+    history_store=history_store,
     dbus_service=resolved_dbus_service,
     spectrum_analyzer=spectrum_analyzer,
   )
@@ -143,6 +152,8 @@ async def run_service(
   emitter_factory: Callable[[], TextEmitter] | None = None,
   rewrite_client_factory: Callable[[LlmRewriteConfig | None], ActiveListenerRewriteClient]
   | None = None,
+  history_store_factory: Callable[[BoundLogger], ActiveListenerTranscriptHistoryStore]
+  | None = None,
 ) -> None:
   """Create and run the long-lived active-listener service.
 
@@ -154,6 +165,8 @@ async def run_service(
   :type client_factory: Callable[[ActiveListenerConfig], ActiveListenerClient] | None
   :param emitter_factory: Factory for the text emitter dependency.
   :type emitter_factory: Callable[[], TextEmitter] | None
+  :param history_store_factory: Factory for the transcript history dependency.
+  :type history_store_factory: Callable[[BoundLogger], ActiveListenerTranscriptHistoryStore] | None
   :returns: None
   :rtype: None
   """
@@ -168,6 +181,7 @@ async def run_service(
       client_factory=client_factory,
       emitter_factory=emitter_factory,
       rewrite_client_factory=rewrite_client_factory,
+      history_store_factory=history_store_factory,
     )
   except Exception as exc:
     await emit_fatal_error_if_possible(
@@ -283,6 +297,18 @@ def build_rewrite_client(config: LlmRewriteConfig | None) -> ActiveListenerRewri
     return LiteRtRewriteClient(model_path=provider.model_path)
 
   return PydanticAiRewriteClient(model=provider.model)
+
+
+def build_history_store(logger: BoundLogger) -> ActiveListenerTranscriptHistoryStore:
+  """Build the local transcript history store.
+
+  :param logger: Structured logger used for best-effort insert failures.
+  :type logger: BoundLogger
+  :returns: SQLite-backed transcript history store.
+  :rtype: ActiveListenerTranscriptHistoryStore
+  """
+
+  return SqliteTranscriptHistoryStore(logger=logger)
 
 
 async def cleanup_startup_prerequisites(

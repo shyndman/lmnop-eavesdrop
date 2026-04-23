@@ -13,6 +13,9 @@ import active_listener.infra.rewrite as rewrite_module
 from active_listener.app.ports import (
   ActiveListenerClient,
   ActiveListenerRewriteClient,
+  ActiveListenerTranscriptHistoryStore,
+  FinalizedTranscriptRecord,
+  RewriteResult,
 )
 from active_listener.config.models import ActiveListenerConfig
 from active_listener.infra.dbus import AppStateService
@@ -24,7 +27,14 @@ from active_listener.recording.reducer import (
 )
 from eavesdrop.wire import TranscriptionMessage
 
-PipelineStep = Callable[[str], Awaitable[str]]
+
+@dataclass(frozen=True)
+class FinalizationState:
+  text: str
+  rewrite_result: RewriteResult | None = None
+
+
+PipelineStep = Callable[[FinalizationState], Awaitable[FinalizationState]]
 
 # Spoken symbol words recognized by `_replace_symbols`. DO NOT expand this list
 # casually — it is deliberately tiny so that normal prose words never collide.
@@ -43,10 +53,7 @@ _SYMBOL_PATTERN = re.compile(
 # Case-insensitive whole-phrase replacements applied BEFORE symbol fusion.
 # Keys are matched case-insensitively; values are substituted verbatim with
 # their canonical casing. Add freely — keep keys lowercase for readability.
-_REPLACEMENTS: dict[str, str] = {
-  "debass": "D-Bus",
-  "tild": "tilde",
-}
+_REPLACEMENTS: dict[str, str] = {"debass": "D-Bus", "tild": "tilde", "yamel": "yaml"}
 _REPLACEMENT_PATTERN = (
   re.compile(
     r"\b(" + "|".join(re.escape(k) for k in _REPLACEMENTS) + r")\b",
@@ -72,6 +79,7 @@ class RecordingFinalizer:
   emitter: TextEmitter
   logger: BoundLogger
   rewrite_client: ActiveListenerRewriteClient
+  history_store: ActiveListenerTranscriptHistoryStore
   dbus_service: AppStateService
   ingest_transcription_message: RecordingMessageIngestor
   current_disconnect_generation: DisconnectGenerationReader
@@ -103,13 +111,15 @@ class RecordingFinalizer:
       self.logger.info("finalized raw transcript", stream=message.stream, raw_text=raw_text)
 
       pipeline_steps = self._pipeline_steps(stream=message.stream)
-      final_text = await self._run_pipeline(
-        text=raw_text,
+      finalization_state = await self._run_pipeline(
+        state=FinalizationState(text=raw_text),
         steps=pipeline_steps,
         stream=message.stream,
       )
-      if final_text is None:
+      if finalization_state is None:
         return
+
+      final_text = finalization_state.text
 
       emitted_text_source = "pipeline" if self.config.llm_rewrite is not None else "raw"
 
@@ -126,13 +136,42 @@ class RecordingFinalizer:
         text_length=len(final_text),
         source=emitted_text_source,
       )
+      self.history_store.record_finalized_transcript(
+        FinalizedTranscriptRecord(
+          pre_finalization_text=raw_text,
+          post_finalization_text=final_text,
+          llm_model=(
+            finalization_state.rewrite_result.model
+            if finalization_state.rewrite_result is not None
+            else None
+          ),
+          tokens_in=(
+            finalization_state.rewrite_result.input_tokens
+            if finalization_state.rewrite_result is not None
+            else None
+          ),
+          tokens_out=(
+            finalization_state.rewrite_result.output_tokens
+            if finalization_state.rewrite_result is not None
+            else None
+          ),
+          cost=(
+            finalization_state.rewrite_result.cost
+            if finalization_state.rewrite_result is not None
+            else None
+          ),
+        )
+      )
 
   def _pipeline_steps(self, *, stream: str) -> list[PipelineStep]:
-    async def rewrite_with_llm(text: str) -> str:
-      return await self._rewrite_with_llm(text=text, stream=stream)
+    async def rewrite_with_llm(state: FinalizationState) -> FinalizationState:
+      return await self._rewrite_with_llm(state=state, stream=stream)
 
-    async def append_trailing_space(text: str) -> str:
-      return f"{text} "
+    async def append_trailing_space(state: FinalizationState) -> FinalizationState:
+      return FinalizationState(
+        text=f"{state.text} ",
+        rewrite_result=state.rewrite_result,
+      )
 
     steps: list[PipelineStep] = [
       self._apply_replacements,
@@ -146,36 +185,42 @@ class RecordingFinalizer:
 
     return steps
 
-  async def _apply_replacements(self, text: str) -> str:
+  async def _apply_replacements(self, state: FinalizationState) -> FinalizationState:
     # Case-insensitive whole-word/phrase substitution driven by `_REPLACEMENTS`.
     # Extend the map at module level; this function should stay dumb.
     if _REPLACEMENT_PATTERN is None:
-      return text
-    return _REPLACEMENT_PATTERN.sub(
-      lambda m: _REPLACEMENTS[m.group(1).lower()],
-      text,
+      return state
+    return FinalizationState(
+      text=_REPLACEMENT_PATTERN.sub(
+        lambda m: _REPLACEMENTS[m.group(1).lower()],
+        state.text,
+      ),
+      rewrite_result=state.rewrite_result,
     )
 
-  async def _replace_symbols(self, text: str) -> str:
+  async def _replace_symbols(self, state: FinalizationState) -> FinalizationState:
     #! This satisfies the design intent. Do not touch.
     #
     # Fuse spoken symbol words into their glyphs, swallowing adjacent whitespace:
     # e.g. "tild slash dot omp slash agent slash skills" -> "~/.omp/agent/skills".
-    return _SYMBOL_PATTERN.sub(
-      lambda m: _SYMBOL_WORDS[m.group(1).lower()],
-      text,
+    return FinalizationState(
+      text=_SYMBOL_PATTERN.sub(
+        lambda m: _SYMBOL_WORDS[m.group(1).lower()],
+        state.text,
+      ),
+      rewrite_result=state.rewrite_result,
     )
 
   async def _run_pipeline(
     self,
     *,
-    text: str,
+    state: FinalizationState,
     steps: Iterable[PipelineStep],
     stream: str,
-  ) -> str | None:
+  ) -> FinalizationState | None:
     for step in steps:
       try:
-        text = await step(text)
+        state = await step(state)
       except Exception as exc:
         self.logger.exception(
           "dictation pipeline step failed",
@@ -186,9 +231,14 @@ class RecordingFinalizer:
         await self.dbus_service.pipeline_failed(step.__name__, str(exc))
         return None
 
-    return text
+    return state
 
-  async def _rewrite_with_llm(self, *, text: str, stream: str) -> str:
+  async def _rewrite_with_llm(
+    self,
+    *,
+    state: FinalizationState,
+    stream: str,
+  ) -> FinalizationState:
     rewrite_config = self.config.llm_rewrite
     if rewrite_config is None:
       raise rewrite_module.RewriteClientError("rewrite is disabled")
@@ -210,17 +260,17 @@ class RecordingFinalizer:
       "rewrite started",
       stream=stream,
       prompt_path=prompt_path,
-      raw_text=text,
+      raw_text=state.text,
     )
-    rewritten_text = await self.rewrite_client.rewrite_text(
+    rewrite_result = await self.rewrite_client.rewrite_text(
       instructions=prompt.instructions,
-      transcript=text,
+      transcript=state.text,
     )
     self.logger.info(
       "rewrite succeeded",
       stream=stream,
       prompt_path=prompt_path,
-      raw_text=text,
-      rewritten_text=rewritten_text,
+      raw_text=state.text,
+      rewritten_text=rewrite_result.text,
     )
-    return rewritten_text
+    return FinalizationState(text=rewrite_result.text, rewrite_result=rewrite_result)

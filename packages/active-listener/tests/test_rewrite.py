@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast, final
@@ -11,6 +12,7 @@ import pytest
 from pydantic_ai.usage import RunUsage
 
 import active_listener.infra.rewrite as rewrite_module
+from active_listener.app.ports import RewriteResult
 from active_listener.infra.rewrite import (
   LiteRtRewriteClient,
   LoadedRewritePromptFile,
@@ -103,11 +105,17 @@ class StubEngine:
 
 
 @dataclass(frozen=True)
+class StubPriceCalculation:
+  total_price: Decimal
+
+
+@dataclass(frozen=True)
 class StubPydanticAiModelResponse:
   usage: RunUsage = field(default_factory=RunUsage)
-  cost_result: object | None = None
+  cost_result: StubPriceCalculation | None = None
 
-  def cost(self) -> object:
+  def cost(self) -> StubPriceCalculation:
+    assert self.cost_result is not None
     return self.cost_result
 
 
@@ -115,7 +123,7 @@ class StubPydanticAiModelResponse:
 class StubPydanticAiRunResult:
   output: str
   run_usage: RunUsage = field(default_factory=RunUsage)
-  cost_result: object | None = None
+  cost_result: StubPriceCalculation | None = None
 
   @property
   def response(self) -> StubPydanticAiModelResponse:
@@ -325,8 +333,20 @@ async def test_rewrite_client_uses_fresh_conversation_per_request(
   second = await client.rewrite_text(instructions="Prompt B", transcript="beta")
   await client.close()
 
-  assert first == "rewritten alpha"
-  assert second == "rewritten beta"
+  assert first == RewriteResult(
+    text="rewritten alpha",
+    model="/tmp/rewrite/model.litertlm",
+    input_tokens=None,
+    output_tokens=None,
+    cost=None,
+  )
+  assert second == RewriteResult(
+    text="rewritten beta",
+    model="/tmp/rewrite/model.litertlm",
+    input_tokens=None,
+    output_tokens=None,
+    cost=None,
+  )
   assert len(StubEngine.created) == 1
   assert StubEngine.created[0].model_path == "/tmp/rewrite/model.litertlm"
   assert len(StubEngine.conversations) == 2
@@ -363,7 +383,13 @@ async def test_rewrite_client_extracts_documented_response_shape(
   client = LiteRtRewriteClient(model_path="/tmp/rewrite/model.litertlm")
   rewritten = await client.rewrite_text(instructions="Rewrite this transcript.", transcript="alpha")
 
-  assert rewritten == "Hello, world"
+  assert rewritten == RewriteResult(
+    text="Hello, world",
+    model="/tmp/rewrite/model.litertlm",
+    input_tokens=None,
+    output_tokens=None,
+    cost=None,
+  )
 
 
 @pytest.mark.asyncio
@@ -423,7 +449,13 @@ async def test_pydantic_ai_rewrite_client_uses_model_and_instructions(
   client = PydanticAiRewriteClient(model="openai:gpt-4.1-mini")
   rewritten = await client.rewrite_text(instructions="Prompt A", transcript="alpha")
 
-  assert rewritten == "rewritten alpha"
+  assert rewritten == RewriteResult(
+    text="rewritten alpha",
+    model="openai:gpt-4.1-mini",
+    input_tokens=0,
+    output_tokens=0,
+    cost=None,
+  )
   assert StubAgent.run_calls == [
     {
       "user_prompt": "alpha",
@@ -434,9 +466,8 @@ async def test_pydantic_ai_rewrite_client_uses_model_and_instructions(
 
 
 @pytest.mark.asyncio
-async def test_pydantic_ai_rewrite_client_prints_openrouter_usage(
+async def test_pydantic_ai_rewrite_client_returns_usage_and_cost_metadata(
   monkeypatch: pytest.MonkeyPatch,
-  capsys: pytest.CaptureFixture[str],
 ) -> None:
   monkeypatch.setattr(rewrite_module, "Agent", StubAgent)
   usage = RunUsage(
@@ -445,7 +476,7 @@ async def test_pydantic_ai_rewrite_client_prints_openrouter_usage(
     output_tokens=4,
     details={"cache_discount": 1},
   )
-  cost_result = {"total_price": "0.00012"}
+  cost_result = StubPriceCalculation(total_price=Decimal("0.00012"))
   StubAgent.responses.append(
     StubPydanticAiRunResult(
       output=" rewritten alpha ",
@@ -456,11 +487,14 @@ async def test_pydantic_ai_rewrite_client_prints_openrouter_usage(
 
   client = PydanticAiRewriteClient(model="openai:gpt-4.1-mini")
 
-  _ = await client.rewrite_text(instructions="Prompt A", transcript="alpha")
+  rewritten = await client.rewrite_text(instructions="Prompt A", transcript="alpha")
 
-  assert capsys.readouterr().out == (
-    f"OpenRouter usage: {asdict(usage)}\n"
-    f"OpenRouter cost: {cost_result}\n"
+  assert rewritten == RewriteResult(
+    text="rewritten alpha",
+    model="openai:gpt-4.1-mini",
+    input_tokens=12,
+    output_tokens=4,
+    cost=Decimal("0.00012"),
   )
 
 
