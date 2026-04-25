@@ -246,6 +246,7 @@ def build_client(
     host=config.host,
     port=config.port,
     audio_device=config.audio_device,
+    word_timestamps=True,
     on_capture=on_capture,
   )
 
