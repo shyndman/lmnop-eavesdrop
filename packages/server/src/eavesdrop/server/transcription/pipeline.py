@@ -1,16 +1,11 @@
 from collections.abc import Iterable
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, NamedTuple, cast
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
   from eavesdrop.server.transcription.session import TranscriptionSessionProtocol
 
-import ctranslate2
 import numpy as np
-from faster_whisper.audio import pad_or_trim
-from faster_whisper.tokenizer import _LANGUAGE_CODES, Tokenizer
-from faster_whisper.utils import get_end
-from faster_whisper.vad import VadOptions
+from faster_whisper.tokenizer import _LANGUAGE_CODES
 
 from eavesdrop.common import get_logger
 from eavesdrop.server.transcription.audio_processing import AudioProcessor
@@ -24,38 +19,18 @@ from eavesdrop.server.transcription.model_setup import (
   WhisperModelConfig,
   load_whisper_model,
 )
-from eavesdrop.server.transcription.models import (
-  SegmentDict,
-  TranscriptionInfo,
-  TranscriptionOptions,
-  VadParameters,
-)
+from eavesdrop.server.transcription.models import TranscriptionInfo, VadParameters
 from eavesdrop.server.transcription.prompt_builder import PromptBuilder
+from eavesdrop.server.transcription.request_runner import RequestRunner
+from eavesdrop.server.transcription.segment_decoder import SegmentDecoder
 from eavesdrop.server.transcription.segment_processor import SegmentProcessor
-from eavesdrop.server.transcription.utils import (
-  finalize_recording_timestamps,
-  get_ctranslate2_storage,
-  get_suppressed_tokens,
-  restore_speech_timestamps,
-  summarize_array,
-)
 from eavesdrop.server.transcription.word_alignment import WordTimestampAligner
-from eavesdrop.wire import Segment, Word
+from eavesdrop.wire import Segment
 
 # Combined punctuation string for word alignment processing
 # Contains both prepended ('"\'"¿([{-') and appended ('"\'.。,，!！?？:：")]}、') punctuation marks
 # Used for merging punctuation with adjacent words during timestamp alignment
 _PUNCTUATION = '"\'"¿([{-"\'.。,，!！?？:：")]}、'
-
-# Whisper has a couple of modes of operation. For now, we only use transcription.
-_TRANSCRIBE_TASK = "transcribe"
-
-
-class _TranscribeSegmentsResult(NamedTuple):
-  """Result from transcription with generation metrics."""
-
-  segments: Iterable[Segment]
-  total_attempts: int
 
 
 class WhisperModel:
@@ -147,6 +122,27 @@ class WhisperModel:
     # Initialize anomaly detector and hallucination filter
     self.hallucination_filter = HallucinationFilter(AnomalyDetector(_PUNCTUATION))
 
+    self.segment_decoder = SegmentDecoder(
+      model=self.model,
+      feature_extractor=self.feature_extractor,
+      frames_per_second=self.frames_per_second,
+      logger=self.logger,
+      language_detector=self.language_detector,
+      word_aligner=self.word_aligner,
+      prompt_builder=self.prompt_builder,
+      segment_processor=self.segment_processor,
+      generation_strategies=self.generation_strategies,
+      hallucination_filter=self.hallucination_filter,
+    )
+    self.request_runner = RequestRunner(
+      logger=self.logger,
+      model=self.model,
+      hf_tokenizer=self.hf_tokenizer,
+      audio_processor=self.audio_processor,
+      language_detector=self.language_detector,
+      segment_decoder=self.segment_decoder,
+    )
+
   @property
   def supported_languages(self) -> list[str]:
     """The languages supported by the model."""
@@ -213,7 +209,7 @@ class WhisperModel:
     )
 
     with session.trace_pipeline():
-      return self._transcribe(
+      return self.request_runner.run(
         audio=audio,
         session=session,
         language=language,
@@ -226,559 +222,3 @@ class WhisperModel:
         beam_size=beam_size,
         word_timestamps=word_timestamps,
       )
-
-  def _transcribe(
-    self,
-    audio: np.ndarray,
-    session: "TranscriptionSessionProtocol",
-    language: str | None = None,
-    initial_prompt: str | None = None,
-    vad_filter: bool = False,
-    vad_parameters: VadParameters | None = None,
-    hotwords: str | None = None,
-    multilingual: bool = False,
-    absolute_stream_start: float = 0.0,
-    beam_size: int | None = None,
-    word_timestamps: bool | None = None,
-  ) -> tuple[Iterable[Segment], TranscriptionInfo]:
-    default_options = TranscriptionOptions()
-    resolved_vad_parameters = vad_parameters or VadParameters()
-    runtime_vad_parameters = VadOptions(
-      threshold=resolved_vad_parameters.threshold,
-      neg_threshold=resolved_vad_parameters.neg_threshold,
-      min_speech_duration_ms=resolved_vad_parameters.min_speech_duration_ms,
-      max_speech_duration_s=resolved_vad_parameters.max_speech_duration_s,
-      min_silence_duration_ms=resolved_vad_parameters.min_silence_duration_ms,
-      speech_pad_ms=resolved_vad_parameters.speech_pad_ms,
-    )
-    resolved_beam_size = beam_size if beam_size is not None else default_options.beam_size
-    resolved_word_timestamps = (
-      word_timestamps if word_timestamps is not None else default_options.word_timestamps
-    )
-
-    # Use our new audio processing module for validation and VAD
-    with session.trace_vad_stage() as tracer:
-      audio, duration, duration_after_vad, speech_chunks, will_be_complete_silence = (
-        self.audio_processor.validate_and_preprocess_audio(
-          audio,
-          vad_filter,
-          runtime_vad_parameters,
-        )
-      )
-      tracer(
-        speech_chunks if vad_filter else None, self.audio_processor.sampling_rate, audio.shape[0]
-      )
-
-    # VAD Gatekeeper: Skip transcription if no speech detected
-    if vad_filter and will_be_complete_silence:
-      # VAD detected no speech - don't waste compute on Whisper
-      return [], TranscriptionInfo(
-        transcription_options=TranscriptionOptions(
-          multilingual=multilingual,
-          initial_prompt=initial_prompt,
-          beam_size=resolved_beam_size,
-          word_timestamps=resolved_word_timestamps,
-        ),
-        vad_options=resolved_vad_parameters,
-        duration=duration,
-        duration_after_vad=0.0,  # No speech detected
-      )
-
-    # Update audio with processed version
-    no_sound_to_process = audio.shape[0] == 0
-    if no_sound_to_process:
-      # Return empty segments and minimal transcription info for empty audio
-      return [], TranscriptionInfo(
-        transcription_options=TranscriptionOptions(
-          multilingual=multilingual,
-          initial_prompt=initial_prompt,
-          beam_size=resolved_beam_size,
-          word_timestamps=resolved_word_timestamps,
-        ),
-        vad_options=resolved_vad_parameters,
-      )
-
-    # Extract features using our audio processor
-    with session.trace_feature_stage():
-      features = self.audio_processor.extract_features(audio)
-      self.logger.debug(
-        "Feature extraction complete",
-        requested_language=language,
-        duration_after_vad=duration_after_vad,
-        **summarize_array("features", features),
-      )
-      self.logger.debug("Language resolution start", requested_language=language)
-      (language, probability), all_language_probs = self.language_detector.resolve_language(
-        language, features
-      )
-      self.logger.debug(
-        "Language resolution complete",
-        language=language,
-        language_probability=probability,
-        candidate_count=len(all_language_probs),
-      )
-
-    # Model inference and segment processing
-    with session.trace_inference_stage() as tracer:
-      segments, total_attempts = self._transcribe_segments(
-        features,
-        tokenizer=(
-          tokenizer := Tokenizer(
-            self.hf_tokenizer,
-            self.model.is_multilingual,
-            task=_TRANSCRIBE_TASK,
-            language=language,
-          )
-        ),
-        transcription_options=(
-          options := TranscriptionOptions(
-            multilingual=multilingual,
-            initial_prompt=initial_prompt,
-            hotwords=hotwords,
-            beam_size=resolved_beam_size,
-            word_timestamps=resolved_word_timestamps,
-            suppress_tokens=get_suppressed_tokens(tokenizer, [-1, 0]),
-          )
-        ),
-        log_progress=False,
-        encoder_output=None,
-        session=session,
-      )
-      tracer(total_attempts, 0.0)
-
-    # Final segment processing and results
-    with session.trace_segment_stage() as tracer:
-      if speech_chunks:
-        segments = restore_speech_timestamps(
-          segments, speech_chunks, self.audio_processor.sampling_rate
-        )
-
-      # Ensure all timestamps are recording-relative
-      if absolute_stream_start > 0:
-        segments = finalize_recording_timestamps(segments, absolute_stream_start)
-
-      tracer(segments)
-
-    info = TranscriptionInfo(
-      language=language,
-      language_probability=probability,
-      duration=duration,
-      duration_after_vad=duration_after_vad,
-      transcription_options=options,
-      vad_options=resolved_vad_parameters,
-      all_language_probs=all_language_probs,
-      speech_chunks=speech_chunks or [],
-    )
-
-    return segments, info
-
-  def _transcribe_segments(
-    self,
-    features: np.ndarray,
-    tokenizer: Tokenizer,
-    transcription_options: TranscriptionOptions,
-    log_progress: bool,
-    encoder_output: ctranslate2.StorageView | None = None,
-    session: "TranscriptionSessionProtocol | None" = None,
-  ) -> _TranscribeSegmentsResult:
-    """A lower-level transcription function that generates the individual segments for a given
-    audio clip.
-
-    :returns: _TranscribeSegmentsResult containing segments and total generation attempts.
-    :rtype: _TranscribeSegmentsResult
-    """
-
-    # Prepare initial tokens from prompt using prompt builder
-    initial_tokens = self.prompt_builder.encode_initial_prompt(
-      tokenizer, transcription_options.initial_prompt
-    )
-
-    # Initialize transcription context
-    ctx = _TranscribeContext(
-      features=features,
-      time_per_frame=self.feature_extractor.time_per_frame,
-      max_segment_frames=self.feature_extractor.nb_max_frames,
-      frames_per_second=self.frames_per_second,
-      initial_tokens=initial_tokens,
-    )
-
-    while ctx.advance():
-      segment = ctx.extract_segment()
-      segment_index = len(ctx.all_segments)
-      encoded_this_iteration = False
-
-      if not ctx.at_beginning or encoder_output is None:
-        self.logger.debug(
-          "Segment encode start",
-          segment_index=segment_index,
-          at_beginning=ctx.at_beginning,
-          seek=ctx.seek,
-          time_offset=ctx.time_offset,
-          **summarize_array("segment_features", segment),
-        )
-        encoder_output = self.encode(segment)
-        encoded_this_iteration = True
-        self.logger.debug(
-          "Segment encode complete",
-          segment_index=segment_index,
-          at_beginning=ctx.at_beginning,
-        )
-      else:
-        self.logger.debug(
-          "Reusing encoder output",
-          segment_index=segment_index,
-          at_beginning=ctx.at_beginning,
-        )
-
-      # You may be thinking, "didn't they just detect a language earlier?", and you'd be quite
-      # correct. That language was only used to initialize the tokenizer for the first pass. The
-      # multilingual case is a little more interesting, so we re-detect the language here to
-      # ensure we have the best possible language for the current segment.
-      if transcription_options.multilingual:
-        self.language_detector.update_tokenizer_language(tokenizer, encoder_output)
-
-      # Generate the transcription
-      prompt = self.prompt_builder.build_prompt(
-        tokenizer,
-        ctx.context_tokens,
-        without_timestamps=transcription_options.without_timestamps,
-        prefix=transcription_options.prefix if ctx.at_beginning else None,
-        hotwords=transcription_options.hotwords,
-      )
-      self.logger.debug(
-        "Generation start",
-        segment_index=segment_index,
-        encoded_this_iteration=encoded_this_iteration,
-        multilingual=transcription_options.multilingual,
-        beam_size=transcription_options.beam_size,
-        prompt_length=len(prompt),
-        context_token_count=len(ctx.context_tokens),
-        word_timestamps=transcription_options.word_timestamps,
-      )
-      result, avg_logprob, temperature, compression_ratio, attempts = (
-        self.generation_strategies.generate_with_fallback(
-          model=self.model,
-          encoder_output=encoder_output,
-          prompt=prompt,
-          tokenizer=tokenizer,
-          transcription_options=transcription_options,
-        )
-      )
-      self.logger.debug(
-        "Generation complete",
-        segment_index=segment_index,
-        attempts=attempts,
-        avg_logprob=avg_logprob,
-        temperature=temperature,
-        compression_ratio=compression_ratio,
-      )
-      tokens = result.sequences_ids[0]
-      ctx.total_attempts += attempts
-
-      # Split segments
-      previous_seek = ctx.seek
-      current_segments, new_seek, single_timestamp_ending = (
-        self.segment_processor.split_segments_by_timestamps(
-          tokenizer=tokenizer,
-          tokens=tokens,
-          time_offset=ctx.time_offset,
-          segment_size=ctx.segment_size,
-          segment_duration=ctx.segment_duration,
-          seek=ctx.seek,
-        )
-      )
-
-      # Update seek position from segment processor
-      ctx.seek_next_to(new_seek)
-
-      # Process word timestamps if requested
-      if transcription_options.word_timestamps:
-        self._process_word_timestamps(
-          current_segments,
-          ctx,
-          transcription_options,
-          encoder_output,
-          tokenizer,
-          single_timestamp_ending,
-        )
-
-        # Filter hallucinations using silence gap analysis
-        if transcription_options.hallucination_silence_threshold is not None:
-          filtered_segments, new_seek = self.hallucination_filter.filter_segments(
-            segments=current_segments,
-            threshold=transcription_options.hallucination_silence_threshold,
-            time_offset=ctx.time_offset,
-            segment_duration=ctx.segment_duration,
-            window_end_time=ctx.window_end_time,
-            last_speech_timestamp=ctx.last_speech_timestamp,
-            total_duration=ctx.total_duration,
-            total_frames=ctx.total_frames,
-            previous_seek=previous_seek,
-            frames_per_second=self.frames_per_second,
-          )
-          current_segments = filtered_segments
-          if new_seek is not None:
-            ctx.seek_next_to(new_seek)
-            continue
-
-      for segment in current_segments:
-        tokens = segment["tokens"]
-        text = tokenizer.decode(tokens)
-
-        ctx.add_segment(
-          segment_data=segment,
-          text=text,
-          tokens=tokens,
-          temperature=temperature,
-          avg_logprob=avg_logprob,
-          compression_ratio=compression_ratio,
-          word_timestamps=transcription_options.word_timestamps,
-        )
-
-      if (
-        not transcription_options.condition_on_previous_text
-        or temperature > transcription_options.prompt_reset_on_temperature
-      ):
-        if transcription_options.condition_on_previous_text:
-          self.logger.debug(
-            "Reset prompt. prompt_reset_on_temperature threshold is met %f > %f",
-            temperature,
-            transcription_options.prompt_reset_on_temperature,
-          )
-
-        ctx.prompt_reset_since = len(ctx.all_tokens)
-
-    return _TranscribeSegmentsResult(segments=ctx.all_segments, total_attempts=ctx.total_attempts)
-
-  def encode(self, features: np.ndarray) -> ctranslate2.StorageView:
-    # When the model is running on multiple GPUs, the encoder output should be moved
-    # to the CPU since we don't know which GPU will handle the next job.
-    to_cpu = self.model.device == "cuda" and len(self.model.device_index) > 1
-
-    if features.ndim == 2:
-      features = np.expand_dims(features, 0)
-    self.logger.debug(
-      "Whisper model.encode start",
-      model_device=self.model.device,
-      model_device_index=self.model.device_index,
-      to_cpu=to_cpu,
-      **summarize_array("features", features),
-    )
-    features = get_ctranslate2_storage(features)
-    encoded = self.model.encode(features, to_cpu=to_cpu)
-    self.logger.debug("Whisper model.encode complete", to_cpu=to_cpu)
-    return encoded
-
-  def _process_word_timestamps(
-    self,
-    current_segments: list[SegmentDict],
-    ctx: "_TranscribeContext",
-    transcription_options: TranscriptionOptions,
-    encoder_output: ctranslate2.StorageView,
-    tokenizer: Tokenizer,
-    single_timestamp_ending: bool,
-  ) -> None:
-    """Process word-level timestamps and update transcription context.
-
-    Performs forced alignment to get precise word timings, adjusts seek position
-    based on actual speech boundaries, and updates speech timestamp tracking.
-
-    :param current_segments: Segments to add word timestamps to.
-    :type current_segments: list[SegmentDict]
-    :param ctx: Transcription context containing seek position and timing state.
-    :type ctx: _TranscribeContext
-    :param transcription_options: Options containing word timestamp settings.
-    :type transcription_options: TranscriptionOptions
-    :param encoder_output: Encoded audio features for alignment.
-    :type encoder_output: ctranslate2.StorageView
-    :param tokenizer: Tokenizer for text processing.
-    :type tokenizer: Tokenizer
-    :param single_timestamp_ending: Whether segment ended with single timestamp.
-    :type single_timestamp_ending: bool
-    """
-    # 1. FORCED ALIGNMENT: Use cross-attention to align words with audio frames
-    self.word_aligner.add_word_timestamps(
-      segments=[current_segments],
-      model=self.model,
-      tokenizer=tokenizer,
-      encoder_output=encoder_output,
-      num_frames=ctx.segment_size,
-      prepend_punctuations=transcription_options.prepend_punctuations,
-      append_punctuations=transcription_options.append_punctuations,
-      last_speech_timestamp=ctx.last_speech_timestamp,
-    )
-
-    # 2. SEEK ADJUSTMENT: Move transcription window to end of actual speech
-    # (Skip this if segment ended with single timestamp, indicating silence)
-    if not single_timestamp_ending:
-      last_word_end: float | None = get_end(cast(list[dict], current_segments))
-      if last_word_end is not None and last_word_end > ctx.time_offset:
-        ctx.seek_next_to(round(last_word_end * self.frames_per_second))
-
-    # 3. SPEECH TIMESTAMP TRACKING: Update last known speech time
-    # This is used for future silence gap calculations and seek positioning
-    if last_word_end := get_end(cast(list[dict], current_segments)):
-      ctx.last_speech_timestamp = last_word_end
-
-
-@dataclass
-class _TranscribeContext:
-  """Context manager for transcription loop state and calculations."""
-
-  # Input parameters
-  features: np.ndarray
-  time_per_frame: float
-  max_segment_frames: int  # nb_max_frames from feature extractor
-  frames_per_second: float
-  initial_tokens: list[int] = field(default_factory=list)
-
-  # Computed on init
-  total_frames: int = field(init=False)
-  """Total number of frames in the audio features."""
-
-  total_duration: float = field(init=False)
-  """Total duration of audio in seconds."""
-
-  # Loop state
-
-  seek: int = field(default=0, init=False)
-  """Current position in audio features (frame index)."""
-
-  at_beginning: bool = field(default=True, init=False)
-  """True if at the beginning of the audio."""
-
-  all_tokens: list[int] = field(init=False)
-  """Accumulated token history for context conditioning."""
-
-  prompt_reset_since: int = field(default=0, init=False)
-  """Token position where prompt context was last reset."""
-
-  last_speech_timestamp: float = field(default=0.0, init=False)
-  """Timestamp of last detected speech for word alignment."""
-
-  all_segments: list[Segment] = field(default_factory=list, init=False)
-  """Collected transcription segments."""
-
-  total_attempts: int = field(default=0, init=False)
-  """Total generation attempts across all segments."""
-
-  # Computed fields (updated on commit)
-  time_offset: float = field(default=0.0, init=False)
-  """Current time offset in seconds."""
-
-  window_end_time: float = field(default=0.0, init=False)
-  """End time of current processing window."""
-
-  segment_size: int = field(default=0, init=False)
-  """Size of current segment in frames."""
-
-  segment_duration: float = field(default=0.0, init=False)
-  """Duration of current segment in seconds."""
-
-  context_tokens: list[int] = field(default_factory=list, init=False)
-  """Tokens for current context window."""
-
-  def __post_init__(self):
-    self.total_frames = self.features.shape[-1] - 1
-    self.total_duration = self.total_frames * self.time_per_frame
-    self.all_tokens = self.initial_tokens.copy()
-
-  def advance(self) -> bool:
-    """Recompute all derived values from current seek position."""
-    if self.done():
-      return False
-
-    self.at_beginning = self.seek == 0
-    self.time_offset = self.seek * self.time_per_frame
-    self.window_end_time = (self.seek + self.max_segment_frames) * self.time_per_frame
-    self.segment_size = min(self.max_segment_frames, self.total_frames - self.seek)
-    self.segment_duration = self.segment_size * self.time_per_frame
-    self.context_tokens = self.all_tokens[self.prompt_reset_since :]
-    return True
-
-  def done(self) -> bool:
-    """Check if we've processed all frames."""
-    return self.seek >= self.total_frames
-
-  def extract_segment(self) -> np.ndarray:
-    """Extract and pad current audio segment."""
-    segment = self.features[:, self.seek : self.seek + self.segment_size]
-    return pad_or_trim(segment)
-
-  def seek_next_to(self, new_seek: int):
-    """Move to next position and commit changes."""
-    self.seek = new_seek
-
-  def add_segment(
-    self,
-    segment_data: SegmentDict,
-    text: str,
-    tokens: list[int],
-    temperature: float,
-    avg_logprob: float,
-    compression_ratio: float,
-    word_timestamps: bool,
-  ):
-    """Add completed segment to results."""
-    text = text.strip()
-    if segment_data["start"] == segment_data["end"] or not text:
-      return
-
-    self.all_tokens.extend(tokens)
-
-    # Assign baseline ID for incomplete segments (will get chain ID when completed)
-    from eavesdrop.wire.transcription import compute_segment_chain_id
-
-    segment_id = compute_segment_chain_id(0, "")  # Baseline ID for incomplete segments
-    start = segment_data["start"]
-    end = segment_data["end"]
-
-    id_logger = get_logger("seg-id")
-    id_logger.debug(
-      "Segment created (incomplete, will get chain ID when completed)",
-      baseline_id=segment_id,
-      relative_start=start,
-      relative_end=end,
-      seek=self.seek,
-      text=text[:50] + "..." if len(text) > 50 else text,
-    )
-
-    self.all_segments.append(
-      Segment(
-        id=segment_id,
-        seek=self.seek,
-        start=start,
-        end=end,
-        text=text,
-        tokens=tokens,
-        temperature=temperature,
-        avg_logprob=avg_logprob,
-        compression_ratio=compression_ratio,
-        words=(
-          [
-            Word(
-              start=word["start"],
-              end=word["end"],
-              word=word["word"],
-              probability=word.get("probability", 0.0),
-            )
-            for word in segment_data.get("words", [])
-          ]
-          if word_timestamps
-          else None
-        ),
-      )
-    )
-
-  def should_reset_prompt(
-    self, temperature: float, transcription_options: TranscriptionOptions
-  ) -> bool:
-    """Check if prompt context should be reset."""
-    return (
-      not transcription_options.condition_on_previous_text
-      or temperature > transcription_options.prompt_reset_on_temperature
-    )
-
-  def reset_prompt(self):
-    """Reset prompt context to current position."""
-    self.prompt_reset_since = len(self.all_tokens)
