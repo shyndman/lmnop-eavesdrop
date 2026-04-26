@@ -196,6 +196,102 @@ class GnomeShellExtensionTextEmitter:
       raise RuntimeError("GnomeShellExtensionTextEmitter.initialize() must run before emit_text()")
     return self._clipboard
 
+  def _snapshot_clipboard(self) -> str:
+    _logger.debug("snapshotting clipboard before emission")
+    try:
+      clipboard_content = self._call_with_rebind(
+        operation="clipboard_get_current_content",
+        call=lambda: self._require_clipboard().get_current_content(),
+      )
+    except Exception:
+      _logger.exception("clipboard snapshot failed")
+      raise
+    _logger.debug("clipboard snapshot captured")
+    return clipboard_content
+
+  def _restore_clipboard(self, clipboard_content: str) -> None:
+    _logger.debug("restoring clipboard after emission")
+    self._call_with_rebind(
+      operation="clipboard_restore_content",
+      call=lambda: self._require_clipboard().set_content(clipboard_content),
+    )
+    _logger.debug("clipboard restore completed")
+
+  def _emit_chunks(
+    self,
+    *,
+    focused_window: FocusedWindow,
+    paste_modifiers: str,
+    chunks: tuple[str, ...],
+  ) -> None:
+    for chunk_index, chunk in enumerate(chunks, start=1):
+      _logger.debug(
+        "writing chunk to clipboard",
+        chunk_index=chunk_index,
+        chunk_length=len(chunk),
+      )
+      try:
+        self._call_with_rebind(
+          operation="clipboard_set_content",
+          call=lambda: self._require_clipboard().set_content(chunk),
+        )
+      except Exception:
+        _logger.exception(
+          "clipboard chunk write failed",
+          chunk_index=chunk_index,
+          chunk_length=len(chunk),
+        )
+        raise
+      _logger.debug(
+        "clipboard chunk written",
+        chunk_index=chunk_index,
+        chunk_length=len(chunk),
+      )
+
+      _logger.debug(
+        "sending paste shortcut",
+        chunk_index=chunk_index,
+        window_id=focused_window.id,
+        key=PASTE_KEY,
+        modifiers=paste_modifiers,
+      )
+      try:
+        did_send = self._call_with_rebind(
+          operation="send_shortcut",
+          call=lambda: self._require_windows().send_shortcut(
+            focused_window.id,
+            PASTE_KEY,
+            paste_modifiers,
+          ),
+        )
+      except Exception:
+        _logger.exception(
+          "paste shortcut send failed",
+          chunk_index=chunk_index,
+          window_id=focused_window.id,
+          key=PASTE_KEY,
+          modifiers=paste_modifiers,
+        )
+        raise
+      _logger.debug(
+        "paste shortcut result",
+        chunk_index=chunk_index,
+        window_id=focused_window.id,
+        key=PASTE_KEY,
+        modifiers=paste_modifiers,
+        success=did_send,
+      )
+      if not did_send:
+        raise RuntimeError(f"failed to send paste shortcut to window {focused_window.id}")
+      if chunk_index < len(chunks):
+        _logger.debug(
+          "waiting for pasted chunk to settle",
+          chunk_index=chunk_index,
+          chunk_count=len(chunks),
+          delay_ms=INTER_CHUNK_DELAY_MS,
+        )
+        time.sleep(INTER_CHUNK_DELAY_MS / 1000)
+
   def _call_with_rebind(
     self,
     *,
@@ -266,73 +362,31 @@ class GnomeShellExtensionTextEmitter:
       chunk_count=len(chunks),
     )
 
-    for chunk_index, chunk in enumerate(chunks, start=1):
+    if not chunks:
       _logger.debug(
-        "writing chunk to clipboard",
-        chunk_index=chunk_index,
-        chunk_length=len(chunk),
+        "text emission completed",
+        chunk_count=0,
+        window_id=focused_window.id,
       )
-      try:
-        self._call_with_rebind(
-          operation="clipboard_set_content",
-          call=lambda: self._require_clipboard().set_content(chunk),
-        )
-      except Exception:
-        _logger.exception(
-          "clipboard chunk write failed",
-          chunk_index=chunk_index,
-          chunk_length=len(chunk),
-        )
-        raise
-      _logger.debug(
-        "clipboard chunk written",
-        chunk_index=chunk_index,
-        chunk_length=len(chunk),
-      )
+      return
 
-      _logger.debug(
-        "sending paste shortcut",
-        chunk_index=chunk_index,
-        window_id=focused_window.id,
-        key=PASTE_KEY,
-        modifiers=paste_modifiers,
+    original_clipboard_content = self._snapshot_clipboard()
+    emission_succeeded = False
+    try:
+      self._emit_chunks(
+        focused_window=focused_window,
+        paste_modifiers=paste_modifiers,
+        chunks=chunks,
       )
+      emission_succeeded = True
+    finally:
       try:
-        did_send = self._call_with_rebind(
-          operation="send_shortcut",
-          call=lambda: self._require_windows().send_shortcut(
-            focused_window.id,
-            PASTE_KEY,
-            paste_modifiers,
-          ),
-        )
+        self._restore_clipboard(original_clipboard_content)
       except Exception:
-        _logger.exception(
-          "paste shortcut send failed",
-          chunk_index=chunk_index,
-          window_id=focused_window.id,
-          key=PASTE_KEY,
-          modifiers=paste_modifiers,
-        )
-        raise
-      _logger.debug(
-        "paste shortcut result",
-        chunk_index=chunk_index,
-        window_id=focused_window.id,
-        key=PASTE_KEY,
-        modifiers=paste_modifiers,
-        success=did_send,
-      )
-      if not did_send:
-        raise RuntimeError(f"failed to send paste shortcut to window {focused_window.id}")
-      if chunk_index < len(chunks):
-        _logger.debug(
-          "waiting for pasted chunk to settle",
-          chunk_index=chunk_index,
-          chunk_count=len(chunks),
-          delay_ms=INTER_CHUNK_DELAY_MS,
-        )
-        time.sleep(INTER_CHUNK_DELAY_MS / 1000)
+        if emission_succeeded:
+          _logger.exception("clipboard restore failed after successful emission")
+        else:
+          _logger.exception("clipboard restore failed after emission failure")
 
     _logger.debug(
       "text emission completed",
