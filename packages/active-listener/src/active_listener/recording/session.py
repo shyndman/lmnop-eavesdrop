@@ -289,4 +289,4 @@ class RecordingSession:
 
 def _format_word_timing(index: int, word: TimedWord) -> str:
   duration_s = word.end_s - word.start_s
-  return f"word{index} {word.text}   {word.start_s:.3f}-{word.end_s:.3f} ({duration_s:.3f})"
+  return f"{word.text}   {word.start_s:.3f}-{word.end_s:.3f} ({duration_s:.3f})"
