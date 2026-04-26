@@ -284,7 +284,7 @@ def test_resolve_active_listener_override_prompt_path_uses_eavesdrop_xdg_config_
   monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
 
   assert resolve_active_listener_override_prompt_path() == (
-    config_home / "eavesdrop" / "active-listener.system.md"
+    config_home / "eavesdrop" / "active-listener.rewrite.system.md"
   )
 
 
@@ -296,7 +296,7 @@ def test_resolve_active_listener_override_prompt_path_falls_back_to_home_config_
   monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
   assert resolve_active_listener_override_prompt_path() == (
-    tmp_path / ".config" / "eavesdrop" / "active-listener.system.md"
+    tmp_path / ".config" / "eavesdrop" / "active-listener.rewrite.system.md"
   )
 
 
@@ -308,7 +308,7 @@ def test_resolve_active_listener_override_prompt_path_uses_home_config_dir_when_
   monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
   assert resolve_active_listener_override_prompt_path() == (
-    tmp_path / ".config" / "eavesdrop" / "active-listener.system.md"
+    tmp_path / ".config" / "eavesdrop" / "active-listener.rewrite.system.md"
   )
 
 

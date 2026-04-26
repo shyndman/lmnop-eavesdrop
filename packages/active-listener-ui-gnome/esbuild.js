@@ -1,6 +1,6 @@
 import { build } from 'esbuild';
 import AdmZip from 'adm-zip';
-import { copyFileSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -11,8 +11,6 @@ const assetsDir = resolve(distDir, 'assets');
 const metadataPath = resolve(__dirname, 'metadata.json');
 const sourceDir = resolve(__dirname, 'src');
 const sourceIconPath = resolve(__dirname, '..', '..', 'assets', 'top-bar-icon.svg');
-const fallbackPromptSourcePath = resolve(__dirname, 'assets', 'rewrite_prompt.md');
-const fallbackPromptDistPath = resolve(assetsDir, 'rewrite_prompt.md');
 const metadata = JSON.parse(readFileSync(metadataPath, 'utf8'));
 const iconTemplate = readFileSync(sourceIconPath, 'utf8');
 
@@ -54,8 +52,6 @@ async function main() {
   for (const [state, color] of Object.entries(STATE_COLORS)) {
     writeStateIcon(state, color);
   }
-
-  copyFileSync(fallbackPromptSourcePath, fallbackPromptDistPath);
 
   const zipPath = resolve(outDir, `${metadata.uuid}.zip`);
   const zip = new AdmZip();

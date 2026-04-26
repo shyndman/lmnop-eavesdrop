@@ -6,8 +6,10 @@ import Gtk from 'gi://Gtk';
 import { ExtensionPreferences } from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
 const PROMPT_OVERRIDE_DIRNAME = 'eavesdrop';
-const PROMPT_OVERRIDE_FILENAME = 'active-listener.system.md';
-const FALLBACK_PROMPT_FILENAME = 'rewrite_prompt.md';
+const ACTIVE_LISTENER_CONFIG_FILENAME = 'active-listener.yaml';
+const PROMPT_OVERRIDE_FILENAME = 'active-listener.rewrite.system.md';
+const REWRITE_CONFIG_BLOCK_NAME = 'llm_rewrite';
+const REWRITE_PROMPT_PATH_FIELD_NAME = 'prompt_path';
 const AUTOSAVE_DELAY_MS = 500;
 
 function getPromptOverridePath(): string {
@@ -20,6 +22,18 @@ function getPromptOverridePath(): string {
 
 function getPromptOverrideFile(): Gio.File {
   return Gio.File.new_for_path(getPromptOverridePath());
+}
+
+function getDefaultActiveListenerConfigPath(): string {
+  return GLib.build_filenamev([
+    GLib.get_user_config_dir(),
+    PROMPT_OVERRIDE_DIRNAME,
+    ACTIVE_LISTENER_CONFIG_FILENAME,
+  ]);
+}
+
+function getDefaultActiveListenerConfigFile(): Gio.File {
+  return Gio.File.new_for_path(getDefaultActiveListenerConfigPath());
 }
 
 function loadFileContentsUtf8(file: Gio.File): Promise<string> {
@@ -71,10 +85,134 @@ function writeFileContentsUtf8(file: Gio.File, contents: string): Promise<void> 
   });
 }
 
+function stripInlineComment(line: string): string {
+  let result = '';
+  let inSingleQuotedString = false;
+  let inDoubleQuotedString = false;
+
+  for (const character of line) {
+    if (character === "'" && !inDoubleQuotedString) {
+      inSingleQuotedString = !inSingleQuotedString;
+    } else if (character === '"' && !inSingleQuotedString) {
+      inDoubleQuotedString = !inDoubleQuotedString;
+    } else if (character === '#' && !inSingleQuotedString && !inDoubleQuotedString) {
+      break;
+    }
+
+    result += character;
+  }
+
+  return result;
+}
+
+function unquoteYamlString(value: string): string {
+  const trimmedValue = value.trim();
+  if (trimmedValue.length < 2) {
+    return trimmedValue;
+  }
+
+  const firstCharacter = trimmedValue[0];
+  const lastCharacter = trimmedValue.at(-1);
+  if ((firstCharacter === '"' || firstCharacter === "'") && firstCharacter === lastCharacter) {
+    return trimmedValue.slice(1, -1);
+  }
+
+  return trimmedValue;
+}
+
+function extractRewritePromptPath(configContents: string): string | null {
+  const configLines = configContents.split(/\r?\n/u);
+  let rewriteBlockIndent: number | null = null;
+
+  for (const line of configLines) {
+    const commentFreeLine = stripInlineComment(line);
+    if (commentFreeLine.trim().length === 0) {
+      continue;
+    }
+
+    const rewriteBlockMatch = /^(\s*)llm_rewrite\s*:\s*$/u.exec(commentFreeLine);
+    if (rewriteBlockMatch !== null) {
+      rewriteBlockIndent = rewriteBlockMatch[1].length;
+      continue;
+    }
+
+    if (rewriteBlockIndent === null) {
+      continue;
+    }
+
+    const currentIndent = line.match(/^\s*/u)?.[0].length ?? 0;
+    if (currentIndent <= rewriteBlockIndent) {
+      rewriteBlockIndent = null;
+      continue;
+    }
+
+    const promptPathMatch = /^(\s*)prompt_path\s*:\s*(.+?)\s*$/u.exec(commentFreeLine);
+    if (promptPathMatch === null || promptPathMatch[1].length <= rewriteBlockIndent) {
+      continue;
+    }
+
+    const configuredPromptPath = unquoteYamlString(promptPathMatch[2]);
+    return configuredPromptPath.length === 0 ? null : configuredPromptPath;
+  }
+
+  return null;
+}
+
+function expandUserPath(path: string): string {
+  if (path === '~') {
+    return GLib.get_home_dir();
+  }
+
+  if (!path.startsWith('~/')) {
+    return path;
+  }
+
+  return GLib.build_filenamev([GLib.get_home_dir(), path.slice(2)]);
+}
+
+function resolveConfiguredPromptPath(configPath: string, configuredPromptPath: string): string {
+  const expandedPromptPath = expandUserPath(configuredPromptPath);
+  if (expandedPromptPath.startsWith('/')) {
+    return expandedPromptPath;
+  }
+
+  const configDirectory = Gio.File.new_for_path(configPath).get_parent();
+  const resolvedPromptPath = configDirectory?.resolve_relative_path(expandedPromptPath).get_path();
+  return resolvedPromptPath ?? expandedPromptPath;
+}
+
 type LoadedPrompt = {
   contents: string;
-  source: 'override' | 'fallback';
+  source: 'override' | 'configured' | 'empty';
 };
+
+async function loadConfiguredPromptContents(): Promise<LoadedPrompt | null> {
+  const configPath = getDefaultActiveListenerConfigPath();
+  const configFile = getDefaultActiveListenerConfigFile();
+  if (!configFile.query_exists(null)) {
+    console.info(`Active Listener prefs found no config-backed rewrite prompt because ${configPath} does not exist`);
+    return null;
+  }
+
+  try {
+    const configContents = await loadFileContentsUtf8(configFile);
+    const configuredPromptPath = extractRewritePromptPath(configContents);
+    if (configuredPromptPath === null) {
+      console.error(`Active Listener prefs could not find ${REWRITE_CONFIG_BLOCK_NAME}.${REWRITE_PROMPT_PATH_FIELD_NAME} in ${configPath}`);
+      return null;
+    }
+
+    const resolvedPromptPath = resolveConfiguredPromptPath(configPath, configuredPromptPath);
+    const configuredPromptFile = Gio.File.new_for_path(resolvedPromptPath);
+    return {
+      contents: await loadFileContentsUtf8(configuredPromptFile),
+      source: 'configured',
+    };
+  } catch (error) {
+    console.error('Active Listener prefs failed to load config-backed rewrite prompt', error);
+    return null;
+  }
+}
 
 export default class ActiveListenerPreferences extends ExtensionPreferences {
   private readonly promptBuffer = new Gtk.TextBuffer();
@@ -95,7 +233,7 @@ export default class ActiveListenerPreferences extends ExtensionPreferences {
     const rewriteGroup = new Adw.PreferencesGroup({
       title: 'Rewrite',
       description:
-        'Active Listener reads the override file first on each rewrite request. If it is absent, prefs seeds this editor from the bundled markdown fallback prompt.',
+        'Active Listener reads the override file first on each rewrite request. If it is absent, prefs seeds this editor from llm_rewrite.prompt_path in ~/.config/eavesdrop/active-listener.yaml.',
     });
 
     rewriteGroup.add(this.createPromptPathSection());
@@ -185,10 +323,6 @@ export default class ActiveListenerPreferences extends ExtensionPreferences {
     return actionBox;
   }
 
-  private getFallbackPromptFile(): Gio.File {
-    return Gio.File.new_for_path(GLib.build_filenamev([this.path, 'assets', FALLBACK_PROMPT_FILENAME]));
-  }
-
   private async loadPromptContents(): Promise<LoadedPrompt> {
     const overrideFile = getPromptOverrideFile();
     if (overrideFile.query_exists(null)) {
@@ -198,9 +332,9 @@ export default class ActiveListenerPreferences extends ExtensionPreferences {
       };
     }
 
-    return {
-      contents: await loadFileContentsUtf8(this.getFallbackPromptFile()),
-      source: 'fallback',
+    return (await loadConfiguredPromptContents()) ?? {
+      contents: '',
+      source: 'empty',
     };
   }
 

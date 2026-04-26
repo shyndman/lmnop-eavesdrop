@@ -52,7 +52,7 @@ task uninstall-active-listener-service
 ```
 
 The active-listener runtime config now lives at `~/.config/eavesdrop/active-listener.yaml`.
-The optional rewrite prompt override lives at `~/.config/eavesdrop/active-listener.system.md`.
+The optional rewrite prompt override lives at `~/.config/eavesdrop/active-listener.rewrite.system.md`.
 
 When rewrite is enabled, active-listener now expects a local LiteRT `.litertlm` bundle at `llm_rewrite.model_path`. That setting, along with `llm_rewrite.prompt_path`, resolves relative to the config file directory. Prompt files are markdown only now — no hidden endpoint settings, routing metadata, or template rendering in the rewrite path.
 

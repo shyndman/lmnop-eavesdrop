@@ -17,7 +17,7 @@ from active_listener.app.ports import RewriteResult
 USER_CONFIG_ENV_VAR = "XDG_CONFIG_HOME"
 DEFAULT_USER_CONFIG_DIRNAME = ".config"
 EAVESDROP_CONFIG_DIRNAME = "eavesdrop"
-ACTIVE_LISTENER_PROMPT_FILENAME = "active-listener.system.md"
+ACTIVE_LISTENER_PROMPT_FILENAME = "active-listener.rewrite.system.md"
 
 
 class LiteRtTextContent(TypedDict):

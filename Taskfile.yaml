@@ -27,8 +27,7 @@ tasks:
         unit_template = repo_root / "packages/active-listener/systemd/active-listener.service.in"
         unit_destination = Path.home() / ".config/systemd/user/active-listener.service"
         config_destination = Path.home() / ".config/eavesdrop/active-listener.yaml"
-        prompt_destination = Path.home() / ".config/eavesdrop/active-listener.system.md"
-        legacy_prompt_source = Path.home() / ".config/active-listener/system.md"
+        prompt_destination = Path.home() / ".config/eavesdrop/active-listener.rewrite.system.md"
 
         package_dir = repo_root / "packages/active-listener"
         active_listener_bin = repo_root / ".venv/bin/active-listener"
@@ -52,10 +51,6 @@ tasks:
               break
           else:
             raise SystemExit("No active-listener config source found to seed the XDG config path")
-
-        if legacy_prompt_source.exists() and not prompt_destination.exists():
-          prompt_destination.parent.mkdir(parents=True, exist_ok=True)
-          shutil.copy2(legacy_prompt_source, prompt_destination)
 
         print(f"Installed {unit_destination}")
         print(f"Using config path {config_destination}")

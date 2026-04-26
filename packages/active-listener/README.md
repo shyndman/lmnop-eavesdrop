@@ -31,9 +31,9 @@ Reference implementation: <https://github.com/dagimg-dot/vicinae-gnome-extension
 The canonical runtime paths are:
 
 - config: `~/.config/eavesdrop/active-listener.yaml`
-- prompt override: `~/.config/eavesdrop/active-listener.system.md`
+- prompt override: `~/.config/eavesdrop/active-listener.rewrite.system.md`
 
-If you still have a legacy prompt override at `~/.config/active-listener/system.md`, move it to `~/.config/eavesdrop/active-listener.system.md`. The install task copies it forward only when the new file does not exist yet.
+If you still have an older override at `~/.config/eavesdrop/active-listener.system.md` or `~/.config/active-listener/system.md`, move it to `~/.config/eavesdrop/active-listener.rewrite.system.md`.
 
 ## Rewrite model and prompt files
 
@@ -48,7 +48,7 @@ That means a copied config at `~/.config/eavesdrop/active-listener.yaml` expects
 
 Prompt files are markdown content only. No hidden routing metadata or template rendering remains in the active rewrite path.
 
-GNOME prefs still edits `~/.config/eavesdrop/active-listener.system.md`. Active Listener reloads that override on every rewrite request, so prompt edits take effect on the next recording without restarting the service.
+GNOME prefs still edits `~/.config/eavesdrop/active-listener.rewrite.system.md`. Active Listener reloads that override on every rewrite request, so prompt edits take effect on the next recording without restarting the service.
 
 ## Uninstall the user service
 
@@ -58,7 +58,7 @@ Run from the repo root:
 task uninstall-active-listener-service
 ```
 
-This removes the installed user unit and reloads the user service manager. It does not delete `~/.config/eavesdrop/active-listener.yaml` or `~/.config/eavesdrop/active-listener.system.md` because those files are user data.
+This removes the installed user unit and reloads the user service manager. It does not delete `~/.config/eavesdrop/active-listener.yaml` or `~/.config/eavesdrop/active-listener.rewrite.system.md` because those files are user data.
 
 ## Inspect and troubleshoot
 
