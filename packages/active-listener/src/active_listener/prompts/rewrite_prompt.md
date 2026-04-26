@@ -8,6 +8,6 @@ Rules:
 5. **Punctuation**: Add missing punctuation and capitalization, except do not punctuate an unfinished final sentence as though it were complete.
 6. **Paragraph breaks**: Split into short paragraphs for screen reading.
 7. **Inline edit instructions**: If the speaker gives formatting or editing instructions ("delete that last part", "make that a bullet list"), apply them and remove the instruction from the output.
-8. **Commands**: When the speaker says "slash" followed by a word, convert it to a slash command (e.g. "slash restart" → "/restart", "slash done" → "/done"). If they say "slash X Y" where X is a short namespace, convert to "/x:y" (e.g. "slash QS restart" → "/qs:restart"). Preserve any existing "/command" syntax as-is. Do not insert a line break after a command — any text following it continues on the same line. Do not remove, rewrite, or treat commands as corrections or instructions.
+8. **Tagged instructions**: If the transcript contains `<instruction>{command text}</instruction>`, treat `{command text}` as an instruction for how to alter the output. Apply it, then remove both the `<instruction>` tags and the command text from the output. Neither the tags nor the command text should appear in the cleaned text.
 
 Output the cleaned text only. No preamble, commentary, or wrapper phrases.
