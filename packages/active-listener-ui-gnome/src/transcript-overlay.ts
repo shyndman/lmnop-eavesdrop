@@ -1,12 +1,4 @@
-import Clutter from 'gi://Clutter';
-import GLib from 'gi://GLib';
-import Pango from 'gi://Pango';
-import St from 'gi://St';
-
-import * as Main from 'resource:///org/gnome/shell/ui/main.js';
-
 import {
-  buildTranscriptAttributeSpecs,
   buildTranscriptDisplay,
   normalizeTranscriptRuns,
   type TranscriptRun,
@@ -16,72 +8,13 @@ import type {
   ActiveListenerServiceState,
   TranscriptionUpdate,
 } from './active-listener-service-client.js';
+import { TranscriptOverlayView } from './transcript-overlay-view.js';
 
 const OVERLAY_MESSAGE = 'Overlay PoC';
-const OVERLAY_DISPLAY_DURATION_MS = 2000;
-const OVERLAY_BOTTOM_MARGIN_PX = 96;
-const OVERLAY_ANIMATION_DURATION_MS = 180;
-const OVERLAY_WIDTH_PX = 720;
-const OVERLAY_HEIGHT_PX = 72;
-const OVERLAY_CORNER_RADIUS_PX = 20;
-const OVERLAY_BACKGROUND_COLOR = 'rgba(11, 13, 16, 0.82)';
-const OVERLAY_TEXT_OFFSET_X_PX = 24;
-const OVERLAY_TEXT_OFFSET_Y_PX = 16;
-const OVERLAY_TEXT_WIDTH_PX = OVERLAY_WIDTH_PX - OVERLAY_TEXT_OFFSET_X_PX * 2;
-const OVERLAY_TEXT_HEIGHT_PX = 40;
-const OVERLAY_TEXT_COLOR = '#F5F7FA';
-const OVERLAY_COMMAND_TEXT_COLOR = '#C4B5FD';
 const TRANSCRIPT_LOG_SAMPLE_INTERVAL = 180;
-const OVERLAY_FONT_FAMILY = 'Inter';
-const OVERLAY_FONT_SIZE_PX = 18;
-const OVERLAY_LINE_HEIGHT = 1.3;
-const SPECTRUM_BAR_COUNT = 50;
-const SPECTRUM_FRAME_OFFSET_X_PX = 8;
-const SPECTRUM_FRAME_WIDTH_PX = 704;
-const SPECTRUM_FRAME_PADDING_VERTICAL_PX = 8;
-const SPECTRUM_FRAME_PADDING_HORIZONTAL_PX = 12;
-const SPECTRUM_BAR_COLOR = '#241732';
-const SPECTRUM_BAR_WIDTH_PX = 3;
-const SPECTRUM_BAR_GAP_PX = 8;
-const SPECTRUM_BAR_MAX_HEIGHT_PX = 56;
-const SPECTRUM_BAR_MIN_HEIGHT_PX = 3;
-const SPECTRUM_BAR_CORNER_RADIUS_PX = 4;
-const SPECTRUM_BAR_STYLE =
-  `background-color: ${SPECTRUM_BAR_COLOR};` +
-  `border-radius: ${SPECTRUM_BAR_CORNER_RADIUS_PX}px;`;
-
-type ActorEaseOptions = {
-  duration: number;
-  mode: Clutter.AnimationMode;
-  opacity?: number;
-  height?: number;
-  y?: number;
-  onComplete?: () => void;
-};
-
-type OverlayActor = St.Widget & {
-  ease(options: ActorEaseOptions): void;
-  remove_all_transitions(): void;
-};
-
-type OverlayMonitor = NonNullable<typeof Main.layoutManager.primaryMonitor>;
-
-type OverlayClutterText = Clutter.Text & {
-  set_line_wrap(lineWrap: boolean): void;
-  set_text(text: string): void;
-  set_attributes(attrs: Pango.AttrList | null): void;
-};
 
 export class TranscriptOverlayController {
-  private overlay: St.Widget | null = null;
-  private overlayContent: St.Widget | null = null;
-  private overlayLabel: St.Label | null = null;
-  private transcriptClip: St.Widget | null = null;
-  private spectrumFrame: St.BoxLayout | null = null;
-  private spectrumBars: St.Widget[] = [];
-  private spectrumLevels: Uint8Array<ArrayBufferLike> = new Uint8Array(SPECTRUM_BAR_COUNT);
-  private overlayTimeoutId: number | null = null;
-  private readonly overlayActor = (actor: St.Widget): OverlayActor => actor as OverlayActor;
+  private readonly view: TranscriptOverlayView;
   private serviceState: ActiveListenerServiceState = {
     indicatorState: 'absent',
     servicePresent: false,
@@ -92,41 +25,18 @@ export class TranscriptOverlayController {
     text: '',
     runs: [],
   };
-  private installedTranscriptDisplay: TranscriptDisplay = {
-    text: '',
-    runs: [],
-  };
   private transcriptEventCounter = 0;
 
   constructor() {
-    this.createOverlay();
+    this.view = new TranscriptOverlayView();
+    this.view.setTranscriptDisplay(
+      buildTranscriptDisplay([{ text: OVERLAY_MESSAGE, isCommand: false, isComplete: true }]),
+    );
   }
 
   destroy(): void {
-    this.clearOverlayTimeout();
-    this.resetTranscriptOverlay();
-
-    if (this.overlay !== null) {
-      Main.layoutManager.removeChrome(this.overlay);
-      this.overlay.destroy();
-      this.overlay = null;
-    }
-
-    this.overlayContent = null;
-    this.overlayLabel = null;
-    this.transcriptClip = null;
-    this.spectrumFrame = null;
-    this.spectrumBars = [];
-    this.spectrumLevels = new Uint8Array(SPECTRUM_BAR_COUNT);
-    this.transcriptRuns = [];
-    this.transcriptDisplay = {
-      text: '',
-      runs: [],
-    };
-    this.installedTranscriptDisplay = {
-      text: '',
-      runs: [],
-    };
+    this.resetTranscriptState();
+    this.view.destroy();
   }
 
   setServiceState(serviceState: ActiveListenerServiceState): void {
@@ -139,22 +49,22 @@ export class TranscriptOverlayController {
     this.serviceState = serviceState;
 
     if (previousState === 'recording' && serviceState.indicatorState !== 'recording') {
-      this.clearSpectrumBars();
+      this.view.clearSpectrum();
       this.resetTranscriptOverlay();
       return;
     }
 
     if (previousState !== 'recording' && serviceState.indicatorState === 'recording') {
-      this.clearSpectrumBars();
+      this.view.clearSpectrum();
       this.resetTranscriptOverlay();
     }
   }
 
   showPreview(text: string = OVERLAY_MESSAGE): void {
-    this.installTranscriptDisplayImmediately(
+    this.view.setTranscriptDisplay(
       buildTranscriptDisplay([{ text, isCommand: false, isComplete: true }]),
     );
-    this.showOverlay();
+    this.view.show();
   }
 
   applyTranscriptionUpdate(update: TranscriptionUpdate): void {
@@ -180,105 +90,20 @@ export class TranscriptOverlayController {
       return;
     }
 
-    this.spectrumLevels = levels;
     this.logTranscriptOverlayEvent('received spectrum update', () => ({
-      barCount: this.spectrumLevels.length,
-      leadingBars: Array.from(this.spectrumLevels.slice(0, 8)),
+      barCount: levels.length,
+      leadingBars: Array.from(levels.slice(0, 8)),
     }));
 
-    if (this.spectrumLevels.length !== SPECTRUM_BAR_COUNT) {
+    if (!this.view.setSpectrum(levels)) {
       this.logTranscriptOverlayEvent('ignored spectrum update because bar count did not match', {
-        expectedBarCount: SPECTRUM_BAR_COUNT,
-        actualBarCount: this.spectrumLevels.length,
+        expectedBarCount: this.view.spectrumBarCount,
+        actualBarCount: levels.length,
       });
       return;
     }
 
-    this.renderSpectrumBars();
     this.renderOverlay();
-  }
-
-  private createOverlay(): void {
-    if (this.overlay !== null) {
-      return;
-    }
-
-    this.overlayLabel = new St.Label({
-      text: OVERLAY_MESSAGE,
-      width: OVERLAY_TEXT_WIDTH_PX,
-      style:
-        `color: ${OVERLAY_TEXT_COLOR};` +
-        `font-family: ${OVERLAY_FONT_FAMILY};` +
-        `font-size: ${OVERLAY_FONT_SIZE_PX}px;` +
-        `line-height: ${OVERLAY_LINE_HEIGHT};` +
-        'font-weight: 500;' +
-        'text-align: center;',
-    });
-    this.getOverlayClutterText()?.set_line_wrap(true);
-
-    this.transcriptClip = new St.Widget({
-      x: OVERLAY_TEXT_OFFSET_X_PX,
-      y: OVERLAY_TEXT_OFFSET_Y_PX,
-      width: OVERLAY_TEXT_WIDTH_PX,
-      height: OVERLAY_TEXT_HEIGHT_PX,
-      layout_manager: new Clutter.FixedLayout(),
-    });
-    this.transcriptClip.set_clip_to_allocation(true);
-    this.transcriptClip.add_child(this.overlayLabel);
-
-    this.spectrumFrame = new St.BoxLayout({
-      x: SPECTRUM_FRAME_OFFSET_X_PX,
-      width: SPECTRUM_FRAME_WIDTH_PX,
-      height: OVERLAY_HEIGHT_PX,
-      clip_to_allocation: true,
-      style:
-        `border-radius: ${OVERLAY_CORNER_RADIUS_PX}px;` +
-        `spacing: ${SPECTRUM_BAR_GAP_PX}px;` +
-        `padding: ${SPECTRUM_FRAME_PADDING_VERTICAL_PX}px ${SPECTRUM_FRAME_PADDING_HORIZONTAL_PX}px;`,
-    });
-    this.spectrumBars = [];
-    for (let index = 0; index < SPECTRUM_BAR_COUNT; index += 1) {
-      const bar = new St.Widget({
-        reactive: false,
-        can_focus: false,
-        width: SPECTRUM_BAR_WIDTH_PX,
-        height: SPECTRUM_BAR_MIN_HEIGHT_PX,
-        y_align: Clutter.ActorAlign.END,
-        style: SPECTRUM_BAR_STYLE,
-      });
-      this.spectrumBars.push(bar);
-      this.spectrumFrame.add_child(bar);
-    }
-
-    this.overlayContent = new St.Widget({
-      width: OVERLAY_WIDTH_PX,
-      layout_manager: new Clutter.FixedLayout(),
-    });
-    this.overlayContent.add_child(this.spectrumFrame);
-    this.overlayContent.add_child(this.transcriptClip);
-
-    this.overlay = new St.Widget({
-      visible: false,
-      reactive: false,
-      can_focus: false,
-      opacity: 0,
-      width: OVERLAY_WIDTH_PX,
-      height: OVERLAY_HEIGHT_PX,
-      clip_to_allocation: true,
-      layout_manager: new Clutter.FixedLayout(),
-      style:
-        `background-color: ${OVERLAY_BACKGROUND_COLOR};` +
-        `border-radius: ${OVERLAY_CORNER_RADIUS_PX}px;`,
-    });
-    this.overlay.add_child(this.overlayContent);
-
-    Main.layoutManager.addChrome(this.overlay, { trackFullscreen: true });
-    this.overlay.set_position(-10000, -10000);
-
-    this.clearSpectrumBars();
-    this.installTranscriptDisplayImmediately(
-      buildTranscriptDisplay([{ text: OVERLAY_MESSAGE, isCommand: false, isComplete: true }]),
-    );
   }
 
   private renderOverlay(): void {
@@ -290,115 +115,17 @@ export class TranscriptOverlayController {
       transcriptRuns: this.describeTranscriptRunsForLogging(this.transcriptRuns),
       combinedTranscript: this.describeTranscriptTextForLogging(transcriptDisplay.text),
       transcriptDisplay,
-      installedTranscriptDisplay: this.installedTranscriptDisplay,
     }));
 
     if (transcriptDisplay.text.length === 0 && this.serviceState.indicatorState !== 'recording') {
       this.logTranscriptOverlayEvent('render overlay hiding because transcript is empty and indicator is not recording');
-      this.installTranscriptDisplayImmediately({ text: '', runs: [] });
-      this.hideOverlay();
+      this.view.setTranscriptDisplay({ text: '', runs: [] });
+      this.view.hide();
       return;
     }
 
-    if (!this.isInstalledTranscriptDisplay(transcriptDisplay)) {
-      this.installTranscriptDisplayImmediately(transcriptDisplay);
-    }
-
-    this.showOverlay(false);
-  }
-
-  private showOverlay(autoHide: boolean = true): void {
-    if (this.overlay === null) {
-      return;
-    }
-
-    const monitor = this.getOverlayMonitor();
-    if (monitor === null) {
-      this.logTranscriptOverlayEvent('show overlay skipped because no monitor is available');
-      return;
-    }
-
-    this.clearOverlayTimeout();
-
-    const x = Math.floor(monitor.x + (monitor.width - OVERLAY_WIDTH_PX) / 2);
-    const y = this.getAnchoredOverlayY(this.overlay.height, monitor);
-    this.logTranscriptOverlayEvent('show overlay requested', {
-      autoHide,
-      visible: this.overlay.visible,
-      overlayHeight: this.overlay.height,
-      x,
-      y,
-      monitor,
-    });
-
-    if (this.overlay.visible) {
-      this.overlay.set_position(x, y);
-      this.overlay.opacity = 255;
-      this.logTranscriptOverlayEvent('updated visible overlay position', {
-        autoHide,
-        x,
-        y,
-        overlayHeight: this.overlay.height,
-      });
-      if (autoHide) {
-        this.scheduleOverlayAutoHide();
-      }
-      return;
-    }
-
-    const overlayActor = this.overlayActor(this.overlay);
-    overlayActor.remove_all_transitions();
-    this.overlay.set_position(x, y);
-    this.overlay.opacity = 0;
-    this.overlay.show();
-    overlayActor.ease({
-      opacity: 255,
-      duration: OVERLAY_ANIMATION_DURATION_MS,
-      mode: Clutter.AnimationMode.EASE_OUT_QUAD,
-    });
-
-    if (autoHide) {
-      this.scheduleOverlayAutoHide();
-    }
-  }
-
-  private hideOverlay(): void {
-    if (this.overlay === null) {
-      return;
-    }
-
-    this.logTranscriptOverlayEvent('hide overlay requested', {
-      visible: this.overlay.visible,
-      overlayHeight: this.overlay.height,
-    });
-    const overlayActor = this.overlayActor(this.overlay);
-    overlayActor.remove_all_transitions();
-    overlayActor.ease({
-      opacity: 0,
-      duration: OVERLAY_ANIMATION_DURATION_MS,
-      mode: Clutter.AnimationMode.EASE_OUT_QUAD,
-      onComplete: () => {
-        this.logTranscriptOverlayEvent('hide overlay animation completed');
-        this.overlay?.hide();
-      },
-    });
-  }
-
-  private scheduleOverlayAutoHide(): void {
-    this.overlayTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, OVERLAY_DISPLAY_DURATION_MS, () => {
-      this.hideOverlay();
-      this.overlayTimeoutId = null;
-      return GLib.SOURCE_REMOVE;
-    });
-  }
-
-  private clearOverlayTimeout(): void {
-    if (this.overlayTimeoutId === null) {
-      return;
-    }
-
-    GLib.Source.remove(this.overlayTimeoutId);
-    this.overlayTimeoutId = null;
+    this.view.setTranscriptDisplay(transcriptDisplay);
+    this.view.show(false);
   }
 
   private resetTranscriptOverlay(): void {
@@ -406,192 +133,20 @@ export class TranscriptOverlayController {
       indicatorState: this.serviceState.indicatorState,
       transcriptRunsBefore: this.describeTranscriptRunsForLogging(this.transcriptRuns),
     }));
-    this.transcriptRuns = [];
-    this.transcriptDisplay = { text: '', runs: [] };
-    this.installTranscriptDisplayImmediately(this.transcriptDisplay);
+    this.resetTranscriptState();
+    this.view.setTranscriptDisplay(this.transcriptDisplay);
 
     if (this.serviceState.indicatorState === 'recording') {
-      this.showOverlay(false);
+      this.view.show(false);
       return;
     }
 
-    this.hideOverlay();
+    this.view.hide();
   }
 
-  private clearSpectrumBars(): void {
-    this.spectrumLevels = new Uint8Array(SPECTRUM_BAR_COUNT);
-    this.renderSpectrumBars();
-  }
-
-  private renderSpectrumBars(): void {
-    if (this.spectrumBars.length !== SPECTRUM_BAR_COUNT) {
-      return;
-    }
-
-    for (let index = 0; index < SPECTRUM_BAR_COUNT; index += 1) {
-      const level = this.spectrumLevels[index] ?? 0;
-      const normalizedLevel = level / 255;
-      const height =
-        SPECTRUM_BAR_MIN_HEIGHT_PX +
-        Math.round(normalizedLevel * (SPECTRUM_BAR_MAX_HEIGHT_PX - SPECTRUM_BAR_MIN_HEIGHT_PX));
-      const bar = this.spectrumBars[index];
-      bar.height = height;
-    }
-  }
-
-  private getOverlayClutterText(): OverlayClutterText | null {
-    return this.overlayLabel?.get_clutter_text() as OverlayClutterText | null;
-  }
-
-  private isInstalledTranscriptDisplay(transcriptDisplay: TranscriptDisplay): boolean {
-    return (
-      transcriptDisplay.text === this.installedTranscriptDisplay.text &&
-      transcriptDisplay.runs.length === this.installedTranscriptDisplay.runs.length &&
-      transcriptDisplay.runs.every((run, index) => {
-        const installedRun = this.installedTranscriptDisplay.runs[index];
-        return installedRun !== undefined &&
-          run.text === installedRun.text &&
-          run.isCommand === installedRun.isCommand &&
-          run.isComplete === installedRun.isComplete &&
-          run.startByte === installedRun.startByte &&
-          run.endByte === installedRun.endByte;
-      })
-    );
-  }
-
-  private installTranscriptDisplay(transcriptDisplay: TranscriptDisplay): void {
-    const overlayClutterText = this.getOverlayClutterText();
-    if (overlayClutterText === null) {
-      this.logTranscriptOverlayEvent('install transcript text skipped because overlay text actor is unavailable', {
-        transcriptDisplay,
-      });
-      return;
-    }
-
-    this.logTranscriptOverlayEvent('installing transcript display', {
-      text: this.describeTranscriptTextForLogging(transcriptDisplay.text),
-      transcriptDisplay,
-    });
-    overlayClutterText.set_text(transcriptDisplay.text);
-    this.applyTranscriptDisplayAttributes(transcriptDisplay);
-    this.installedTranscriptDisplay = {
-      text: transcriptDisplay.text,
-      runs: transcriptDisplay.runs.map((run) => ({ ...run })),
-    };
-  }
-
-  private installTranscriptDisplayImmediately(transcriptDisplay: TranscriptDisplay): void {
-    this.logTranscriptOverlayEvent('install transcript display immediately requested', {
-      text: this.describeTranscriptTextForLogging(transcriptDisplay.text),
-      transcriptDisplay,
-    });
-    this.installTranscriptDisplay(transcriptDisplay);
-    this.syncOverlayHeightToInstalledText();
-  }
-
-  private clearTranscriptAttributes(): void {
-    this.getOverlayClutterText()?.set_attributes(null);
-  }
-
-  private applyTranscriptDisplayAttributes(transcriptDisplay: TranscriptDisplay): void {
-    const overlayClutterText = this.getOverlayClutterText();
-    if (overlayClutterText === null) {
-      this.logTranscriptOverlayEvent('skipped transcript attribute application because overlay text actor is unavailable', {
-        transcriptDisplay,
-      });
-      return;
-    }
-
-    const attributeSpecs = buildTranscriptAttributeSpecs(
-      transcriptDisplay,
-      OVERLAY_TEXT_COLOR,
-      OVERLAY_COMMAND_TEXT_COLOR,
-    );
-    if (attributeSpecs.length === 0) {
-      this.clearTranscriptAttributes();
-      return;
-    }
-
-    const attrs = Pango.AttrList.new();
-    this.logTranscriptOverlayEvent('applying transcript attributes', {
-      text: this.describeTranscriptTextForLogging(transcriptDisplay.text),
-      transcriptDisplay,
-      attributeSpecs,
-    });
-    for (const spec of attributeSpecs) {
-      const attr = spec.kind === 'foreground-color'
-        ? Pango.attr_foreground_new(spec.red, spec.green, spec.blue)
-        : Pango.attr_foreground_alpha_new(spec.alpha);
-      attr.start_index = spec.startByte;
-      attr.end_index = spec.endByte;
-      attrs.insert(attr);
-    }
-
-    overlayClutterText.set_attributes(attrs);
-  }
-
-  private syncOverlayHeightToInstalledText(): void {
-    if (this.transcriptClip === null || this.overlay === null) {
-      this.logTranscriptOverlayEvent('sync overlay height skipped because overlay actors are unavailable');
-      return;
-    }
-
-    const transcriptHeight = this.measureTranscriptHeight();
-    const shellHeight = this.measureOverlayShellHeight(transcriptHeight);
-    this.logTranscriptOverlayEvent('syncing overlay height to installed text', {
-      transcriptHeight,
-      shellHeight,
-      overlayVisible: this.overlay.visible,
-    });
-
-    this.overlayActor(this.transcriptClip).remove_all_transitions();
-    this.transcriptClip.set_height(transcriptHeight);
-
-    this.overlayActor(this.overlay).remove_all_transitions();
-    this.overlay.set_height(shellHeight);
-
-    if (this.overlay.visible) {
-      this.overlay.set_y(this.getAnchoredOverlayY(shellHeight));
-    }
-  }
-
-  private measureTranscriptHeight(): number {
-    if (this.overlayLabel === null) {
-      this.logTranscriptOverlayEvent('measure transcript height used fallback because overlay label is unavailable', {
-        fallbackHeight: OVERLAY_TEXT_HEIGHT_PX,
-      });
-      return OVERLAY_TEXT_HEIGHT_PX;
-    }
-
-    const [, naturalHeight] = this.overlayLabel.get_preferred_height(OVERLAY_TEXT_WIDTH_PX);
-    const measuredHeight = Math.max(OVERLAY_TEXT_HEIGHT_PX, Math.ceil(naturalHeight));
-    this.logTranscriptOverlayEvent('measured transcript height', {
-      naturalHeight,
-      measuredHeight,
-      installedText: this.describeTranscriptTextForLogging(this.overlayLabel.get_text()),
-    });
-    return measuredHeight;
-  }
-
-  private measureOverlayShellHeight(transcriptHeight: number): number {
-    return Math.max(OVERLAY_HEIGHT_PX, transcriptHeight + OVERLAY_TEXT_OFFSET_Y_PX * 2);
-  }
-
-  private getOverlayMonitor(): OverlayMonitor | null {
-    const focusedWindow = global.display.get_focus_window();
-    const focusedMonitor = focusedWindow === null
-      ? undefined
-      : Main.layoutManager.monitors[focusedWindow.get_monitor()];
-
-    return focusedMonitor ?? Main.layoutManager.primaryMonitor;
-  }
-
-  private getAnchoredOverlayY(height: number, monitor: OverlayMonitor | null = this.getOverlayMonitor()): number {
-    if (monitor === null) {
-      return -10000;
-    }
-
-    return Math.floor(monitor.y + monitor.height - height - OVERLAY_BOTTOM_MARGIN_PX);
+  private resetTranscriptState(): void {
+    this.transcriptRuns = [];
+    this.transcriptDisplay = { text: '', runs: [] };
   }
 
   private logTranscriptOverlayEvent(
