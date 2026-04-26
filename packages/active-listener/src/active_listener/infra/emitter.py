@@ -30,6 +30,7 @@ KITTY_WM_CLASS = "kitty"
 MAX_EMIT_CHUNK_LENGTH = 800
 # Vicinae schedules the actual paste asynchronously after a 100 ms timeout.
 INTER_CHUNK_DELAY_MS = 150
+CLIPBOARD_RESTORE_DELAY_MS = 750
 DISCONNECTED_BUS_ERROR_NAME = "System.Error.ENOTCONN"
 
 
@@ -210,6 +211,11 @@ class GnomeShellExtensionTextEmitter:
     return clipboard_content
 
   def _restore_clipboard(self, clipboard_content: str) -> None:
+    _logger.debug(
+      "waiting before clipboard restore",
+      delay_ms=CLIPBOARD_RESTORE_DELAY_MS,
+    )
+    time.sleep(CLIPBOARD_RESTORE_DELAY_MS / 1000)
     _logger.debug("restoring clipboard after emission")
     self._call_with_rebind(
       operation="clipboard_restore_content",

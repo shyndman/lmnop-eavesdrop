@@ -263,7 +263,7 @@ def test_emitter_chunks_text_at_800_characters(monkeypatch: pytest.MonkeyPatch) 
 
   assert [len(chunk) for chunk in clipboard.set_contents[:-1]] == [800, 800, 1]
   assert clipboard.set_contents[-1] == "seed"
-  assert sleep_calls == [0.15, 0.15]
+  assert sleep_calls == [0.15, 0.15, 0.75]
 
 
 def test_emitter_preserves_newlines_inside_chunk(monkeypatch: pytest.MonkeyPatch) -> None:
