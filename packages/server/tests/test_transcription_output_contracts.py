@@ -3,7 +3,7 @@
 These tests lock down the server-to-client segment envelope guarantees:
 - completed history is windowed by `send_last_n_segments`
 - every emission ends with exactly one incomplete segment
-- absolute timestamps remain monotonic across repeated updates
+- start/end timestamps remain monotonic across repeated updates
 """
 
 from dataclasses import dataclass, field
@@ -144,16 +144,16 @@ async def test_send_last_n_limits_completed_history_and_appends_synthetic_tail()
 
 
 @pytest.mark.asyncio
-async def test_absolute_timestamps_remain_monotonic_across_multiple_updates() -> None:
-  """Absolute times must move forward even when relative timestamps reset between updates."""
+async def test_recording_relative_timestamps_remain_monotonic_across_multiple_updates() -> None:
+  """Recording-relative starts and ends must continue to move forward across updates."""
   session = create_session("stream-1")
   sink = RecordingSink()
   processor = _create_processor(send_last_n_segments=3, session=session, sink=sink)
 
   await processor._handle_transcription_output(
     result=[
-      _segment(start=0.0, end=1.0, text="alpha", time_offset=30.0),
-      _segment(start=1.0, end=1.2, text="draft", time_offset=30.0),
+      _segment(start=30.0, end=31.0, text="alpha", time_offset=30.0),
+      _segment(start=31.0, end=31.2, text="draft", time_offset=30.0),
     ],
     duration=0.2,
     speech_chunks=None,
@@ -161,8 +161,8 @@ async def test_absolute_timestamps_remain_monotonic_across_multiple_updates() ->
 
   await processor._handle_transcription_output(
     result=[
-      _segment(start=0.1, end=0.7, text="bravo", time_offset=31.5),
-      _segment(start=0.7, end=1.0, text="charlie", time_offset=31.5),
+      _segment(start=31.6, end=32.2, text="bravo", time_offset=31.5),
+      _segment(start=32.2, end=32.5, text="charlie", time_offset=31.5),
     ],
     duration=1.0,
     speech_chunks=None,
@@ -171,17 +171,15 @@ async def test_absolute_timestamps_remain_monotonic_across_multiple_updates() ->
   completed = session.completed_segments
   assert [segment.text for segment in completed] == ["alpha", "bravo", "charlie"]
 
-  absolute_ranges = [
-    (segment.absolute_start_time, segment.absolute_end_time) for segment in completed
-  ]
-  assert absolute_ranges == pytest.approx(
+  ranges = [(segment.start, segment.end) for segment in completed]
+  assert ranges == pytest.approx(
     [
       (30.0, 31.0),
       (31.6, 32.2),
       (32.2, 32.5),
     ]
   )
-  assert absolute_ranges[1][0] > absolute_ranges[0][1]
+  assert ranges[1][0] > ranges[0][1]
 
   latest_output = sink.results[-1].segments
   assert [segment.text for segment in latest_output[:-1]] == ["alpha", "bravo", "charlie"]

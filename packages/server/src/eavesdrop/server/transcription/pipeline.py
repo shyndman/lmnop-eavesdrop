@@ -713,16 +713,27 @@ class _TranscribeContext:
     # Assign baseline ID for incomplete segments (will get chain ID when completed)
     from eavesdrop.wire.transcription import compute_segment_chain_id
 
+    def flatten_timestamp(value: float) -> float:
+      # If caller already supplied a recording-relative timestamp, keep it.
+      # This keeps compatibility with in-process constructors that pass
+      # window-relative values plus `time_offset`.
+      if time_offset > 0 and value < time_offset:
+        return value + time_offset
+      return value
+
     segment_id = compute_segment_chain_id(0, "")  # Baseline ID for incomplete segments
-    absolute_start_time = time_offset + segment_data["start"]
+    flattened_start = flatten_timestamp(segment_data["start"])
+    flattened_end = flatten_timestamp(segment_data["end"])
 
     id_logger = get_logger("seg-id")
     id_logger.debug(
       "Segment created (incomplete, will get chain ID when completed)",
       baseline_id=segment_id,
       relative_start=segment_data["start"],
+      relative_end=segment_data["end"],
       time_offset=time_offset,
-      absolute_start_time=absolute_start_time,
+      flattened_start=flattened_start,
+      flattened_end=flattened_end,
       seek=self.seek,
       text=text[:50] + "..." if len(text) > 50 else text,
     )
@@ -731,15 +742,26 @@ class _TranscribeContext:
       Segment(
         id=segment_id,
         seek=self.seek,
-        start=segment_data["start"],
-        end=segment_data["end"],
+        start=flattened_start,
+        end=flattened_end,
         text=text,
         tokens=tokens,
         temperature=temperature,
         avg_logprob=avg_logprob,
         compression_ratio=compression_ratio,
         words=(
-          [Word(**word) for word in segment_data.get("words", [])] if word_timestamps else None
+          [
+            Word(
+              **{
+                **word,
+                "start": flatten_timestamp(word["start"]),
+                "end": flatten_timestamp(word["end"]),
+              }
+            )
+            for word in segment_data.get("words", [])
+          ]
+          if word_timestamps
+          else None
         ),
         time_offset=time_offset,
       )

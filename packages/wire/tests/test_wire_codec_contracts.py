@@ -6,6 +6,8 @@ These tests lock down the wire protocol API boundary:
 - decoded messages retain metadata fields clients depend on
 """
 
+import json
+
 import pytest
 from pydantic import ValidationError
 
@@ -130,6 +132,11 @@ def test_decode_preserves_transcription_metadata_fields() -> None:
     )
   )
 
+  payload = json.loads(encoded)
+  assert "time_offset" not in payload["segments"][0]
+  assert "absolute_start_time" not in payload["segments"][0]
+  assert "absolute_end_time" not in payload["segments"][0]
+
   decoded = deserialize_message(encoded)
 
   assert decoded.type == "transcription"
@@ -139,7 +146,7 @@ def test_decode_preserves_transcription_metadata_fields() -> None:
   assert decoded.flush_complete is True
   assert decoded.segments[0].id == 4242
   assert decoded.segments[0].text == "contract fixture"
-  assert decoded.segments[0].time_offset == 32.0
+  assert decoded.segments[0].time_offset == 0.0
   assert decoded.segments[0].completed is True
   assert decoded.segments[0].words is not None
   assert decoded.segments[0].words[0].word == "contract"
@@ -215,6 +222,48 @@ def test_ordinary_transcription_omits_flush_complete_on_wire() -> None:
 
   assert '"flush_complete"' not in encoded
   _ = deserialize_message(encoded)
+
+
+def test_wire_payload_records_and_words_use_same_recording_timeline() -> None:
+  encoded = serialize_message(
+    TranscriptionMessage(
+      timestamp=1_700_000_008.0,
+      stream="stream-words",
+      segments=[
+        Segment(
+          id=9001,
+          seek=0,
+          start=22.0,
+          end=24.0,
+          text="words on timeline",
+          tokens=[1, 2, 3],
+          avg_logprob=-0.1,
+          compression_ratio=1.0,
+          words=[
+            Word(
+              start=22.1,
+              end=22.4,
+              word="first",
+              probability=0.95,
+            )
+          ],
+          temperature=0.0,
+          time_offset=5.0,
+          completed=True,
+        )
+      ],
+    )
+  )
+
+  payload = json.loads(encoded)["segments"][0]
+
+  assert "time_offset" not in payload
+  assert payload["start"] == pytest.approx(22.0)
+  assert payload["end"] == pytest.approx(24.0)
+  assert payload["words"][0]["start"] == pytest.approx(22.1)
+  assert payload["words"][0]["end"] == pytest.approx(22.4)
+  assert "absolute_start_time" not in payload["words"][0]
+  assert "absolute_end_time" not in payload["words"][0]
 
 
 def test_flush_satisfying_transcription_serializes_flush_complete_true() -> None:

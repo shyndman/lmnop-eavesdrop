@@ -34,14 +34,13 @@ def compute_segment_chain_id(previous_id: int, text: str) -> int:
 
 
 class Word(BaseModel):
-  """Lists of these objects are sent accomanpanying segments if word-level timestamps are
-  requested."""
+  """Lists of these objects are sent with segments when word-level timestamps are requested."""
 
   start: float
-  """Start timestamp of the word in seconds within the audio segment."""
+  """Start timestamp of the word in seconds on the recording timeline."""
 
   end: float
-  """End timestamp of the word in seconds within the audio segment."""
+  """End timestamp of the word in seconds on the recording timeline."""
 
   word: str
   """The transcribed text content of the word."""
@@ -58,10 +57,10 @@ class Segment(BaseModel):
   """Frame position in audio features where segment processing started."""
 
   start: float
-  """Segment start time in seconds relative to the current audio window."""
+  """Segment start time in seconds on the recording timeline."""
 
   end: float
-  """Segment end time in seconds relative to the current audio window."""
+  """Segment end time in seconds on the recording timeline."""
 
   text: str
   """Transcribed text content of the audio segment."""
@@ -81,8 +80,8 @@ class Segment(BaseModel):
   temperature: float | None
   """Generation temperature used when creating this segment, None if not tracked."""
 
-  time_offset: float = 0.0
-  """Absolute time offset to convert relative segment times to stream timestamps."""
+  time_offset: float = Field(default=0.0, exclude=True)
+  """Internal segment-local offset retained only for Python-side compatibility helpers."""
 
   completed: bool = False
   """Whether the segment transcription has been finalized and assigned a chain ID."""
@@ -98,17 +97,29 @@ class Segment(BaseModel):
     """Return the segment probability by exponentiating the average log probability."""
     return math.exp(self.avg_logprob)
 
-  @computed_field
   @property
   def absolute_start_time(self) -> float:
-    """Return the absolute start time in the audio stream."""
-    return self.time_offset + self.start
+    """Return the start time in the recording timeline.
 
-  @computed_field
+    Segments created by current wire-facing pipeline stages now already use recording-
+    relative `start` values, so no offset is added when `start` already appears to be on
+    the recording timeline. For older compatibility where `start` is still window-relative,
+    `time_offset` is added as a fallback.
+    """
+    if self.time_offset > 0 and self.start < self.time_offset:
+      return self.time_offset + self.start
+    return self.start
+
   @property
   def absolute_end_time(self) -> float:
-    """Return the absolute end time in the audio stream."""
-    return self.time_offset + self.end
+    """Return the end time in the recording timeline.
+
+    Mirrors `absolute_start_time` so callers depending on compatibility helpers continue
+    to receive timeline-correct values after the flattening cutover.
+    """
+    if self.time_offset > 0 and self.end < self.time_offset:
+      return self.time_offset + self.end
+    return self.end
 
   @computed_field
   @property

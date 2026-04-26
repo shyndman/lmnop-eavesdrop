@@ -5,7 +5,7 @@ import json
 import pytest
 
 from eavesdrop.server.transcription.session import create_session
-from eavesdrop.wire import Segment, TranscriptionMessage, serialize_message
+from eavesdrop.wire import Segment, TranscriptionMessage, Word, serialize_message
 
 
 def _segment(*, start: float, end: float, time_offset: float) -> Segment:
@@ -43,17 +43,66 @@ def test_absolute_times_remain_monotonic_across_window_boundaries() -> None:
   assert second.absolute_start_time > first.absolute_end_time
 
 
-def test_transcription_message_serializes_absolute_timestamp_fields() -> None:
-  segment = _segment(start=3.0, end=5.0, time_offset=40.0)
+def test_transcription_message_serializes_flattened_timestamps() -> None:
+  segment = Segment(
+    id=1,
+    seek=0,
+    start=43.0,
+    end=45.0,
+    text="hello",
+    tokens=[1, 2, 3],
+    avg_logprob=-0.25,
+    compression_ratio=1.0,
+    words=None,
+    temperature=0.0,
+    time_offset=40.0,
+    completed=False,
+  )
   message = TranscriptionMessage(stream="s1", segments=[segment], language="en")
 
   payload = json.loads(serialize_message(message))
   serialized_segment = payload["segments"][0]
 
-  assert serialized_segment["start"] == pytest.approx(3.0)
-  assert serialized_segment["end"] == pytest.approx(5.0)
-  assert serialized_segment["absolute_start_time"] == pytest.approx(43.0)
-  assert serialized_segment["absolute_end_time"] == pytest.approx(45.0)
+  assert "time_offset" not in serialized_segment
+  assert "absolute_start_time" not in serialized_segment
+  assert "absolute_end_time" not in serialized_segment
+  assert serialized_segment["start"] == pytest.approx(43.0)
+  assert serialized_segment["end"] == pytest.approx(45.0)
+
+
+def test_transcription_message_word_timestamps_share_recording_timeline() -> None:
+  segment = Segment(
+    id=1,
+    seek=0,
+    start=40.0,
+    end=42.5,
+    text="worded hello",
+    tokens=[1, 2, 3],
+    avg_logprob=-0.25,
+    compression_ratio=1.0,
+    words=[
+      Word(
+        start=40.25,
+        end=40.6,
+        word="word",
+        probability=0.99,
+      )
+    ],
+    temperature=0.0,
+    time_offset=40.0,
+    completed=False,
+  )
+  message = TranscriptionMessage(stream="s1", segments=[segment], language="en")
+
+  payload = json.loads(serialize_message(message))
+  serialized_segment = payload["segments"][0]
+  serialized_word = serialized_segment["words"][0]
+
+  assert "time_offset" not in serialized_segment
+  assert "absolute_start_time" not in serialized_word
+  assert "absolute_end_time" not in serialized_word
+  assert serialized_word["start"] == pytest.approx(40.25)
+  assert serialized_word["end"] == pytest.approx(40.6)
 
 
 def test_session_reports_absolute_chunk_time_range() -> None:
