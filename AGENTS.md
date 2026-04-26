@@ -61,6 +61,9 @@ Silence-based segment completion:
 # Type checking
 uv run basedpyright
 
+# packages/server on a host machine needs its opt-in transcription deps
+cd packages/server && uv run --group type_checkable basedpyright
+
 # Linting
 uv run ruff check
 ```

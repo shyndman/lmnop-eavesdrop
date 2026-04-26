@@ -111,9 +111,12 @@ cd packages/wire && uv sync
 cd packages/common && uv sync
 cd packages/active-listener && uv sync
 
-# Code quality (run from any package directory)
+# Code quality (run from each package directory)
 ruff check && ruff format
 basedpyright
+
+# Server host type checking needs the opt-in transcription dependency group.
+cd packages/server && uv run --group type_checkable basedpyright
 
 # Testing (where applicable)
 pytest

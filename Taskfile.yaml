@@ -160,6 +160,12 @@ tasks:
     cmds:
       - uv sync --all-extras --all-groups
 
+  typecheck-server:
+    desc: Run the server type checker with host-only transcription deps
+    dir: packages/server
+    cmds:
+      - uv run --group type_checkable basedpyright
+
   list-gpus:
     desc: Print GPU names as reported by PyTorch on the current machine
     cmds:
