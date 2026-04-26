@@ -60,6 +60,35 @@ def restore_speech_timestamps(
   return segments
 
 
+def finalize_recording_timestamps(
+  segments: Iterable[Segment],
+  absolute_stream_start: float,
+) -> Iterable[Segment]:
+  """Ensures all segments and words have recording-relative timestamps.
+
+  This adds the recording-level offset to chunk-local timestamps and updates
+  the internal time_offset field for compatibility.
+
+  :param segments: The transcribed segments to normalize.
+  :type segments: Iterable[Segment]
+  :param absolute_stream_start: The offset of the current audio chunk in the recording.
+  :type absolute_stream_start: float
+  :return: The segments with recording-relative timestamps.
+  :rtype: Iterable[Segment]
+  """
+  for segment in segments:
+    segment.start += absolute_stream_start
+    segment.end += absolute_stream_start
+    segment.time_offset = absolute_stream_start
+
+    if segment.words:
+      for word in segment.words:
+        word.start += absolute_stream_start
+        word.end += absolute_stream_start
+
+  return segments
+
+
 def get_ctranslate2_storage(segment: np.ndarray) -> "ctranslate2.StorageView":
   import ctranslate2
 

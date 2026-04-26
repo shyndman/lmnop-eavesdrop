@@ -33,6 +33,7 @@ from eavesdrop.server.transcription.models import (
 from eavesdrop.server.transcription.prompt_builder import PromptBuilder
 from eavesdrop.server.transcription.segment_processor import SegmentProcessor
 from eavesdrop.server.transcription.utils import (
+  finalize_recording_timestamps,
   get_ctranslate2_storage,
   get_suppressed_tokens,
   restore_speech_timestamps,
@@ -342,7 +343,6 @@ class WhisperModel:
         log_progress=False,
         encoder_output=None,
         session=session,
-        absolute_stream_start=absolute_stream_start,
       )
       tracer(total_attempts, 0.0)
 
@@ -352,6 +352,11 @@ class WhisperModel:
         segments = restore_speech_timestamps(
           segments, speech_chunks, self.audio_processor.sampling_rate
         )
+
+      # Ensure all timestamps are recording-relative
+      if absolute_stream_start > 0:
+        segments = finalize_recording_timestamps(segments, absolute_stream_start)
+
       tracer(segments)
 
     info = TranscriptionInfo(
@@ -362,7 +367,7 @@ class WhisperModel:
       transcription_options=options,
       vad_options=resolved_vad_parameters,
       all_language_probs=all_language_probs,
-      speech_chunks=speech_chunks,
+      speech_chunks=speech_chunks or [],
     )
 
     return segments, info
@@ -375,7 +380,6 @@ class WhisperModel:
     log_progress: bool,
     encoder_output: ctranslate2.StorageView | None = None,
     session: "TranscriptionSessionProtocol | None" = None,
-    absolute_stream_start: float = 0.0,
   ) -> _TranscribeSegmentsResult:
     """A lower-level transcription function that generates the individual segments for a given
     audio clip.
@@ -529,7 +533,6 @@ class WhisperModel:
           avg_logprob=avg_logprob,
           compression_ratio=compression_ratio,
           word_timestamps=transcription_options.word_timestamps,
-          time_offset=absolute_stream_start,
         )
 
       if (
@@ -715,7 +718,6 @@ class _TranscribeContext:
     avg_logprob: float,
     compression_ratio: float,
     word_timestamps: bool,
-    time_offset: float,
   ):
     """Add completed segment to results."""
     text = text.strip()
@@ -727,27 +729,16 @@ class _TranscribeContext:
     # Assign baseline ID for incomplete segments (will get chain ID when completed)
     from eavesdrop.wire.transcription import compute_segment_chain_id
 
-    def flatten_timestamp(value: float) -> float:
-      # If caller already supplied a recording-relative timestamp, keep it.
-      # This keeps compatibility with in-process constructors that pass
-      # window-relative values plus `time_offset`.
-      if time_offset > 0 and value < time_offset:
-        return value + time_offset
-      return value
-
     segment_id = compute_segment_chain_id(0, "")  # Baseline ID for incomplete segments
-    flattened_start = flatten_timestamp(segment_data["start"])
-    flattened_end = flatten_timestamp(segment_data["end"])
+    start = segment_data["start"]
+    end = segment_data["end"]
 
     id_logger = get_logger("seg-id")
     id_logger.debug(
       "Segment created (incomplete, will get chain ID when completed)",
       baseline_id=segment_id,
-      relative_start=segment_data["start"],
-      relative_end=segment_data["end"],
-      time_offset=time_offset,
-      flattened_start=flattened_start,
-      flattened_end=flattened_end,
+      relative_start=start,
+      relative_end=end,
       seek=self.seek,
       text=text[:50] + "..." if len(text) > 50 else text,
     )
@@ -756,8 +747,8 @@ class _TranscribeContext:
       Segment(
         id=segment_id,
         seek=self.seek,
-        start=flattened_start,
-        end=flattened_end,
+        start=start,
+        end=end,
         text=text,
         tokens=tokens,
         temperature=temperature,
@@ -766,18 +757,16 @@ class _TranscribeContext:
         words=(
           [
             Word(
-              **{
-                **word,
-                "start": flatten_timestamp(word["start"]),
-                "end": flatten_timestamp(word["end"]),
-              }
+              start=word["start"],
+              end=word["end"],
+              word=word["word"],
+              probability=word.get("probability", 0.0),
             )
             for word in segment_data.get("words", [])
           ]
           if word_timestamps
           else None
         ),
-        time_offset=time_offset,
       )
     )
 
