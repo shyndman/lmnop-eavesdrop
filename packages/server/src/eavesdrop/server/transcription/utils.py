@@ -1,14 +1,15 @@
 import zlib
 from collections.abc import Iterable
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
-import ctranslate2
 import numpy as np
-from faster_whisper.tokenizer import Tokenizer
-from faster_whisper.vad import SpeechTimestampsMap
 
 from eavesdrop.server.transcription.models import SpeechChunk, WordTimingDict
 from eavesdrop.wire import Segment
+
+if TYPE_CHECKING:
+  import ctranslate2
+  from faster_whisper.tokenizer import Tokenizer
 
 
 def summarize_array(name: str, array: np.ndarray) -> dict[str, object]:
@@ -34,6 +35,8 @@ def restore_speech_timestamps(
   speech_chunks: list[SpeechChunk],
   sampling_rate: int,
 ) -> Iterable[Segment]:
+  from faster_whisper.vad import SpeechTimestampsMap
+
   ts_map = SpeechTimestampsMap(cast(list[dict], speech_chunks), sampling_rate)
 
   for segment in segments:
@@ -57,7 +60,9 @@ def restore_speech_timestamps(
   return segments
 
 
-def get_ctranslate2_storage(segment: np.ndarray) -> ctranslate2.StorageView:
+def get_ctranslate2_storage(segment: np.ndarray) -> "ctranslate2.StorageView":
+  import ctranslate2
+
   segment = np.ascontiguousarray(segment)
   segment = ctranslate2.StorageView.from_array(segment)
   return segment
@@ -69,7 +74,7 @@ def get_compression_ratio(text: str) -> float:
 
 
 def get_suppressed_tokens(
-  tokenizer: Tokenizer,
+  tokenizer: "Tokenizer",
   suppress_tokens: list[int],
 ) -> list[int]:
   if -1 in suppress_tokens:

@@ -1,15 +1,14 @@
 import os
 from pathlib import Path
 
-import torch
 import yaml
-from faster_whisper.vad import VadOptions
 from pydantic import BaseModel, Field, model_validator, validate_call
 from pydantic.dataclasses import dataclass
 from pydantic.types import FilePath
 
 from eavesdrop.common import get_logger
 from eavesdrop.server.constants import CACHE_PATH, SINGLE_MODEL
+from eavesdrop.server.transcription.models import VadParameters
 
 logger = get_logger("cfg")
 
@@ -128,7 +127,7 @@ class TranscriptionConfig(BaseModel):
   use_vad: bool = True
   """Whether to use Voice Activity Detection."""
 
-  vad_parameters: VadOptions = Field(default_factory=VadOptions)
+  vad_parameters: VadParameters = Field(default_factory=VadParameters)
   """Voice Activity Detection parameters."""
 
   same_output_threshold: int = Field(default=10, gt=0)
@@ -211,6 +210,8 @@ class TranscriptionConfig(BaseModel):
 
   def _resolve_gpu_device_index(self, gpu_name: str) -> int:
     """Resolve GPU device index from GPU name."""
+    import torch
+
     if not torch.cuda.is_available():
       return 0
 

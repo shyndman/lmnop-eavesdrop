@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
-import soundfile as sf
 
 from eavesdrop.common import get_logger
 
@@ -83,6 +82,7 @@ class AudioDebugCapture:
     timestamp = int(time.time())
     chunk_id = f"{chunk.start_time:.3f}_{chunk.duration:.3f}"
     filename = self._output_path / f"{self._stream_name}_{timestamp}_{chunk_id}_post.wav"
+    import soundfile as sf
 
     try:
       sf.write(str(filename), chunk.data, self._sample_rate)
@@ -117,6 +117,7 @@ class AudioDebugCapture:
     timestamp = int(time.time())
     chunk_id = f"{start_time:.3f}_{duration:.3f}"
     filename = self._output_path / f"{self._stream_name}_{timestamp}_{chunk_id}_post.wav"
+    import soundfile as sf
 
     try:
       sf.write(str(filename), audio_data, self._sample_rate)

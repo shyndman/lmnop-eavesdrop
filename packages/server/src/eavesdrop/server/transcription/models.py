@@ -1,6 +1,6 @@
 from typing import NamedTuple, NotRequired, Required, TypedDict
 
-from faster_whisper.vad import VadOptions
+from pydantic import BaseModel, Field
 
 
 class SpeechChunk(TypedDict):
@@ -67,6 +67,17 @@ class WordTimingDict(TypedDict):
   start: float
   end: float
   probability: float
+
+
+class VadParameters(BaseModel):
+  """Repo-owned VAD configuration kept import-light for config and tests."""
+
+  threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+  neg_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+  min_speech_duration_ms: int = Field(default=0, ge=0)
+  max_speech_duration_s: float = Field(default=float("inf"), gt=0.0)
+  min_silence_duration_ms: int = Field(default=2000, ge=0)
+  speech_pad_ms: int = Field(default=400, ge=0)
 
 
 class TranscriptionOptions(NamedTuple):
@@ -192,7 +203,7 @@ type LanguageProbability = tuple[str, float]
 
 class TranscriptionInfo(NamedTuple):
   transcription_options: TranscriptionOptions = TranscriptionOptions()
-  vad_options: VadOptions = VadOptions()
+  vad_options: VadParameters = VadParameters()
   language: str = "en"
   language_probability: float = 0.0
   duration: float = 0.0

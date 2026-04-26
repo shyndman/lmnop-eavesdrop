@@ -28,6 +28,7 @@ from eavesdrop.server.transcription.models import (
   SegmentDict,
   TranscriptionInfo,
   TranscriptionOptions,
+  VadParameters,
 )
 from eavesdrop.server.transcription.prompt_builder import PromptBuilder
 from eavesdrop.server.transcription.segment_processor import SegmentProcessor
@@ -157,7 +158,7 @@ class WhisperModel:
     language: str | None = None,
     initial_prompt: str | None = None,
     vad_filter: bool = False,
-    vad_parameters: VadOptions = VadOptions(),
+    vad_parameters: VadParameters | None = None,
     hotwords: str | None = None,
     multilingual: bool = False,
     start_offset: float = 0.0,
@@ -181,8 +182,8 @@ class WhisperModel:
         without speech. This step is using the Silero VAD model
         https://github.com/snakers4/silero-vad.
     :type vad_filter: bool
-    :param vad_parameters: VAD configuration options (VadOptions instance).
-    :type vad_parameters: VadOptions
+    :param vad_parameters: Repo-owned VAD configuration options.
+    :type vad_parameters: VadParameters | None
     :param hotwords: Optional hotwords to provide as context to improve recognition of
       specific terms.
     :type hotwords: str | None
@@ -232,7 +233,7 @@ class WhisperModel:
     language: str | None = None,
     initial_prompt: str | None = None,
     vad_filter: bool = False,
-    vad_parameters: VadOptions = VadOptions(),
+    vad_parameters: VadParameters | None = None,
     hotwords: str | None = None,
     multilingual: bool = False,
     absolute_stream_start: float = 0.0,
@@ -240,6 +241,15 @@ class WhisperModel:
     word_timestamps: bool | None = None,
   ) -> tuple[Iterable[Segment], TranscriptionInfo]:
     default_options = TranscriptionOptions()
+    resolved_vad_parameters = vad_parameters or VadParameters()
+    runtime_vad_parameters = VadOptions(
+      threshold=resolved_vad_parameters.threshold,
+      neg_threshold=resolved_vad_parameters.neg_threshold,
+      min_speech_duration_ms=resolved_vad_parameters.min_speech_duration_ms,
+      max_speech_duration_s=resolved_vad_parameters.max_speech_duration_s,
+      min_silence_duration_ms=resolved_vad_parameters.min_silence_duration_ms,
+      speech_pad_ms=resolved_vad_parameters.speech_pad_ms,
+    )
     resolved_beam_size = beam_size if beam_size is not None else default_options.beam_size
     resolved_word_timestamps = (
       word_timestamps if word_timestamps is not None else default_options.word_timestamps
@@ -248,7 +258,11 @@ class WhisperModel:
     # Use our new audio processing module for validation and VAD
     with session.trace_vad_stage() as tracer:
       audio, duration, duration_after_vad, speech_chunks, will_be_complete_silence = (
-        self.audio_processor.validate_and_preprocess_audio(audio, vad_filter, vad_parameters)
+        self.audio_processor.validate_and_preprocess_audio(
+          audio,
+          vad_filter,
+          runtime_vad_parameters,
+        )
       )
       tracer(
         speech_chunks if vad_filter else None, self.audio_processor.sampling_rate, audio.shape[0]
@@ -264,7 +278,7 @@ class WhisperModel:
           beam_size=resolved_beam_size,
           word_timestamps=resolved_word_timestamps,
         ),
-        vad_options=vad_parameters,
+        vad_options=resolved_vad_parameters,
         duration=duration,
         duration_after_vad=0.0,  # No speech detected
       )
@@ -280,7 +294,7 @@ class WhisperModel:
           beam_size=resolved_beam_size,
           word_timestamps=resolved_word_timestamps,
         ),
-        vad_options=vad_parameters,
+        vad_options=resolved_vad_parameters,
       )
 
     # Extract features using our audio processor
@@ -346,7 +360,7 @@ class WhisperModel:
       duration=duration,
       duration_after_vad=duration_after_vad,
       transcription_options=options,
-      vad_options=vad_parameters,
+      vad_options=resolved_vad_parameters,
       all_language_probs=all_language_probs,
       speech_chunks=speech_chunks,
     )

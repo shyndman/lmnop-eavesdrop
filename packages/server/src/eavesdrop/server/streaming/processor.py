@@ -2,17 +2,17 @@
 Streaming transcription processor with integrated Faster Whisper transcriber.
 """
 
+from __future__ import annotations
+
 import asyncio
 import os
 import time
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-import ctranslate2
 import numpy as np
-import torch
-from huggingface_hub import snapshot_download
 
 from eavesdrop.common import Pretty, Range, Seconds, get_logger
 from eavesdrop.server.config import TranscriptionConfig
@@ -22,10 +22,12 @@ from eavesdrop.server.streaming.debug_capture import AudioDebugCapture
 from eavesdrop.server.streaming.flush_state import LiveSessionFlushState, PendingFlush
 from eavesdrop.server.streaming.interfaces import TranscriptionResult, TranscriptionSink
 from eavesdrop.server.transcription.models import SpeechChunk, TranscriptionInfo
-from eavesdrop.server.transcription.pipeline import WhisperModel
 from eavesdrop.server.transcription.session import TranscriptionSession
 from eavesdrop.server.transcription.utils import summarize_array
 from eavesdrop.wire import Segment
+
+if TYPE_CHECKING:
+  from eavesdrop.server.transcription.pipeline import WhisperModel
 
 tracing_logger = get_logger("tracing")
 
@@ -132,6 +134,8 @@ class StreamingTranscriptionProcessor:
 
   async def initialize(self) -> None:
     """Initialize the transcriber model."""
+    import torch
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     self.logger.debug("Selected device", device=device)
 
@@ -179,6 +183,8 @@ class StreamingTranscriptionProcessor:
 
   def _create_model_instance(self, device: str, model_ref: str) -> None:
     """Create a single model instance."""
+    from eavesdrop.server.transcription.pipeline import WhisperModel
+
     model_to_load = self._resolve_model_path(model_ref)
 
     self.logger.info("Loading model", model=model_to_load)
@@ -207,10 +213,15 @@ class StreamingTranscriptionProcessor:
 
   def _is_local_ct2_model(self, model_ref: str) -> bool:
     """Check if model reference points to a local CTranslate2 model."""
+    import ctranslate2
+
     return os.path.isdir(model_ref) and ctranslate2.contains_model(model_ref)
 
   def _download_and_convert_model(self, model_ref: str) -> str:
     """Download model from HuggingFace and convert to CTranslate2 if needed."""
+    import ctranslate2
+    from huggingface_hub import snapshot_download
+
     self.logger.debug("Downloading model from HuggingFace", model=model_ref)
     local_snapshot = snapshot_download(repo_id=model_ref, repo_type="model")
     self.logger.debug("Downloaded model", path=local_snapshot)
@@ -223,6 +234,8 @@ class StreamingTranscriptionProcessor:
 
   def _convert_to_ct2(self, model_ref: str, local_snapshot: str) -> str:
     """Convert downloaded model to CTranslate2 format."""
+    import ctranslate2
+
     cache_root = os.path.expanduser(os.path.join(CACHE_PATH, "whisper-ct2-models/"))
     os.makedirs(cache_root, exist_ok=True)
     safe_name = model_ref.replace("/", "--")

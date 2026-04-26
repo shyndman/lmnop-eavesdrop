@@ -74,7 +74,46 @@ class TestTranscriptionConfig:
     assert config.use_vad is True
     assert config.send_last_n_segments == 10
     assert config.device_index == 0
+    assert config.vad_parameters.threshold == 0.5
+    assert config.vad_parameters.neg_threshold is None
+    assert config.vad_parameters.min_speech_duration_ms == 0
+    assert config.vad_parameters.max_speech_duration_s == float("inf")
+    assert config.vad_parameters.min_silence_duration_ms == 800
+    assert config.vad_parameters.speech_pad_ms == 400
     assert isinstance(config.buffer, BufferConfig)
+
+  def test_vad_parameters_validate_and_align(self):
+    """Test that repo-owned VAD parameters validate and align with silence threshold."""
+    config = TranscriptionConfig.model_validate(
+      {
+        "silence_completion_threshold": 1.2,
+        "vad_parameters": {
+          "threshold": 0.4,
+          "neg_threshold": 0.25,
+          "min_speech_duration_ms": 50,
+          "max_speech_duration_s": 12.5,
+          "speech_pad_ms": 250,
+        },
+      }
+    )
+
+    assert config.vad_parameters.threshold == 0.4
+    assert config.vad_parameters.neg_threshold == 0.25
+    assert config.vad_parameters.min_speech_duration_ms == 50
+    assert config.vad_parameters.max_speech_duration_s == 12.5
+    assert config.vad_parameters.min_silence_duration_ms == 1200
+    assert config.vad_parameters.speech_pad_ms == 250
+
+  def test_min_silence_duration_rejection(self):
+    """Test that min_silence_duration_ms cannot be configured directly."""
+    with pytest.raises(ValueError, match="min_silence_duration_ms cannot be specified"):
+      TranscriptionConfig.model_validate(
+        {
+          "vad_parameters": {
+            "min_silence_duration_ms": 100,
+          }
+        }
+      )
 
   def test_model_custom_model_mutual_exclusion(self, fake_filesystem):
     """Test that model and custom_model cannot both be specified."""
