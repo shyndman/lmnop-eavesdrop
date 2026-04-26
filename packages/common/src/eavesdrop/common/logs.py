@@ -366,7 +366,9 @@ def setup_logging(
   root_logger.setLevel(level)
 
   # Propogate the logs of some libraries
-  for liblog in [logging.getLogger(_liblog) for _liblog in ["websockets"]]:
+  for liblog in [
+    logging.getLogger(_liblog) for _liblog in ["websockets", "httpcore.http11"]
+  ]:
     liblog.handlers.clear()
     liblog.setLevel(logging.WARNING)
     liblog.propagate = True
