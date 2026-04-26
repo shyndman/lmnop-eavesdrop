@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 
 from clypi import Command, arg
@@ -145,6 +146,7 @@ def main() -> int:
   """
 
   setup_logging_from_env()
+  logging.getLogger("httpx").setLevel(logging.WARNING)
   logger = get_logger("al/main")
 
   try:

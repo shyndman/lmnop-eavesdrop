@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -119,6 +120,8 @@ def test_main_starts_command_and_configures_logging(monkeypatch: pytest.MonkeyPa
   logger = RecordingLogger()
   setup_calls: list[str] = []
   command = StubCommand()
+  httpx_logger = logging.getLogger("httpx")
+  original_httpx_level = httpx_logger.level
 
   def fake_get_logger(_name: str) -> RecordingLogger:
     return logger
@@ -133,12 +136,16 @@ def test_main_starts_command_and_configures_logging(monkeypatch: pytest.MonkeyPa
   monkeypatch.setattr("active_listener.cli.get_logger", fake_get_logger)
   monkeypatch.setattr(ActiveListenerCommand, "parse", classmethod(parse_command))
 
-  exit_code = main()
+  try:
+    exit_code = main()
 
-  assert exit_code == 0
-  assert command.started is True
-  assert setup_calls == ["called"]
-  assert logger.info_messages == ["starting active-listener"]
+    assert exit_code == 0
+    assert command.started is True
+    assert setup_calls == ["called"]
+    assert httpx_logger.level == logging.WARNING
+    assert logger.info_messages == ["starting active-listener"]
+  finally:
+    httpx_logger.setLevel(original_httpx_level)
 
 
 def test_main_returns_non_zero_when_startup_raises(monkeypatch: pytest.MonkeyPatch) -> None:
