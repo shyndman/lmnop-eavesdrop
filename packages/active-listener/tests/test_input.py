@@ -8,11 +8,11 @@ from dataclasses import dataclass, field
 import pytest
 from evdev.events import InputEvent
 
-from active_listener.app.state import AppAction
 from active_listener.infra.keyboard import (
   EvdevKeyboard,
+  KeyboardEventKind,
   KeyboardResolutionError,
-  action_from_event,
+  control_event_from_input_event,
   resolve_keyboard,
 )
 
@@ -52,19 +52,27 @@ def _key_event(code: int, value: int) -> InputEvent:
   return InputEvent(0, 0, 1, code, value)
 
 
-def test_action_from_event_filters_non_key_down_events() -> None:
-  assert action_from_event(_key_event(58, 0)) is None
-  assert action_from_event(_key_event(58, 2)) is None
-  assert action_from_event(InputEvent(0, 0, 0, 58, 1)) is None
+def test_control_event_from_input_event_filters_irrelevant_events() -> None:
+  assert control_event_from_input_event(_key_event(58, 2)) is None
+  assert control_event_from_input_event(_key_event(1, 0)) is None
+  assert control_event_from_input_event(InputEvent(0, 0, 0, 58, 1)) is None
 
 
-def test_action_from_event_maps_caps_lock_and_escape() -> None:
-  assert action_from_event(_key_event(58, 1)) is AppAction.START_OR_FINISH
-  assert action_from_event(_key_event(1, 1)) is AppAction.CANCEL
+def test_control_event_from_input_event_maps_caps_lock_and_escape() -> None:
+  caps_down = control_event_from_input_event(_key_event(58, 1))
+  caps_up = control_event_from_input_event(_key_event(58, 0))
+  escape_down = control_event_from_input_event(_key_event(1, 1))
+
+  assert caps_down is not None
+  assert caps_down.kind is KeyboardEventKind.CAPSLOCK_DOWN
+  assert caps_up is not None
+  assert caps_up.kind is KeyboardEventKind.CAPSLOCK_UP
+  assert escape_down is not None
+  assert escape_down.kind is KeyboardEventKind.ESCAPE_DOWN
 
 
 @pytest.mark.asyncio
-async def test_evdev_keyboard_actions_only_emit_normalized_hotkeys() -> None:
+async def test_evdev_keyboard_events_only_emit_control_events() -> None:
   keyboard = EvdevKeyboard(
     device=FakeDevice(
       path="/dev/input/event1",
@@ -78,9 +86,13 @@ async def test_evdev_keyboard_actions_only_emit_normalized_hotkeys() -> None:
     )
   )
 
-  actions = [action async for action in keyboard.actions()]
+  events = [event async for event in keyboard.events()]
 
-  assert actions == [AppAction.START_OR_FINISH, AppAction.CANCEL]
+  assert [event.kind for event in events] == [
+    KeyboardEventKind.CAPSLOCK_DOWN,
+    KeyboardEventKind.CAPSLOCK_UP,
+    KeyboardEventKind.ESCAPE_DOWN,
+  ]
 
 
 @pytest.mark.asyncio
@@ -97,12 +109,13 @@ async def test_grab_transitions_do_not_split_hotkey_press_release_pairs() -> Non
   )
   keyboard = EvdevKeyboard(device=device)
 
-  action_iterator = keyboard.actions().__aiter__()
+  action_iterator = keyboard.events().__aiter__()
 
-  assert await action_iterator.__anext__() is AppAction.START_OR_FINISH
+  assert (await action_iterator.__anext__()).kind is KeyboardEventKind.CAPSLOCK_DOWN
   keyboard.grab()
 
-  assert await action_iterator.__anext__() is AppAction.CANCEL
+  assert (await action_iterator.__anext__()).kind is KeyboardEventKind.CAPSLOCK_UP
+  assert (await action_iterator.__anext__()).kind is KeyboardEventKind.ESCAPE_DOWN
   keyboard.ungrab()
 
   with pytest.raises(StopAsyncIteration):

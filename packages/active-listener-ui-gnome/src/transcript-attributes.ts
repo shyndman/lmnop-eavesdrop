@@ -3,9 +3,23 @@ const INCOMPLETE_TRANSCRIPT_OPACITY = 0.54;
 export const INCOMPLETE_TRANSCRIPT_ALPHA = Math.round(PANGO_ALPHA_MAX * INCOMPLETE_TRANSCRIPT_OPACITY);
 const utf8Encoder = new TextEncoder();
 
+export type TranscriptRun = {
+  text: string;
+  isCommand: boolean;
+  isComplete: boolean;
+};
+
+export type TranscriptDisplayRun = {
+  text: string;
+  isCommand: boolean;
+  isComplete: boolean;
+  startByte: number;
+  endByte: number;
+};
+
 export type TranscriptDisplay = {
   text: string;
-  incompleteStartByte: number | null;
+  runs: TranscriptDisplayRun[];
 };
 
 export type TranscriptAttributeSpec =
@@ -46,58 +60,94 @@ const parseTextColor = (colorHex: string): TranscriptAttributeSpec & { kind: 'fo
   };
 };
 
-export const appendCompletedTranscript = (completedText: string, segmentText: string): string => {
-  const normalizedSegmentText = segmentText.trim();
-  if (normalizedSegmentText.length === 0) {
-    return completedText;
+export const normalizeTranscriptRuns = (runs: TranscriptRun[]): TranscriptRun[] => {
+  const normalizedRuns: TranscriptRun[] = [];
+
+  for (const run of runs) {
+    const text = run.text.trim();
+    if (text.length === 0) {
+      continue;
+    }
+
+    const previousRun = normalizedRuns.at(-1);
+    if (
+      previousRun !== undefined &&
+      previousRun.isCommand === run.isCommand &&
+      previousRun.isComplete === run.isComplete
+    ) {
+      previousRun.text = `${previousRun.text} ${text}`;
+      continue;
+    }
+
+    normalizedRuns.push({
+      text,
+      isCommand: run.isCommand,
+      isComplete: run.isComplete,
+    });
   }
 
-  if (completedText.length === 0) {
-    return normalizedSegmentText;
-  }
-
-  return `${completedText} ${normalizedSegmentText}`;
+  return normalizedRuns;
 };
 
-export const buildTranscriptDisplay = (
-  completedText: string,
-  incompleteText: string,
-): TranscriptDisplay => {
-  if (incompleteText.length === 0) {
+export const buildTranscriptDisplay = (runs: TranscriptRun[]): TranscriptDisplay => {
+  const normalizedRuns = normalizeTranscriptRuns(runs);
+  if (normalizedRuns.length === 0) {
     return {
-      text: completedText,
-      incompleteStartByte: null,
+      text: '',
+      runs: [],
     };
   }
 
-  const separator = completedText.length === 0 ? '' : ' ';
-  const prefix = `${completedText}${separator}`;
+  let currentByte = 0;
+  let text = '';
+  const displayRuns: TranscriptDisplayRun[] = [];
+
+  for (const run of normalizedRuns) {
+    const separator = text.length === 0 ? '' : ' ';
+    text += `${separator}${run.text}`;
+    currentByte += separator.length;
+
+    const startByte = currentByte;
+    currentByte += utf8Encoder.encode(run.text).byteLength;
+    displayRuns.push({
+      text: run.text,
+      isCommand: run.isCommand,
+      isComplete: run.isComplete,
+      startByte,
+      endByte: currentByte,
+    });
+  }
+
   return {
-    text: `${prefix}${incompleteText}`,
-    incompleteStartByte: utf8Encoder.encode(prefix).byteLength,
+    text,
+    runs: displayRuns,
   };
 };
 
 export const buildTranscriptAttributeSpecs = (
   display: TranscriptDisplay,
-  colorHex: string,
+  normalColorHex: string,
+  commandColorHex: string,
 ): TranscriptAttributeSpec[] => {
-  const textByteLength = utf8Encoder.encode(display.text).byteLength;
-  if (textByteLength === 0) {
+  if (display.runs.length === 0) {
     return [];
   }
 
-  const foregroundColor = parseTextColor(colorHex);
-  foregroundColor.endByte = textByteLength;
+  const specs: TranscriptAttributeSpec[] = [];
+  for (const run of display.runs) {
+    const foregroundColor = parseTextColor(run.isCommand ? commandColorHex : normalColorHex);
+    foregroundColor.startByte = run.startByte;
+    foregroundColor.endByte = run.endByte;
+    specs.push(foregroundColor);
 
-  const specs: TranscriptAttributeSpec[] = [foregroundColor];
-  if (display.incompleteStartByte !== null) {
-    specs.push({
-      kind: 'foreground-alpha',
-      startByte: display.incompleteStartByte,
-      endByte: textByteLength,
-      alpha: clamp(INCOMPLETE_TRANSCRIPT_ALPHA, 0, PANGO_ALPHA_MAX),
-    });
+    if (!run.isComplete) {
+      specs.push({
+        kind: 'foreground-alpha',
+        startByte: run.startByte,
+        endByte: run.endByte,
+        alpha: clamp(INCOMPLETE_TRANSCRIPT_ALPHA, 0, PANGO_ALPHA_MAX),
+      });
+    }
   }
 
   return specs;

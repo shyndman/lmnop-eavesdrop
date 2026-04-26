@@ -11,7 +11,7 @@ from active_listener.app.ports import (
   ActiveListenerRewriteClient,
   ActiveListenerTranscriptHistoryStore,
 )
-from active_listener.app.signals import AppActionSignal, ClientSignal, RuntimeSignal
+from active_listener.app.signals import ClientSignal, KeyboardEventSignal, RuntimeSignal
 from active_listener.app.state import (
   AppAction,
   AppActionDecision,
@@ -23,7 +23,7 @@ from active_listener.app.state import (
 from active_listener.config.models import ActiveListenerConfig
 from active_listener.infra.dbus import AppStateService
 from active_listener.infra.emitter import TextEmitter
-from active_listener.infra.keyboard import KeyboardInput
+from active_listener.infra.keyboard import KeyboardControlEvent, KeyboardEventKind, KeyboardInput
 from active_listener.recording.finalizer import RecordingFinalizer
 from active_listener.recording.session import RecordingSession
 from active_listener.recording.spectrum import SpectrumAnalyzer
@@ -101,15 +101,15 @@ class ActiveListenerService:
 
     signal_queue: asyncio.Queue[RuntimeSignal] = asyncio.Queue()
     producer_tasks = {
-      asyncio.create_task(self._pump_keyboard_actions(signal_queue)),
+      asyncio.create_task(self._pump_keyboard_events(signal_queue)),
       asyncio.create_task(self._pump_client_events(signal_queue)),
     }
 
     try:
       while True:
         signal = await signal_queue.get()
-        if isinstance(signal, AppActionSignal):
-          _ = await self.handle_action(signal.action)
+        if isinstance(signal, KeyboardEventSignal):
+          await self.handle_keyboard_event(signal.event)
         else:
           await self.handle_client_event(signal.event)
     finally:
@@ -207,6 +207,27 @@ class ActiveListenerService:
     finalization_task.add_done_callback(self._background_tasks.discard)
     self.logger.info("recording finished", background_finalization=True)
     return decision
+
+  async def handle_keyboard_event(self, event: KeyboardControlEvent) -> None:
+    if event.kind is KeyboardEventKind.ESCAPE_DOWN:
+      _ = await self.handle_action(AppAction.CANCEL)
+      return
+
+    if self.phase is not ForegroundPhase.RECORDING:
+      if event.kind is KeyboardEventKind.CAPSLOCK_DOWN:
+        _ = await self.handle_action(AppAction.START_OR_FINISH)
+      return
+
+    if event.kind is KeyboardEventKind.CAPSLOCK_DOWN:
+      await self._recording_session.handle_capslock_down(event.received_monotonic_s)
+      return
+
+    if event.kind is KeyboardEventKind.CAPSLOCK_UP:
+      should_finish_recording = await self._recording_session.handle_capslock_up(
+        event.received_monotonic_s
+      )
+      if should_finish_recording:
+        _ = await self.handle_action(AppAction.START_OR_FINISH)
 
   async def handle_client_event(
     self,
@@ -309,30 +330,21 @@ class ActiveListenerService:
       )
       return
 
-    completed_segments = [
-      (segment.id, segment.text) for segment in transcription_update.completed_segments
-    ]
-    incomplete_segment = transcription_update.incomplete_segment
     self.logger.debug(
       "publishing live transcription update",
       stream=message.stream,
-      completed_segments=completed_segments,
-      incomplete_segment=(incomplete_segment.id, incomplete_segment.text),
+      runs=transcription_update.runs,
     )
-    await self.dbus_service.transcription_updated(
-      completed_segments=completed_segments,
-      incomplete_segment=(incomplete_segment.id, incomplete_segment.text),
-    )
+    await self.dbus_service.transcription_updated(transcription_update.runs)
     self.logger.debug(
       "live transcription update published",
       stream=message.stream,
-      completed_segment_count=len(completed_segments),
-      incomplete_segment_id=incomplete_segment.id,
+      run_count=len(transcription_update.runs),
     )
 
-  async def _pump_keyboard_actions(self, signal_queue: asyncio.Queue[RuntimeSignal]) -> None:
-    async for action in self.keyboard.actions():
-      await signal_queue.put(AppActionSignal(action=action))
+  async def _pump_keyboard_events(self, signal_queue: asyncio.Queue[RuntimeSignal]) -> None:
+    async for event in self.keyboard.events():
+      await signal_queue.put(KeyboardEventSignal(event=event))
 
   async def _pump_client_events(self, signal_queue: asyncio.Queue[RuntimeSignal]) -> None:
     async for event in self.client:

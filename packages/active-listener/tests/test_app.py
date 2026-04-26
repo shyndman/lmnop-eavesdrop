@@ -28,7 +28,7 @@ from active_listener.config.models import (
   LiteRtRewriteProvider,
   LlmRewriteConfig,
 )
-from active_listener.infra.keyboard import KeyboardInput
+from active_listener.infra.keyboard import KeyboardControlEvent, KeyboardEventKind, KeyboardInput
 from active_listener.infra.rewrite import (
   LoadedRewritePrompt,
   LoadedRewritePromptFile,
@@ -36,6 +36,8 @@ from active_listener.infra.rewrite import (
   RewriteClientTimeoutError,
   RewritePromptError,
 )
+from active_listener.recording.reducer import RecordingReducerState, TextRun, TimeSpan
+from active_listener.recording.session import PendingCapsGesture, RecordingSession
 from active_listener.recording.spectrum import (
   SAMPLE_RATE_HZ,
   SPECTRUM_TICK_INTERVAL_SECONDS,
@@ -47,7 +49,7 @@ from eavesdrop.client import (
   ReconnectingEvent,
   TranscriptionEvent,
 )
-from eavesdrop.wire import Segment, TranscriptionMessage
+from eavesdrop.wire import Segment, TranscriptionMessage, Word
 
 
 class RecordingLogger:
@@ -89,7 +91,6 @@ class LogRecord:
 
 
 AppEvent = DisconnectedEvent | ReconnectedEvent | ReconnectingEvent | TranscriptionEvent
-DbusOverlaySegment = tuple[int, str]
 
 
 def _rewrite_config() -> LlmRewriteConfig:
@@ -131,6 +132,14 @@ async def _hold_open(signal: asyncio.Event) -> None:
   _ = await signal.wait()
 
 
+def _keyboard_event(
+  kind: KeyboardEventKind,
+  *,
+  received_monotonic_s: float = 0.0,
+) -> KeyboardControlEvent:
+  return KeyboardControlEvent(kind=kind, received_monotonic_s=received_monotonic_s)
+
+
 def _prompt_loader(
   loaded_prompt: LoadedRewritePromptFile,
 ) -> Callable[[str], LoadedRewritePromptFile]:
@@ -155,11 +164,11 @@ class FakeKeyboard:
   ungrab_calls: int = 0
   close_calls: int = 0
   grabbed: bool = False
-  queued_actions: list[AppAction] = field(default_factory=list)
+  queued_events: list[KeyboardControlEvent] = field(default_factory=list)
 
-  async def actions(self) -> AsyncIterator[AppAction]:
-    for action in self.queued_actions:
-      yield action
+  async def events(self) -> AsyncIterator[KeyboardControlEvent]:
+    for event in self.queued_events:
+      yield event
 
   @asynccontextmanager
   async def recording_grab(self) -> AsyncIterator[Callable[[], None]]:
@@ -218,13 +227,9 @@ class FakeDbusService:
     self.states.append(state)
     self.events.append(("State", state))
 
-  async def transcription_updated(
-    self,
-    completed_segments: list[DbusOverlaySegment],
-    incomplete_segment: DbusOverlaySegment,
-  ) -> None:
-    self.signals.append(("TranscriptionUpdated", (completed_segments, incomplete_segment)))
-    self.events.append(("TranscriptionUpdated", (completed_segments, incomplete_segment)))
+  async def transcription_updated(self, runs: list[TextRun]) -> None:
+    self.signals.append(("TranscriptionUpdated", runs))
+    self.events.append(("TranscriptionUpdated", runs))
 
   async def spectrum_updated(self, bars: bytes) -> None:
     self.signals.append(("SpectrumUpdated", bars))
@@ -408,20 +413,48 @@ class FakeHistoryStore:
     self.records.append(record)
 
 
-def _segment(segment_id: int, text: str, *, completed: bool) -> Segment:
+def _segment(
+  segment_id: int,
+  text: str,
+  *,
+  completed: bool,
+  start: float = 0.0,
+  end: float = 0.1,
+  words: list[Word] | None = None,
+) -> Segment:
   return Segment(
     id=segment_id,
     seek=0,
-    start=0.0,
-    end=0.1,
+    start=start,
+    end=end,
     text=text,
     tokens=[],
     temperature=0.0,
     avg_logprob=0.0,
     compression_ratio=1.0,
-    words=None,
+    words=words,
     completed=completed,
   )
+
+
+def _word(text: str, *, start: float, end: float) -> Word:
+  return Word(start=start, end=end, word=text, probability=1.0)
+
+
+def _recording_session(service: ActiveListenerService) -> RecordingSession:
+  return cast(RecordingSession, getattr(service, "_recording_session"))
+
+
+def _recording_started_monotonic_s(session: RecordingSession) -> float | None:
+  return cast(float | None, getattr(session, "_recording_started_monotonic_s"))
+
+
+def _recording_reducer_state(session: RecordingSession) -> RecordingReducerState | None:
+  return cast(RecordingReducerState | None, getattr(session, "_recording_reducer_state"))
+
+
+def _pending_caps_gesture(session: RecordingSession) -> PendingCapsGesture | None:
+  return cast(PendingCapsGesture | None, getattr(session, "_pending_caps_gesture"))
 
 
 def _message(
@@ -813,7 +846,12 @@ async def test_run_service_emits_fatal_error_once_on_startup_failure() -> None:
 
 @pytest.mark.asyncio
 async def test_run_service_emits_fatal_error_once_on_runtime_failure() -> None:
-  keyboard = FakeKeyboard(queued_actions=[AppAction.START_OR_FINISH, AppAction.CANCEL])
+  keyboard = FakeKeyboard(
+    queued_events=[
+      _keyboard_event(KeyboardEventKind.CAPSLOCK_DOWN),
+      _keyboard_event(KeyboardEventKind.ESCAPE_DOWN),
+    ]
+  )
   client = FailingStopClient()
   dbus_service = FakeDbusService()
 
@@ -877,6 +915,254 @@ async def test_start_and_finish_publish_recording_and_idle_states() -> None:
 
 
 @pytest.mark.asyncio
+async def test_idle_capslock_up_is_ignored_but_down_starts_recording() -> None:
+  harness = _service()
+
+  await harness.service.handle_keyboard_event(_keyboard_event(KeyboardEventKind.CAPSLOCK_UP))
+
+  assert harness.service.phase is ForegroundPhase.IDLE
+  assert harness.client.start_calls == 0
+
+  await harness.service.handle_keyboard_event(_keyboard_event(KeyboardEventKind.CAPSLOCK_DOWN))
+
+  assert harness.service.phase is ForegroundPhase.RECORDING
+  assert harness.client.start_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_recording_caps_tap_finishes_before_hold_threshold(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  monkeypatch.setattr("active_listener.recording.session.HOLD_THRESHOLD_S", 0.01)
+  client = FakeClient(
+    flush_results=[
+      _message(
+        _segment(1, "alpha", completed=True),
+        _segment(2, "tail", completed=False),
+      )
+    ]
+  )
+  harness = _service(client=client)
+
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  recording_started_monotonic_s = _recording_started_monotonic_s(
+    _recording_session(harness.service)
+  )
+  assert recording_started_monotonic_s is not None
+
+  await harness.service.handle_keyboard_event(
+    _keyboard_event(
+      KeyboardEventKind.CAPSLOCK_DOWN,
+      received_monotonic_s=recording_started_monotonic_s + 1.0,
+    )
+  )
+  await harness.service.handle_keyboard_event(
+    _keyboard_event(
+      KeyboardEventKind.CAPSLOCK_UP,
+      received_monotonic_s=recording_started_monotonic_s + 1.005,
+    )
+  )
+  await harness.service.wait_for_background_tasks()
+
+  assert harness.service.phase is ForegroundPhase.IDLE
+  assert harness.client.flush_calls == [True]
+  assert harness.client.stop_calls == 1
+  assert harness.dbus_service.states == [ForegroundPhase.RECORDING, ForegroundPhase.IDLE]
+
+
+@pytest.mark.asyncio
+async def test_recording_caps_release_after_threshold_closes_hold_without_scheduler_help(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  monkeypatch.setattr("active_listener.recording.session.HOLD_THRESHOLD_S", 0.01)
+  harness = _service()
+
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  session = _recording_session(harness.service)
+  recording_started_monotonic_s = _recording_started_monotonic_s(session)
+  assert recording_started_monotonic_s is not None
+
+  await harness.service.handle_keyboard_event(
+    _keyboard_event(
+      KeyboardEventKind.CAPSLOCK_DOWN,
+      received_monotonic_s=recording_started_monotonic_s + 1.0,
+    )
+  )
+  await harness.service.handle_keyboard_event(
+    _keyboard_event(
+      KeyboardEventKind.CAPSLOCK_UP,
+      received_monotonic_s=recording_started_monotonic_s + 1.02,
+    )
+  )
+
+  reducer_state = _recording_reducer_state(session)
+  assert reducer_state is not None
+  assert harness.service.phase is ForegroundPhase.RECORDING
+  assert reducer_state.open_command_start_s is None
+  assert len(reducer_state.closed_command_spans) == 1
+  assert abs(reducer_state.closed_command_spans[0].start_s - 1.0) < 1e-9
+  assert abs(reducer_state.closed_command_spans[0].end_s - 1.02) < 1e-9
+
+
+@pytest.mark.asyncio
+async def test_recording_caps_hold_commits_at_keydown_and_release_closes_span(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  monkeypatch.setattr("active_listener.recording.session.HOLD_THRESHOLD_S", 0.001)
+  harness = _service()
+
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  session = _recording_session(harness.service)
+  recording_started_monotonic_s = _recording_started_monotonic_s(session)
+  assert recording_started_monotonic_s is not None
+
+  await harness.service.handle_keyboard_event(
+    _keyboard_event(
+      KeyboardEventKind.CAPSLOCK_DOWN,
+      received_monotonic_s=recording_started_monotonic_s + 1.0,
+    )
+  )
+  await asyncio.sleep(0.01)
+
+  reducer_state = _recording_reducer_state(session)
+  assert reducer_state is not None
+  assert reducer_state.open_command_start_s is not None
+  assert abs(reducer_state.open_command_start_s - 1.0) < 1e-9
+
+  await harness.service.handle_keyboard_event(
+    _keyboard_event(
+      KeyboardEventKind.CAPSLOCK_DOWN,
+      received_monotonic_s=recording_started_monotonic_s + 1.2,
+    )
+  )
+  assert reducer_state.open_command_start_s is not None
+  assert abs(reducer_state.open_command_start_s - 1.0) < 1e-9
+  assert reducer_state.closed_command_spans == []
+
+  await harness.service.handle_keyboard_event(
+    _keyboard_event(
+      KeyboardEventKind.CAPSLOCK_UP,
+      received_monotonic_s=recording_started_monotonic_s + 1.4,
+    )
+  )
+
+  assert harness.service.phase is ForegroundPhase.RECORDING
+  assert reducer_state.open_command_start_s is None
+  assert len(reducer_state.closed_command_spans) == 1
+  assert abs(reducer_state.closed_command_spans[0].start_s - 1.0) < 1e-9
+  assert abs(reducer_state.closed_command_spans[0].end_s - 1.4) < 1e-9
+
+
+@pytest.mark.asyncio
+async def test_disconnect_clears_pending_caps_hold_task(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  monkeypatch.setattr("active_listener.recording.session.HOLD_THRESHOLD_S", 10.0)
+  harness = _service()
+
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  session = _recording_session(harness.service)
+  recording_started_monotonic_s = _recording_started_monotonic_s(session)
+  assert recording_started_monotonic_s is not None
+
+  await harness.service.handle_keyboard_event(
+    _keyboard_event(
+      KeyboardEventKind.CAPSLOCK_DOWN,
+      received_monotonic_s=recording_started_monotonic_s + 1.0,
+    )
+  )
+
+  pending_gesture = _pending_caps_gesture(session)
+  assert pending_gesture is not None
+  assert pending_gesture.threshold_task is not None
+  assert pending_gesture.threshold_task.done() is False
+
+  await harness.service.handle_client_event(
+    DisconnectedEvent(stream="stream-1", reason="socket closed")
+  )
+
+  assert harness.service.phase is ForegroundPhase.RECONNECTING
+  assert _pending_caps_gesture(session) is None
+  assert pending_gesture.threshold_task.done() is True
+
+
+@pytest.mark.asyncio
+async def test_finish_recording_returns_closed_spans_and_no_open_span(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  monkeypatch.setattr("active_listener.recording.session.HOLD_THRESHOLD_S", 0.001)
+  harness = _service()
+
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  session = _recording_session(harness.service)
+  recording_started_monotonic_s = _recording_started_monotonic_s(session)
+  assert recording_started_monotonic_s is not None
+
+  await harness.service.handle_keyboard_event(
+    _keyboard_event(
+      KeyboardEventKind.CAPSLOCK_DOWN,
+      received_monotonic_s=recording_started_monotonic_s + 0.01,
+    )
+  )
+  await asyncio.sleep(0.01)
+
+  reducer_state = await session.finish_recording()
+
+  assert reducer_state.open_command_start_s is None
+  assert len(reducer_state.closed_command_spans) == 1
+  assert abs(reducer_state.closed_command_spans[0].start_s - 0.01) < 1e-9
+  assert reducer_state.closed_command_spans[0].end_s >= 0.01
+
+
+@pytest.mark.asyncio
+async def test_multiple_holds_accumulate_closed_command_spans(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  monkeypatch.setattr("active_listener.recording.session.HOLD_THRESHOLD_S", 0.001)
+  harness = _service()
+
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  session = _recording_session(harness.service)
+  recording_started_monotonic_s = _recording_started_monotonic_s(session)
+  assert recording_started_monotonic_s is not None
+
+  await harness.service.handle_keyboard_event(
+    _keyboard_event(
+      KeyboardEventKind.CAPSLOCK_DOWN,
+      received_monotonic_s=recording_started_monotonic_s + 1.0,
+    )
+  )
+  await asyncio.sleep(0.01)
+  await harness.service.handle_keyboard_event(
+    _keyboard_event(
+      KeyboardEventKind.CAPSLOCK_UP,
+      received_monotonic_s=recording_started_monotonic_s + 1.2,
+    )
+  )
+  await harness.service.handle_keyboard_event(
+    _keyboard_event(
+      KeyboardEventKind.CAPSLOCK_DOWN,
+      received_monotonic_s=recording_started_monotonic_s + 2.0,
+    )
+  )
+  await asyncio.sleep(0.01)
+  await harness.service.handle_keyboard_event(
+    _keyboard_event(
+      KeyboardEventKind.CAPSLOCK_UP,
+      received_monotonic_s=recording_started_monotonic_s + 2.3,
+    )
+  )
+
+  reducer_state = _recording_reducer_state(session)
+  assert reducer_state is not None
+  assert len(reducer_state.closed_command_spans) == 2
+  assert abs(reducer_state.closed_command_spans[0].start_s - 1.0) < 1e-9
+  assert abs(reducer_state.closed_command_spans[0].end_s - 1.2) < 1e-9
+  assert abs(reducer_state.closed_command_spans[1].start_s - 2.0) < 1e-9
+  assert abs(reducer_state.closed_command_spans[1].end_s - 2.3) < 1e-9
+
+
+@pytest.mark.asyncio
 async def test_idle_disconnect_sets_reconnecting_without_extra_dbus_signal() -> None:
   harness = _service()
 
@@ -930,7 +1216,13 @@ async def test_transcription_events_are_consumed_only_while_recording() -> None:
   assert client.stop_calls == 1
   assert client.flush_calls == [True]
   assert harness.dbus_service.signals == [
-    ("TranscriptionUpdated", ([(1, "alpha")], (2, "draft"))),
+    (
+      "TranscriptionUpdated",
+      [
+        TextRun(text="alpha", is_command=False, is_complete=True),
+        TextRun(text="draft", is_command=False, is_complete=False),
+      ],
+    ),
   ]
   assert emitter.emitted == ["alpha bravo "]
   assert harness.keyboard.ungrab_calls == 1
@@ -958,8 +1250,10 @@ async def test_transcription_events_are_consumed_only_while_recording() -> None:
       event="publishing live transcription update",
       fields={
         "stream": "stream-1",
-        "completed_segments": [(1, "alpha")],
-        "incomplete_segment": (2, "draft"),
+        "runs": [
+          TextRun(text="alpha", is_command=False, is_complete=True),
+          TextRun(text="draft", is_command=False, is_complete=False),
+        ],
       },
     )
     in harness.logger.debug_records
@@ -969,8 +1263,7 @@ async def test_transcription_events_are_consumed_only_while_recording() -> None:
       event="live transcription update published",
       fields={
         "stream": "stream-1",
-        "completed_segment_count": 1,
-        "incomplete_segment_id": 2,
+        "run_count": 2,
       },
     )
     in harness.logger.debug_records
@@ -1344,6 +1637,82 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
 
 
 @pytest.mark.asyncio
+async def test_finalize_recording_serializes_command_text_runs_for_rewrite(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  client = FakeClient(
+    flush_results=[
+      _message(
+        _segment(
+          1,
+          "Hello,",
+          completed=True,
+          start=0.0,
+          end=0.2,
+          words=[_word("Hello,", start=0.0, end=0.2)],
+        ),
+        _segment(
+          2,
+          "scratch that.",
+          completed=True,
+          start=0.3,
+          end=0.6,
+          words=[
+            _word("scratch", start=0.3, end=0.45),
+            _word("that.", start=0.45, end=0.6),
+          ],
+        ),
+        _segment(
+          3,
+          "Bye.",
+          completed=True,
+          start=0.7,
+          end=0.8,
+          words=[_word("Bye.", start=0.7, end=0.8)],
+        ),
+        _segment(4, "", completed=False),
+      )
+    ]
+  )
+  rewrite_client = FakeRewriteClient(rewritten_text="rewritten output")
+  harness = _service(
+    client=client,
+    rewrite_client=rewrite_client,
+    config=_config(rewrite_enabled=True),
+  )
+  monkeypatch.setattr(
+    "active_listener.infra.rewrite.load_active_listener_rewrite_prompt",
+    _prompt_loader(_loaded_prompt_file(_prompt())),
+  )
+
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  reducer_state = _recording_reducer_state(_recording_session(harness.service))
+  assert reducer_state is not None
+  reducer_state.closed_command_spans = [TimeSpan(start_s=0.3, end_s=0.6)]
+
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  await harness.service.wait_for_background_tasks()
+
+  assert rewrite_client.calls == [
+    {
+      "instructions": "Rewrite this transcript.",
+      "transcript": "Hello, <instruction>scratch that.</instruction> Bye.",
+    }
+  ]
+  assert (
+    LogRecord(
+      event="rewrite started",
+      fields={
+        "stream": "stream-1",
+        "prompt_path": "/tmp/rewrite/system.md",
+        "rewrite_input": "Hello, <instruction>scratch that.</instruction> Bye.",
+      },
+    )
+    in harness.logger.info_records
+  )
+
+
+@pytest.mark.asyncio
 async def test_finalize_recording_drops_text_and_signals_pipeline_failure_when_rewrite_fails(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1520,7 +1889,6 @@ async def test_rewrite_logging_uses_resolved_prompt_path(monkeypatch: pytest.Mon
       fields={
         "stream": "stream-1",
         "prompt_path": "/tmp/override/system.md",
-        "instructions": "Rewrite this transcript.",
       },
     )
     in harness.logger.info_records
@@ -1610,7 +1978,7 @@ async def test_rewrite_logging_captures_success_payloads(monkeypatch: pytest.Mon
       fields={
         "stream": "stream-1",
         "prompt_path": "/tmp/override/system.md",
-        "raw_text": "alpha",
+        "rewrite_input": "alpha",
         "rewritten_text": "rewritten alpha",
       },
     )

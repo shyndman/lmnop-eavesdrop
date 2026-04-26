@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from active_listener.app.state import AppAction
+from active_listener.infra.keyboard import KeyboardControlEvent
 from eavesdrop.client import (
   ConnectedEvent,
   DisconnectedEvent,
@@ -15,10 +15,10 @@ from eavesdrop.client import (
 
 
 @dataclass(frozen=True)
-class AppActionSignal:
-  """Signal carrying one app action into the runtime policy queue."""
+class KeyboardEventSignal:
+  """Signal carrying one keyboard event into the runtime policy queue."""
 
-  action: AppAction
+  event: KeyboardControlEvent
 
 
 @dataclass(frozen=True)
@@ -30,4 +30,4 @@ class ClientSignal:
   )
 
 
-RuntimeSignal = AppActionSignal | ClientSignal
+RuntimeSignal = KeyboardEventSignal | ClientSignal

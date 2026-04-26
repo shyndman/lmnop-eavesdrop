@@ -21,6 +21,7 @@ from active_listener.infra.dbus import (
   DbusServiceError,
   NoopDbusService,
 )
+from active_listener.recording.reducer import TextRun
 
 
 class RecordingLogger:
@@ -59,13 +60,8 @@ class FakeDbusService:
   async def set_state(self, state: ForegroundPhase) -> None:
     self.states.append(state)
 
-  async def transcription_updated(
-    self,
-    completed_segments: list[tuple[int, str]],
-    incomplete_segment: tuple[int, str],
-  ) -> None:
-    _ = completed_segments
-    _ = incomplete_segment
+  async def transcription_updated(self, runs: list[TextRun]) -> None:
+    _ = runs
 
   async def recording_aborted(self, reason: str) -> None:
     _ = reason

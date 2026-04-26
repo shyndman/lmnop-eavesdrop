@@ -6,6 +6,7 @@ import {
   resolveStartOrFinishCommandResponse,
   type IndicatorState,
 } from './recording-menu-control.js';
+import type { TranscriptRun } from './transcript-attributes.js';
 
 const DBUS_BUS_NAME = 'ca.lmnop.Eavesdrop.ActiveListener';
 const DBUS_OBJECT_PATH = '/ca/lmnop/Eavesdrop/ActiveListener';
@@ -17,17 +18,11 @@ const DBUS_SPECTRUM_UPDATED_SIGNAL = 'SpectrumUpdated';
 const DBUS_PIPELINE_FAILED_SIGNAL = 'PipelineFailed';
 const DBUS_PROXY_FLAGS = Gio.DBusProxyFlags.DO_NOT_AUTO_START_AT_CONSTRUCTION;
 
-type DbusOverlaySegment = [number | bigint, string];
-type DbusTranscriptionUpdatedPayload = [DbusOverlaySegment[], DbusOverlaySegment];
-
-export type TranscriptSegment = {
-  sequenceNumber: number;
-  text: string;
-};
+type DbusTextRun = [string, boolean, boolean];
+type DbusTranscriptionUpdatedPayload = [DbusTextRun[]];
 
 export type TranscriptionUpdate = {
-  completedSegments: TranscriptSegment[];
-  incompleteSegment: TranscriptSegment;
+  runs: TranscriptRun[];
 };
 
 export type ActiveListenerServiceState = {
@@ -43,9 +38,10 @@ export type ActiveListenerServiceEvents = {
   onError(title: string, detail: string): void;
 };
 
-const normalizeTranscriptSegment = ([sequenceNumber, text]: DbusOverlaySegment): TranscriptSegment => ({
-  sequenceNumber: Number(sequenceNumber),
+const normalizeTextRun = ([text, isCommand, isComplete]: DbusTextRun): TranscriptRun => ({
   text,
+  isCommand,
+  isComplete,
 });
 
 export class ActiveListenerServiceClient {
@@ -181,10 +177,9 @@ export class ActiveListenerServiceClient {
   }
 
   private handleTranscriptionUpdated(parameters: GLib.Variant): void {
-    const [completedSegments, incompleteSegment] = parameters.deepUnpack() as DbusTranscriptionUpdatedPayload;
+    const [runs] = parameters.deepUnpack() as DbusTranscriptionUpdatedPayload;
     this.events.onTranscriptionUpdated({
-      completedSegments: completedSegments.map(normalizeTranscriptSegment),
-      incompleteSegment: normalizeTranscriptSegment(incompleteSegment),
+      runs: runs.map(normalizeTextRun),
     });
   }
 

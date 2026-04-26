@@ -11,7 +11,12 @@ from typing import Protocol, cast
 import pytest
 from sdbus import DbusPropertyReadOnlyError
 
-from active_listener.app.state import AppAction, AppActionDecision, ForegroundPhase, StartOrFinishResult
+from active_listener.app.state import (
+  AppAction,
+  AppActionDecision,
+  ForegroundPhase,
+  StartOrFinishResult,
+)
 from active_listener.infra.dbus import (
   DBUS_BUS_NAME,
   DBUS_OBJECT_PATH,
@@ -20,6 +25,7 @@ from active_listener.infra.dbus import (
   NoopDbusService,
   SdbusDbusService,
 )
+from active_listener.recording.reducer import TextRun
 
 requires_user_bus = pytest.mark.skipif(
   os.getenv("DBUS_SESSION_BUS_ADDRESS") in {None, ""},
@@ -50,7 +56,7 @@ class PairSignalProxy(Protocol):
 
 
 class TranscriptionUpdatedSignalProxy(Protocol):
-  def __aiter__(self) -> AsyncIterator[tuple[list[tuple[int, str]], tuple[int, str]]]: ...
+  def __aiter__(self) -> AsyncIterator[list[tuple[str, bool, bool]]]: ...
 
 
 class PropertyDescriptor(Protocol):
@@ -101,8 +107,8 @@ async def receive_next_pair_signal(iterator: AsyncIterator[tuple[str, str]]) -> 
 
 
 async def receive_next_transcription_update(
-  iterator: AsyncIterator[tuple[list[tuple[int, str]], tuple[int, str]]],
-) -> tuple[list[tuple[int, str]], tuple[int, str]]:
+  iterator: AsyncIterator[list[tuple[str, bool, bool]]],
+) -> list[tuple[str, bool, bool]]:
   return await anext(iterator)
 
 
@@ -224,8 +230,11 @@ async def test_property_is_read_only_over_dbus_and_empty_signals_emit() -> None:
 
     await service.fatal_error("boom")
     await service.transcription_updated(
-      completed_segments=[(1, "alpha"), (2, "bravo")],
-      incomplete_segment=(3, "draft"),
+      runs=[
+        TextRun(text="alpha", is_command=False, is_complete=True),
+        TextRun(text="bravo", is_command=True, is_complete=True),
+        TextRun(text="draft", is_command=True, is_complete=False),
+      ]
     )
     await service.spectrum_updated(bytes(range(50)))
     await service.pipeline_failed("rewrite_with_llm", "timed out")
@@ -233,10 +242,11 @@ async def test_property_is_read_only_over_dbus_and_empty_signals_emit() -> None:
     await service.reconnected()
 
     assert await asyncio.wait_for(fatal_error_task, timeout=2) == "boom"
-    assert await asyncio.wait_for(transcription_updated_task, timeout=2) == (
-      [(1, "alpha"), (2, "bravo")],
-      (3, "draft"),
-    )
+    assert await asyncio.wait_for(transcription_updated_task, timeout=2) == [
+      ("alpha", False, True),
+      ("bravo", True, True),
+      ("draft", True, False),
+    ]
     spectrum_payload = await asyncio.wait_for(spectrum_updated_task, timeout=2)
     assert isinstance(spectrum_payload, bytes)
     assert spectrum_payload == bytes(range(50))
@@ -297,9 +307,13 @@ async def test_dbus_introspection_matches_locked_contract() -> None:
     assert DBUS_OBJECT_PATH == "/ca/lmnop/Eavesdrop/ActiveListener"
     assert 'interface name="ca.lmnop.Eavesdrop.ActiveListener1"' in introspection_xml
     assert '<method name="StartOrFinishRecording">' in introspection_xml
-    assert '<arg type="s" direction="out" name="result"/>' in interface_block
+    assert '<method name="StartOrFinishRecording">' in interface_block
+    assert 'name="result"' in interface_block
+    assert 'type="s"' in interface_block
+    assert 'direction="out"' in interface_block
     assert '<property name="State" type="s" access="read">' in introspection_xml
     assert '<signal name="TranscriptionUpdated">' in introspection_xml
+    assert '<arg type="a(sbb)" name="runs"/>' in interface_block
     assert '<signal name="SpectrumUpdated">' in introspection_xml
     assert '<arg type="ay"' in interface_block
     assert '<signal name="RecordingAborted">' in introspection_xml

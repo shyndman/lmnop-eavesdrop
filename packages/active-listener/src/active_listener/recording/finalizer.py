@@ -23,7 +23,9 @@ from active_listener.infra.emitter import TextEmitter
 from active_listener.recording.reducer import (
   RecordingReducerState,
   TranscriptionUpdate,
+  build_completed_text_runs,
   render_text,
+  serialize_text_runs,
 )
 from eavesdrop.wire import TranscriptionMessage
 
@@ -31,6 +33,7 @@ from eavesdrop.wire import TranscriptionMessage
 @dataclass(frozen=True)
 class FinalizationState:
   text: str
+  rewrite_input: str | None = None
   rewrite_result: RewriteResult | None = None
 
 
@@ -103,7 +106,8 @@ class RecordingFinalizer:
         return
 
       _ = self.ingest_transcription_message(reducer_state, message)
-      raw_text = render_text(reducer_state.parts)
+      completed_runs = build_completed_text_runs(reducer_state)
+      raw_text = render_text(reducer_state.completed_words)
       if not raw_text:
         self.logger.info("recording finalized without committed text", stream=message.stream)
         return
@@ -112,7 +116,10 @@ class RecordingFinalizer:
 
       pipeline_steps = self._pipeline_steps(stream=message.stream)
       finalization_state = await self._run_pipeline(
-        state=FinalizationState(text=raw_text),
+        state=FinalizationState(
+          text=raw_text,
+          rewrite_input=serialize_text_runs(completed_runs),
+        ),
         steps=pipeline_steps,
         stream=message.stream,
       )
@@ -172,6 +179,7 @@ class RecordingFinalizer:
     async def append_trailing_space(state: FinalizationState) -> FinalizationState:
       return FinalizationState(
         text=f"{state.text} ",
+        rewrite_input=state.rewrite_input,
         rewrite_result=state.rewrite_result,
       )
 
@@ -192,10 +200,18 @@ class RecordingFinalizer:
     # Extend the map at module level; this function should stay dumb.
     if _REPLACEMENT_PATTERN is None:
       return state
+    replacement_pattern = _REPLACEMENT_PATTERN
     return FinalizationState(
-      text=_REPLACEMENT_PATTERN.sub(
+      text=replacement_pattern.sub(
         lambda m: _REPLACEMENTS[m.group(1).lower()],
         state.text,
+      ),
+      rewrite_input=self._rewrite_pipeline_text(
+        state.rewrite_input,
+        lambda text: replacement_pattern.sub(
+          lambda m: _REPLACEMENTS[m.group(1).lower()],
+          text,
+        ),
       ),
       rewrite_result=state.rewrite_result,
     )
@@ -205,10 +221,18 @@ class RecordingFinalizer:
     #
     # Fuse spoken symbol words into their glyphs, swallowing adjacent whitespace:
     # e.g. "tild slash dot omp slash agent slash skills" -> "~/.omp/agent/skills".
+    symbol_pattern = _SYMBOL_PATTERN
     return FinalizationState(
-      text=_SYMBOL_PATTERN.sub(
+      text=symbol_pattern.sub(
         lambda m: _SYMBOL_WORDS[m.group(1).lower()],
         state.text,
+      ),
+      rewrite_input=self._rewrite_pipeline_text(
+        state.rewrite_input,
+        lambda text: symbol_pattern.sub(
+          lambda m: _SYMBOL_WORDS[m.group(1).lower()],
+          text,
+        ),
       ),
       rewrite_result=state.rewrite_result,
     )
@@ -252,30 +276,43 @@ class RecordingFinalizer:
     loaded_prompt = rewrite_module.load_active_listener_rewrite_prompt(rewrite_config.prompt_path)
     prompt = loaded_prompt.prompt
     prompt_path = str(loaded_prompt.prompt_path)
+    rewrite_input = state.rewrite_input or state.text
     self.logger.info(
       "rewrite prompt loaded",
       stream=stream,
       prompt_path=prompt_path,
-      instructions=prompt.instructions,
     )
     self.logger.info(
       "rewrite started",
       stream=stream,
       prompt_path=prompt_path,
-      raw_text=state.text,
+      rewrite_input=rewrite_input,
     )
     rewrite_result = await self.rewrite_client.rewrite_text(
       instructions=prompt.instructions,
-      transcript=state.text,
+      transcript=rewrite_input,
     )
     self.logger.info(
       "rewrite succeeded",
       stream=stream,
       prompt_path=prompt_path,
-      raw_text=state.text,
+      rewrite_input=rewrite_input,
       rewritten_text=rewrite_result.text,
     )
-    return FinalizationState(text=rewrite_result.text, rewrite_result=rewrite_result)
+    return FinalizationState(
+      text=rewrite_result.text,
+      rewrite_input=state.rewrite_input,
+      rewrite_result=rewrite_result,
+    )
+
+  def _rewrite_pipeline_text(
+    self,
+    text: str | None,
+    transform: Callable[[str], str],
+  ) -> str | None:
+    if text is None:
+      return None
+    return transform(text)
 
 
 def _count_words(text: str) -> int:

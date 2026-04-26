@@ -25,6 +25,7 @@ from active_listener.app.state import (
   ForegroundPhase,
   StartOrFinishResult,
 )
+from active_listener.recording.reducer import TextRun
 from active_listener.recording.spectrum import QuantizedSpectrumFrame
 from eavesdrop.common import get_logger
 
@@ -50,11 +51,7 @@ class RecordingControl(Protocol):
 class AppStateService(Protocol):
   async def set_state(self, state: ForegroundPhase) -> None: ...
 
-  async def transcription_updated(
-    self,
-    completed_segments: list[tuple[int, str]],
-    incomplete_segment: tuple[int, str],
-  ) -> None: ...
+  async def transcription_updated(self, runs: list[TextRun]) -> None: ...
 
   async def spectrum_updated(self, bars: QuantizedSpectrumFrame) -> None: ...
 
@@ -152,11 +149,11 @@ else:
         self._recording_control = control
 
       @dbus_signal_async(
-        signal_signature="a(ts)(ts)",
-        signal_args_names=("completed_segments", "incomplete_segment"),
+        signal_signature="a(sbb)",
+        signal_args_names=("runs",),
         signal_name="TranscriptionUpdated",
       )
-      def transcription_updated(self) -> tuple[list[tuple[int, str]], tuple[int, str]]:
+      def transcription_updated(self) -> list[tuple[str, bool, bool]]:
         raise NotImplementedError
 
       @dbus_signal_async(
@@ -265,15 +262,10 @@ class NoopDbusService:
   async def set_state(self, state: ForegroundPhase) -> None:
     _ = state
 
-  async def transcription_updated(
-    self,
-    completed_segments: list[tuple[int, str]],
-    incomplete_segment: tuple[int, str],
-  ) -> None:
+  async def transcription_updated(self, runs: list[TextRun]) -> None:
     _logger.debug(
       "dropping transcription update because dbus is disabled",
-      completed_segment_count=len(completed_segments),
-      incomplete_segment_id=incomplete_segment[0],
+      run_count=len(runs),
     )
 
   async def spectrum_updated(self, bars: QuantizedSpectrumFrame) -> None:
@@ -334,18 +326,13 @@ class SdbusDbusService:
   def attach_recording_control(self, control: RecordingControl) -> None:
     self.interface.set_recording_control(control)
 
-  async def transcription_updated(
-    self,
-    completed_segments: list[tuple[int, str]],
-    incomplete_segment: tuple[int, str],
-  ) -> None:
+  async def transcription_updated(self, runs: list[TextRun]) -> None:
     _logger.debug(
       "emitting transcription update on dbus",
-      completed_segment_count=len(completed_segments),
-      incomplete_segment_id=incomplete_segment[0],
+      run_count=len(runs),
     )
     cast(DbusSignalEmitter, self.interface.transcription_updated).emit(
-      (completed_segments, incomplete_segment)
+      [(run.text, run.is_command, run.is_complete) for run in runs]
     )
 
   async def spectrum_updated(self, bars: QuantizedSpectrumFrame) -> None:

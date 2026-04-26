@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import AsyncIterator, Callable, Iterable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
+from enum import StrEnum
 from types import TracebackType
 from typing import Protocol
 
@@ -12,17 +14,31 @@ import evdev
 from evdev.events import InputEvent
 from typing_extensions import override
 
-from active_listener.app.state import AppAction
-
 _CONTROL_KEY_CODES = frozenset({evdev.ecodes.KEY_CAPSLOCK, evdev.ecodes.KEY_ESC})
 RecordingGrabRelease = Callable[[], None]
+
+
+class KeyboardEventKind(StrEnum):
+  """Low-level keyboard control events consumed by the service."""
+
+  CAPSLOCK_DOWN = "capslock_down"
+  CAPSLOCK_UP = "capslock_up"
+  ESCAPE_DOWN = "escape_down"
+
+
+@dataclass(frozen=True)
+class KeyboardControlEvent:
+  """One low-level keyboard control event with local receive timing."""
+
+  kind: KeyboardEventKind
+  received_monotonic_s: float
 
 
 class KeyboardInput(Protocol):
   """Protocol for the active-listener keyboard boundary."""
 
-  def actions(self) -> AsyncIterator[AppAction]:
-    """Yield normalized hotkey actions from the workstation."""
+  def events(self) -> AsyncIterator[KeyboardControlEvent]:
+    """Yield low-level keyboard control events from the workstation."""
     ...
 
   def grab(self) -> None:
@@ -107,19 +123,19 @@ class EvdevKeyboard:
   _pending_ungrab: bool = False
   _pressed_hotkeys: set[int] = field(default_factory=set)
 
-  async def actions(self) -> AsyncIterator[AppAction]:
-    """Yield normalized key-down actions from the evdev stream.
+  async def events(self) -> AsyncIterator[KeyboardControlEvent]:
+    """Yield low-level control events from the evdev stream.
 
-    :returns: Async iterator of normalized hotkey actions.
-    :rtype: AsyncIterator[AppAction]
+    :returns: Async iterator of low-level keyboard control events.
+    :rtype: AsyncIterator[KeyboardControlEvent]
     """
 
     async for event in self.device.async_read_loop():
       self._update_hotkey_state(event)
       self._apply_pending_transition_if_ready()
-      action = action_from_event(event)
-      if action is not None:
-        yield action
+      control_event = control_event_from_input_event(event)
+      if control_event is not None:
+        yield control_event
 
   def grab(self) -> None:
     """Grab the concrete keyboard device.
@@ -286,23 +302,33 @@ class _RecordingGrab(AbstractAsyncContextManager[RecordingGrabRelease]):
     self.keyboard.ungrab()
 
 
-def action_from_event(event: InputEvent) -> AppAction | None:
-  """Translate one raw evdev event into a normalized hotkey action.
+def control_event_from_input_event(event: InputEvent) -> KeyboardControlEvent | None:
+  """Translate one raw evdev event into a low-level control event.
 
   :param event: Raw evdev input event.
   :type event: InputEvent
-  :returns: Normalized hotkey action, or ``None`` for irrelevant events.
-  :rtype: AppAction | None
+  :returns: Keyboard control event, or ``None`` for irrelevant events.
+  :rtype: KeyboardControlEvent | None
   """
 
-  if event.type != evdev.ecodes.EV_KEY or event.value != 1:
+  if event.type != evdev.ecodes.EV_KEY:
     return None
 
   if event.code == evdev.ecodes.KEY_CAPSLOCK:
-    return AppAction.START_OR_FINISH
-  if event.code == evdev.ecodes.KEY_ESC:
-    return AppAction.CANCEL
-  return None
+    if event.value == 1:
+      kind = KeyboardEventKind.CAPSLOCK_DOWN
+    elif event.value == 0:
+      kind = KeyboardEventKind.CAPSLOCK_UP
+    else:
+      return None
+  elif event.code == evdev.ecodes.KEY_ESC:
+    if event.value != 1:
+      return None
+    kind = KeyboardEventKind.ESCAPE_DOWN
+  else:
+    return None
+
+  return KeyboardControlEvent(kind=kind, received_monotonic_s=time.monotonic())
 
 
 def resolve_keyboard(
