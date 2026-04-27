@@ -31,8 +31,7 @@ from eavesdrop.server.streaming.file_queue import FileAudioQueue
 from eavesdrop.server.streaming.flush_state import LiveSessionFlushState
 from eavesdrop.server.streaming.interfaces import Float32Audio
 from eavesdrop.server.streaming.processor import StreamingTranscriptionProcessor
-from eavesdrop.server.transcription.session import TranscriptionSession
-from eavesdrop.server.transcription.session import create_session
+from eavesdrop.server.transcription.session import TranscriptionSession, create_session
 from eavesdrop.wire import (
   FlushControlMessage,
   TranscriptionSourceMode,
@@ -395,9 +394,12 @@ class WebSocketStreamingClient:
       return
 
     if isinstance(message, UtteranceCancelledMessage):
+      active_utterance_generation = self._flush_state.cancel_active_utterance()
+      self.session.reset_utterance()
       discarded_duration = self.buffer.discard_unprocessed_audio()
       self.logger.info(
         "Discarded live utterance tail",
+        active_utterance_generation=active_utterance_generation,
         discarded_duration_s=f"{discarded_duration:.3f}",
         processed_up_to_time_s=f"{self.buffer.processed_up_to_time:.3f}",
       )

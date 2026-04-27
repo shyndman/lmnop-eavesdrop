@@ -515,6 +515,10 @@ def _recording_reducer_state(session: RecordingSession) -> RecordingReducerState
   return cast(RecordingReducerState | None, getattr(session, "_recording_reducer_state"))
 
 
+def _connection_last_id(session: RecordingSession) -> int | None:
+  return cast(int | None, getattr(session, "_connection_last_id"))
+
+
 def _pending_caps_gesture(session: RecordingSession) -> PendingCapsGesture | None:
   return cast(PendingCapsGesture | None, getattr(session, "_pending_caps_gesture"))
 
@@ -731,6 +735,30 @@ async def test_start_and_cancel_recording_toggle_grab_and_streaming() -> None:
   assert spectrum_analyzer.start_calls == 1
   assert spectrum_analyzer.stop_calls == 1
   assert harness.logger.info_messages == ["recording started", "recording cancelled"]
+
+
+@pytest.mark.asyncio
+async def test_cancel_clears_connection_cursor_for_discarded_utterance() -> None:
+  harness = _service()
+  service = harness.service
+
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
+  await service.handle_client_event(
+    _transcription_event(
+      _message(
+        _segment(1, "alpha", completed=True),
+        _segment(2, "draft", completed=False),
+        flush_complete=False,
+      )
+    )
+  )
+
+  recording_session = _recording_session(service)
+  assert _connection_last_id(recording_session) is not None
+
+  _ = await service.handle_action(AppAction.CANCEL)
+
+  assert _connection_last_id(recording_session) is None
 
 
 @pytest.mark.asyncio
@@ -1639,7 +1667,7 @@ async def test_transcription_events_are_consumed_only_while_recording() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cancel_preserves_connection_cursor_for_next_recording() -> None:
+async def test_cancel_clears_connection_cursor_for_next_recording() -> None:
   client = FakeClient(
     flush_results=[
       _message(
@@ -1670,7 +1698,7 @@ async def test_cancel_preserves_connection_cursor_for_next_recording() -> None:
 
   assert client.cancel_calls == 1
   assert client.flush_calls == [True]
-  assert emitter.emitted == ["bravo "]
+  assert emitter.emitted == ["alpha bravo "]
 
 
 @pytest.mark.asyncio

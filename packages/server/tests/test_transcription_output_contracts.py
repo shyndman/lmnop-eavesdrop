@@ -215,6 +215,42 @@ async def test_recording_relative_timestamps_remain_monotonic_across_multiple_up
 
 
 @pytest.mark.asyncio
+async def test_cancelled_generation_drops_stale_transcription_result() -> None:
+  """Results from a cancelled live utterance must not reach the client sink."""
+  session = create_session("stream-1")
+  sink = RecordingSink()
+  buffer = AudioStreamBuffer(BufferConfig(sample_rate=16000, min_chunk_duration=1.0))
+  flush_state = LiveSessionFlushState()
+  processor = _create_processor_with_buffer(
+    send_last_n_segments=3,
+    session=session,
+    sink=sink,
+    buffer=buffer,
+    flush_state=flush_state,
+  )
+
+  stale_generation = 0
+  flush_state.cancel_active_utterance()
+
+  await processor._process_transcription_result(
+    ChunkTranscriptionResult(
+      status=TranscriptionPassStatus.TRANSCRIBED,
+      chunk_start_sample=0,
+      chunk_sample_count=int(0.5 * buffer.config.sample_rate),
+      segments=[_segment(start=0.0, end=0.4, text="draft", time_offset=0.0)],
+      info=None,
+      processing_time=0.0,
+      audio_duration=0.5,
+      speech_chunks=None,
+      utterance_generation=stale_generation,
+    )
+  )
+
+  assert sink.results == []
+  assert session.completed_segments == []
+
+
+@pytest.mark.asyncio
 async def test_flush_force_complete_converts_tail_to_completed_history() -> None:
   """Force-complete flush responses finalize the tentative tail and append a fresh tail."""
   session = create_session("stream-1")

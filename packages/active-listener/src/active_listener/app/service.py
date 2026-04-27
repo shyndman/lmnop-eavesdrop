@@ -215,6 +215,7 @@ class ActiveListenerService:
       await self._recording_session.stop_recording()
       await self.dbus_service.set_state(self.phase)
       await self.client.cancel_utterance()
+      self._recording_session.reset_connection_cursor()
       self.logger.info("recording cancelled")
       return decision
 

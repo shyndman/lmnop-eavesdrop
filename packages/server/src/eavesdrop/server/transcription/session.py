@@ -256,6 +256,10 @@ class TranscriptionSession:
     """
     self.completed_segments.append(segment)
 
+  def reset_utterance(self) -> None:
+    """Clear utterance-local completed history after the live utterance is discarded."""
+    self.completed_segments.clear()
+
   def get_absolute_time_range(self) -> tuple[float, float]:
     """Get the absolute time range of the current audio chunk.
 

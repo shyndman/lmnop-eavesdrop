@@ -1,8 +1,8 @@
-"""Shared live-session flush state for streaming transcription.
+"""Shared live-session control state for streaming transcription.
 
-This module keeps the server's pending-flush state in one canonical place while
-exposing separate wakeup primitives for event-loop waits and worker-thread
-checkpoints.
+This module keeps the server's pending-flush state and active-utterance cancel
+generation in one canonical place while exposing separate wakeup primitives for
+event-loop waits and worker-thread checkpoints.
 """
 
 import asyncio
@@ -19,23 +19,34 @@ class PendingFlush:
 
 
 class LiveSessionFlushState:
-  """Thread-safe owner for one live session's pending flush request."""
+  """Thread-safe owner for one live session's flush and cancel control state."""
 
   def __init__(self) -> None:
     self._lock: threading.Lock = threading.Lock()
     self._pending_flush: PendingFlush | None = None
+    self._active_utterance_generation: int = 0
     self._wakeup: asyncio.Event = asyncio.Event()
     self._interrupt: threading.Event = threading.Event()
 
-  def begin_wait(self) -> bool:
+  def current_generation(self) -> int:
+    """Return the current active-utterance generation."""
+    with self._lock:
+      return self._active_utterance_generation
+
+  def begin_wait(self, *, observed_generation: int) -> bool:
     """Prepare an async wait without racing against new flush acceptance.
 
+    :param observed_generation: Active-utterance generation observed before the
+      caller decided to sleep.
+    :type observed_generation: int
     :returns: ``True`` when the caller should wait, ``False`` when a flush is
-      already pending and the wait should be skipped.
+      already pending or the utterance generation has advanced.
     :rtype: bool
     """
     with self._lock:
       if self._pending_flush is not None:
+        return False
+      if self._active_utterance_generation != observed_generation:
         return False
       self._wakeup.clear()
       return True
@@ -67,6 +78,22 @@ class LiveSessionFlushState:
     """Return the currently pending flush, if any."""
     with self._lock:
       return self._pending_flush
+
+  def cancel_active_utterance(self) -> int:
+    """Advance the active-utterance generation and wake pending work.
+
+    Any pending flush belongs to the discarded utterance and is cleared.
+
+    :returns: The new active-utterance generation.
+    :rtype: int
+    """
+    with self._lock:
+      self._active_utterance_generation += 1
+      self._pending_flush = None
+      generation = self._active_utterance_generation
+      self._wakeup.set()
+      self._interrupt.set()
+      return generation
 
   def clear_interrupt(self) -> None:
     """Clear the worker-thread interrupt doorbell after a checkpoint consumes it."""

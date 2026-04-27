@@ -44,6 +44,7 @@ from eavesdrop.server.streaming.processor import AudioChunk, StreamingTranscript
 from eavesdrop.server.transcription.session import create_session
 from eavesdrop.wire import (
   FlushControlMessage,
+  Segment,
   TranscriptionSetupMessage,
   UserTranscriptionOptions,
   UtteranceCancelledMessage,
@@ -536,6 +537,22 @@ async def test_live_utterance_cancel_discards_tail_without_merging_future_audio(
   client = WebSocketStreamingClient.__new__(WebSocketStreamingClient)
   client.logger = MagicMock()
   client.buffer = AudioStreamBuffer(BufferConfig(sample_rate=10, min_chunk_duration=1.0))
+  client.session = create_session("stream-1")
+  client.session.add_completed_segment(
+    Segment(
+      id=1,
+      seek=0,
+      start=0.0,
+      end=0.2,
+      text="alpha",
+      tokens=[1, 2, 3],
+      avg_logprob=-0.25,
+      compression_ratio=1.0,
+      words=None,
+      temperature=0.0,
+      completed=True,
+    )
+  )
   _set_attr(
     client,
     "transcription_sink",
@@ -545,6 +562,12 @@ async def test_live_utterance_cancel_discards_tail_without_merging_future_audio(
 
   _add_frames(client.buffer, np.ones(8, dtype=np.float32))
   client.buffer.advance_processed_boundary(0.3)
+  pending_flush = _get_flush_state(client).accept(
+    boundary_sample=client.buffer.get_buffer_end_sample(),
+    force_complete=True,
+  )
+
+  assert pending_flush is not None
 
   await _client_handle_live_text_frame(
     client,
@@ -555,6 +578,9 @@ async def test_live_utterance_cancel_discards_tail_without_merging_future_audio(
   assert abs(client.buffer.buffer_start_time - 0.3) < 1e-9
   assert client.buffer.available_duration == 0.0
   assert client.buffer.total_duration == 0.0
+  assert client.session.completed_segments == []
+  assert _get_flush_state(client).pending() is None
+  assert _get_flush_state(client).current_generation() == 1
 
   _add_frames(client.buffer, np.full(4, 0.5, dtype=np.float32))
   chunk, duration, start_time = _get_chunk(client.buffer)

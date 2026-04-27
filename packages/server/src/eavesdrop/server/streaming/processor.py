@@ -96,6 +96,7 @@ class ChunkTranscriptionResult:
   processing_time: float
   audio_duration: float
   speech_chunks: list[SpeechChunk] | None = None
+  utterance_generation: int = 0
 
 
 class TranscriptionPassStatus(str, Enum):
@@ -388,7 +389,11 @@ class StreamingTranscriptionProcessor:
           wait_s=f"{remaining_wait:.3f}",
         )
         self._minimum_chunk_wait_logged = True
-      wait_completed = await self._wait_for_flush_wakeup(remaining_wait)
+      observed_generation = self._current_utterance_generation()
+      wait_completed = await self._wait_for_live_control_wakeup(
+        remaining_wait,
+        observed_generation=observed_generation,
+      )
       pending_flush = self._pending_flush()
       if not wait_completed and pending_flush is not None and duration > 0:
         self.logger.info(
@@ -397,6 +402,12 @@ class StreamingTranscriptionProcessor:
           boundary_sample=pending_flush.boundary_sample,
         )
         return AudioChunk(data=input_bytes, duration=duration, start_time=start_time)
+      if not wait_completed and self._current_utterance_generation() != observed_generation:
+        self.logger.info(
+          "Cancelled utterance interrupts minimum chunk wait",
+          buffered_duration_s=f"{duration:.3f}s",
+          utterance_generation=observed_generation,
+        )
       return None
 
     # TRACING: Audio chunk range being processed
@@ -442,6 +453,15 @@ class StreamingTranscriptionProcessor:
       self.logger.info("Skipping interrupted transcription pass before commit")
       return
 
+    active_generation = self._current_utterance_generation()
+    if result.utterance_generation != active_generation:
+      self.logger.info(
+        "Dropping stale transcription result after utterance cancel",
+        result_generation=result.utterance_generation,
+        active_generation=active_generation,
+      )
+      return
+
     pending_flush = self._pending_flush()
     flush_boundary_reached = pending_flush is not None and self._covers_flush_boundary(
       result, pending_flush
@@ -483,9 +503,20 @@ class StreamingTranscriptionProcessor:
     remaining_wait = self.buffer.config.transcription_interval - processing_time
     if remaining_wait > 0:
       self.logger.debug(f"Waiting {remaining_wait:.2f}s to maintain transcription interval")
-      wait_completed = await self._wait_for_flush_wakeup(remaining_wait)
+      observed_generation = self._current_utterance_generation()
+      wait_completed = await self._wait_for_live_control_wakeup(
+        remaining_wait,
+        observed_generation=observed_generation,
+      )
       if not wait_completed:
-        self.logger.info("Pending flush interrupts interval wait")
+        pending_flush = self._pending_flush()
+        if pending_flush is not None:
+          self.logger.info("Pending flush interrupts interval wait")
+        elif self._current_utterance_generation() != observed_generation:
+          self.logger.info(
+            "Cancelled utterance interrupts interval wait",
+            utterance_generation=observed_generation,
+          )
     else:
       self.logger.warning("Transcription took longer than interval, proceeding immediately")
 
@@ -505,15 +536,22 @@ class StreamingTranscriptionProcessor:
     return int(round(chunk.start_time * self.buffer.config.sample_rate))
 
   def _consume_precommit_interrupt(self) -> bool:
-    """Consume one pending flush interrupt before expensive work begins."""
+    """Consume one live-session control interrupt before expensive work begins."""
     if self.flush_state is None or not self.flush_state.interrupt.is_set():
       return False
     _ = self.flush_state.clear_interrupt()
-    self.logger.info("Pending flush interrupts worker pass before commit")
+    self.logger.info("Live-session control interrupts worker pass before commit")
     return True
+
+  def _current_utterance_generation(self) -> int:
+    """Return the active utterance generation for the live session."""
+    if self.flush_state is None:
+      return 0
+    return self.flush_state.current_generation()
 
   def _run_transcription_pass(self, chunk: AudioChunk) -> ChunkTranscriptionResult:
     """Run one worker-thread transcription pass or report interruption before commit."""
+    utterance_generation = self._current_utterance_generation()
     if self._consume_precommit_interrupt():
       return ChunkTranscriptionResult(
         status=TranscriptionPassStatus.INTERRUPTED_BEFORE_COMMIT,
@@ -524,6 +562,7 @@ class StreamingTranscriptionProcessor:
         processing_time=0.0,
         audio_duration=chunk.duration,
         speech_chunks=None,
+        utterance_generation=utterance_generation,
       )
 
     result, info, speech_chunks = self._transcribe_audio(chunk)
@@ -536,6 +575,7 @@ class StreamingTranscriptionProcessor:
       processing_time=0.0,
       audio_duration=chunk.duration,
       speech_chunks=speech_chunks,
+      utterance_generation=utterance_generation,
     )
 
   def _covers_flush_boundary(
@@ -553,14 +593,19 @@ class StreamingTranscriptionProcessor:
     )
     return boundary_reached
 
-  async def _wait_for_flush_wakeup(self, delay: float) -> bool:
-    """Sleep unless a pending flush needs the loop to resume immediately."""
+  async def _wait_for_live_control_wakeup(
+    self,
+    delay: float,
+    *,
+    observed_generation: int,
+  ) -> bool:
+    """Sleep unless live-session control needs the loop to resume immediately."""
     if delay <= 0:
       return True
     if self.flush_state is None:
       await asyncio.sleep(delay)
       return True
-    if not self.flush_state.begin_wait():
+    if not self.flush_state.begin_wait(observed_generation=observed_generation):
       return False
 
     sleep_task = asyncio.create_task(asyncio.sleep(delay))
