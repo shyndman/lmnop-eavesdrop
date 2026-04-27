@@ -10,6 +10,7 @@ from active_listener.app.ports import (
   ActiveListenerClient,
   ActiveListenerRewriteClient,
   ActiveListenerTranscriptHistoryStore,
+  MediaPlaybackController,
 )
 from active_listener.app.signals import ClientSignal, KeyboardEventSignal, RuntimeSignal
 from active_listener.app.state import (
@@ -64,10 +65,12 @@ class ActiveListenerService:
   rewrite_client: ActiveListenerRewriteClient
   history_store: ActiveListenerTranscriptHistoryStore
   dbus_service: AppStateService
+  media_playback_controller: MediaPlaybackController
   recording_audio_buffer: RecordingAudioBuffer
   spectrum_analyzer: SpectrumRuntime = field(default_factory=_build_noop_spectrum_analyzer)
   phase: ForegroundPhase = ForegroundPhase.IDLE
   disconnect_generation: int = 0
+  _was_playing_before_recording: bool = field(default=False, init=False)
   _llm_available: bool = field(default=False, init=False)
   _llm_active: bool = field(default=False, init=False)
   _recording_session: RecordingSession = field(init=False)
@@ -128,7 +131,12 @@ class ActiveListenerService:
       await self.close()
 
   async def close(self) -> None:
-    await self._stop_spectrum_analysis()
+    cleanup_errors: list[Exception] = []
+
+    try:
+      await self._stop_spectrum_analysis()
+    except Exception as exc:
+      cleanup_errors.append(exc)
 
     for task in list(self._background_tasks):
       _ = task.cancel()
@@ -136,13 +144,14 @@ class ActiveListenerService:
       _ = await asyncio.gather(*self._background_tasks, return_exceptions=True)
       self._background_tasks.clear()
 
-    cleanup_errors: list[Exception] = []
-
     try:
       if self.phase is ForegroundPhase.RECORDING:
         try:
           self.phase = ForegroundPhase.IDLE
-          await self._recording_session.stop_recording()
+          try:
+            await self._recording_session.stop_recording()
+          finally:
+            await self._resume_media_if_needed()
         except Exception as exc:
           cleanup_errors.append(exc)
 
@@ -197,6 +206,7 @@ class ActiveListenerService:
       return decision
 
     if decision is AppActionDecision.START_RECORDING:
+      self._was_playing_before_recording = await self._pause_media_if_playing()
       self._start_spectrum_analysis()
       try:
         await self.client.start_streaming()
@@ -206,33 +216,42 @@ class ActiveListenerService:
         self.logger.info("recording started")
         return decision
       except Exception:
-        await self._stop_spectrum_analysis()
+        try:
+          await self._stop_spectrum_analysis()
+        finally:
+          await self._resume_media_if_needed()
         raise
 
     if decision is AppActionDecision.CANCEL_RECORDING:
       self.phase = ForegroundPhase.IDLE
-      await self._stop_spectrum_analysis()
-      await self._recording_session.stop_recording()
-      await self.dbus_service.set_state(self.phase)
-      await self.client.cancel_utterance()
-      self._recording_session.reset_connection_cursor()
-      self.logger.info("recording cancelled")
-      return decision
+      try:
+        await self._stop_spectrum_analysis()
+        await self._recording_session.stop_recording()
+        await self.dbus_service.set_state(self.phase)
+        await self.client.cancel_utterance()
+        self._recording_session.reset_connection_cursor()
+        self.logger.info("recording cancelled")
+        return decision
+      finally:
+        await self._resume_media_if_needed()
 
     self.phase = ForegroundPhase.IDLE
-    finished_recording = await self._recording_session.finish_recording()
-    await self._stop_spectrum_analysis()
-    await self.dbus_service.set_state(self.phase)
-    finalization_task = asyncio.create_task(
-      self._recording_finalizer.finalize_recording(
-        disconnect_generation=self.disconnect_generation,
-        finished_recording=finished_recording,
+    try:
+      finished_recording = await self._recording_session.finish_recording()
+      await self._stop_spectrum_analysis()
+      await self.dbus_service.set_state(self.phase)
+      finalization_task = asyncio.create_task(
+        self._recording_finalizer.finalize_recording(
+          disconnect_generation=self.disconnect_generation,
+          finished_recording=finished_recording,
+        )
       )
-    )
-    self._background_tasks.add(finalization_task)
-    finalization_task.add_done_callback(self._background_tasks.discard)
-    self.logger.info("recording finished", background_finalization=True)
-    return decision
+      self._background_tasks.add(finalization_task)
+      finalization_task.add_done_callback(self._background_tasks.discard)
+      self.logger.info("recording finished", background_finalization=True)
+      return decision
+    finally:
+      await self._resume_media_if_needed()
 
   async def handle_keyboard_event(self, event: KeyboardControlEvent) -> None:
     if event.kind is KeyboardEventKind.ESCAPE_DOWN:
@@ -310,17 +329,20 @@ class ActiveListenerService:
 
     if decision is ConnectionDecision.ABORT_RECORDING:
       self.phase = ForegroundPhase.RECONNECTING
-      await self._stop_spectrum_analysis()
-      await self._recording_session.stop_recording()
-      await self.dbus_service.set_state(self.phase)
-      await self.dbus_service.recording_aborted(disconnect_reason)
-      await self.dbus_service.reconnecting()
-      self.logger.warning(
-        "recording aborted by disconnect",
-        stream=disconnected_event.stream,
-        reason=disconnect_reason,
-      )
-      return
+      try:
+        await self._stop_spectrum_analysis()
+        await self._recording_session.stop_recording()
+        await self.dbus_service.set_state(self.phase)
+        await self.dbus_service.recording_aborted(disconnect_reason)
+        await self.dbus_service.reconnecting()
+        self.logger.warning(
+          "recording aborted by disconnect",
+          stream=disconnected_event.stream,
+          reason=disconnect_reason,
+        )
+        return
+      finally:
+        await self._resume_media_if_needed()
 
     await self.dbus_service.set_state(self.phase)
 
@@ -378,6 +400,34 @@ class ActiveListenerService:
 
   def _current_disconnect_generation(self) -> int:
     return self.disconnect_generation
+
+  async def _pause_media_if_playing(self) -> bool:
+    try:
+      was_playing_before_recording = await self.media_playback_controller.pause_if_playing()
+    except Exception:
+      self.logger.exception("media pause failed")
+      return False
+
+    if was_playing_before_recording:
+      self.logger.debug("media pause requested for recording")
+
+    return was_playing_before_recording
+
+  async def _resume_media_if_needed(self) -> None:
+    was_playing_before_recording = self._was_playing_before_recording
+    self._was_playing_before_recording = False
+
+    if not was_playing_before_recording:
+      return None
+
+    try:
+      await self.media_playback_controller.resume()
+    except Exception:
+      self.logger.exception("media resume failed")
+      return None
+
+    self.logger.debug("media resume requested after recording")
+    return None
 
   def _start_spectrum_analysis(self) -> None:
     spectrum_task = self.spectrum_analyzer.start()

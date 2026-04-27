@@ -14,6 +14,7 @@ from active_listener.app.ports import (
   ActiveListenerRewriteClient,
   ActiveListenerRuntimeError,
   ActiveListenerTranscriptHistoryStore,
+  MediaPlaybackController,
 )
 from active_listener.app.service import ActiveListenerService
 from active_listener.app.state import ForegroundPhase
@@ -25,6 +26,7 @@ from active_listener.config.models import (
 from active_listener.infra.dbus import AppStateService, NoopDbusService, SdbusDbusService
 from active_listener.infra.emitter import GnomeShellExtensionTextEmitter, TextEmitter
 from active_listener.infra.keyboard import KeyboardInput, resolve_keyboard
+from active_listener.infra.mpris import PlayerctldMediaPlaybackController
 from active_listener.infra.rewrite import (
   DisabledRewriteClient,
   LiteRtRewriteClient,
@@ -60,6 +62,7 @@ async def create_service(
     Callable[[ActiveListenerConfig, Callable[[Float32PcmChunk], None]], ActiveListenerClient] | None
   ) = None,
   emitter_factory: Callable[[], TextEmitter] | None = None,
+  media_playback_controller_factory: Callable[[BoundLogger], MediaPlaybackController] | None = None,
   rewrite_client_factory: Callable[[LlmRewriteConfig | None], ActiveListenerRewriteClient]
   | None = None,
   history_store_factory: Callable[
@@ -78,6 +81,8 @@ async def create_service(
   :type client_factory: Callable[[ActiveListenerConfig], ActiveListenerClient] | None
   :param emitter_factory: Factory for the text emitter dependency.
   :type emitter_factory: Callable[[], TextEmitter] | None
+  :param media_playback_controller_factory: Factory for the media playback controller.
+  :type media_playback_controller_factory: Callable[[BoundLogger], MediaPlaybackController] | None
   :param history_store_factory: Factory for the transcript history dependency.
   :type history_store_factory:
       Callable[[ActiveListenerConfig, BoundLogger, AppStateService],
@@ -91,6 +96,9 @@ async def create_service(
   resolved_dbus_service = dbus_service or NoopDbusService()
   resolved_client_factory = client_factory or build_client
   resolved_emitter_factory = emitter_factory or build_emitter
+  resolved_media_playback_controller_factory = (
+    media_playback_controller_factory or build_media_playback_controller
+  )
   resolved_rewrite_client_factory = rewrite_client_factory or build_rewrite_client
   resolved_history_store_factory = history_store_factory or build_history_store
   spectrum_analyzer = SpectrumAnalyzer(
@@ -107,6 +115,7 @@ async def create_service(
     logger=logger,
   )
   client: ActiveListenerClient | None = None
+  media_playback_controller: MediaPlaybackController | None = None
   rewrite_client: ActiveListenerRewriteClient | None = None
   history_store: ActiveListenerTranscriptHistoryStore | None = None
   connect_started = False
@@ -121,6 +130,7 @@ async def create_service(
     history_store = resolved_history_store_factory(config, logger, resolved_dbus_service)
     emitter = resolved_emitter_factory()
     client = resolved_client_factory(config, on_capture)
+    media_playback_controller = resolved_media_playback_controller_factory(logger)
     rewrite_client = resolved_rewrite_client_factory(config.llm_rewrite)
     connect_started = True
     await client.connect()
@@ -147,6 +157,7 @@ async def create_service(
     port=config.port,
   )
   assert history_store is not None
+  assert media_playback_controller is not None
   service = ActiveListenerService(
     config=config,
     keyboard=keyboard,
@@ -156,6 +167,7 @@ async def create_service(
     rewrite_client=rewrite_client,
     history_store=history_store,
     dbus_service=resolved_dbus_service,
+    media_playback_controller=media_playback_controller,
     recording_audio_buffer=recording_audio_buffer,
     spectrum_analyzer=spectrum_analyzer,
   )
@@ -175,6 +187,7 @@ async def run_service(
     Callable[[ActiveListenerConfig, Callable[[Float32PcmChunk], None]], ActiveListenerClient] | None
   ) = None,
   emitter_factory: Callable[[], TextEmitter] | None = None,
+  media_playback_controller_factory: Callable[[BoundLogger], MediaPlaybackController] | None = None,
   rewrite_client_factory: Callable[[LlmRewriteConfig | None], ActiveListenerRewriteClient]
   | None = None,
   history_store_factory: Callable[
@@ -193,6 +206,8 @@ async def run_service(
   :type client_factory: Callable[[ActiveListenerConfig], ActiveListenerClient] | None
   :param emitter_factory: Factory for the text emitter dependency.
   :type emitter_factory: Callable[[], TextEmitter] | None
+  :param media_playback_controller_factory: Factory for the media playback controller.
+  :type media_playback_controller_factory: Callable[[BoundLogger], MediaPlaybackController] | None
   :param history_store_factory: Factory for the transcript history dependency.
   :type history_store_factory:
       Callable[[ActiveListenerConfig, BoundLogger, AppStateService],
@@ -210,6 +225,7 @@ async def run_service(
       keyboard_resolver=keyboard_resolver,
       client_factory=client_factory,
       emitter_factory=emitter_factory,
+      media_playback_controller_factory=media_playback_controller_factory,
       rewrite_client_factory=rewrite_client_factory,
       history_store_factory=history_store_factory,
     )
@@ -327,6 +343,10 @@ def build_emitter() -> TextEmitter:
   emitter = GnomeShellExtensionTextEmitter()
   emitter.initialize()
   return emitter
+
+
+def build_media_playback_controller(logger: BoundLogger) -> MediaPlaybackController:
+  return PlayerctldMediaPlaybackController(logger=logger)
 
 
 def build_rewrite_client(config: LlmRewriteConfig | None) -> ActiveListenerRewriteClient:

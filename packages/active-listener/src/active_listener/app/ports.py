@@ -161,5 +161,11 @@ class ActiveListenerTranscriptHistoryStore(Protocol):
   ) -> None: ...
 
 
+class MediaPlaybackController(Protocol):
+  async def pause_if_playing(self) -> bool: ...
+
+  async def resume(self) -> None: ...
+
+
 class ActiveListenerRuntimeError(RuntimeError):
   """Raised when the service cannot satisfy runtime prerequisites."""

@@ -280,6 +280,28 @@ class FakeDbusService:
 
 
 @dataclass
+class FakeMediaPlaybackController:
+  pause_results: list[bool] = field(default_factory=list)
+  pause_calls: int = 0
+  resume_calls: int = 0
+  pause_error: Exception | None = None
+  resume_error: Exception | None = None
+
+  async def pause_if_playing(self) -> bool:
+    self.pause_calls += 1
+    if self.pause_error is not None:
+      raise self.pause_error
+    if not self.pause_results:
+      return False
+    return self.pause_results.pop(0)
+
+  async def resume(self) -> None:
+    self.resume_calls += 1
+    if self.resume_error is not None:
+      raise self.resume_error
+
+
+@dataclass
 class FakeClient:
   """Live-client stand-in used by app tests."""
 
@@ -366,6 +388,16 @@ class FailingConnectClient(FakeClient):
   @override
   async def connect(self) -> None:
     raise RuntimeError("server unavailable")
+
+
+@final
+class FailingStartClient(FakeClient):
+  """Client stand-in whose start-streaming path fails."""
+
+  @override
+  async def start_streaming(self) -> None:
+    self.start_calls += 1
+    raise RuntimeError("start failed")
 
 
 @final
@@ -553,6 +585,7 @@ class ServiceHarness:
   rewrite_client: FakeRewriteClient
   history_store: FakeHistoryStore
   dbus_service: FakeDbusService
+  media_playback_controller: FakeMediaPlaybackController
   recording_audio_buffer: RecordingAudioBuffer
 
 
@@ -565,6 +598,7 @@ def _service(
   rewrite_client: FakeRewriteClient | None = None,
   history_store: FakeHistoryStore | None = None,
   dbus_service: FakeDbusService | None = None,
+  media_playback_controller: FakeMediaPlaybackController | None = None,
   config: ActiveListenerConfig | None = None,
   spectrum_analyzer: FakeSpectrumAnalyzer | None = None,
   recording_audio_buffer: RecordingAudioBuffer | None = None,
@@ -576,6 +610,7 @@ def _service(
   resolved_rewrite_client = rewrite_client or FakeRewriteClient()
   resolved_history_store = history_store or FakeHistoryStore()
   resolved_dbus_service = dbus_service or FakeDbusService()
+  resolved_media_playback_controller = media_playback_controller or FakeMediaPlaybackController()
   resolved_recording_audio_buffer = recording_audio_buffer or RecordingAudioBuffer()
   service = ActiveListenerService(
     config=config or _config(),
@@ -586,6 +621,7 @@ def _service(
     rewrite_client=resolved_rewrite_client,
     history_store=resolved_history_store,
     dbus_service=resolved_dbus_service,
+    media_playback_controller=resolved_media_playback_controller,
     recording_audio_buffer=resolved_recording_audio_buffer,
     spectrum_analyzer=spectrum_analyzer or FakeSpectrumAnalyzer(),
   )
@@ -598,6 +634,7 @@ def _service(
     resolved_rewrite_client,
     resolved_history_store,
     resolved_dbus_service,
+    resolved_media_playback_controller,
     resolved_recording_audio_buffer,
   )
 
@@ -738,6 +775,74 @@ async def test_start_and_cancel_recording_toggle_grab_and_streaming() -> None:
 
 
 @pytest.mark.asyncio
+async def test_start_and_cancel_resume_prior_media() -> None:
+  media_playback_controller = FakeMediaPlaybackController(pause_results=[True])
+  harness = _service(media_playback_controller=media_playback_controller)
+  service = harness.service
+
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
+  _ = await service.handle_action(AppAction.CANCEL)
+
+  assert media_playback_controller.pause_calls == 1
+  assert media_playback_controller.resume_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_start_and_finish_resume_prior_media() -> None:
+  media_playback_controller = FakeMediaPlaybackController(pause_results=[True])
+  client = FakeClient(
+    flush_results=[
+      _message(
+        _segment(1, "alpha", completed=True),
+        _segment(2, "tail", completed=False),
+      )
+    ]
+  )
+  harness = _service(
+    client=client,
+    media_playback_controller=media_playback_controller,
+  )
+
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  await harness.service.wait_for_background_tasks()
+
+  assert media_playback_controller.pause_calls == 1
+  assert media_playback_controller.resume_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_media_pause_failure_does_not_block_recording_start() -> None:
+  media_playback_controller = FakeMediaPlaybackController(pause_error=RuntimeError("pause boom"))
+  harness = _service(media_playback_controller=media_playback_controller)
+
+  decision = await harness.service.handle_action(AppAction.START_OR_FINISH)
+
+  assert decision is AppActionDecision.START_RECORDING
+  assert harness.service.phase is ForegroundPhase.RECORDING
+  assert harness.client.start_calls == 1
+  assert media_playback_controller.pause_calls == 1
+  assert media_playback_controller.resume_calls == 0
+  assert harness.logger.exception_messages[-1] == "media pause failed"
+
+
+@pytest.mark.asyncio
+async def test_start_failure_resumes_prior_media() -> None:
+  media_playback_controller = FakeMediaPlaybackController(pause_results=[True])
+  harness = _service(
+    client=FailingStartClient(),
+    media_playback_controller=media_playback_controller,
+  )
+
+  with pytest.raises(RuntimeError, match="start failed"):
+    _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+
+  assert media_playback_controller.pause_calls == 1
+  assert media_playback_controller.resume_calls == 1
+  assert harness.service.phase is ForegroundPhase.IDLE
+
+
+@pytest.mark.asyncio
 async def test_cancel_clears_connection_cursor_for_discarded_utterance() -> None:
   harness = _service()
   service = harness.service
@@ -828,7 +933,11 @@ async def test_caps_lock_is_suppressed_while_reconnecting() -> None:
 @pytest.mark.asyncio
 async def test_disconnect_during_recording_forces_local_abort() -> None:
   spectrum_analyzer = FakeSpectrumAnalyzer()
-  harness = _service(spectrum_analyzer=spectrum_analyzer)
+  media_playback_controller = FakeMediaPlaybackController(pause_results=[True])
+  harness = _service(
+    spectrum_analyzer=spectrum_analyzer,
+    media_playback_controller=media_playback_controller,
+  )
   service = harness.service
   _ = await service.handle_action(AppAction.START_OR_FINISH)
 
@@ -842,6 +951,7 @@ async def test_disconnect_during_recording_forces_local_abort() -> None:
     ("RecordingAborted", "socket closed"),
     ("Reconnecting", None),
   ]
+  assert media_playback_controller.resume_calls == 1
   assert spectrum_analyzer.stop_calls == 1
   assert harness.logger.warning_messages == ["recording aborted by disconnect"]
 
@@ -893,6 +1003,48 @@ async def test_close_releases_keyboard_even_when_disconnect_raises() -> None:
   assert harness.keyboard.close_calls == 1
   assert harness.keyboard.grabbed is False
   assert spectrum_analyzer.stop_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_close_resumes_prior_media() -> None:
+  media_playback_controller = FakeMediaPlaybackController(pause_results=[True])
+  harness = _service(media_playback_controller=media_playback_controller)
+
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  await harness.service.close()
+
+  assert media_playback_controller.pause_calls == 1
+  assert media_playback_controller.resume_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_resume_failure_does_not_block_recording_cancel() -> None:
+  media_playback_controller = FakeMediaPlaybackController(
+    pause_results=[True],
+    resume_error=RuntimeError("resume boom"),
+  )
+  harness = _service(media_playback_controller=media_playback_controller)
+
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  decision = await harness.service.handle_action(AppAction.CANCEL)
+
+  assert decision is AppActionDecision.CANCEL_RECORDING
+  assert harness.service.phase is ForegroundPhase.IDLE
+  assert harness.client.cancel_calls == 1
+  assert media_playback_controller.resume_calls == 1
+  assert harness.logger.exception_messages[-1] == "media resume failed"
+
+
+@pytest.mark.asyncio
+async def test_close_after_cancel_does_not_resume_twice() -> None:
+  media_playback_controller = FakeMediaPlaybackController(pause_results=[True])
+  harness = _service(media_playback_controller=media_playback_controller)
+
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  _ = await harness.service.handle_action(AppAction.CANCEL)
+  await harness.service.close()
+
+  assert media_playback_controller.resume_calls == 1
 
 
 @pytest.mark.asyncio
@@ -1992,10 +2144,13 @@ async def test_finalize_recording_emits_raw_text_when_rewrite_is_disabled() -> N
 
   assert harness.emitter.emitted == ["alpha "]
   assert harness.rewrite_client.calls == []
-  assert LogRecord(
-    event="recording finalization mode",
-    fields={"stream": "stream-1", "llm_mode": "unavailable"},
-  ) in harness.logger.info_records
+  assert (
+    LogRecord(
+      event="recording finalization mode",
+      fields={"stream": "stream-1", "llm_mode": "unavailable"},
+    )
+    in harness.logger.info_records
+  )
   assert harness.history_store.recordings == [
     RecordedFinalization(
       record=FinalizedTranscriptRecord(
@@ -2047,10 +2202,13 @@ async def test_finalize_recording_skips_only_rewrite_when_runtime_disabled() -> 
 
   assert harness.emitter.emitted == ["alpha "]
   assert harness.rewrite_client.calls == []
-  assert LogRecord(
-    event="recording finalization mode",
-    fields={"stream": "stream-1", "llm_mode": "bypassed"},
-  ) in harness.logger.info_records
+  assert (
+    LogRecord(
+      event="recording finalization mode",
+      fields={"stream": "stream-1", "llm_mode": "bypassed"},
+    )
+    in harness.logger.info_records
+  )
   assert harness.history_store.recordings == [
     RecordedFinalization(
       record=FinalizedTranscriptRecord(
@@ -2238,10 +2396,13 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
       "cost_details": {"total": 0.00012},
     }
   ]
-  assert LogRecord(
-    event="recording finalization mode",
-    fields={"stream": "stream-1", "llm_mode": "active"},
-  ) in harness.logger.info_records
+  assert (
+    LogRecord(
+      event="recording finalization mode",
+      fields={"stream": "stream-1", "llm_mode": "active"},
+    )
+    in harness.logger.info_records
+  )
   assert harness.logger.info_records[-1] == LogRecord(
     event="text emitted",
     fields={
