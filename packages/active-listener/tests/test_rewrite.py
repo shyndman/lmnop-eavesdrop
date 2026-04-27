@@ -138,11 +138,25 @@ class StubPydanticAiRunResult:
 
 @final
 class StubAgent:
+  init_calls: list[dict[str, object]] = []
   responses: list[object] = []
   run_calls: list[dict[str, object]] = []
 
-  def __init__(self, *, output_type: object) -> None:
+  def __init__(
+    self,
+    *,
+    output_type: object,
+    instrument: object | None = None,
+    name: object | None = None,
+  ) -> None:
     self.output_type: object = output_type
+    self.__class__.init_calls.append(
+      {
+        "output_type": output_type,
+        "instrument": instrument,
+        "name": name,
+      }
+    )
 
   async def run(
     self,
@@ -171,6 +185,7 @@ def reset_stubs() -> None:
   StubEngine.responses.clear()
   StubEngine.init_error = None
   StubEngine.close_calls = 0
+  StubAgent.init_calls.clear()
   StubAgent.responses.clear()
   StubAgent.run_calls.clear()
 
@@ -456,6 +471,13 @@ async def test_pydantic_ai_rewrite_client_uses_model_and_instructions(
     output_tokens=0,
     cost=None,
   )
+  assert StubAgent.init_calls == [
+    {
+      "output_type": str,
+      "instrument": True,
+      "name": "active-listener-rewrite",
+    }
+  ]
   assert StubAgent.run_calls == [
     {
       "user_prompt": "alpha",

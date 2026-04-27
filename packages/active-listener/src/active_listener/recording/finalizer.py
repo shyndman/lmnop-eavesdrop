@@ -17,7 +17,11 @@ from active_listener.app.ports import (
   FinalizedTranscriptRecord,
   RewriteResult,
 )
-from active_listener.config.models import ActiveListenerConfig
+from active_listener.config.models import (
+  ActiveListenerConfig,
+  LiteRtRewriteProvider,
+  LlmRewriteConfig,
+)
 from active_listener.infra.dbus import AppStateService
 from active_listener.infra.emitter import TextEmitter
 from active_listener.recording.reducer import (
@@ -28,6 +32,8 @@ from active_listener.recording.reducer import (
   serialize_text_runs,
 )
 from eavesdrop.wire import TranscriptionMessage
+
+from ..infra.langfuse import start_rewrite_observation
 
 
 @dataclass(frozen=True)
@@ -288,10 +294,33 @@ class RecordingFinalizer:
       prompt_path=prompt_path,
       rewrite_input=rewrite_input,
     )
-    rewrite_result = await self.rewrite_client.rewrite_text(
-      instructions=prompt.instructions,
+    provider = _rewrite_provider_type(rewrite_config)
+    model = _rewrite_model(rewrite_config)
+
+    with start_rewrite_observation(
+      provider=provider,
+      model=model,
+      prompt_path=prompt_path,
+      stream=stream,
       transcript=rewrite_input,
-    )
+    ) as observation:
+      try:
+        rewrite_result = await self.rewrite_client.rewrite_text(
+          instructions=prompt.instructions,
+          transcript=rewrite_input,
+        )
+      except Exception as exc:
+        if observation is not None:
+          _ = observation.update(level="ERROR", status_message=str(exc))
+        raise
+
+      if observation is not None:
+        _ = observation.update(
+          output=rewrite_result.text,
+          usage_details=_langfuse_usage_details(rewrite_result),
+          cost_details=_langfuse_cost_details(rewrite_result),
+        )
+
     self.logger.info(
       "rewrite succeeded",
       stream=stream,
@@ -317,3 +346,37 @@ class RecordingFinalizer:
 
 def _count_words(text: str) -> int:
   return len(text.split())
+
+
+def _rewrite_provider_type(config: LlmRewriteConfig) -> str:
+  return config.provider.type
+
+
+def _rewrite_model(config: LlmRewriteConfig) -> str:
+  provider = config.provider
+  if isinstance(provider, LiteRtRewriteProvider):
+    return provider.model_path
+
+  return provider.model
+
+
+def _langfuse_usage_details(rewrite_result: RewriteResult) -> dict[str, int] | None:
+  usage_details: dict[str, int] = {}
+
+  if rewrite_result.input_tokens is not None:
+    usage_details["input"] = rewrite_result.input_tokens
+
+  if rewrite_result.output_tokens is not None:
+    usage_details["output"] = rewrite_result.output_tokens
+
+  if not usage_details:
+    return None
+
+  return usage_details
+
+
+def _langfuse_cost_details(rewrite_result: RewriteResult) -> dict[str, float] | None:
+  if rewrite_result.cost is None:
+    return None
+
+  return {"total": float(rewrite_result.cost)}

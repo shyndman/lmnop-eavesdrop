@@ -4,15 +4,17 @@ import os
 from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
+from importlib import import_module
 from pathlib import Path
 from types import TracebackType
 from typing import Literal, NotRequired, Protocol, TypedDict, cast, final
 
-import litert_lm
 from pydantic_ai import Agent
 from pydantic_ai.run import AgentRunResult
 
 from active_listener.app.ports import RewriteResult
+
+from .langfuse import initialize_langfuse
 
 USER_CONFIG_ENV_VAR = "XDG_CONFIG_HOME"
 DEFAULT_USER_CONFIG_DIRNAME = ".config"
@@ -67,6 +69,29 @@ class LiteRtEngine(Protocol):
     *,
     messages: Sequence[LiteRtMessage] | None = None,
   ) -> LiteRtConversation: ...
+
+
+class LiteRtBackend(Protocol):
+  CPU: object
+
+
+class LiteRtEngineFactory(Protocol):
+  def __call__(self, model_path: str, *, backend: object) -> LiteRtEngine: ...
+
+
+class LiteRtModule(Protocol):
+  Backend: LiteRtBackend
+  Engine: LiteRtEngineFactory
+
+
+litert_lm: LiteRtModule | None = None
+
+
+def _load_litert_module() -> LiteRtModule:
+  global litert_lm
+  if litert_lm is None:
+    litert_lm = cast(LiteRtModule, cast(object, import_module("litert_lm")))
+  return litert_lm
 
 
 @dataclass(frozen=True)
@@ -140,7 +165,8 @@ class LiteRtRewriteClient:
 
   def _open_engine(self, model_path: str) -> LiteRtEngine:
     try:
-      return cast(LiteRtEngine, litert_lm.Engine(model_path, backend=litert_lm.Backend.CPU))
+      litert_module = _load_litert_module()
+      return litert_module.Engine(model_path, backend=litert_module.Backend.CPU)
     except Exception as exc:
       raise RewriteClientError(f"failed to initialize LiteRT rewrite model: {model_path}") from exc
 
@@ -149,7 +175,12 @@ class LiteRtRewriteClient:
 class PydanticAiRewriteClient:
   def __init__(self, *, model: str) -> None:
     self.model: str = model
-    self._agent: Agent[None, str] = Agent(output_type=str)
+    _ = initialize_langfuse()
+    self._agent: Agent[None, str] = Agent(
+      output_type=str,
+      instrument=True,
+      name="active-listener-rewrite",
+    )
 
   async def rewrite_text(
     self,

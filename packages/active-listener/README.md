@@ -33,6 +33,21 @@ The canonical runtime paths are:
 - config: `~/.config/eavesdrop/active-listener.yaml`
 - prompt override: `~/.config/eavesdrop/active-listener.rewrite.system.md`
 
+## Langfuse tracing
+
+Langfuse tracing is env-driven.
+
+- `task run-active-listener` already loads the repo-root `.env`.
+- the installed `active-listener.service` now reads `@REPO_ROOT@/.env` too, if that file exists.
+
+Set these variables to enable tracing:
+
+- `LANGFUSE_PUBLIC_KEY`
+- `LANGFUSE_SECRET_KEY`
+- `LANGFUSE_BASE_URL` when you are not using the default Langfuse cloud host
+
+When tracing is enabled, each rewrite finalization is wrapped in a Langfuse root observation. Pydantic AI rewrite providers also emit their nested model spans via `Agent.instrument_all()` + `instrument=True`, so the rewrite trace shows both the active-listener request context and the underlying model call.
+
 If you still have an older override at `~/.config/eavesdrop/active-listener.system.md` or `~/.config/active-listener/system.md`, move it to `~/.config/eavesdrop/active-listener.rewrite.system.md`.
 
 ## Rewrite model and prompt files

@@ -32,6 +32,7 @@ from active_listener.recording.spectrum import (
   QuantizedSpectrumFrame,
   SpectrumAnalyzer,
 )
+from .infra.langfuse import flush_langfuse
 from eavesdrop.client import EavesdropClient
 from eavesdrop.common import get_logger
 
@@ -205,6 +206,10 @@ async def run_service(
     raise
   finally:
     await resolved_dbus_service.close()
+    try:
+      flush_langfuse()
+    except Exception:
+      logger.exception("langfuse flush failed")
 
 
 async def emit_fatal_error_if_possible(

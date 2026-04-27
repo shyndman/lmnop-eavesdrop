@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
@@ -1564,6 +1564,40 @@ async def test_finalize_recording_emits_raw_text_when_rewrite_is_disabled() -> N
 async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+  observed_calls: list[dict[str, object]] = []
+  observed_updates: list[dict[str, object | None]] = []
+
+  @dataclass
+  class FakeLangfuseObservation:
+    def update(
+      self,
+      *,
+      input: object | None = None,
+      output: object | None = None,
+      metadata: object | None = None,
+      level: str | None = None,
+      status_message: str | None = None,
+      usage_details: dict[str, int] | None = None,
+      cost_details: dict[str, float] | None = None,
+    ) -> FakeLangfuseObservation:
+      observed_updates.append(
+        {
+          "input": input,
+          "output": output,
+          "metadata": metadata,
+          "level": level,
+          "status_message": status_message,
+          "usage_details": usage_details,
+          "cost_details": cost_details,
+        }
+      )
+      return self
+
+  @contextmanager
+  def fake_start_rewrite_observation(**kwargs: object) -> Iterator[FakeLangfuseObservation]:
+    observed_calls.append(kwargs)
+    yield FakeLangfuseObservation()
+
   client = FakeClient(
     flush_results=[
       _message(
@@ -1601,6 +1635,10 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
     "active_listener.infra.rewrite.load_active_listener_rewrite_prompt",
     _prompt_loader(_loaded_prompt_file(_prompt())),
   )
+  monkeypatch.setattr(
+    "active_listener.recording.finalizer.start_rewrite_observation",
+    fake_start_rewrite_observation,
+  )
 
   _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
   _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
@@ -1624,6 +1662,26 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
       word_count=2,
       duration_seconds=0.1,
     )
+  ]
+  assert observed_calls == [
+    {
+      "provider": "litert",
+      "model": "/tmp/rewrite/model.litertlm",
+      "prompt_path": "/tmp/rewrite/system.md",
+      "stream": "stream-1",
+      "transcript": "alpha",
+    }
+  ]
+  assert observed_updates == [
+    {
+      "input": None,
+      "output": "rewritten alpha",
+      "metadata": None,
+      "level": None,
+      "status_message": None,
+      "usage_details": {"input": 12, "output": 4},
+      "cost_details": {"total": 0.00012},
+    }
   ]
   assert harness.logger.info_records[-1] == LogRecord(
     event="text emitted",
@@ -1716,6 +1774,38 @@ async def test_finalize_recording_serializes_command_text_runs_for_rewrite(
 async def test_finalize_recording_drops_text_and_signals_pipeline_failure_when_rewrite_fails(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+  observed_updates: list[dict[str, object | None]] = []
+
+  @dataclass
+  class FakeLangfuseObservation:
+    def update(
+      self,
+      *,
+      input: object | None = None,
+      output: object | None = None,
+      metadata: object | None = None,
+      level: str | None = None,
+      status_message: str | None = None,
+      usage_details: dict[str, int] | None = None,
+      cost_details: dict[str, float] | None = None,
+    ) -> FakeLangfuseObservation:
+      observed_updates.append(
+        {
+          "input": input,
+          "output": output,
+          "metadata": metadata,
+          "level": level,
+          "status_message": status_message,
+          "usage_details": usage_details,
+          "cost_details": cost_details,
+        }
+      )
+      return self
+
+  @contextmanager
+  def fake_start_rewrite_observation(**_kwargs: object) -> Iterator[FakeLangfuseObservation]:
+    yield FakeLangfuseObservation()
+
   client = FakeClient(
     flush_results=[
       _message(
@@ -1734,12 +1824,27 @@ async def test_finalize_recording_drops_text_and_signals_pipeline_failure_when_r
     "active_listener.infra.rewrite.load_active_listener_rewrite_prompt",
     _prompt_loader(_loaded_prompt_file(_prompt())),
   )
+  monkeypatch.setattr(
+    "active_listener.recording.finalizer.start_rewrite_observation",
+    fake_start_rewrite_observation,
+  )
 
   _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
   _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
   await harness.service.wait_for_background_tasks()
 
   assert harness.emitter.emitted == []
+  assert observed_updates == [
+    {
+      "input": None,
+      "output": None,
+      "metadata": None,
+      "level": "ERROR",
+      "status_message": "model failed",
+      "usage_details": None,
+      "cost_details": None,
+    }
+  ]
   assert harness.dbus_service.signals[-1] == (
     "PipelineFailed",
     ("rewrite_with_llm", "model failed"),
