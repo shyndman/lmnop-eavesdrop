@@ -23,6 +23,23 @@ WORKDIR /app/server
 COPY server/pyproject.toml ./pyproject.toml
 COPY server/uv.lock ./uv.lock
 COPY server/src/ ./src
+RUN python - <<'PY'
+from pathlib import Path
+
+path = Path("pyproject.toml")
+content = path.read_text()
+replacements = {
+  'eavesdrop-wire = { workspace = true }': 'eavesdrop-wire = { path = "../wire", editable = true }',
+  'eavesdrop-common = { workspace = true }': 'eavesdrop-common = { path = "../common", editable = true }',
+}
+
+for old, new in replacements.items():
+  if old not in content:
+    raise SystemExit(f"Missing expected source entry: {old}")
+  content = content.replace(old, new)
+
+path.write_text(content)
+PY
 # The ROCm base image already provides the runtime Python environment in /opt/venv.
 # Sync into that active environment so the app sees the preinstalled GPU stack.
 # Keep the base image packages in place: torch/ctranslate2 are installed there, not in pyproject.toml.
