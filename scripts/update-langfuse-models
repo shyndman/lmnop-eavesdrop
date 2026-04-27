@@ -1,0 +1,575 @@
+#!/usr/bin/env -S uv run --script
+#
+# /// script
+# requires-python = ">=3.12.3,<3.13"
+# dependencies = ["python-dotenv"]
+# ///
+
+from __future__ import annotations
+
+import argparse
+import base64
+import json
+import os
+import re
+from decimal import Decimal
+from pathlib import Path
+from typing import TypedDict, cast
+from urllib.request import Request, urlopen
+
+from dotenv import load_dotenv
+
+MODELS_API_URL = "https://models.dev/api.json"
+LLM_CONNECTIONS_PATH = "/api/public/llm-connections"
+MODELS_PATH = "/api/public/models"
+OPENROUTER_PROVIDER_KEY = "openrouter"
+OPENROUTER_PROVIDER_NAME = "OpenRouter"
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+SYNC_TIER_NAME = "models.dev sync"
+TOKENS_UNIT = "TOKENS"
+USER_AGENT = "eavesdrop-langfuse-model-sync/0.2"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+ONE_MILLION = Decimal("1000000")
+
+
+class SourceCostEntry(TypedDict, total=False):
+  input: float
+  output: float
+
+
+class SourceModelEntry(TypedDict, total=False):
+  id: str
+  cost: SourceCostEntry
+
+
+class ProviderEntry(TypedDict):
+  id: str
+  models: dict[str, SourceModelEntry]
+
+
+class LlmConnection(TypedDict):
+  id: str
+  provider: str
+  adapter: str
+  baseURL: str | None
+  customModels: list[str]
+  withDefaultModels: bool
+  extraHeaderKeys: list[str]
+  config: dict[str, object] | None
+  updatedAt: str
+
+
+class LlmConnectionsResponse(TypedDict):
+  data: list[LlmConnection]
+
+
+class ExistingPricingTier(TypedDict, total=False):
+  id: str
+  name: str
+  isDefault: bool
+  priority: int
+  conditions: list[object]
+  prices: dict[str, float]
+
+
+class ExistingModelDefinition(TypedDict, total=False):
+  id: str
+  modelName: str
+  matchPattern: str
+  unit: str | None
+  tokenizerId: str | None
+  tokenizerConfig: object | None
+  startDate: str | None
+  isLangfuseManaged: bool
+  pricingTiers: list[ExistingPricingTier]
+  createdAt: str
+
+
+class PaginationMeta(TypedDict):
+  page: int
+  totalPages: int
+
+
+class PaginatedModelsResponse(TypedDict):
+  data: list[ExistingModelDefinition]
+  meta: PaginationMeta
+
+
+class PricingTierInput(TypedDict):
+  name: str
+  isDefault: bool
+  priority: int
+  conditions: list[object]
+  prices: dict[str, float]
+
+
+class CreateModelRequest(TypedDict, total=False):
+  modelName: str
+  matchPattern: str
+  unit: str
+  pricingTiers: list[PricingTierInput]
+
+
+def parse_args() -> argparse.Namespace:
+  parser = argparse.ArgumentParser()
+  parser.add_argument("--dry-run", action="store_true")
+  return parser.parse_args()
+
+
+def require_env(name: str) -> str:
+  value = os.getenv(name)
+  if value:
+    return value
+
+  raise RuntimeError(f"Missing required environment variable: {name}")
+
+
+def get_langfuse_base_url() -> str:
+  return (os.getenv("LANGFUSE_BASE_URL") or os.getenv("LANGFUSE_HOST") or "").rstrip("/")
+
+
+def build_langfuse_headers() -> dict[str, str]:
+  public_key = require_env("LANGFUSE_PUBLIC_KEY")
+  secret_key = require_env("LANGFUSE_SECRET_KEY")
+  token = base64.b64encode(f"{public_key}:{secret_key}".encode("utf-8")).decode("ascii")
+  return {
+    "Accept": "application/json",
+    "Authorization": f"Basic {token}",
+    "Content-Type": "application/json",
+    "User-Agent": USER_AGENT,
+  }
+
+
+def fetch_json(url: str, *, headers: dict[str, str], method: str = "GET", payload: object | None = None) -> object:
+  request_data = None if payload is None else json.dumps(payload).encode("utf-8")
+  request = Request(url, data=request_data, headers=headers, method=method)
+  with urlopen(request, timeout=30) as response:
+    return json.load(response)
+
+
+def fetch_provider_map() -> dict[str, ProviderEntry]:
+  payload = fetch_json(
+    MODELS_API_URL,
+    headers={
+      "Accept": "application/json",
+      "User-Agent": USER_AGENT,
+    },
+  )
+  if not isinstance(payload, dict):
+    raise TypeError("models.dev API returned a non-object payload")
+
+  return cast(dict[str, ProviderEntry], payload)
+
+
+def build_custom_models(provider_map: dict[str, ProviderEntry]) -> list[str]:
+  if OPENROUTER_PROVIDER_KEY not in provider_map:
+    raise KeyError(f"Provider not found: {OPENROUTER_PROVIDER_KEY}")
+
+  openrouter_provider = provider_map[OPENROUTER_PROVIDER_KEY]
+  return sorted({model["id"] for model in openrouter_provider["models"].values()})
+
+
+def exact_match_pattern(model_name: str) -> str:
+  return f"^{re.escape(model_name)}$"
+
+
+def normalize_price_per_token(price_per_million: float) -> float:
+  return float(Decimal(str(price_per_million)) / ONE_MILLION)
+
+
+def build_desired_model_definitions(provider_map: dict[str, ProviderEntry]) -> dict[str, CreateModelRequest]:
+  if OPENROUTER_PROVIDER_KEY not in provider_map:
+    raise KeyError(f"Provider not found: {OPENROUTER_PROVIDER_KEY}")
+
+  desired: dict[str, CreateModelRequest] = {}
+  for model in sorted(provider_map[OPENROUTER_PROVIDER_KEY]["models"].values(), key=lambda item: item["id"]):
+    cost = model.get("cost")
+    if cost is None:
+      continue
+
+    prices: dict[str, float] = {}
+    if "input" in cost:
+      prices["input"] = normalize_price_per_token(cost["input"])
+    if "output" in cost:
+      prices["output"] = normalize_price_per_token(cost["output"])
+    if not prices:
+      continue
+
+    model_name = model["id"]
+    desired[model_name] = {
+      "modelName": model_name,
+      "matchPattern": exact_match_pattern(model_name),
+      "unit": TOKENS_UNIT,
+      "pricingTiers": [
+        {
+          "name": SYNC_TIER_NAME,
+          "isDefault": True,
+          "priority": 0,
+          "conditions": [],
+          "prices": prices,
+        }
+      ],
+    }
+
+  return desired
+
+
+def fetch_openrouter_connection(base_url: str, headers: dict[str, str]) -> LlmConnection | None:
+  payload = fetch_json(
+    f"{base_url}{LLM_CONNECTIONS_PATH}?limit=100&page=1",
+    headers=headers,
+  )
+  if not isinstance(payload, dict):
+    raise TypeError("Langfuse returned a non-object llm-connections payload")
+
+  response = cast(LlmConnectionsResponse, payload)
+  matches = [
+    connection
+    for connection in response["data"]
+    if connection["provider"] == OPENROUTER_PROVIDER_NAME
+  ]
+  if len(matches) > 1:
+    raise RuntimeError("Expected at most one OpenRouter LLM connection")
+
+  connection = matches[0] if matches else None
+  if connection is not None and connection["extraHeaderKeys"]:
+    raise RuntimeError(
+      "Refusing to overwrite an OpenRouter connection with hidden extra headers"
+    )
+
+  return connection
+
+
+def build_connection_payload(custom_models: list[str], connection: LlmConnection | None) -> dict[str, object]:
+  payload: dict[str, object] = {
+    "provider": OPENROUTER_PROVIDER_NAME,
+    "adapter": connection["adapter"] if connection is not None else "openai",
+    "secretKey": require_env("OPENROUTER_API_KEY"),
+    "baseURL": (
+      connection["baseURL"]
+      if connection is not None and connection["baseURL"] is not None
+      else OPENROUTER_BASE_URL
+    ),
+    "customModels": custom_models,
+    "withDefaultModels": False,
+  }
+  if connection is not None and connection["config"] is not None:
+    payload["config"] = connection["config"]
+
+  return payload
+
+
+def normalize_connection_state(payload: dict[str, object]) -> dict[str, object]:
+  normalized: dict[str, object] = {
+    "provider": payload["provider"],
+    "adapter": payload["adapter"],
+    "baseURL": payload["baseURL"],
+    "customModels": sorted(cast(list[str], payload["customModels"])),
+    "withDefaultModels": payload["withDefaultModels"],
+  }
+  if "config" in payload:
+    normalized["config"] = payload["config"]
+
+  return normalized
+
+
+def upsert_openrouter_connection(base_url: str, headers: dict[str, str], payload: dict[str, object]) -> LlmConnection:
+  response = fetch_json(
+    f"{base_url}{LLM_CONNECTIONS_PATH}",
+    headers=headers,
+    method="PUT",
+    payload=payload,
+  )
+  if not isinstance(response, dict):
+    raise TypeError("Langfuse returned a non-object llm connection upsert response")
+
+  return cast(LlmConnection, response)
+
+
+def fetch_all_model_definitions(base_url: str, headers: dict[str, str]) -> list[ExistingModelDefinition]:
+  models: list[ExistingModelDefinition] = []
+  page = 1
+  while True:
+    payload = fetch_json(
+      f"{base_url}{MODELS_PATH}?limit=100&page={page}",
+      headers=headers,
+    )
+    if not isinstance(payload, dict):
+      raise TypeError("Langfuse returned a non-object models payload")
+
+    response = cast(PaginatedModelsResponse, payload)
+    models.extend(response["data"])
+    if page >= response["meta"]["totalPages"]:
+      return models
+    page += 1
+
+
+def has_sync_tier(model: ExistingModelDefinition) -> bool:
+  return any(tier.get("name") == SYNC_TIER_NAME for tier in model.get("pricingTiers", []))
+
+
+def is_script_managed_model(model: ExistingModelDefinition) -> bool:
+  if model.get("isLangfuseManaged", True):
+    return False
+  model_name = model.get("modelName")
+  if not isinstance(model_name, str) or model.get("matchPattern") != exact_match_pattern(model_name):
+    return False
+  if model.get("unit") != TOKENS_UNIT:
+    return False
+
+  pricing_tiers = model.get("pricingTiers", [])
+  if len(pricing_tiers) != 1:
+    return False
+
+  tier = pricing_tiers[0]
+  return (
+    tier.get("name") == SYNC_TIER_NAME
+    and tier.get("isDefault") is True
+    and tier.get("priority") == 0
+    and tier.get("conditions") == []
+  )
+
+
+def index_custom_models_by_name(models: list[ExistingModelDefinition]) -> dict[str, ExistingModelDefinition]:
+  custom_models = [model for model in models if not model.get("isLangfuseManaged", True)]
+  indexed: dict[str, ExistingModelDefinition] = {}
+  duplicates: list[str] = []
+  for model in sorted(custom_models, key=lambda item: cast(str, item.get("modelName", ""))):
+    model_name = model.get("modelName")
+    if not isinstance(model_name, str):
+      raise RuntimeError("Encountered a custom model without a modelName")
+    if model_name in indexed:
+      duplicates.append(model_name)
+      continue
+    indexed[model_name] = model
+
+  if duplicates:
+    raise RuntimeError(
+      "Duplicate custom model definitions exist: " + ", ".join(sorted(set(duplicates)))
+    )
+
+  return indexed
+
+
+def ensure_safe_custom_models(
+  custom_models_by_name: dict[str, ExistingModelDefinition],
+  desired_model_names: set[str],
+) -> None:
+  for model in custom_models_by_name.values():
+    model_name = cast(str, model["modelName"])
+    if has_sync_tier(model) and not is_script_managed_model(model):
+      raise RuntimeError(
+        f"Custom model definition uses sync marker but is not script-managed: {model_name}"
+      )
+    if model_name in desired_model_names and not is_script_managed_model(model):
+      raise RuntimeError(
+        f"Custom model definition already exists for {model_name}; refusing to create a duplicate"
+      )
+
+
+def decimal_string(value: float) -> str:
+  text = format(Decimal(str(value)), "f")
+  if "." in text:
+    text = text.rstrip("0").rstrip(".")
+  return text or "0"
+
+
+def normalize_price_map(prices: dict[str, float]) -> dict[str, str]:
+  normalized: dict[str, str] = {}
+  for key in sorted(prices):
+    normalized[key] = decimal_string(prices[key])
+  return normalized
+
+
+def desired_model_signature(model: CreateModelRequest) -> dict[str, object]:
+  tier = model["pricingTiers"][0]
+  return {
+    "modelName": model["modelName"],
+    "matchPattern": model["matchPattern"],
+    "unit": model["unit"],
+    "pricingTiers": [
+      {
+        "name": tier["name"],
+        "isDefault": tier["isDefault"],
+        "priority": tier["priority"],
+        "conditions": tier["conditions"],
+        "prices": normalize_price_map(tier["prices"]),
+      }
+    ],
+  }
+
+
+def existing_model_signature(model: ExistingModelDefinition) -> dict[str, object]:
+  tier = model["pricingTiers"][0]
+  return {
+    "modelName": model["modelName"],
+    "matchPattern": model["matchPattern"],
+    "unit": model.get("unit"),
+    "pricingTiers": [
+      {
+        "name": tier["name"],
+        "isDefault": tier["isDefault"],
+        "priority": tier["priority"],
+        "conditions": tier["conditions"],
+        "prices": normalize_price_map(tier["prices"]),
+      }
+    ],
+  }
+
+
+def create_model_definition(base_url: str, headers: dict[str, str], payload: CreateModelRequest) -> ExistingModelDefinition:
+  response = fetch_json(
+    f"{base_url}{MODELS_PATH}",
+    headers=headers,
+    method="POST",
+    payload=payload,
+  )
+  if not isinstance(response, dict):
+    raise TypeError("Langfuse returned a non-object model create response")
+
+  return cast(ExistingModelDefinition, response)
+
+
+def delete_model_definition(base_url: str, headers: dict[str, str], model_id: str) -> None:
+  _ = fetch_json(
+    f"{base_url}{MODELS_PATH}/{model_id}",
+    headers=headers,
+    method="DELETE",
+  )
+
+
+def sync_connection(
+  *,
+  base_url: str,
+  headers: dict[str, str],
+  custom_models: list[str],
+  current_connection: LlmConnection | None,
+  apply: bool,
+) -> dict[str, object]:
+  desired_payload = build_connection_payload(custom_models, current_connection)
+  desired_state = normalize_connection_state(desired_payload)
+  current_state = None
+  if current_connection is not None:
+    current_payload: dict[str, object] = {
+      "provider": current_connection["provider"],
+      "adapter": current_connection["adapter"],
+      "baseURL": current_connection["baseURL"],
+      "customModels": current_connection["customModels"],
+      "withDefaultModels": current_connection["withDefaultModels"],
+    }
+    if current_connection["config"] is not None:
+      current_payload["config"] = current_connection["config"]
+    current_state = normalize_connection_state(current_payload)
+
+  will_update = current_state != desired_state
+  result: dict[str, object] = {
+    "willUpdate": will_update,
+    "customModelsCount": len(custom_models),
+  }
+  if current_connection is not None:
+    result["id"] = current_connection["id"]
+    result["updatedAt"] = current_connection["updatedAt"]
+
+  if will_update and apply:
+    updated_connection = upsert_openrouter_connection(base_url, headers, desired_payload)
+    result["id"] = updated_connection["id"]
+    result["updatedAt"] = updated_connection["updatedAt"]
+
+  return result
+
+
+def sync_model_definitions(
+  *,
+  base_url: str,
+  headers: dict[str, str],
+  desired_models: dict[str, CreateModelRequest],
+  existing_models: list[ExistingModelDefinition],
+  apply: bool,
+) -> dict[str, object]:
+  custom_models_by_name = index_custom_models_by_name(existing_models)
+  ensure_safe_custom_models(custom_models_by_name, set(desired_models))
+
+  existing_script_managed_by_name = {
+    name: model
+    for name, model in custom_models_by_name.items()
+    if is_script_managed_model(model)
+  }
+
+  create_names: list[str] = []
+  update_names: list[str] = []
+  unchanged_names: list[str] = []
+  for model_name in sorted(desired_models):
+    existing = existing_script_managed_by_name.get(model_name)
+    if existing is None:
+      create_names.append(model_name)
+      continue
+    if existing_model_signature(existing) != desired_model_signature(desired_models[model_name]):
+      update_names.append(model_name)
+      continue
+    unchanged_names.append(model_name)
+
+  delete_names = sorted(
+    name for name in existing_script_managed_by_name if name not in desired_models
+  )
+
+  if apply:
+    for model_name in delete_names + update_names:
+      delete_model_definition(base_url, headers, cast(str, existing_script_managed_by_name[model_name]["id"]))
+    for model_name in create_names + update_names:
+      create_model_definition(base_url, headers, desired_models[model_name])
+
+  return {
+    "desiredCount": len(desired_models),
+    "existingManagedCount": len(existing_script_managed_by_name),
+    "create": create_names,
+    "update": update_names,
+    "delete": delete_names,
+    "unchangedCount": len(unchanged_names),
+  }
+
+
+def main() -> int:
+  args = parse_args()
+  _ = load_dotenv(REPO_ROOT / ".env", override=True)
+
+  langfuse_base_url = get_langfuse_base_url()
+  if not langfuse_base_url:
+    raise RuntimeError("Missing LANGFUSE_BASE_URL or LANGFUSE_HOST")
+
+  headers = build_langfuse_headers()
+  provider_map = fetch_provider_map()
+  custom_models = build_custom_models(provider_map)
+  desired_models = build_desired_model_definitions(provider_map)
+  current_connection = fetch_openrouter_connection(langfuse_base_url, headers)
+  existing_models = fetch_all_model_definitions(langfuse_base_url, headers)
+
+  connection_result = sync_connection(
+    base_url=langfuse_base_url,
+    headers=headers,
+    custom_models=custom_models,
+    current_connection=current_connection,
+    apply=not args.dry_run,
+  )
+  model_result = sync_model_definitions(
+    base_url=langfuse_base_url,
+    headers=headers,
+    desired_models=desired_models,
+    existing_models=existing_models,
+    apply=not args.dry_run,
+  )
+
+  print(
+    json.dumps(
+      {
+        "dryRun": args.dry_run,
+        "connection": connection_result,
+        "modelDefinitions": model_result,
+      },
+      indent=2,
+    )
+  )
+  return 0
+
+
+if __name__ == "__main__":
+  raise SystemExit(main())
