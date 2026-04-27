@@ -67,6 +67,9 @@ class FakeDbusService:
   async def recording_aborted(self, reason: str) -> None:
     _ = reason
 
+  async def audio_archive_failed(self, reason: str) -> None:
+    self.signals.append(("AudioArchiveFailed", reason))
+
   async def pipeline_failed(self, step: str, reason: str) -> None:
     _ = step
     _ = reason

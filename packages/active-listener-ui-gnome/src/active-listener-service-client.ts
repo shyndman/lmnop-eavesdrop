@@ -6,6 +6,7 @@ import {
   resolveStartOrFinishCommandResponse,
   type IndicatorState,
 } from './recording-menu-control.js';
+import { resolveActiveListenerServiceErrorSignal } from './active-listener-service-error.js';
 import type { TranscriptRun } from './transcript-attributes.js';
 
 const DBUS_BUS_NAME = 'ca.lmnop.Eavesdrop.ActiveListener';
@@ -15,7 +16,6 @@ const DBUS_STATE_PROPERTY = 'State';
 const DBUS_START_OR_FINISH_RECORDING_METHOD = 'StartOrFinishRecording';
 const DBUS_TRANSCRIPTION_UPDATED_SIGNAL = 'TranscriptionUpdated';
 const DBUS_SPECTRUM_UPDATED_SIGNAL = 'SpectrumUpdated';
-const DBUS_PIPELINE_FAILED_SIGNAL = 'PipelineFailed';
 const DBUS_PROXY_FLAGS = Gio.DBusProxyFlags.DO_NOT_AUTO_START_AT_CONSTRUCTION;
 
 type DbusTextRun = [string, boolean, boolean];
@@ -166,14 +166,16 @@ export class ActiveListenerServiceClient {
       return;
     }
 
-    if (signalName !== DBUS_PIPELINE_FAILED_SIGNAL) {
+    const errorSignal = resolveActiveListenerServiceErrorSignal(
+      signalName,
+      parameters.deepUnpack(),
+    );
+    if (errorSignal === null) {
       return;
     }
 
-    const [step, reason] = parameters.deepUnpack() as [string, string];
-    const detail = `${step}: ${reason}`;
-    console.error(`Active Listener pipeline failed ${detail}`);
-    this.events.onError('Active Listener pipeline failed', detail);
+    console.error(`${errorSignal.title} ${errorSignal.detail}`);
+    this.events.onError(errorSignal.title, errorSignal.detail);
   }
 
   private handleTranscriptionUpdated(parameters: GLib.Variant): void {

@@ -25,7 +25,7 @@ from active_listener.infra.dbus import AppStateService
 from active_listener.infra.emitter import TextEmitter
 from active_listener.infra.keyboard import KeyboardControlEvent, KeyboardEventKind, KeyboardInput
 from active_listener.recording.finalizer import RecordingFinalizer
-from active_listener.recording.session import RecordingSession
+from active_listener.recording.session import RecordingAudioBuffer, RecordingSession
 from active_listener.recording.spectrum import SpectrumAnalyzer
 from eavesdrop.client import (
   ConnectedEvent,
@@ -64,6 +64,7 @@ class ActiveListenerService:
   rewrite_client: ActiveListenerRewriteClient
   history_store: ActiveListenerTranscriptHistoryStore
   dbus_service: AppStateService
+  recording_audio_buffer: RecordingAudioBuffer
   spectrum_analyzer: SpectrumRuntime = field(default_factory=_build_noop_spectrum_analyzer)
   phase: ForegroundPhase = ForegroundPhase.IDLE
   disconnect_generation: int = 0
@@ -77,6 +78,7 @@ class ActiveListenerService:
       keyboard=self.keyboard,
       client=self.client,
       logger=self.logger,
+      audio_buffer=self.recording_audio_buffer,
     )
     self._recording_finalizer = RecordingFinalizer(
       config=self.config,
@@ -194,13 +196,13 @@ class ActiveListenerService:
       return decision
 
     self.phase = ForegroundPhase.IDLE
-    reducer_state = await self._recording_session.finish_recording()
+    finished_recording = await self._recording_session.finish_recording()
     await self._stop_spectrum_analysis()
     await self.dbus_service.set_state(self.phase)
     finalization_task = asyncio.create_task(
       self._recording_finalizer.finalize_recording(
         disconnect_generation=self.disconnect_generation,
-        reducer_state=reducer_state,
+        finished_recording=finished_recording,
       )
     )
     self._background_tasks.add(finalization_task)

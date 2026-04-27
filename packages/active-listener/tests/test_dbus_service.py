@@ -143,6 +143,10 @@ async def test_interface_contract_names_match_spec() -> None:
     SignalDescriptor,
     ActiveListenerDbusInterface.__dict__["pipeline_failed"],
   )
+  audio_archive_failed_signal = cast(
+    SignalDescriptor,
+    ActiveListenerDbusInterface.__dict__["audio_archive_failed"],
+  )
   fatal_error_signal = cast(
     SignalDescriptor,
     ActiveListenerDbusInterface.__dict__["fatal_error"],
@@ -162,6 +166,7 @@ async def test_interface_contract_names_match_spec() -> None:
   assert transcription_updated_signal.signal_name == "TranscriptionUpdated"
   assert spectrum_updated_signal.signal_name == "SpectrumUpdated"
   assert recording_aborted_signal.signal_name == "RecordingAborted"
+  assert audio_archive_failed_signal.signal_name == "AudioArchiveFailed"
   assert pipeline_failed_signal.signal_name == "PipelineFailed"
   assert fatal_error_signal.signal_name == "FatalError"
   assert reconnecting_signal.signal_name == "Reconnecting"
@@ -184,6 +189,7 @@ async def test_noop_service_accepts_spectrum_updates() -> None:
   service = NoopDbusService()
 
   await service.spectrum_updated(bytes(range(50)))
+  await service.audio_archive_failed("disk full")
 
 
 @requires_user_bus
@@ -215,6 +221,7 @@ async def test_property_is_read_only_over_dbus_and_empty_signals_emit() -> None:
       proxy.transcription_updated,
     ).__aiter__()
     spectrum_updated_iter = cast(BytesSignalProxy, proxy.spectrum_updated).__aiter__()
+    audio_archive_failed_iter = cast(StringSignalProxy, proxy.audio_archive_failed).__aiter__()
     pipeline_failed_iter = cast(PairSignalProxy, proxy.pipeline_failed).__aiter__()
     reconnecting_iter = cast(EmptySignalProxy, proxy.reconnecting).__aiter__()
     reconnected_iter = cast(EmptySignalProxy, proxy.reconnected).__aiter__()
@@ -223,6 +230,9 @@ async def test_property_is_read_only_over_dbus_and_empty_signals_emit() -> None:
       receive_next_transcription_update(transcription_updated_iter)
     )
     spectrum_updated_task = asyncio.create_task(receive_next_bytes_signal(spectrum_updated_iter))
+    audio_archive_failed_task = asyncio.create_task(
+      receive_next_string_signal(audio_archive_failed_iter)
+    )
     pipeline_failed_task = asyncio.create_task(receive_next_pair_signal(pipeline_failed_iter))
     reconnecting_task = asyncio.create_task(receive_next_signal(reconnecting_iter))
     reconnected_task = asyncio.create_task(receive_next_signal(reconnected_iter))
@@ -237,6 +247,7 @@ async def test_property_is_read_only_over_dbus_and_empty_signals_emit() -> None:
       ]
     )
     await service.spectrum_updated(bytes(range(50)))
+    await service.audio_archive_failed("disk full")
     await service.pipeline_failed("rewrite_with_llm", "timed out")
     await service.reconnecting()
     await service.reconnected()
@@ -250,6 +261,7 @@ async def test_property_is_read_only_over_dbus_and_empty_signals_emit() -> None:
     spectrum_payload = await asyncio.wait_for(spectrum_updated_task, timeout=2)
     assert isinstance(spectrum_payload, bytes)
     assert spectrum_payload == bytes(range(50))
+    assert await asyncio.wait_for(audio_archive_failed_task, timeout=2) == "disk full"
     assert await asyncio.wait_for(pipeline_failed_task, timeout=2) == (
       "rewrite_with_llm",
       "timed out",
@@ -317,11 +329,12 @@ async def test_dbus_introspection_matches_locked_contract() -> None:
     assert '<signal name="SpectrumUpdated">' in introspection_xml
     assert '<arg type="ay"' in interface_block
     assert '<signal name="RecordingAborted">' in introspection_xml
+    assert '<signal name="AudioArchiveFailed">' in introspection_xml
     assert '<signal name="PipelineFailed">' in introspection_xml
     assert '<signal name="FatalError">' in introspection_xml
     assert '<signal name="Reconnecting">' in introspection_xml
     assert '<signal name="Reconnected">' in introspection_xml
-    assert interface_block.count("<signal name=") == 7
+    assert interface_block.count("<signal name=") == 8
   finally:
     await service.close()
 

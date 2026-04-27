@@ -63,6 +63,10 @@ def normalize_active_listener_config_paths(
   config_dir: Path,
 ) -> dict[str, object]:
   normalized_config = dict(config_data)
+  normalized_config["ffmpeg_path"] = normalize_config_path_value(
+    normalized_config.get("ffmpeg_path"),
+    config_dir=config_dir,
+  )
   raw_rewrite_config = normalized_config.get("llm_rewrite")
   if not isinstance(raw_rewrite_config, Mapping):
     return normalized_config

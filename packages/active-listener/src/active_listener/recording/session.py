@@ -12,6 +12,8 @@ from structlog.stdlib import BoundLogger
 from active_listener.app.ports import (
   ActiveListenerClient,
   ActiveListenerRuntimeError,
+  CapturedRecordingAudio,
+  FinishedRecording,
 )
 from active_listener.infra.keyboard import KeyboardInput, RecordingGrabRelease
 from active_listener.recording.reducer import (
@@ -24,9 +26,37 @@ from active_listener.recording.reducer import (
   build_transcription_update,
   reduce_new_segments,
 )
+from active_listener.recording.spectrum import SAMPLE_RATE_HZ
 from eavesdrop.wire import TranscriptionMessage
 
 HOLD_THRESHOLD_S = 0.250
+RECORDING_CHANNEL_COUNT = 1
+
+
+@dataclass
+class RecordingAudioBuffer:
+  _chunks: list[bytes] = field(default_factory=list)
+  _active: bool = False
+
+  def start(self) -> None:
+    self._chunks.clear()
+    self._active = True
+
+  def append(self, chunk: bytes) -> None:
+    if not self._active:
+      return
+
+    self._chunks.append(chunk)
+
+  def finish(self) -> bytes:
+    combined = b"".join(self._chunks)
+    self._chunks.clear()
+    self._active = False
+    return combined
+
+  def discard(self) -> None:
+    self._chunks.clear()
+    self._active = False
 
 
 @dataclass
@@ -42,6 +72,7 @@ class RecordingSession:
   keyboard: KeyboardInput
   client: ActiveListenerClient
   logger: BoundLogger
+  audio_buffer: RecordingAudioBuffer
   _connection_last_id: int | None = None
   _recording_reducer_state: RecordingReducerState | None = None
   _recording_grab_stack: AsyncExitStack | None = None
@@ -76,6 +107,7 @@ class RecordingSession:
     self._release_recording_grab = release_recording_grab
     self._recording_started_monotonic_s = time.monotonic()
     self._recording_reducer_state = RecordingReducerState(last_id=self._connection_last_id)
+    self.audio_buffer.start()
     self._last_transcription_runs = []
     self.logger.debug(
       "recording session started",
@@ -85,16 +117,25 @@ class RecordingSession:
   async def stop_recording(self) -> None:
     await self._exit_recording(close_open_command_span=False)
 
-  async def finish_recording(self) -> RecordingReducerState:
+  async def finish_recording(self) -> FinishedRecording:
     reducer_state = self._require_recording_reducer_state()
+    captured_audio = CapturedRecordingAudio(
+      pcm_f32le=self.audio_buffer.finish(),
+      sample_rate_hz=SAMPLE_RATE_HZ,
+      channels=RECORDING_CHANNEL_COUNT,
+    )
     await self._exit_recording(close_open_command_span=True)
     self.logger.debug(
       "recording session finished",
       last_id=reducer_state.last_id,
       committed_word_count=len(reducer_state.completed_words),
       closed_command_span_count=len(reducer_state.closed_command_spans),
+      captured_audio_bytes=len(captured_audio.pcm_f32le),
     )
-    return reducer_state
+    return FinishedRecording(
+      reducer_state=reducer_state,
+      captured_audio=captured_audio,
+    )
 
   async def handle_capslock_down(self, received_monotonic_s: float) -> None:
     reducer_state = self._require_recording_reducer_state()
@@ -230,6 +271,7 @@ class RecordingSession:
           TimeSpan(start_s=reducer_state.open_command_start_s, end_s=recording_end_s)
         )
       reducer_state.open_command_start_s = None
+    self.audio_buffer.discard()
 
     self._release_recording_grab = None
     self._recording_grab_stack = None

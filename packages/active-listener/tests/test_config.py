@@ -20,6 +20,8 @@ def _write_config(
   *,
   prompt_path: str = "prompts/rewrite_prompt.md",
   provider_block: str | None = None,
+  ffmpeg_path: str | None = None,
+  include_ffmpeg_path: bool = False,
 ) -> None:
   path.parent.mkdir(parents=True, exist_ok=True)
   resolved_provider_block = _litert_provider_block() if provider_block is None else provider_block
@@ -28,6 +30,13 @@ def _write_config(
     f'  prompt_path: "{prompt_path}"',
     *resolved_provider_block.splitlines(),
   ]
+  ffmpeg_line = (
+    [f'ffmpeg_path: "{ffmpeg_path}"']
+    if include_ffmpeg_path and ffmpeg_path is not None
+    else ["ffmpeg_path: null"]
+    if include_ffmpeg_path
+    else []
+  )
   _ = path.write_text(
     "\n".join(
       [
@@ -35,6 +44,7 @@ def _write_config(
         'host: "config.local"',
         "port: 9090",
         'audio_device: "config-device"',
+        *ffmpeg_line,
         "",
         *llm_rewrite_lines,
         "",
@@ -135,6 +145,31 @@ def test_load_active_listener_config_preserves_absolute_rewrite_paths(tmp_path: 
   )
 
 
+def test_load_active_listener_config_resolves_relative_ffmpeg_path_against_config_dir(
+  tmp_path: Path,
+) -> None:
+  config_path = tmp_path / "configs" / "active-listener.yaml"
+  _write_config(config_path, ffmpeg_path="bin/ffmpeg", include_ffmpeg_path=True)
+
+  config = load_active_listener_config(config_path=str(config_path), overrides={})
+
+  assert config.ffmpeg_path == str(config_path.parent / "bin" / "ffmpeg")
+
+
+def test_load_active_listener_config_preserves_absolute_ffmpeg_path(tmp_path: Path) -> None:
+  ffmpeg_path = tmp_path / "bin" / "ffmpeg"
+  config_path = tmp_path / "configs" / "active-listener.yaml"
+  _write_config(
+    config_path,
+    ffmpeg_path=str(ffmpeg_path),
+    include_ffmpeg_path=True,
+  )
+
+  config = load_active_listener_config(config_path=str(config_path), overrides={})
+
+  assert config.ffmpeg_path == str(ffmpeg_path)
+
+
 def test_load_active_listener_config_uses_default_xdg_path_for_relative_rewrite_paths(
   tmp_path: Path,
   monkeypatch: pytest.MonkeyPatch,
@@ -153,6 +188,15 @@ def test_load_active_listener_config_uses_default_xdg_path_for_relative_rewrite_
       model_path=str(config_path.parent / "models" / "rewrite.litertlm"),
     ),
   )
+
+
+def test_load_active_listener_config_allows_omitted_ffmpeg_path(tmp_path: Path) -> None:
+  config_path = tmp_path / "configs" / "active-listener.yaml"
+  _write_config(config_path)
+
+  config = load_active_listener_config(config_path=str(config_path), overrides={})
+
+  assert config.ffmpeg_path is None
 
 
 def test_load_active_listener_config_preserves_absolute_symlink_model_path(tmp_path: Path) -> None:

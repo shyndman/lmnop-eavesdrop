@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
 from collections.abc import Callable
+from pathlib import Path
 from typing import Protocol
 
 from structlog.stdlib import BoundLogger
@@ -27,18 +31,24 @@ from active_listener.infra.rewrite import (
   PydanticAiRewriteClient,
 )
 from active_listener.infra.transcript_history import SqliteTranscriptHistoryStore
+from active_listener.recording.session import RecordingAudioBuffer
 from active_listener.recording.spectrum import (
   Float32PcmChunk,
   QuantizedSpectrumFrame,
   SpectrumAnalyzer,
 )
-from .infra.langfuse import flush_langfuse
 from eavesdrop.client import EavesdropClient
 from eavesdrop.common import get_logger
+
+from .infra.langfuse import flush_langfuse
 
 
 class SpectrumCaptureSink(Protocol):
   def ingest(self, chunk: Float32PcmChunk) -> None: ...
+
+
+class RecordingAudioCaptureSink(Protocol):
+  def append(self, chunk: Float32PcmChunk) -> None: ...
 
 
 async def create_service(
@@ -52,7 +62,10 @@ async def create_service(
   emitter_factory: Callable[[], TextEmitter] | None = None,
   rewrite_client_factory: Callable[[LlmRewriteConfig | None], ActiveListenerRewriteClient]
   | None = None,
-  history_store_factory: Callable[[BoundLogger], ActiveListenerTranscriptHistoryStore]
+  history_store_factory: Callable[
+    [ActiveListenerConfig, BoundLogger, AppStateService],
+    ActiveListenerTranscriptHistoryStore,
+  ]
   | None = None,
 ) -> ActiveListenerService:
   """Construct a fully initialized service instance.
@@ -66,7 +79,9 @@ async def create_service(
   :param emitter_factory: Factory for the text emitter dependency.
   :type emitter_factory: Callable[[], TextEmitter] | None
   :param history_store_factory: Factory for the transcript history dependency.
-  :type history_store_factory: Callable[[BoundLogger], ActiveListenerTranscriptHistoryStore] | None
+  :type history_store_factory:
+      Callable[[ActiveListenerConfig, BoundLogger, AppStateService],
+      ActiveListenerTranscriptHistoryStore] | None
   :returns: Ready-to-run service instance.
   :rtype: ActiveListenerService
   :raises ActiveListenerRuntimeError: If startup prerequisites cannot be satisfied.
@@ -85,10 +100,15 @@ async def create_service(
       bars=bars,
     )
   )
-  on_capture = build_capture_callback(spectrum_analyzer=spectrum_analyzer, logger=logger)
+  recording_audio_buffer = RecordingAudioBuffer()
+  on_capture = build_capture_callback(
+    spectrum_analyzer=spectrum_analyzer,
+    audio_buffer=recording_audio_buffer,
+    logger=logger,
+  )
   client: ActiveListenerClient | None = None
   rewrite_client: ActiveListenerRewriteClient | None = None
-  history_store = resolved_history_store_factory(logger)
+  history_store: ActiveListenerTranscriptHistoryStore | None = None
   connect_started = False
 
   try:
@@ -98,6 +118,7 @@ async def create_service(
     raise ActiveListenerRuntimeError(str(exc)) from exc
 
   try:
+    history_store = resolved_history_store_factory(config, logger, resolved_dbus_service)
     emitter = resolved_emitter_factory()
     client = resolved_client_factory(config, on_capture)
     rewrite_client = resolved_rewrite_client_factory(config.llm_rewrite)
@@ -125,6 +146,7 @@ async def create_service(
     host=config.host,
     port=config.port,
   )
+  assert history_store is not None
   service = ActiveListenerService(
     config=config,
     keyboard=keyboard,
@@ -134,6 +156,7 @@ async def create_service(
     rewrite_client=rewrite_client,
     history_store=history_store,
     dbus_service=resolved_dbus_service,
+    recording_audio_buffer=recording_audio_buffer,
     spectrum_analyzer=spectrum_analyzer,
   )
   if isinstance(resolved_dbus_service, SdbusDbusService):
@@ -153,7 +176,10 @@ async def run_service(
   emitter_factory: Callable[[], TextEmitter] | None = None,
   rewrite_client_factory: Callable[[LlmRewriteConfig | None], ActiveListenerRewriteClient]
   | None = None,
-  history_store_factory: Callable[[BoundLogger], ActiveListenerTranscriptHistoryStore]
+  history_store_factory: Callable[
+    [ActiveListenerConfig, BoundLogger, AppStateService],
+    ActiveListenerTranscriptHistoryStore,
+  ]
   | None = None,
 ) -> None:
   """Create and run the long-lived active-listener service.
@@ -167,7 +193,9 @@ async def run_service(
   :param emitter_factory: Factory for the text emitter dependency.
   :type emitter_factory: Callable[[], TextEmitter] | None
   :param history_store_factory: Factory for the transcript history dependency.
-  :type history_store_factory: Callable[[BoundLogger], ActiveListenerTranscriptHistoryStore] | None
+  :type history_store_factory:
+      Callable[[ActiveListenerConfig, BoundLogger, AppStateService],
+      ActiveListenerTranscriptHistoryStore] | None
   :returns: None
   :rtype: None
   """
@@ -259,6 +287,7 @@ def build_client(
 def build_capture_callback(
   *,
   spectrum_analyzer: SpectrumCaptureSink,
+  audio_buffer: RecordingAudioCaptureSink,
   logger: BoundLogger,
 ) -> Callable[[Float32PcmChunk], None]:
   def on_capture(chunk: Float32PcmChunk) -> None:
@@ -266,6 +295,11 @@ def build_capture_callback(
       spectrum_analyzer.ingest(chunk)
     except Exception:
       logger.exception("spectrum capture callback failed", byte_count=len(chunk))
+
+    try:
+      audio_buffer.append(chunk)
+    except Exception:
+      logger.exception("recording audio capture failed", byte_count=len(chunk))
 
   return on_capture
 
@@ -305,16 +339,72 @@ def build_rewrite_client(config: LlmRewriteConfig | None) -> ActiveListenerRewri
   return PydanticAiRewriteClient(model=provider.model)
 
 
-def build_history_store(logger: BoundLogger) -> ActiveListenerTranscriptHistoryStore:
+def build_history_store(
+  config: ActiveListenerConfig,
+  logger: BoundLogger,
+  dbus_service: AppStateService,
+) -> ActiveListenerTranscriptHistoryStore:
   """Build the local transcript history store.
 
+  :param config: Validated runtime configuration.
+  :type config: ActiveListenerConfig
   :param logger: Structured logger used for best-effort insert failures.
   :type logger: BoundLogger
+  :param dbus_service: DBus publisher used for archive-failure notifications.
+  :type dbus_service: AppStateService
   :returns: SQLite-backed transcript history store.
   :rtype: ActiveListenerTranscriptHistoryStore
   """
 
-  return SqliteTranscriptHistoryStore(logger=logger)
+  ffmpeg_path = resolve_ffmpeg_path(config.ffmpeg_path, logger=logger)
+  logger.info("resolved ffmpeg binary", ffmpeg_path=ffmpeg_path)
+  return SqliteTranscriptHistoryStore(
+    logger=logger,
+    ffmpeg_path=ffmpeg_path,
+    dbus_service=dbus_service,
+  )
+
+
+def resolve_ffmpeg_path(configured_path: str | None, *, logger: BoundLogger) -> str:
+  resolved_configured_path = _resolve_usable_executable_path(configured_path)
+  if resolved_configured_path is not None:
+    return resolved_configured_path
+
+  if configured_path is not None:
+    logger.warning("configured ffmpeg path unusable", ffmpeg_path=configured_path)
+
+  resolved_path = shutil.which("ffmpeg")
+  resolved_path_from_path = _resolve_usable_executable_path(resolved_path)
+  if resolved_path_from_path is not None:
+    return resolved_path_from_path
+
+  raise ActiveListenerRuntimeError(
+    "ffmpeg executable not found; set ffmpeg_path or add ffmpeg to PATH"
+  )
+
+
+def _resolve_usable_executable_path(raw_path: str | None) -> str | None:
+  if raw_path is None:
+    return None
+
+  candidate_path = Path(raw_path).expanduser().resolve()
+  if not candidate_path.is_file():
+    return None
+  if not os.access(candidate_path, os.X_OK):
+    return None
+
+  try:
+    result = subprocess.run(
+      [str(candidate_path), "-version"],
+      capture_output=True,
+      check=False,
+    )
+  except FileNotFoundError:
+    return None
+  if result.returncode != 0:
+    return None
+
+  return str(candidate_path)
 
 
 async def cleanup_startup_prerequisites(

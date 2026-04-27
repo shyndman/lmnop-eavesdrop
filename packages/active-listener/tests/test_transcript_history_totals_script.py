@@ -10,6 +10,7 @@ from typing import Protocol, cast
 import pytest
 
 from active_listener.infra.transcript_history import (
+  TRANSCRIPT_AUDIO_TABLE,
   TRANSCRIPT_HISTORY_TABLE,
   ensure_transcript_history_schema,
 )
@@ -114,3 +115,60 @@ def test_main_prints_aggregated_totals(
     "cost: 0.00015\n"
     "duration: 2.500s\n"
   )
+
+
+def test_query_totals_migrates_legacy_database_and_preserves_missing_audio_rows(
+  tmp_path: Path,
+) -> None:
+  module = _load_script_module()
+  database_path = tmp_path / "history.sqlite3"
+  with sqlite3.connect(str(database_path)) as connection:
+    _ = connection.execute(
+      f"""
+      CREATE TABLE {TRANSCRIPT_HISTORY_TABLE} (
+        id INTEGER PRIMARY KEY,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        pre_finalization_text TEXT NOT NULL,
+        post_finalization_text TEXT NOT NULL,
+        llm_model TEXT,
+        tokens_in INTEGER,
+        tokens_out INTEGER,
+        cost TEXT
+      )
+      """
+    )
+    _ = connection.execute(
+      f"""
+      INSERT INTO {TRANSCRIPT_HISTORY_TABLE} (
+        pre_finalization_text,
+        post_finalization_text,
+        llm_model,
+        tokens_in,
+        tokens_out,
+        cost
+      )
+      VALUES (?, ?, ?, ?, ?, ?)
+      """,
+      ("alpha", "alpha ", None, None, None, None),
+    )
+
+  totals = module.query_totals(database_path)
+
+  with sqlite3.connect(str(database_path)) as connection:
+    audio_table_row = cast(
+      tuple[str] | None,
+      connection.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (TRANSCRIPT_AUDIO_TABLE,),
+      ).fetchone(),
+    )
+    audio_count = cast(
+      tuple[int],
+      connection.execute(f"SELECT COUNT(*) FROM {TRANSCRIPT_AUDIO_TABLE}").fetchone(),
+    )
+
+  assert totals.utterances == 1
+  assert totals.word_count == 0
+  assert totals.duration_seconds == 0.0
+  assert audio_table_row == (TRANSCRIPT_AUDIO_TABLE,)
+  assert audio_count == (0,)

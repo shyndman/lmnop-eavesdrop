@@ -15,6 +15,7 @@ from active_listener.app.ports import (
   ActiveListenerRewriteClient,
   ActiveListenerTranscriptHistoryStore,
   FinalizedTranscriptRecord,
+  FinishedRecording,
   RewriteResult,
 )
 from active_listener.config.models import (
@@ -99,8 +100,9 @@ class RecordingFinalizer:
     self,
     *,
     disconnect_generation: int,
-    reducer_state: RecordingReducerState,
+    finished_recording: FinishedRecording,
   ) -> None:
+    reducer_state = finished_recording.reducer_state
     try:
       async with self._flush_lock:
         message = await self.client.flush(force_complete=True)
@@ -155,7 +157,7 @@ class RecordingFinalizer:
         text_length=len(final_text),
         source=emitted_text_source,
       )
-      self.history_store.record_finalized_transcript(
+      self.history_store.record_finalized_recording(
         FinalizedTranscriptRecord(
           pre_finalization_text=raw_text,
           post_finalization_text=final_text,
@@ -181,7 +183,8 @@ class RecordingFinalizer:
           ),
           word_count=_count_words(final_text),
           duration_seconds=reducer_state.duration_seconds,
-        )
+        ),
+        finished_recording.captured_audio,
       )
 
   def _pipeline_steps(self, *, stream: str) -> list[PipelineStep]:

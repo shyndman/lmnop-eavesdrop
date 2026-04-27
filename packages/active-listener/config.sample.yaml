@@ -2,8 +2,10 @@ keyboard_name: "AT Translated Set 2 keyboard"
 host: "home-brainbox"
 port: 9090
 audio_device: "default"
+ffmpeg_path: null
 
 llm_rewrite:
-  enabled: true
-  model_path: "models/rewrite.litertlm"
   prompt_path: "prompts/rewrite_prompt.md"
+  provider:
+    type: "litert"
+    model_path: "models/rewrite.litertlm"

@@ -6,6 +6,7 @@
   "scripts": {
     "build": "node esbuild.js",
     "install:extension": "npm run build && gnome-extensions install --force .out/eavesdrop@shyndman.ca.zip",
+    "validate:active-listener-service-error": "node scripts/validate-active-listener-service-error.ts",
     "validate:recording-menu-control": "node scripts/validate-recording-menu-control.ts",
     "validate:transcript-attributes": "node scripts/validate-transcript-attributes.ts",
     "typecheck": "tsc --noEmit",

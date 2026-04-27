@@ -17,7 +17,9 @@ from typing_extensions import override
 
 from active_listener.app.ports import (
   ActiveListenerRuntimeError,
+  CapturedRecordingAudio,
   FinalizedTranscriptRecord,
+  FinishedRecording,
   RewriteResult,
 )
 from active_listener.app.service import ActiveListenerService
@@ -37,7 +39,11 @@ from active_listener.infra.rewrite import (
   RewritePromptError,
 )
 from active_listener.recording.reducer import RecordingReducerState, TextRun, TimeSpan
-from active_listener.recording.session import PendingCapsGesture, RecordingSession
+from active_listener.recording.session import (
+  PendingCapsGesture,
+  RecordingAudioBuffer,
+  RecordingSession,
+)
 from active_listener.recording.spectrum import (
   SAMPLE_RATE_HZ,
   SPECTRUM_TICK_INTERVAL_SECONDS,
@@ -109,6 +115,7 @@ def _config(*, rewrite_enabled: bool = False) -> ActiveListenerConfig:
     host="localhost",
     port=9090,
     audio_device="default",
+    ffmpeg_path=None,
     llm_rewrite=_rewrite_config() if rewrite_enabled else None,
   )
 
@@ -215,6 +222,14 @@ class FakeEmitter:
 
 
 @dataclass
+class FailingEmitter(FakeEmitter):
+  @override
+  def emit_text(self, text: str) -> None:
+    _ = text
+    raise RuntimeError("emit failed")
+
+
+@dataclass
 class FakeDbusService:
   states: list[ForegroundPhase] = field(default_factory=list)
   signals: list[tuple[str, object | None]] = field(default_factory=list)
@@ -238,6 +253,10 @@ class FakeDbusService:
   async def recording_aborted(self, reason: str) -> None:
     self.signals.append(("RecordingAborted", reason))
     self.events.append(("RecordingAborted", reason))
+
+  async def audio_archive_failed(self, reason: str) -> None:
+    self.signals.append(("AudioArchiveFailed", reason))
+    self.events.append(("AudioArchiveFailed", reason))
 
   async def pipeline_failed(self, step: str, reason: str) -> None:
     self.signals.append(("PipelineFailed", (step, reason)))
@@ -440,10 +459,20 @@ class BlockingFirstRewriteClient(FakeRewriteClient):
 
 @dataclass
 class FakeHistoryStore:
-  records: list[FinalizedTranscriptRecord] = field(default_factory=list)
+  recordings: list[RecordedFinalization] = field(default_factory=list)
 
-  def record_finalized_transcript(self, record: FinalizedTranscriptRecord) -> None:
-    self.records.append(record)
+  def record_finalized_recording(
+    self,
+    record: FinalizedTranscriptRecord,
+    captured_audio: CapturedRecordingAudio,
+  ) -> None:
+    self.recordings.append(RecordedFinalization(record=record, captured_audio=captured_audio))
+
+
+@dataclass(frozen=True)
+class RecordedFinalization:
+  record: FinalizedTranscriptRecord
+  captured_audio: CapturedRecordingAudio
 
 
 def _segment(
@@ -520,6 +549,7 @@ class ServiceHarness:
   rewrite_client: FakeRewriteClient
   history_store: FakeHistoryStore
   dbus_service: FakeDbusService
+  recording_audio_buffer: RecordingAudioBuffer
 
 
 def _service(
@@ -533,6 +563,7 @@ def _service(
   dbus_service: FakeDbusService | None = None,
   config: ActiveListenerConfig | None = None,
   spectrum_analyzer: FakeSpectrumAnalyzer | None = None,
+  recording_audio_buffer: RecordingAudioBuffer | None = None,
 ) -> ServiceHarness:
   resolved_client = client or FakeClient()
   resolved_keyboard = keyboard or FakeKeyboard()
@@ -541,6 +572,7 @@ def _service(
   resolved_rewrite_client = rewrite_client or FakeRewriteClient()
   resolved_history_store = history_store or FakeHistoryStore()
   resolved_dbus_service = dbus_service or FakeDbusService()
+  resolved_recording_audio_buffer = recording_audio_buffer or RecordingAudioBuffer()
   service = ActiveListenerService(
     config=config or _config(),
     keyboard=resolved_keyboard,
@@ -550,6 +582,7 @@ def _service(
     rewrite_client=resolved_rewrite_client,
     history_store=resolved_history_store,
     dbus_service=resolved_dbus_service,
+    recording_audio_buffer=resolved_recording_audio_buffer,
     spectrum_analyzer=spectrum_analyzer or FakeSpectrumAnalyzer(),
   )
   return ServiceHarness(
@@ -561,6 +594,7 @@ def _service(
     resolved_rewrite_client,
     resolved_history_store,
     resolved_dbus_service,
+    resolved_recording_audio_buffer,
   )
 
 
@@ -577,6 +611,7 @@ async def test_create_service_connects_client_and_initializes_emitter() -> None:
     keyboard_resolver=lambda _name: keyboard,
     client_factory=lambda _config, _on_capture: client,
     emitter_factory=lambda: (emitter.initialize(), emitter)[1],
+    history_store_factory=lambda _config, _logger, _dbus_service: FakeHistoryStore(),
   )
 
   assert service.phase is ForegroundPhase.IDLE
@@ -604,6 +639,7 @@ async def test_create_service_passes_capture_callback_into_client_factory() -> N
     keyboard_resolver=lambda _name: keyboard,
     client_factory=client_factory,
     emitter_factory=lambda: (emitter.initialize(), emitter)[1],
+    history_store_factory=lambda _config, _logger, _dbus_service: FakeHistoryStore(),
   )
 
   assert service.phase is ForegroundPhase.IDLE
@@ -616,6 +652,7 @@ async def test_create_service_fails_fast_on_keyboard_resolution_error() -> None:
     _ = await create_service(
       _config(),
       keyboard_resolver=lambda _name: (_ for _ in ()).throw(RuntimeError("missing keyboard")),
+      history_store_factory=lambda _config, _logger, _dbus_service: FakeHistoryStore(),
     )
 
 
@@ -632,6 +669,7 @@ async def test_create_service_fails_fast_on_connect_error() -> None:
       client_factory=lambda _config, _on_capture: client,
       emitter_factory=lambda: FakeEmitter(),
       rewrite_client_factory=lambda _config: rewrite_client,
+      history_store_factory=lambda _config, _logger, _dbus_service: FakeHistoryStore(),
     )
 
   assert keyboard.close_calls == 1
@@ -649,6 +687,7 @@ async def test_create_service_fails_fast_when_rewrite_client_cannot_initialize()
       client_factory=lambda _config, _on_capture: FakeClient(),
       emitter_factory=lambda: FakeEmitter(),
       rewrite_client_factory=lambda _config: (_ for _ in ()).throw(RewriteClientError("bad model")),
+      history_store_factory=lambda _config, _logger, _dbus_service: FakeHistoryStore(),
     )
 
   assert keyboard.close_calls == 1
@@ -793,14 +832,41 @@ async def test_close_releases_keyboard_even_when_disconnect_raises() -> None:
 @pytest.mark.asyncio
 async def test_capture_callback_failures_are_logged_locally() -> None:
   logger = RecordingLogger()
+  audio_buffer = RecordingAudioBuffer()
   on_capture = build_capture_callback(
     spectrum_analyzer=ExplodingSpectrumAnalyzer(),
+    audio_buffer=audio_buffer,
     logger=cast(BoundLogger, cast(object, logger)),
   )
 
   on_capture(b"chunk")
 
   assert logger.exception_messages == ["spectrum capture callback failed"]
+  assert audio_buffer.finish() == b""
+
+
+def test_capture_callback_records_audio_only_while_buffer_is_active() -> None:
+  logger = RecordingLogger()
+  spectrum_analyzer = FakeSpectrumAnalyzer()
+  audio_buffer = RecordingAudioBuffer()
+  on_capture = build_capture_callback(
+    spectrum_analyzer=spectrum_analyzer,
+    audio_buffer=audio_buffer,
+    logger=cast(BoundLogger, cast(object, logger)),
+  )
+  first_chunk = _sine_wave_bytes(220.0, 16)
+  second_chunk = _sine_wave_bytes(330.0, 16)
+
+  on_capture(first_chunk)
+  audio_buffer.start()
+  on_capture(first_chunk)
+  on_capture(second_chunk)
+  captured_snapshot = audio_buffer.finish()
+  on_capture(first_chunk)
+
+  assert spectrum_analyzer.ingested == [first_chunk, first_chunk, second_chunk, first_chunk]
+  assert captured_snapshot == first_chunk + second_chunk
+  assert audio_buffer.finish() == b""
 
 
 @pytest.mark.asyncio
@@ -824,6 +890,7 @@ async def test_spectrum_emission_flows_through_dbus_while_recording() -> None:
     client_factory=client_factory,
     emitter_factory=lambda: (emitter.initialize(), emitter)[1],
     rewrite_client_factory=lambda _config: FakeRewriteClient(),
+    history_store_factory=lambda _config, _logger, _dbus_service: FakeHistoryStore(),
   )
 
   _ = await service.handle_action(AppAction.START_OR_FINISH)
@@ -870,6 +937,7 @@ async def test_run_service_emits_fatal_error_once_on_startup_failure() -> None:
       client_factory=lambda _config, _on_capture: FakeClient(),
       emitter_factory=lambda: FakeEmitter(),
       rewrite_client_factory=lambda _config: FakeRewriteClient(),
+      history_store_factory=lambda _config, _logger, _dbus_service: FakeHistoryStore(),
     )
 
   assert dbus_service.states == []
@@ -896,11 +964,164 @@ async def test_run_service_emits_fatal_error_once_on_runtime_failure() -> None:
       client_factory=lambda _config, _on_capture: client,
       emitter_factory=lambda: FakeEmitter(),
       rewrite_client_factory=lambda _config: FakeRewriteClient(),
+      history_store_factory=lambda _config, _logger, _dbus_service: FakeHistoryStore(),
     )
 
   assert dbus_service.states == [ForegroundPhase.IDLE, ForegroundPhase.RECORDING]
   assert dbus_service.signals == [("FatalError", "stop failed")]
   assert dbus_service.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_create_service_resolves_configured_ffmpeg_path(
+  monkeypatch: pytest.MonkeyPatch,
+  tmp_path: Path,
+) -> None:
+  logger = RecordingLogger()
+  keyboard = FakeKeyboard()
+  ffmpeg_path = tmp_path / "bin" / "ffmpeg"
+  ffmpeg_path.parent.mkdir(parents=True)
+  _ = ffmpeg_path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+  ffmpeg_path.chmod(0o755)
+  captured_paths: list[str] = []
+
+  class CapturingHistoryStore:
+    def __init__(
+      self,
+      *,
+      logger: BoundLogger,
+      ffmpeg_path: str,
+      dbus_service: FakeDbusService,
+    ) -> None:
+      _ = logger
+      _ = dbus_service
+      captured_paths.append(ffmpeg_path)
+
+    def record_finalized_recording(
+      self,
+      record: FinalizedTranscriptRecord,
+      captured_audio: CapturedRecordingAudio,
+    ) -> None:
+      _ = record
+      _ = captured_audio
+
+  monkeypatch.setattr("active_listener.bootstrap.get_logger", lambda _name: logger)
+  monkeypatch.setattr(
+    "active_listener.bootstrap.SqliteTranscriptHistoryStore",
+    CapturingHistoryStore,
+  )
+
+  service = await create_service(
+    ActiveListenerConfig(
+      keyboard_name="Exact Keyboard",
+      host="localhost",
+      port=9090,
+      audio_device="default",
+      ffmpeg_path=str(ffmpeg_path),
+    ),
+    dbus_service=FakeDbusService(),
+    keyboard_resolver=lambda _name: keyboard,
+    client_factory=lambda _config, _on_capture: FakeClient(),
+    emitter_factory=lambda: FakeEmitter(),
+    rewrite_client_factory=lambda _config: FakeRewriteClient(),
+  )
+
+  assert service.phase is ForegroundPhase.IDLE
+  assert captured_paths == [str(ffmpeg_path.resolve())]
+  assert logger.info_records[0] == LogRecord(
+    event="resolved ffmpeg binary",
+    fields={"ffmpeg_path": str(ffmpeg_path.resolve())},
+  )
+
+
+@pytest.mark.asyncio
+async def test_create_service_falls_back_to_path_for_ffmpeg_resolution(
+  monkeypatch: pytest.MonkeyPatch,
+  tmp_path: Path,
+) -> None:
+  logger = RecordingLogger()
+  keyboard = FakeKeyboard()
+  ffmpeg_path = tmp_path / "path-bin" / "ffmpeg"
+  ffmpeg_path.parent.mkdir(parents=True)
+  _ = ffmpeg_path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+  ffmpeg_path.chmod(0o755)
+  captured_paths: list[str] = []
+
+  class CapturingHistoryStore:
+    def __init__(
+      self,
+      *,
+      logger: BoundLogger,
+      ffmpeg_path: str,
+      dbus_service: FakeDbusService,
+    ) -> None:
+      _ = logger
+      _ = dbus_service
+      captured_paths.append(ffmpeg_path)
+
+    def record_finalized_recording(
+      self,
+      record: FinalizedTranscriptRecord,
+      captured_audio: CapturedRecordingAudio,
+    ) -> None:
+      _ = record
+      _ = captured_audio
+
+  monkeypatch.setattr("active_listener.bootstrap.get_logger", lambda _name: logger)
+  monkeypatch.setattr("active_listener.bootstrap.shutil.which", lambda _name: str(ffmpeg_path))
+  monkeypatch.setattr(
+    "active_listener.bootstrap.SqliteTranscriptHistoryStore",
+    CapturingHistoryStore,
+  )
+
+  service = await create_service(
+    _config(),
+    dbus_service=FakeDbusService(),
+    keyboard_resolver=lambda _name: keyboard,
+    client_factory=lambda _config, _on_capture: FakeClient(),
+    emitter_factory=lambda: FakeEmitter(),
+    rewrite_client_factory=lambda _config: FakeRewriteClient(),
+  )
+
+  assert service.phase is ForegroundPhase.IDLE
+  assert captured_paths == [str(ffmpeg_path.resolve())]
+  assert logger.info_records[0] == LogRecord(
+    event="resolved ffmpeg binary",
+    fields={"ffmpeg_path": str(ffmpeg_path.resolve())},
+  )
+
+
+@pytest.mark.asyncio
+async def test_create_service_fails_fast_when_ffmpeg_cannot_be_resolved(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  logger = RecordingLogger()
+  keyboard = FakeKeyboard()
+
+  monkeypatch.setattr("active_listener.bootstrap.get_logger", lambda _name: logger)
+  monkeypatch.setattr("active_listener.bootstrap.shutil.which", lambda _name: None)
+
+  with pytest.raises(
+    ActiveListenerRuntimeError,
+    match="ffmpeg executable not found; set ffmpeg_path or add ffmpeg to PATH",
+  ):
+    _ = await create_service(
+      _config(),
+      keyboard_resolver=lambda _name: keyboard,
+      client_factory=lambda _config, _on_capture: FakeClient(),
+      emitter_factory=lambda: FakeEmitter(),
+      rewrite_client_factory=lambda _config: FakeRewriteClient(),
+    )
+
+  assert keyboard.close_calls == 1
+  assert logger.exception_records[-1] == LogRecord(
+    event="startup prerequisite failed",
+    fields={
+      "keyboard_name": "Exact Keyboard",
+      "host": "localhost",
+      "port": 9090,
+    },
+  )
 
 
 @pytest.mark.asyncio
@@ -1139,12 +1360,86 @@ async def test_finish_recording_returns_closed_spans_and_no_open_span(
   )
   await asyncio.sleep(0.01)
 
-  reducer_state = await session.finish_recording()
+  session.audio_buffer.append(_sine_wave_bytes(440.0, 32))
+  finished_recording = await session.finish_recording()
+  reducer_state = finished_recording.reducer_state
 
   assert reducer_state.open_command_start_s is None
   assert len(reducer_state.closed_command_spans) == 1
   assert abs(reducer_state.closed_command_spans[0].start_s - 0.01) < 1e-9
   assert reducer_state.closed_command_spans[0].end_s >= 0.01
+  assert finished_recording.captured_audio.sample_rate_hz == SAMPLE_RATE_HZ
+  assert finished_recording.captured_audio.channels == 1
+  assert finished_recording.captured_audio.pcm_f32le != b""
+
+
+@pytest.mark.asyncio
+async def test_cancel_recording_discards_captured_audio_before_next_recording() -> None:
+  harness = _service()
+  first_chunk = _sine_wave_bytes(220.0, 24)
+  second_chunk = _sine_wave_bytes(330.0, 24)
+
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  harness.recording_audio_buffer.append(first_chunk)
+  _ = await harness.service.handle_action(AppAction.CANCEL)
+
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  harness.recording_audio_buffer.append(second_chunk)
+  finished_recording = await _recording_session(harness.service).finish_recording()
+
+  assert finished_recording == FinishedRecording(
+    reducer_state=finished_recording.reducer_state,
+    captured_audio=CapturedRecordingAudio(
+      pcm_f32le=second_chunk,
+      sample_rate_hz=SAMPLE_RATE_HZ,
+      channels=1,
+    ),
+  )
+
+
+@pytest.mark.asyncio
+async def test_disconnect_discards_captured_audio_before_next_recording() -> None:
+  harness = _service()
+  first_chunk = _sine_wave_bytes(220.0, 24)
+  second_chunk = _sine_wave_bytes(330.0, 24)
+
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  harness.recording_audio_buffer.append(first_chunk)
+  await harness.service.handle_client_event(
+    DisconnectedEvent(stream="stream-1", reason="socket closed")
+  )
+  await harness.service.handle_client_event(ReconnectedEvent(stream="stream-1"))
+
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  harness.recording_audio_buffer.append(second_chunk)
+  finished_recording = await _recording_session(harness.service).finish_recording()
+
+  assert finished_recording == FinishedRecording(
+    reducer_state=finished_recording.reducer_state,
+    captured_audio=CapturedRecordingAudio(
+      pcm_f32le=second_chunk,
+      sample_rate_hz=SAMPLE_RATE_HZ,
+      channels=1,
+    ),
+  )
+
+
+@pytest.mark.asyncio
+async def test_finish_recording_returns_audio_snapshot_unchanged_after_late_chunks() -> None:
+  harness = _service()
+  first_chunk = _sine_wave_bytes(220.0, 24)
+  late_chunk = _sine_wave_bytes(330.0, 24)
+
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  harness.recording_audio_buffer.append(first_chunk)
+  finished_recording = await _recording_session(harness.service).finish_recording()
+  harness.recording_audio_buffer.append(late_chunk)
+
+  assert finished_recording.captured_audio == CapturedRecordingAudio(
+    pcm_f32le=first_chunk,
+    sample_rate_hz=SAMPLE_RATE_HZ,
+    channels=1,
+  )
 
 
 @pytest.mark.asyncio
@@ -1622,23 +1917,32 @@ async def test_finalize_recording_emits_raw_text_when_rewrite_is_disabled() -> N
     ]
   )
   harness = _service(client=client)
+  captured_audio = _sine_wave_bytes(440.0, 32)
 
   _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  harness.recording_audio_buffer.append(captured_audio)
   _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
   await harness.service.wait_for_background_tasks()
 
   assert harness.emitter.emitted == ["alpha "]
   assert harness.rewrite_client.calls == []
-  assert harness.history_store.records == [
-    FinalizedTranscriptRecord(
-      pre_finalization_text="alpha",
-      post_finalization_text="alpha ",
-      llm_model=None,
-      tokens_in=None,
-      tokens_out=None,
-      cost=None,
-      word_count=1,
-      duration_seconds=0.1,
+  assert harness.history_store.recordings == [
+    RecordedFinalization(
+      record=FinalizedTranscriptRecord(
+        pre_finalization_text="alpha",
+        post_finalization_text="alpha ",
+        llm_model=None,
+        tokens_in=None,
+        tokens_out=None,
+        cost=None,
+        word_count=1,
+        duration_seconds=0.1,
+      ),
+      captured_audio=CapturedRecordingAudio(
+        pcm_f32le=captured_audio,
+        sample_rate_hz=SAMPLE_RATE_HZ,
+        channels=1,
+      ),
     )
   ]
   assert harness.logger.info_records[-1] == LogRecord(
@@ -1650,6 +1954,27 @@ async def test_finalize_recording_emits_raw_text_when_rewrite_is_disabled() -> N
       "source": "raw",
     },
   )
+
+
+@pytest.mark.asyncio
+async def test_finalize_recording_does_not_archive_when_text_emission_fails() -> None:
+  client = FakeClient(
+    flush_results=[
+      _message(
+        _segment(1, "alpha", completed=True),
+        _segment(2, "tail", completed=False),
+      )
+    ]
+  )
+  harness = _service(client=client, emitter=FailingEmitter())
+
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  harness.recording_audio_buffer.append(_sine_wave_bytes(440.0, 32))
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  await harness.service.wait_for_background_tasks()
+
+  assert harness.history_store.recordings == []
+  assert harness.logger.exception_messages[-1] == "text emission failed"
 
 
 @pytest.mark.asyncio
@@ -1705,15 +2030,20 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
     cost=Decimal("0.00012"),
   )
   emitter = FakeEmitter()
+  captured_audio = _sine_wave_bytes(440.0, 32)
 
   @dataclass
   class AssertingHistoryStore(FakeHistoryStore):
     emitter: FakeEmitter = field(default_factory=FakeEmitter)
 
     @override
-    def record_finalized_transcript(self, record: FinalizedTranscriptRecord) -> None:
+    def record_finalized_recording(
+      self,
+      record: FinalizedTranscriptRecord,
+      captured_audio: CapturedRecordingAudio,
+    ) -> None:
       assert self.emitter.emitted == ["rewritten alpha "]
-      super().record_finalized_transcript(record)
+      super().record_finalized_recording(record, captured_audio)
 
   history_store = AssertingHistoryStore(emitter=emitter)
   harness = _service(
@@ -1733,6 +2063,7 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
   )
 
   _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  harness.recording_audio_buffer.append(captured_audio)
   _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
   await harness.service.wait_for_background_tasks()
 
@@ -1743,16 +2074,23 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
       "transcript": "alpha",
     }
   ]
-  assert harness.history_store.records == [
-    FinalizedTranscriptRecord(
-      pre_finalization_text="alpha",
-      post_finalization_text="rewritten alpha ",
-      llm_model="fake-model",
-      tokens_in=12,
-      tokens_out=4,
-      cost=Decimal("0.00012"),
-      word_count=2,
-      duration_seconds=0.1,
+  assert harness.history_store.recordings == [
+    RecordedFinalization(
+      record=FinalizedTranscriptRecord(
+        pre_finalization_text="alpha",
+        post_finalization_text="rewritten alpha ",
+        llm_model="fake-model",
+        tokens_in=12,
+        tokens_out=4,
+        cost=Decimal("0.00012"),
+        word_count=2,
+        duration_seconds=0.1,
+      ),
+      captured_audio=CapturedRecordingAudio(
+        pcm_f32le=captured_audio,
+        sample_rate_hz=SAMPLE_RATE_HZ,
+        channels=1,
+      ),
     )
   ]
   assert observed_calls == [

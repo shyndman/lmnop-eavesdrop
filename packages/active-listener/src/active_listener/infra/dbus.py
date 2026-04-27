@@ -57,6 +57,8 @@ class AppStateService(Protocol):
 
   async def recording_aborted(self, reason: str) -> None: ...
 
+  async def audio_archive_failed(self, reason: str) -> None: ...
+
   async def pipeline_failed(self, step: str, reason: str) -> None: ...
 
   async def fatal_error(self, reason: str) -> None: ...
@@ -85,6 +87,7 @@ if TYPE_CHECKING:
     transcription_updated: object = object()
     spectrum_updated: object = object()
     recording_aborted: object = object()
+    audio_archive_failed: object = object()
     pipeline_failed: object = object()
     fatal_error: object = object()
     reconnecting: object = object()
@@ -173,6 +176,14 @@ else:
         raise NotImplementedError
 
       @dbus_signal_async(
+        signal_signature="s",
+        signal_args_names=("reason",),
+        signal_name="AudioArchiveFailed",
+      )
+      def audio_archive_failed(self) -> str:
+        raise NotImplementedError
+
+      @dbus_signal_async(
         signal_signature="ss",
         signal_args_names=("step", "reason"),
         signal_name="PipelineFailed",
@@ -239,6 +250,7 @@ else:
       namespace["transcription_updated"] = transcription_updated
       namespace["spectrum_updated"] = spectrum_updated
       namespace["recording_aborted"] = recording_aborted
+      namespace["audio_archive_failed"] = audio_archive_failed
       namespace["pipeline_failed"] = pipeline_failed
       namespace["fatal_error"] = fatal_error
       namespace["reconnecting"] = reconnecting
@@ -272,6 +284,9 @@ class NoopDbusService:
     _ = bars
 
   async def recording_aborted(self, reason: str) -> None:
+    _ = reason
+
+  async def audio_archive_failed(self, reason: str) -> None:
     _ = reason
 
   async def pipeline_failed(self, step: str, reason: str) -> None:
@@ -340,6 +355,9 @@ class SdbusDbusService:
 
   async def recording_aborted(self, reason: str) -> None:
     cast(DbusSignalEmitter, self.interface.recording_aborted).emit(reason)
+
+  async def audio_archive_failed(self, reason: str) -> None:
+    cast(DbusSignalEmitter, self.interface.audio_archive_failed).emit(reason)
 
   async def pipeline_failed(self, step: str, reason: str) -> None:
     cast(DbusSignalEmitter, self.interface.pipeline_failed).emit((step, reason))

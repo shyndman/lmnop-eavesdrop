@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import cast
 
 TRANSCRIPT_HISTORY_TABLE = "transcript_history"
+TRANSCRIPT_AUDIO_TABLE = "transcript_audio"
 TRANSCRIPT_HISTORY_OPTIONAL_COLUMNS = {
   "word_count": "INTEGER",
   "duration_seconds": "REAL",
@@ -146,6 +147,16 @@ def ensure_transcript_history_schema(connection: sqlite3.Connection) -> None:
     _ = connection.execute(
       f"ALTER TABLE {TRANSCRIPT_HISTORY_TABLE} ADD COLUMN {column_name} {column_definition}"
     )
+
+  _ = connection.execute(
+    f"""
+    CREATE TABLE IF NOT EXISTS {TRANSCRIPT_AUDIO_TABLE} (
+      transcript_id INTEGER PRIMARY KEY,
+      audio_m4a BLOB NOT NULL,
+      FOREIGN KEY (transcript_id) REFERENCES {TRANSCRIPT_HISTORY_TABLE}(id) ON DELETE CASCADE
+    )
+    """
+  )
 
 
 def main(argv: Sequence[str] | None = None) -> int:

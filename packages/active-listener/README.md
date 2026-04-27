@@ -50,14 +50,25 @@ When tracing is enabled, each rewrite finalization is wrapped in a Langfuse root
 
 If you still have an older override at `~/.config/eavesdrop/active-listener.system.md` or `~/.config/active-listener/system.md`, move it to `~/.config/eavesdrop/active-listener.rewrite.system.md`.
 
+## FFmpeg runtime dependency
+
+Historical audio archival now depends on a usable `ffmpeg` binary at startup.
+
+- If you leave `ffmpeg_path` unset, active-listener resolves `ffmpeg` from `PATH`.
+- If you set `ffmpeg_path`, relative values resolve from the config file directory before startup validation runs.
+- Startup fails fast when neither source provides an executable `ffmpeg` binary.
+
+The sample config leaves `ffmpeg_path: null`, which means PATH lookup remains the default. Use an absolute override when your workstation keeps FFmpeg outside the normal shell PATH.
+
 ## Rewrite model and prompt files
 
-Rewrite now runs against a local LiteRT `.litertlm` bundle. If `llm_rewrite.enabled` is `true`, the service must be able to open `llm_rewrite.model_path` during startup or it will fail fast.
+Rewrite config now uses a provider block under `llm_rewrite.provider`. The seeded sample config uses:
 
-Both `llm_rewrite.model_path` and `llm_rewrite.prompt_path` resolve relative to the config file directory, then normalize to absolute paths before the runtime starts. The seeded sample config uses:
-
-- `model_path: "models/rewrite.litertlm"`
 - `prompt_path: "prompts/rewrite_prompt.md"`
+- `provider.type: "litert"`
+- `provider.model_path: "models/rewrite.litertlm"`
+
+When the provider type is `litert`, both `llm_rewrite.provider.model_path` and `llm_rewrite.prompt_path` resolve relative to the config file directory, then normalize to absolute paths before the runtime starts.
 
 That means a copied config at `~/.config/eavesdrop/active-listener.yaml` expects its fallback model bundle beside that config, and its fallback prompt under `prompts/rewrite_prompt.md`, unless you point them somewhere else.
 

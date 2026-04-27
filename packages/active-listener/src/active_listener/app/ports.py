@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Protocol
 
+from active_listener.recording.reducer import RecordingReducerState
 from eavesdrop.client import (
   ConnectedEvent,
   DisconnectedEvent,
@@ -72,6 +73,37 @@ class FinalizedTranscriptRecord:
   duration_seconds: float | None
 
 
+@dataclass(frozen=True)
+class CapturedRecordingAudio:
+  """Immutable raw audio snapshot captured for one finished recording.
+
+  :param pcm_f32le: Raw mono float32 PCM bytes captured during the recording.
+  :type pcm_f32le: bytes
+  :param sample_rate_hz: Capture sample rate in Hz.
+  :type sample_rate_hz: int
+  :param channels: Capture channel count.
+  :type channels: int
+  """
+
+  pcm_f32le: bytes
+  sample_rate_hz: int
+  channels: int
+
+
+@dataclass(frozen=True)
+class FinishedRecording:
+  """Immutable recording snapshot handed from session teardown to finalization.
+
+  :param reducer_state: Final reducer state captured at recording finish.
+  :type reducer_state: RecordingReducerState
+  :param captured_audio: Immutable microphone capture snapshot for the recording.
+  :type captured_audio: CapturedRecordingAudio
+  """
+
+  reducer_state: RecordingReducerState
+  captured_audio: CapturedRecordingAudio
+
+
 class ActiveListenerClient(Protocol):
   """Protocol for the live transcription client dependency."""
 
@@ -122,7 +154,11 @@ class ActiveListenerRewriteClient(Protocol):
 class ActiveListenerTranscriptHistoryStore(Protocol):
   """Persistence boundary for successfully emitted transcript records."""
 
-  def record_finalized_transcript(self, record: FinalizedTranscriptRecord) -> None: ...
+  def record_finalized_recording(
+    self,
+    record: FinalizedTranscriptRecord,
+    captured_audio: CapturedRecordingAudio,
+  ) -> None: ...
 
 
 class ActiveListenerRuntimeError(RuntimeError):
