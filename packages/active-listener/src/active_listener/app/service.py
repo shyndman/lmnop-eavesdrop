@@ -68,12 +68,16 @@ class ActiveListenerService:
   spectrum_analyzer: SpectrumRuntime = field(default_factory=_build_noop_spectrum_analyzer)
   phase: ForegroundPhase = ForegroundPhase.IDLE
   disconnect_generation: int = 0
+  _llm_available: bool = field(default=False, init=False)
+  _llm_active: bool = field(default=False, init=False)
   _recording_session: RecordingSession = field(init=False)
   _recording_finalizer: RecordingFinalizer = field(init=False)
   _background_tasks: set[asyncio.Task[None]] = field(default_factory=set)
   _spectrum_task: asyncio.Task[None] | None = field(default=None, init=False)
 
   def __post_init__(self) -> None:
+    self._llm_available = self.config.llm_rewrite is not None
+    self._llm_active = self._llm_available
     self._recording_session = RecordingSession(
       keyboard=self.keyboard,
       client=self.client,
@@ -89,6 +93,8 @@ class ActiveListenerService:
       history_store=self.history_store,
       dbus_service=self.dbus_service,
       ingest_transcription_message=self._recording_session.ingest_transcription_message,
+      current_llm_available=self.current_llm_available,
+      current_llm_active=self.current_llm_active,
       current_disconnect_generation=self._current_disconnect_generation,
     )
 
@@ -160,6 +166,23 @@ class ActiveListenerService:
   async def wait_for_background_tasks(self) -> None:
     if self._background_tasks:
       _ = await asyncio.gather(*list(self._background_tasks), return_exceptions=True)
+
+  def current_llm_available(self) -> bool:
+    return self._llm_available
+
+  def current_llm_active(self) -> bool:
+    return self._llm_active
+
+  async def set_llm_active(self, active: bool) -> bool:
+    if not self._llm_available:
+      raise RuntimeError("llm unavailable")
+
+    if self._llm_active == active:
+      return self._llm_active
+
+    self._llm_active = active
+    self.logger.info("llm runtime toggled", active=active)
+    return self._llm_active
 
   async def handle_action(self, action: AppAction) -> AppActionDecision:
     decision = decide_app_action(self.phase, action)

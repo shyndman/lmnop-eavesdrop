@@ -17,6 +17,9 @@ export default class ActiveListenerIndicatorExtension extends Extension {
       toggleRecording: () => {
         this.serviceClient?.runRecordingControlAction();
       },
+      setLlmActive: (active) => {
+        this.serviceClient?.setLlmActive(active);
+      },
       openPreferences: () => {
         this.openPreferences();
       },

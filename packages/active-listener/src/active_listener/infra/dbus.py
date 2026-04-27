@@ -48,6 +48,14 @@ class RecordingControl(Protocol):
   async def handle_action(self, action: AppAction) -> AppActionDecision: ...
 
 
+class LlmRuntimeControl(Protocol):
+  def current_llm_available(self) -> bool: ...
+
+  def current_llm_active(self) -> bool: ...
+
+  async def set_llm_active(self, active: bool) -> bool: ...
+
+
 class AppStateService(Protocol):
   async def set_state(self, state: ForegroundPhase) -> None: ...
 
@@ -83,7 +91,12 @@ if TYPE_CHECKING:
   class ActiveListenerDbusInterface:
     _state: str = ""
     _recording_control: RecordingControl | None = None
+    _llm_runtime_control: LlmRuntimeControl | None = None
+    _llm_available: bool = False
+    _llm_active: bool = False
     state: object = object()
+    llm_available: object = object()
+    llm_active: object = object()
     transcription_updated: object = object()
     spectrum_updated: object = object()
     recording_aborted: object = object()
@@ -107,7 +120,15 @@ if TYPE_CHECKING:
       _ = control
       raise NotImplementedError
 
+    def set_llm_runtime_control(self, control: LlmRuntimeControl) -> None:
+      _ = control
+      raise NotImplementedError
+
     async def start_or_finish_recording(self) -> str:
+      raise NotImplementedError
+
+    async def set_llm_active(self, active: bool) -> bool:
+      _ = active
       raise NotImplementedError
 
     def export_to_dbus(self, object_path: str, bus: SdBus | None = None) -> DbusExportHandle:
@@ -134,6 +155,12 @@ else:
         DbusInterfaceCommonAsync.__init__(self)
         self._state = initial_state.value
         self._recording_control = None
+        self._llm_runtime_control = None
+        self._llm_available = False
+        self._llm_active = False
+
+      def emit_properties_changed(self, properties: dict[str, tuple[str, object]]) -> None:
+        self.properties_changed.emit((DBUS_INTERFACE_NAME, properties, []))
 
       @dbus_property_async(
         property_signature="s",
@@ -148,8 +175,51 @@ else:
 
       state.setter_private(set_local_state)
 
+      @dbus_property_async(
+        property_signature="b",
+        flags=DbusPropertyEmitsChangeFlag,
+        property_name="LlmAvailable",
+      )
+      def llm_available(self) -> bool:
+        return self._llm_available
+
+      def set_local_llm_available(self, value: bool) -> None:
+        self._llm_available = value
+
+      llm_available.setter_private(set_local_llm_available)
+
+      @dbus_property_async(
+        property_signature="b",
+        flags=DbusPropertyEmitsChangeFlag,
+        property_name="LlmActive",
+      )
+      def llm_active(self) -> bool:
+        return self._llm_active
+
+      def set_local_llm_active(self, value: bool) -> None:
+        self._llm_active = value
+
+      llm_active.setter_private(set_local_llm_active)
+
       def set_recording_control(self, control: RecordingControl) -> None:
         self._recording_control = control
+
+      def set_llm_runtime_control(self, control: LlmRuntimeControl) -> None:
+        previous_available = self._llm_available
+        previous_active = self._llm_active
+        self._llm_runtime_control = control
+        current_available = control.current_llm_available()
+        current_active = control.current_llm_active()
+        set_local_llm_available(self, current_available)
+        set_local_llm_active(self, current_active)
+
+        changed_properties: dict[str, tuple[str, object]] = {}
+        if current_available != previous_available:
+          changed_properties["LlmAvailable"] = ("b", current_available)
+        if current_active != previous_active:
+          changed_properties["LlmActive"] = ("b", current_active)
+        if changed_properties:
+          emit_properties_changed(self, changed_properties)
 
       @dbus_signal_async(
         signal_signature="a(sbb)",
@@ -224,29 +294,41 @@ else:
           return StartOrFinishResult.FINISHED.value
         return StartOrFinishResult.IGNORED.value
 
+      @dbus_method_async(
+        input_signature="b",
+        result_signature="b",
+        input_args_names=("active",),
+        result_args_names=("active",),
+        method_name="SetLlmActive",
+      )
+      async def set_llm_active(self, active: bool) -> bool:
+        if self._llm_runtime_control is None:
+          raise RuntimeError("llm runtime control unavailable")
+
+        previous_active = self._llm_active
+        resolved_active = await self._llm_runtime_control.set_llm_active(active)
+        set_local_llm_active(self, resolved_active)
+
+        if resolved_active != previous_active:
+          emit_properties_changed(self, {"LlmActive": ("b", resolved_active)})
+
+        return resolved_active
+
       async def set_state(self, state: ForegroundPhase) -> None:
         if state.value == self._state:
           return
         set_local_state(self, state.value)
-        self.properties_changed.emit(
-          (
-            DBUS_INTERFACE_NAME,
-            {
-              "State": (
-                "s",
-                state.value,
-              )
-            },
-            [],
-          )
-        )
+        emit_properties_changed(self, {"State": ("s", state.value)})
 
       async def current_state(self) -> str:
         return self._state
 
       namespace["__init__"] = __init__
       namespace["state"] = state
+      namespace["llm_available"] = llm_available
+      namespace["llm_active"] = llm_active
       namespace["set_recording_control"] = set_recording_control
+      namespace["set_llm_runtime_control"] = set_llm_runtime_control
       namespace["transcription_updated"] = transcription_updated
       namespace["spectrum_updated"] = spectrum_updated
       namespace["recording_aborted"] = recording_aborted
@@ -256,6 +338,7 @@ else:
       namespace["reconnecting"] = reconnecting
       namespace["reconnected"] = reconnected
       namespace["start_or_finish_recording"] = start_or_finish_recording
+      namespace["set_llm_active"] = set_llm_active
       namespace["set_state"] = set_state
       namespace["current_state"] = current_state
 
@@ -340,6 +423,9 @@ class SdbusDbusService:
 
   def attach_recording_control(self, control: RecordingControl) -> None:
     self.interface.set_recording_control(control)
+
+  def attach_llm_runtime_control(self, control: LlmRuntimeControl) -> None:
+    self.interface.set_llm_runtime_control(control)
 
   async def transcription_updated(self, runs: list[TextRun]) -> None:
     _logger.debug(

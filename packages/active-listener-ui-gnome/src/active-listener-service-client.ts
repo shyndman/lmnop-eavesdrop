@@ -3,6 +3,7 @@ import GLib from 'gi://GLib';
 
 import {
   deriveIndicatorState,
+  resolveSetLlmActiveCommandResponse,
   resolveStartOrFinishCommandResponse,
   type IndicatorState,
 } from './recording-menu-control.js';
@@ -13,7 +14,10 @@ const DBUS_BUS_NAME = 'ca.lmnop.Eavesdrop.ActiveListener';
 const DBUS_OBJECT_PATH = '/ca/lmnop/Eavesdrop/ActiveListener';
 const DBUS_INTERFACE_NAME = 'ca.lmnop.Eavesdrop.ActiveListener1';
 const DBUS_STATE_PROPERTY = 'State';
+const DBUS_LLM_AVAILABLE_PROPERTY = 'LlmAvailable';
+const DBUS_LLM_ACTIVE_PROPERTY = 'LlmActive';
 const DBUS_START_OR_FINISH_RECORDING_METHOD = 'StartOrFinishRecording';
+const DBUS_SET_LLM_ACTIVE_METHOD = 'SetLlmActive';
 const DBUS_TRANSCRIPTION_UPDATED_SIGNAL = 'TranscriptionUpdated';
 const DBUS_SPECTRUM_UPDATED_SIGNAL = 'SpectrumUpdated';
 const DBUS_PROXY_FLAGS = Gio.DBusProxyFlags.DO_NOT_AUTO_START_AT_CONSTRUCTION;
@@ -29,6 +33,8 @@ export type ActiveListenerServiceState = {
   indicatorState: IndicatorState;
   servicePresent: boolean;
   phase: string | null;
+  llmAvailable: boolean;
+  llmActive: boolean;
 };
 
 export type ActiveListenerServiceEvents = {
@@ -65,7 +71,7 @@ export class ActiveListenerServiceClient {
       },
       () => {
         this.detachProxy();
-        this.updateServiceState(false, null);
+        this.updateServiceState(false, null, false, false);
       },
     );
   }
@@ -112,6 +118,40 @@ export class ActiveListenerServiceClient {
     );
   }
 
+  setLlmActive(active: boolean): void {
+    const proxy = this.proxy;
+    if (proxy === null) {
+      return;
+    }
+
+    proxy.call(
+      DBUS_SET_LLM_ACTIVE_METHOD,
+      new GLib.Variant('(b)', [active]),
+      Gio.DBusCallFlags.NONE,
+      -1,
+      null,
+      (source, result) => {
+        const response = resolveSetLlmActiveCommandResponse(() => {
+          if (source === null || result === null) {
+            throw new Error('Active Listener command returned no result');
+          }
+
+          const reply = source.call_finish(result);
+          return reply.deepUnpack() as [boolean];
+        });
+
+        if (response.kind === 'failure') {
+          console.error('Active Listener command failed', response.detail);
+          this.syncIndicatorState();
+          this.events.onError(response.title, response.detail);
+          return;
+        }
+
+        console.debug(`Active Listener command result ${String(response.result)}`);
+      },
+    );
+  }
+
   private attachProxy(): void {
     this.detachProxy();
 
@@ -127,7 +167,7 @@ export class ActiveListenerServiceClient {
       );
     } catch (error) {
       console.error('Active Listener indicator failed to create DBus proxy', error);
-      this.updateServiceState(false, null);
+      this.updateServiceState(false, null, false, false);
       return;
     }
 
@@ -193,19 +233,33 @@ export class ActiveListenerServiceClient {
 
   private syncIndicatorState(): void {
     if (this.proxy === null) {
-      this.updateServiceState(false, null);
+      this.updateServiceState(false, null, false, false);
       return;
     }
 
-    const value = this.proxy.get_cached_property(DBUS_STATE_PROPERTY)?.deepUnpack();
-    this.updateServiceState(true, typeof value === 'string' ? value : null);
+    const phase = this.proxy.get_cached_property(DBUS_STATE_PROPERTY)?.deepUnpack();
+    const llmAvailable = this.proxy.get_cached_property(DBUS_LLM_AVAILABLE_PROPERTY)?.deepUnpack();
+    const llmActive = this.proxy.get_cached_property(DBUS_LLM_ACTIVE_PROPERTY)?.deepUnpack();
+    this.updateServiceState(
+      true,
+      typeof phase === 'string' ? phase : null,
+      llmAvailable === true,
+      llmActive === true,
+    );
   }
 
-  private updateServiceState(servicePresent: boolean, phase: string | null): void {
+  private updateServiceState(
+    servicePresent: boolean,
+    phase: string | null,
+    llmAvailable: boolean,
+    llmActive: boolean,
+  ): void {
     this.events.onStateChanged({
       indicatorState: deriveIndicatorState(servicePresent, phase),
       servicePresent,
       phase,
+      llmAvailable,
+      llmActive,
     });
   }
 }

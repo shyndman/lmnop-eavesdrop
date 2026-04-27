@@ -615,9 +615,27 @@ async def test_create_service_connects_client_and_initializes_emitter() -> None:
   )
 
   assert service.phase is ForegroundPhase.IDLE
+  assert service.current_llm_available() is False
+  assert service.current_llm_active() is False
   assert client.connect_calls == 1
   assert emitter.initialize_calls == 1
   assert dbus_service.states == [ForegroundPhase.IDLE]
+
+
+@pytest.mark.asyncio
+async def test_create_service_defaults_llm_runtime_active_when_rewrite_is_configured() -> None:
+  service = await create_service(
+    _config(rewrite_enabled=True),
+    dbus_service=FakeDbusService(),
+    keyboard_resolver=lambda _name: FakeKeyboard(),
+    client_factory=lambda _config, _on_capture: FakeClient(),
+    emitter_factory=lambda: FakeEmitter(),
+    rewrite_client_factory=lambda _config: FakeRewriteClient(),
+    history_store_factory=lambda _config, _logger, _dbus_service: FakeHistoryStore(),
+  )
+
+  assert service.current_llm_available() is True
+  assert service.current_llm_active() is True
 
 
 @pytest.mark.asyncio
@@ -713,6 +731,26 @@ async def test_start_and_cancel_recording_toggle_grab_and_streaming() -> None:
   assert spectrum_analyzer.start_calls == 1
   assert spectrum_analyzer.stop_calls == 1
   assert harness.logger.info_messages == ["recording started", "recording cancelled"]
+
+
+@pytest.mark.asyncio
+async def test_set_llm_active_fails_when_rewrite_is_unavailable() -> None:
+  harness = _service()
+
+  with pytest.raises(RuntimeError, match="llm unavailable"):
+    _ = await harness.service.set_llm_active(True)
+
+
+@pytest.mark.asyncio
+async def test_set_llm_active_updates_runtime_flag() -> None:
+  harness = _service(config=_config(rewrite_enabled=True))
+
+  assert await harness.service.set_llm_active(False) is False
+  assert harness.service.current_llm_active() is False
+  assert harness.logger.info_records[-1] == LogRecord(
+    event="llm runtime toggled",
+    fields={"active": False},
+  )
 
 
 @pytest.mark.asyncio
@@ -1926,6 +1964,10 @@ async def test_finalize_recording_emits_raw_text_when_rewrite_is_disabled() -> N
 
   assert harness.emitter.emitted == ["alpha "]
   assert harness.rewrite_client.calls == []
+  assert LogRecord(
+    event="recording finalization mode",
+    fields={"stream": "stream-1", "llm_mode": "unavailable"},
+  ) in harness.logger.info_records
   assert harness.history_store.recordings == [
     RecordedFinalization(
       record=FinalizedTranscriptRecord(
@@ -1952,6 +1994,61 @@ async def test_finalize_recording_emits_raw_text_when_rewrite_is_disabled() -> N
       "emitted_text": "alpha ",
       "text_length": 6,
       "source": "raw",
+    },
+  )
+
+
+@pytest.mark.asyncio
+async def test_finalize_recording_skips_only_rewrite_when_runtime_disabled() -> None:
+  client = FakeClient(
+    flush_results=[
+      _message(
+        _segment(1, "alpha", completed=True),
+        _segment(2, "tail", completed=False),
+      )
+    ]
+  )
+  harness = _service(client=client, config=_config(rewrite_enabled=True))
+
+  assert await harness.service.set_llm_active(False) is False
+
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  harness.recording_audio_buffer.append(_sine_wave_bytes(440.0, 32))
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  await harness.service.wait_for_background_tasks()
+
+  assert harness.emitter.emitted == ["alpha "]
+  assert harness.rewrite_client.calls == []
+  assert LogRecord(
+    event="recording finalization mode",
+    fields={"stream": "stream-1", "llm_mode": "bypassed"},
+  ) in harness.logger.info_records
+  assert harness.history_store.recordings == [
+    RecordedFinalization(
+      record=FinalizedTranscriptRecord(
+        pre_finalization_text="alpha",
+        post_finalization_text="alpha ",
+        llm_model=None,
+        tokens_in=None,
+        tokens_out=None,
+        cost=None,
+        word_count=1,
+        duration_seconds=0.1,
+      ),
+      captured_audio=CapturedRecordingAudio(
+        pcm_f32le=_sine_wave_bytes(440.0, 32),
+        sample_rate_hz=SAMPLE_RATE_HZ,
+        channels=1,
+      ),
+    )
+  ]
+  assert harness.logger.info_records[-1] == LogRecord(
+    event="text emitted",
+    fields={
+      "stream": "stream-1",
+      "emitted_text": "alpha ",
+      "text_length": 6,
+      "source": "pipeline_no_llm",
     },
   )
 
@@ -2113,13 +2210,17 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
       "cost_details": {"total": 0.00012},
     }
   ]
+  assert LogRecord(
+    event="recording finalization mode",
+    fields={"stream": "stream-1", "llm_mode": "active"},
+  ) in harness.logger.info_records
   assert harness.logger.info_records[-1] == LogRecord(
     event="text emitted",
     fields={
       "stream": "stream-1",
       "emitted_text": "rewritten alpha ",
       "text_length": 16,
-      "source": "pipeline",
+      "source": "pipeline_llm",
     },
   )
 

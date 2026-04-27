@@ -39,6 +39,12 @@ class WritablePropertyProxy(Protocol):
   async def set_async(self, value: str) -> None: ...
 
 
+class WritableBoolPropertyProxy(Protocol):
+  async def get_async(self) -> bool: ...
+
+  async def set_async(self, value: bool) -> None: ...
+
+
 class EmptySignalProxy(Protocol):
   def __aiter__(self) -> AsyncIterator[None]: ...
 
@@ -80,6 +86,10 @@ class StartOrFinishProxy(Protocol):
   async def start_or_finish_recording(self) -> str: ...
 
 
+class SetLlmActiveProxy(Protocol):
+  async def set_llm_active(self, active: bool) -> bool: ...
+
+
 @dataclass
 class FakeRecordingControl:
   decisions: list[AppActionDecision]
@@ -88,6 +98,26 @@ class FakeRecordingControl:
   async def handle_action(self, action: AppAction) -> AppActionDecision:
     self.actions.append(action)
     return self.decisions.pop(0)
+
+
+@dataclass
+class FakeLlmRuntimeControl:
+  llm_available: bool
+  llm_active: bool
+  calls: list[bool] = field(default_factory=list)
+
+  def current_llm_available(self) -> bool:
+    return self.llm_available
+
+  def current_llm_active(self) -> bool:
+    return self.llm_active
+
+  async def set_llm_active(self, active: bool) -> bool:
+    self.calls.append(active)
+    if not self.llm_available:
+      raise RuntimeError("llm unavailable")
+    self.llm_active = active
+    return self.llm_active
 
 
 async def receive_next_signal(iterator: AsyncIterator[None]) -> None:
@@ -123,9 +153,21 @@ async def connect_test_service_or_skip() -> SdbusDbusService:
 @pytest.mark.asyncio
 async def test_interface_contract_names_match_spec() -> None:
   state_descriptor = cast(PropertyDescriptor, ActiveListenerDbusInterface.__dict__["state"])
+  llm_available_descriptor = cast(
+    PropertyDescriptor,
+    ActiveListenerDbusInterface.__dict__["llm_available"],
+  )
+  llm_active_descriptor = cast(
+    PropertyDescriptor,
+    ActiveListenerDbusInterface.__dict__["llm_active"],
+  )
   start_or_finish_method = cast(
     MethodDescriptor,
     ActiveListenerDbusInterface.__dict__["start_or_finish_recording"],
+  )
+  set_llm_active_method = cast(
+    MethodDescriptor,
+    ActiveListenerDbusInterface.__dict__["set_llm_active"],
   )
   recording_aborted_signal = cast(
     SignalDescriptor,
@@ -162,7 +204,12 @@ async def test_interface_contract_names_match_spec() -> None:
 
   assert state_descriptor.property_name == "State"
   assert state_descriptor.property_setter_is_public is False
+  assert llm_available_descriptor.property_name == "LlmAvailable"
+  assert llm_available_descriptor.property_setter_is_public is False
+  assert llm_active_descriptor.property_name == "LlmActive"
+  assert llm_active_descriptor.property_setter_is_public is False
   assert start_or_finish_method.method_name == "StartOrFinishRecording"
+  assert set_llm_active_method.method_name == "SetLlmActive"
   assert transcription_updated_signal.signal_name == "TranscriptionUpdated"
   assert spectrum_updated_signal.signal_name == "SpectrumUpdated"
   assert recording_aborted_signal.signal_name == "RecordingAborted"
@@ -197,14 +244,24 @@ async def test_noop_service_accepts_spectrum_updates() -> None:
 async def test_property_is_read_only_over_dbus_and_empty_signals_emit() -> None:
   service = await connect_test_service_or_skip()
   proxy = ActiveListenerDbusInterface.new_proxy(DBUS_BUS_NAME, DBUS_OBJECT_PATH, bus=service.bus)
+  llm_runtime_control = FakeLlmRuntimeControl(llm_available=True, llm_active=True)
+  service.attach_llm_runtime_control(llm_runtime_control)
 
   try:
     state_proxy = cast(WritablePropertyProxy, proxy.state)
+    llm_available_proxy = cast(WritableBoolPropertyProxy, proxy.llm_available)
+    llm_active_proxy = cast(WritableBoolPropertyProxy, proxy.llm_active)
 
     assert await state_proxy.get_async() == ForegroundPhase.STARTING.value
+    assert await llm_available_proxy.get_async() is True
+    assert await llm_active_proxy.get_async() is True
 
     with pytest.raises(DbusPropertyReadOnlyError, match="State"):
       await state_proxy.set_async("idle")
+    with pytest.raises(DbusPropertyReadOnlyError, match="LlmAvailable"):
+      await llm_available_proxy.set_async(False)
+    with pytest.raises(DbusPropertyReadOnlyError, match="LlmActive"):
+      await llm_active_proxy.set_async(False)
 
     for state in (
       ForegroundPhase.IDLE,
@@ -269,6 +326,8 @@ async def test_property_is_read_only_over_dbus_and_empty_signals_emit() -> None:
     assert await asyncio.wait_for(reconnecting_task, timeout=2) is None
     assert await asyncio.wait_for(reconnected_task, timeout=2) is None
     assert await state_proxy.get_async() == ForegroundPhase.IDLE.value
+    assert await llm_available_proxy.get_async() is True
+    assert await llm_active_proxy.get_async() is True
   finally:
     await service.close()
 
@@ -304,6 +363,47 @@ async def test_start_or_finish_recording_returns_locked_results() -> None:
 
 @requires_user_bus
 @pytest.mark.asyncio
+async def test_set_llm_active_returns_effective_state_and_updates_property() -> None:
+  service = await connect_test_service_or_skip()
+  proxy = ActiveListenerDbusInterface.new_proxy(DBUS_BUS_NAME, DBUS_OBJECT_PATH, bus=service.bus)
+  llm_runtime_control = FakeLlmRuntimeControl(llm_available=True, llm_active=True)
+  service.attach_llm_runtime_control(llm_runtime_control)
+
+  try:
+    llm_active_proxy = cast(WritableBoolPropertyProxy, proxy.llm_active)
+    method_proxy = cast(SetLlmActiveProxy, proxy)
+
+    assert await llm_active_proxy.get_async() is True
+    assert await method_proxy.set_llm_active(False) is False
+    assert await llm_active_proxy.get_async() is False
+    assert await method_proxy.set_llm_active(False) is False
+    assert await llm_active_proxy.get_async() is False
+    assert await method_proxy.set_llm_active(True) is True
+    assert await llm_active_proxy.get_async() is True
+    assert llm_runtime_control.calls == [False, False, True]
+  finally:
+    await service.close()
+
+
+@requires_user_bus
+@pytest.mark.asyncio
+async def test_set_llm_active_fails_when_llm_is_unavailable() -> None:
+  service = await connect_test_service_or_skip()
+  proxy = ActiveListenerDbusInterface.new_proxy(DBUS_BUS_NAME, DBUS_OBJECT_PATH, bus=service.bus)
+  llm_runtime_control = FakeLlmRuntimeControl(llm_available=False, llm_active=False)
+  service.attach_llm_runtime_control(llm_runtime_control)
+
+  try:
+    method_proxy = cast(SetLlmActiveProxy, proxy)
+
+    with pytest.raises(Exception, match="llm unavailable"):
+      _ = await method_proxy.set_llm_active(True)
+  finally:
+    await service.close()
+
+
+@requires_user_bus
+@pytest.mark.asyncio
 async def test_dbus_introspection_matches_locked_contract() -> None:
   service = await connect_test_service_or_skip()
   proxy = ActiveListenerDbusInterface.new_proxy(DBUS_BUS_NAME, DBUS_OBJECT_PATH, bus=service.bus)
@@ -319,11 +419,15 @@ async def test_dbus_introspection_matches_locked_contract() -> None:
     assert DBUS_OBJECT_PATH == "/ca/lmnop/Eavesdrop/ActiveListener"
     assert 'interface name="ca.lmnop.Eavesdrop.ActiveListener1"' in introspection_xml
     assert '<method name="StartOrFinishRecording">' in introspection_xml
+    assert '<method name="SetLlmActive">' in introspection_xml
     assert '<method name="StartOrFinishRecording">' in interface_block
+    assert '<method name="SetLlmActive">' in interface_block
     assert 'name="result"' in interface_block
     assert 'type="s"' in interface_block
     assert 'direction="out"' in interface_block
     assert '<property name="State" type="s" access="read">' in introspection_xml
+    assert '<property name="LlmAvailable" type="b" access="read">' in introspection_xml
+    assert '<property name="LlmActive" type="b" access="read">' in introspection_xml
     assert '<signal name="TranscriptionUpdated">' in introspection_xml
     assert '<arg type="a(sbb)" name="runs"/>' in interface_block
     assert '<signal name="SpectrumUpdated">' in introspection_xml

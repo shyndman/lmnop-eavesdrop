@@ -6,6 +6,7 @@ import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 import {
+  deriveLlmRewriteMenuState,
   deriveMenuControlState,
   type IndicatorState,
 } from './recording-menu-control.js';
@@ -16,6 +17,7 @@ const RECORDING_SPIN_TRANSITION_NAME = 'recording-spin';
 
 export type PanelIndicatorActions = {
   toggleRecording(): void;
+  setLlmActive(active: boolean): void;
   openPreferences(): void;
   showOverlayPreview(): void;
   restartService(): void;
@@ -29,11 +31,15 @@ export class PanelIndicator {
   private readonly actions: PanelIndicatorActions;
   private readonly icon: St.Icon;
   private readonly recordingControlItem: PopupMenu.PopupMenuItem;
+  private readonly llmRewritingItem: PopupMenu.PopupSwitchMenuItem;
   private readonly restartServiceItem: PopupMenu.PopupMenuItem;
   private readonly stopServiceItem: PopupMenu.PopupMenuItem;
   private indicatorState: IndicatorState = 'absent';
   private servicePresent = false;
   private servicePhase: string | null = null;
+  private llmAvailable = false;
+  private llmActive = false;
+  private applyingLlmToggleState = false;
 
   constructor(name: string, assetBasePath: string, actions: PanelIndicatorActions) {
     this.assetBasePath = assetBasePath;
@@ -50,6 +56,15 @@ export class PanelIndicator {
     this.recordingControlItem = new PopupMenu.PopupMenuItem('No Service');
     this.recordingControlItem.connect('activate', () => {
       this.actions.toggleRecording();
+    });
+
+    this.llmRewritingItem = new PopupMenu.PopupSwitchMenuItem('LLM rewriting', false);
+    this.llmRewritingItem.connect('toggled', (_item, active) => {
+      if (this.applyingLlmToggleState) {
+        return;
+      }
+
+      this.actions.setLlmActive(active);
     });
 
     const preferencesItem = new PopupMenu.PopupMenuItem('Preferences');
@@ -77,6 +92,7 @@ export class PanelIndicator {
     }
 
     this.button.menu.addMenuItem(this.recordingControlItem);
+    this.button.menu.addMenuItem(this.llmRewritingItem);
     this.button.menu.addMenuItem(preferencesItem);
     this.button.menu.addMenuItem(showOverlayItem);
     this.button.menu.addMenuItem(this.restartServiceItem);
@@ -96,6 +112,8 @@ export class PanelIndicator {
     this.indicatorState = serviceState.indicatorState;
     this.servicePresent = serviceState.servicePresent;
     this.servicePhase = serviceState.phase;
+    this.llmAvailable = serviceState.llmAvailable;
+    this.llmActive = serviceState.llmActive;
     this.updateMenuSensitivity();
 
     if (previousState === 'recording' && serviceState.indicatorState !== 'recording') {
@@ -145,8 +163,18 @@ export class PanelIndicator {
 
   private updateMenuSensitivity(): void {
     const controlState = deriveMenuControlState(this.servicePresent, this.servicePhase);
+    const llmRewriteState = deriveLlmRewriteMenuState(
+      this.servicePresent,
+      this.llmAvailable,
+      this.llmActive,
+    );
     this.recordingControlItem.label.set_text(controlState.label);
     this.recordingControlItem.sensitive = controlState.enabled;
+    this.llmRewritingItem.visible = llmRewriteState.visible;
+    this.llmRewritingItem.sensitive = llmRewriteState.enabled;
+    this.applyingLlmToggleState = true;
+    this.llmRewritingItem.setToggleState(llmRewriteState.active);
+    this.applyingLlmToggleState = false;
     this.restartServiceItem.sensitive = true;
     this.stopServiceItem.sensitive = this.servicePresent;
   }

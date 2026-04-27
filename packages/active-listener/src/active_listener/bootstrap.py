@@ -161,6 +161,7 @@ async def create_service(
   )
   if isinstance(resolved_dbus_service, SdbusDbusService):
     resolved_dbus_service.attach_recording_control(service)
+    resolved_dbus_service.attach_llm_runtime_control(service)
   await resolved_dbus_service.set_state(ForegroundPhase.IDLE)
   return service
 

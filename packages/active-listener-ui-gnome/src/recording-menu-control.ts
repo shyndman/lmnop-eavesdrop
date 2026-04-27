@@ -5,9 +5,18 @@ export type MenuControlState = {
   enabled: boolean;
 };
 
-export type StartOrFinishCommandResponse =
-  | { kind: 'success'; result: string }
+export type LlmRewriteMenuState = {
+  visible: boolean;
+  enabled: boolean;
+  active: boolean;
+};
+
+export type CommandResponse<T> =
+  | { kind: 'success'; result: T }
   | { kind: 'failure'; title: string; detail: string };
+
+export type StartOrFinishCommandResponse = CommandResponse<string>;
+export type SetLlmActiveCommandResponse = CommandResponse<boolean>;
 
 export const ACTIVE_LISTENER_COMMAND_FAILED_TITLE = 'Active Listener command failed';
 
@@ -45,11 +54,45 @@ export const deriveMenuControlState = (
   return { label: 'Start Recording', enabled: false };
 };
 
+export const deriveLlmRewriteMenuState = (
+  servicePresent: boolean,
+  llmAvailable: boolean,
+  llmActive: boolean,
+): LlmRewriteMenuState => {
+  if (!servicePresent || !llmAvailable) {
+    return { visible: false, enabled: false, active: false };
+  }
+
+  return {
+    visible: true,
+    enabled: true,
+    active: llmActive,
+  };
+};
+
 export const resolveStartOrFinishCommandResponse = (
   callFinish: () => [string],
 ): StartOrFinishCommandResponse => {
-  try {
+  return resolveCommandResponse(() => {
     const [result] = callFinish();
+    return result;
+  });
+};
+
+export const resolveSetLlmActiveCommandResponse = (
+  callFinish: () => [boolean],
+): SetLlmActiveCommandResponse => {
+  return resolveCommandResponse(() => {
+    const [result] = callFinish();
+    return result;
+  });
+};
+
+const resolveCommandResponse = <T>(
+  callFinish: () => T,
+): CommandResponse<T> => {
+  try {
+    const result = callFinish();
     return { kind: 'success', result };
   } catch (error) {
     return {

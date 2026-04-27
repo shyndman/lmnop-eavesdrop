@@ -77,6 +77,8 @@ RecordingMessageIngestor = Callable[
   [RecordingReducerState, TranscriptionMessage],
   TranscriptionUpdate | None,
 ]
+LlmAvailabilityReader = Callable[[], bool]
+LlmActiveReader = Callable[[], bool]
 DisconnectGenerationReader = Callable[[], int]
 
 
@@ -92,6 +94,8 @@ class RecordingFinalizer:
   history_store: ActiveListenerTranscriptHistoryStore
   dbus_service: AppStateService
   ingest_transcription_message: RecordingMessageIngestor
+  current_llm_available: LlmAvailabilityReader
+  current_llm_active: LlmActiveReader
   current_disconnect_generation: DisconnectGenerationReader
   _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
   _flush_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -142,7 +146,11 @@ class RecordingFinalizer:
 
       final_text = finalization_state.text
 
-      emitted_text_source = "pipeline" if self.config.llm_rewrite is not None else "raw"
+      llm_mode = _llm_mode(
+        llm_available=self.current_llm_available(),
+        rewrite_ran=finalization_state.rewrite_result is not None,
+      )
+      emitted_text_source = _emitted_text_source(llm_mode)
 
       try:
         self.emitter.emit_text(final_text)
@@ -150,6 +158,7 @@ class RecordingFinalizer:
         self.logger.exception("text emission failed", stream=message.stream)
         return
 
+      self.logger.info("recording finalization mode", stream=message.stream, llm_mode=llm_mode)
       self.logger.info(
         "text emitted",
         stream=message.stream,
@@ -189,6 +198,9 @@ class RecordingFinalizer:
 
   def _pipeline_steps(self, *, stream: str) -> list[PipelineStep]:
     async def rewrite_with_llm(state: FinalizationState) -> FinalizationState:
+      if not self.current_llm_active():
+        return state
+
       return await self._rewrite_with_llm(state=state, stream=stream)
 
     async def append_trailing_space(state: FinalizationState) -> FinalizationState:
@@ -203,7 +215,7 @@ class RecordingFinalizer:
       self._replace_symbols,
     ]
 
-    if self.config.llm_rewrite is not None:
+    if self.current_llm_available():
       steps.append(rewrite_with_llm)
 
     steps.append(append_trailing_space)
@@ -355,6 +367,26 @@ class RecordingFinalizer:
 
 def _count_words(text: str) -> int:
   return len(text.split())
+
+
+def _llm_mode(*, llm_available: bool, rewrite_ran: bool) -> str:
+  if not llm_available:
+    return "unavailable"
+
+  if rewrite_ran:
+    return "active"
+
+  return "bypassed"
+
+
+def _emitted_text_source(llm_mode: str) -> str:
+  if llm_mode == "unavailable":
+    return "raw"
+
+  if llm_mode == "active":
+    return "pipeline_llm"
+
+  return "pipeline_no_llm"
 
 
 def _rewrite_provider_type(config: LlmRewriteConfig) -> str:

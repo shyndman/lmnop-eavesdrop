@@ -19,6 +19,8 @@ export class TranscriptOverlayController {
     indicatorState: 'absent',
     servicePresent: false,
     phase: null,
+    llmAvailable: false,
+    llmActive: false,
   };
   private transcriptRuns: TranscriptRun[] = [];
   private transcriptDisplay: TranscriptDisplay = {
