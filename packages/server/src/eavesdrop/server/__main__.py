@@ -3,17 +3,17 @@
 import argparse
 import asyncio
 import os
-
-
-class CLIArgs(argparse.Namespace):
-  port: int = 0
-  config: str | None = None
-  json_logs: bool = False
-  correlation_id: str | None = None
-  log_namespace: str | None = None
-
+from typing import Protocol, cast
 
 from eavesdrop.common import get_logger, setup_logging
+
+
+class CLIArgs(Protocol):
+  port: int
+  config: str | None
+  json_logs: bool
+  correlation_id: str | None
+  log_namespace: str | None
 
 
 def get_env_str(env_var: str, default: str | None = None) -> str | None:
@@ -81,7 +81,7 @@ async def _async_main() -> None:
       "(Env: LOG_NAMESPACE)"
     ),
   )
-  args: CLIArgs = parser.parse_args(namespace=CLIArgs())
+  args = cast(CLIArgs, cast(object, parser.parse_args()))
 
   # Validate required config path
   if not args.config:
