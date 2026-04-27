@@ -406,6 +406,39 @@ class FakeRewriteClient:
 
 
 @dataclass
+class BlockingFirstRewriteClient(FakeRewriteClient):
+  """Rewrite client whose first rewrite blocks until the test releases it."""
+
+  first_call_started: asyncio.Event = field(default_factory=asyncio.Event)
+  release_first: asyncio.Future[RewriteResult] | None = None
+  call_count: int = 0
+
+  @override
+  async def rewrite_text(
+    self,
+    *,
+    instructions: str,
+    transcript: str,
+  ) -> RewriteResult:
+    self.call_count += 1
+    if self.call_count == 1:
+      self.calls.append(
+        {
+          "instructions": instructions,
+          "transcript": transcript,
+        }
+      )
+      self.first_call_started.set()
+      if self.release_first is None:
+        raise RuntimeError("first rewrite release future not configured")
+      return await self.release_first
+    return await super().rewrite_text(
+      instructions=instructions,
+      transcript=transcript,
+    )
+
+
+@dataclass
 class FakeHistoryStore:
   records: list[FinalizedTranscriptRecord] = field(default_factory=list)
 
@@ -1408,6 +1441,65 @@ async def test_new_recording_can_start_while_older_finalization_waits() -> None:
   assert emitter.emitted == ["first ", "second "]
   assert harness.keyboard.grab_calls == 2
   assert harness.keyboard.ungrab_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_new_commit_flushes_while_older_rewrite_is_still_running(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Commit must clear the server operation boundary before waiting on older rewrite work."""
+  rewrite_client = BlockingFirstRewriteClient()
+  first_rewrite_result = asyncio.get_running_loop().create_future()
+  rewrite_client.release_first = first_rewrite_result
+  client = FakeClient(
+    flush_results=[
+      _message(
+        _segment(2, "first", completed=True),
+        _segment(3, "tail", completed=False),
+      ),
+      _message(
+        _segment(3, "second", completed=True),
+        _segment(4, "tail", completed=False),
+      ),
+    ]
+  )
+  emitter = FakeEmitter()
+  harness = _service(
+    config=_config(rewrite_enabled=True),
+    client=client,
+    emitter=emitter,
+    rewrite_client=rewrite_client,
+  )
+  _ = monkeypatch.setattr(
+    "active_listener.infra.rewrite.load_active_listener_rewrite_prompt",
+    _prompt_loader(_loaded_prompt_file(_prompt())),
+  )
+  service = harness.service
+
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
+  _ = await asyncio.wait_for(rewrite_client.first_call_started.wait(), timeout=0.5)
+
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
+  await asyncio.sleep(0)
+
+  assert client.flush_calls == [True, True]
+  assert emitter.emitted == []
+
+  first_rewrite_result.set_result(
+    RewriteResult(
+      text="first rewritten",
+      model="fake-model",
+      input_tokens=None,
+      output_tokens=None,
+      cost=None,
+    )
+  )
+  await service.wait_for_background_tasks()
+
+  assert emitter.emitted == ["first rewritten ", "rewritten text "]
+  assert rewrite_client.call_count == 2
 
 
 @pytest.mark.asyncio

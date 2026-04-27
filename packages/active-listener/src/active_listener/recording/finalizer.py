@@ -93,6 +93,7 @@ class RecordingFinalizer:
   ingest_transcription_message: RecordingMessageIngestor
   current_disconnect_generation: DisconnectGenerationReader
   _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+  _flush_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
   async def finalize_recording(
     self,
@@ -100,13 +101,18 @@ class RecordingFinalizer:
     disconnect_generation: int,
     reducer_state: RecordingReducerState,
   ) -> None:
-    async with self._lock:
-      try:
+    try:
+      async with self._flush_lock:
         message = await self.client.flush(force_complete=True)
-      except Exception:
-        self.logger.exception("recording finalization failed")
-        return
+    except Exception:
+      self.logger.exception("recording finalization failed")
+      return
 
+    if self.current_disconnect_generation() != disconnect_generation:
+      self.logger.warning("skipping emission after disconnect", stream=message.stream)
+      return
+
+    async with self._lock:
       if self.current_disconnect_generation() != disconnect_generation:
         self.logger.warning("skipping emission after disconnect", stream=message.stream)
         return

@@ -126,6 +126,60 @@ def test_discard_unprocessed_audio_preserves_processed_cursor_for_next_utterance
   assert start_time == 1.2
 
 
+def test_discard_through_sample_preserves_audio_after_boundary() -> None:
+  """Flush cleanup must drop accepted audio without deleting later buffered frames."""
+  config = _make_config()
+  buffer = AudioStreamBuffer(config)
+  _add_frames(buffer, _frames(5.0, sample_rate=config.sample_rate))
+  buffer.advance_processed_boundary(2.0)
+
+  discarded_duration = buffer.discard_through_sample(40)
+
+  assert discarded_duration == 2.0
+  assert buffer.buffer_start_time == 4.0
+  assert buffer.processed_up_to_time == 4.0
+  assert buffer.available_duration == 1.0
+
+  chunk, duration, start_time = _get_chunk(buffer)
+
+  assert chunk.shape[0] == 10
+  assert duration == 1.0
+  assert start_time == 4.0
+
+
+def test_discard_through_sample_uses_buffer_sample_index_truncation() -> None:
+  """Flush cleanup must use the same sample indexing as buffer boundary capture."""
+  config = _make_config()
+  buffer = AudioStreamBuffer(config)
+  buffer.advance_processed_boundary(0.26)
+  _ = buffer.discard_unprocessed_audio()
+  _add_frames(buffer, _frames(1.0, sample_rate=config.sample_rate))
+  boundary_sample = buffer.get_buffer_end_sample()
+
+  discarded_duration = buffer.discard_through_sample(boundary_sample)
+
+  assert boundary_sample == 12
+  assert discarded_duration == 1.0
+  assert buffer.total_duration == 0.0
+  assert buffer.available_duration == 0.0
+
+
+def test_discard_through_sample_does_not_move_buffer_start_backwards() -> None:
+  """Stale flush boundaries must not rewind the buffer timeline."""
+  config = _make_config()
+  buffer = AudioStreamBuffer(config)
+  buffer.advance_processed_boundary(0.26)
+  _ = buffer.discard_unprocessed_audio()
+  _add_frames(buffer, _frames(1.0, sample_rate=config.sample_rate))
+
+  discarded_duration = buffer.discard_through_sample(2)
+
+  assert discarded_duration == 0.0
+  assert buffer.buffer_start_time == 0.26
+  assert buffer.processed_up_to_time == 0.26
+  assert buffer.total_duration == 1.0
+
+
 def test_clip_if_stalled_respects_enabled_disabled_and_threshold_boundaries() -> None:
   """Clip behavior must be gated and trigger only above the stall threshold."""
   disabled_config = _make_config(clip_audio=False)

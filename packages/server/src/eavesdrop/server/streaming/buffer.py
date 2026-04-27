@@ -238,6 +238,46 @@ class AudioStreamBuffer:
 
     return discarded_samples / self.config.sample_rate
 
+  def discard_through_sample(self, boundary_sample: int) -> float:
+    """Discard buffered audio through an absolute sample boundary.
+
+    :param boundary_sample: Absolute sample index through which buffered audio is discarded.
+    :type boundary_sample: int
+    :returns: Duration in seconds discarded from the unprocessed tail.
+    :rtype: float
+    """
+    with self.lock:
+      sample_rate = self.config.sample_rate
+      processed_sample = int(self.processed_up_to_time * sample_rate)
+
+      if self.frames_np is None:
+        if boundary_sample > processed_sample:
+          boundary_time = boundary_sample / sample_rate
+          self.buffer_start_time = boundary_time
+          self.processed_up_to_time = boundary_time
+        return 0.0
+
+      buffer_start_sample = int(self.buffer_start_time * sample_rate)
+      buffer_end_sample = buffer_start_sample + self.frames_np.shape[0]
+      discard_end_sample = min(max(boundary_sample, buffer_start_sample), buffer_end_sample)
+      samples_to_remove = discard_end_sample - buffer_start_sample
+      discarded_unprocessed_samples = max(0, discard_end_sample - processed_sample)
+
+      if samples_to_remove <= 0:
+        return 0.0
+
+      if samples_to_remove >= self.frames_np.shape[0]:
+        self.frames_np = None
+      else:
+        self.frames_np = self.frames_np[samples_to_remove:]
+
+      boundary_time = max(self.buffer_start_time, discard_end_sample / sample_rate)
+      self.buffer_start_time = boundary_time
+      if self.processed_up_to_time < boundary_time:
+        self.processed_up_to_time = boundary_time
+
+    return discarded_unprocessed_samples / self.config.sample_rate
+
   @property
   def available_duration(self) -> float:
     """
