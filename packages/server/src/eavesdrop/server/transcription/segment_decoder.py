@@ -1,19 +1,15 @@
-from typing import TYPE_CHECKING, cast
+from collections.abc import Callable, Iterable
+from importlib import import_module
+from typing import TYPE_CHECKING, NamedTuple, Protocol, cast
 
 if TYPE_CHECKING:
   from eavesdrop.server.transcription.session import TranscriptionSessionProtocol
+  from eavesdrop.wire import Segment
 
-import ctranslate2
 import numpy as np
-from faster_whisper.feature_extractor import FeatureExtractor
-from faster_whisper.tokenizer import Tokenizer
-from faster_whisper.utils import get_end
 from structlog.stdlib import BoundLogger
 
-from eavesdrop.server.transcription.decode_state import (
-  _TranscribeContext,
-  _TranscribeSegmentsResult,
-)
+from eavesdrop.server.transcription.audio_processing import WhisperFeatures
 from eavesdrop.server.transcription.generation_strategies import GenerationStrategies
 from eavesdrop.server.transcription.hallucination_filter import HallucinationFilter
 from eavesdrop.server.transcription.language_detection import LanguageDetector
@@ -21,14 +17,69 @@ from eavesdrop.server.transcription.models import SegmentDict, TranscriptionOpti
 from eavesdrop.server.transcription.prompt_builder import PromptBuilder
 from eavesdrop.server.transcription.segment_processor import SegmentProcessor
 from eavesdrop.server.transcription.utils import get_ctranslate2_storage, summarize_array
+from eavesdrop.server.transcription.vendor_types import (
+  FeatureExtractorLike,
+  StorageViewLike,
+  TokenizerLike,
+  WhisperModelLike,
+  load_get_end,
+)
 from eavesdrop.server.transcription.word_alignment import WordTimestampAligner
+
+get_end = load_get_end()
+
+
+class TranscribeSegmentsResult(NamedTuple):
+  segments: Iterable["Segment"]
+  total_attempts: int
+
+
+class TranscribeContextLike(Protocol):
+  at_beginning: bool
+  seek: int
+  time_offset: float
+  context_tokens: list[int]
+  total_attempts: int
+  segment_size: int
+  segment_duration: float
+  window_end_time: float
+  last_speech_timestamp: float
+  total_duration: float
+  total_frames: int
+  all_tokens: list[int]
+  all_segments: list["Segment"]
+  prompt_reset_since: int
+
+  def advance(self) -> bool: ...
+
+  def extract_segment(self) -> WhisperFeatures: ...
+
+  def seek_next_to(self, new_seek: int) -> None: ...
+
+  def add_segment(
+    self,
+    segment_data: SegmentDict,
+    text: str,
+    tokens: list[int],
+    temperature: float,
+    avg_logprob: float,
+    compression_ratio: float,
+    word_timestamps: bool,
+  ) -> None: ...
+
+
+TranscribeContextFactory = Callable[..., TranscribeContextLike]
+TranscribeContext = cast(
+  TranscribeContextFactory,
+  getattr(import_module("eavesdrop.server.transcription.decode_state"), "_TranscribeContext"),
+)
 
 
 class SegmentDecoder:
   def __init__(
     self,
-    model: ctranslate2.models.Whisper,
-    feature_extractor: FeatureExtractor,
+    model: WhisperModelLike,
+    feature_extractor: FeatureExtractorLike,
     frames_per_second: float,
     logger: BoundLogger,
     language_detector: LanguageDetector,
@@ -38,32 +89,34 @@ class SegmentDecoder:
     generation_strategies: GenerationStrategies,
     hallucination_filter: HallucinationFilter,
   ):
-    self.model = model
-    self.feature_extractor = feature_extractor
-    self.frames_per_second = frames_per_second
-    self.logger = logger
-    self.language_detector = language_detector
-    self.word_aligner = word_aligner
-    self.prompt_builder = prompt_builder
-    self.segment_processor = segment_processor
-    self.generation_strategies = generation_strategies
-    self.hallucination_filter = hallucination_filter
+    self.model: WhisperModelLike = model
+    self.feature_extractor: FeatureExtractorLike = feature_extractor
+    self.frames_per_second: float = frames_per_second
+    self.logger: BoundLogger = logger
+    self.language_detector: LanguageDetector = language_detector
+    self.word_aligner: WordTimestampAligner = word_aligner
+    self.prompt_builder: PromptBuilder = prompt_builder
+    self.segment_processor: SegmentProcessor = segment_processor
+    self.generation_strategies: GenerationStrategies = generation_strategies
+    self.hallucination_filter: HallucinationFilter = hallucination_filter
 
   def transcribe_segments(
     self,
-    features: np.ndarray,
-    tokenizer: Tokenizer,
+    features: WhisperFeatures,
+    tokenizer: TokenizerLike,
     transcription_options: TranscriptionOptions,
     log_progress: bool,
-    encoder_output: ctranslate2.StorageView | None = None,
+    encoder_output: StorageViewLike | None = None,
     session: "TranscriptionSessionProtocol | None" = None,
-  ) -> _TranscribeSegmentsResult:
+  ) -> TranscribeSegmentsResult:
     """A lower-level transcription function that generates the individual segments for a given
     audio clip.
 
-    :returns: _TranscribeSegmentsResult containing segments and total generation attempts.
-    :rtype: _TranscribeSegmentsResult
+    :returns: TranscribeSegmentsResult containing segments and total generation attempts.
+    :rtype: TranscribeSegmentsResult
     """
+    _ = log_progress
+    _ = session
 
     # Prepare initial tokens from prompt using prompt builder
     initial_tokens = self.prompt_builder.encode_initial_prompt(
@@ -71,7 +124,7 @@ class SegmentDecoder:
     )
 
     # Initialize transcription context
-    ctx = _TranscribeContext(
+    ctx = TranscribeContext(
       features=features,
       time_per_frame=self.feature_extractor.time_per_frame,
       max_segment_frames=self.feature_extractor.nb_max_frames,
@@ -112,7 +165,7 @@ class SegmentDecoder:
       # multilingual case is a little more interesting, so we re-detect the language here to
       # ensure we have the best possible language for the current segment.
       if transcription_options.multilingual:
-        self.language_detector.update_tokenizer_language(tokenizer, encoder_output)
+        _ = self.language_detector.update_tokenizer_language(tokenizer, encoder_output)
 
       # Generate the transcription
       prompt = self.prompt_builder.build_prompt(
@@ -225,9 +278,9 @@ class SegmentDecoder:
 
         ctx.prompt_reset_since = len(ctx.all_tokens)
 
-    return _TranscribeSegmentsResult(segments=ctx.all_segments, total_attempts=ctx.total_attempts)
+    return TranscribeSegmentsResult(segments=ctx.all_segments, total_attempts=ctx.total_attempts)
 
-  def encode(self, features: np.ndarray) -> ctranslate2.StorageView:
+  def encode(self, features: WhisperFeatures) -> StorageViewLike:
     # When the model is running on multiple GPUs, the encoder output should be moved
     # to the CPU since we don't know which GPU will handle the next job.
     to_cpu = self.model.device == "cuda" and len(self.model.device_index) > 1
@@ -241,18 +294,18 @@ class SegmentDecoder:
       to_cpu=to_cpu,
       **summarize_array("features", features),
     )
-    features = get_ctranslate2_storage(features)
-    encoded = self.model.encode(features, to_cpu=to_cpu)
+    storage_view = get_ctranslate2_storage(features)
+    encoded = self.model.encode(storage_view, to_cpu=to_cpu)
     self.logger.debug("Whisper model.encode complete", to_cpu=to_cpu)
     return encoded
 
   def _process_word_timestamps(
     self,
     current_segments: list[SegmentDict],
-    ctx: _TranscribeContext,
+    ctx: TranscribeContextLike,
     transcription_options: TranscriptionOptions,
-    encoder_output: ctranslate2.StorageView,
-    tokenizer: Tokenizer,
+    encoder_output: StorageViewLike,
+    tokenizer: TokenizerLike,
     single_timestamp_ending: bool,
   ) -> None:
     """Process word-level timestamps and update transcription context.
@@ -263,7 +316,7 @@ class SegmentDecoder:
     :param current_segments: Segments to add word timestamps to.
     :type current_segments: list[SegmentDict]
     :param ctx: Transcription context containing seek position and timing state.
-    :type ctx: _TranscribeContext
+    :type ctx: TranscribeContextLike
     :param transcription_options: Options containing word timestamp settings.
     :type transcription_options: TranscriptionOptions
     :param encoder_output: Encoded audio features for alignment.
@@ -274,7 +327,7 @@ class SegmentDecoder:
     :type single_timestamp_ending: bool
     """
     # 1. FORCED ALIGNMENT: Use cross-attention to align words with audio frames
-    self.word_aligner.add_word_timestamps(
+    _ = self.word_aligner.add_word_timestamps(
       segments=[current_segments],
       model=self.model,
       tokenizer=tokenizer,
@@ -287,12 +340,15 @@ class SegmentDecoder:
 
     # 2. SEEK ADJUSTMENT: Move transcription window to end of actual speech
     # (Skip this if segment ended with single timestamp, indicating silence)
+    last_word_end: float | None = None
     if not single_timestamp_ending:
-      last_word_end: float | None = get_end(cast(list[dict], current_segments))
+      last_word_end = cast(float | None, get_end(cast(list[dict[str, object]], current_segments)))
       if last_word_end is not None and last_word_end > ctx.time_offset:
         ctx.seek_next_to(round(last_word_end * self.frames_per_second))
 
     # 3. SPEECH TIMESTAMP TRACKING: Update last known speech time
     # This is used for future silence gap calculations and seek positioning
-    if last_word_end := get_end(cast(list[dict], current_segments)):
+    if last_word_end is None:
+      last_word_end = cast(float | None, get_end(cast(list[dict[str, object]], current_segments)))
+    if last_word_end is not None:
       ctx.last_speech_timestamp = last_word_end

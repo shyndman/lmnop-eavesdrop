@@ -10,6 +10,7 @@ import secrets
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import TracebackType
 
 from structlog.stdlib import BoundLogger
 
@@ -72,36 +73,36 @@ class EavesdropClient:
     :param audio_device: For transcriber mode, audio device to use
     :param transcription_options: Transcription configuration options
     """
-    self._host = host
-    self._port = port
-    self._client_type = client_type
-    self._stream_names = stream_names or []
-    self._audio_device = audio_device
+    self._host: str = host
+    self._port: int = port
+    self._client_type: ClientType = client_type
+    self._stream_names: list[str] = stream_names or []
+    self._audio_device: str | None = audio_device
     self._transcription_options: UserTranscriptionOptions = (
       transcription_options or UserTranscriptionOptions()
     )
-    self._on_capture = on_capture
+    self._on_capture: Callable[[bytes], None] | None = on_capture
 
     # Internal state
     self._stream_name: str | None = None
     self._connection: WebSocketConnection | None = None
     self._audio_capture: AudioCapture | None = None
-    self._connected = False
-    self._streaming = False
+    self._connected: bool = False
+    self._streaming: bool = False
     self._message_queue: asyncio.Queue[TranscriptionMessage] = asyncio.Queue()
     self._event_queue: asyncio.Queue[LiveClientEvent] = asyncio.Queue()
     self._background_tasks: set[asyncio.Task[None]] = set()
     self._message_task: asyncio.Task[None] | None = None
     self._audio_loop_task: asyncio.Task[None] | None = None
     self._reconnect_task: asyncio.Task[None] | None = None
-    self._operation_lock = asyncio.Lock()
-    self._disconnect_event = asyncio.Event()
+    self._operation_lock: asyncio.Lock = asyncio.Lock()
+    self._disconnect_event: asyncio.Event = asyncio.Event()
     self._disconnect_reason: str | None = None
-    self._flush_waiting = False
+    self._flush_waiting: bool = False
     self._flush_error: str | None = None
-    self._disconnect_requested = False
-    self._event_stream_open = False
-    self._reconnect_enabled = False
+    self._disconnect_requested: bool = False
+    self._event_stream_open: bool = False
+    self._reconnect_enabled: bool = False
     self._live_setup_options: UserTranscriptionOptions | None = None
     self._logger: BoundLogger = get_logger(
       "client/core",
@@ -341,13 +342,13 @@ class EavesdropClient:
       self._audio_capture = None
 
     if self._audio_loop_task and not self._audio_loop_task.done():
-      self._audio_loop_task.cancel()
-      await asyncio.gather(self._audio_loop_task, return_exceptions=True)
+      _ = self._audio_loop_task.cancel()
+      _ = await asyncio.gather(self._audio_loop_task, return_exceptions=True)
     self._set_audio_loop_task(None)
 
     if self._reconnect_task and not self._reconnect_task.done():
-      self._reconnect_task.cancel()
-      await asyncio.gather(self._reconnect_task, return_exceptions=True)
+      _ = self._reconnect_task.cancel()
+      _ = await asyncio.gather(self._reconnect_task, return_exceptions=True)
     self._reconnect_task = None
 
     # Close WebSocket connection
@@ -358,10 +359,10 @@ class EavesdropClient:
 
     # Cancel background tasks
     for task in list(self._background_tasks):
-      task.cancel()
+      _ = task.cancel()
 
     if self._background_tasks:
-      await asyncio.gather(*self._background_tasks, return_exceptions=True)
+      _ = await asyncio.gather(*self._background_tasks, return_exceptions=True)
     self._background_tasks.clear()
     self._disconnect_event.clear()
     self._disconnect_reason = None
@@ -683,12 +684,12 @@ class EavesdropClient:
   def _clear_message_queue(self) -> None:
     """Drain stale buffered messages before starting a one-shot file operation."""
     while not self._message_queue.empty():
-      self._message_queue.get_nowait()
+      _ = self._message_queue.get_nowait()
 
   def _clear_event_queue(self) -> None:
     """Drain buffered iterator events when the client is explicitly closed."""
     while not self._event_queue.empty():
-      self._event_queue.get_nowait()
+      _ = self._event_queue.get_nowait()
 
   def _flush_disconnect_message(self) -> str:
     """Build a truthful flush failure message from current disconnect state."""
@@ -745,12 +746,17 @@ class EavesdropClient:
     await self.connect()
     return self
 
-  async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+  async def __aexit__(
+    self,
+    _exc_type: type[BaseException] | None,
+    _exc_val: BaseException | None,
+    _exc_tb: TracebackType | None,
+  ) -> None:
     """Exit async context manager."""
     await self.disconnect()
 
   # Callback handlers
-  def _on_ready(self, backend: str) -> None:
+  def _on_ready(self, _backend: str) -> None:
     """Handle server ready callback."""
     # Server is ready for transcription
     pass
@@ -760,7 +766,7 @@ class EavesdropClient:
     self._message_queue.put_nowait(message)
     self._emit_event(TranscriptionEvent(stream=message.stream, message=message))
 
-  def _on_transcription_text(self, text: str) -> None:
+  def _on_transcription_text(self, _text: str) -> None:
     """Handle legacy transcription text callback from existing connection."""
     # This is primarily for backward compatibility
     # The main message flow now uses _on_transcription_message

@@ -5,9 +5,9 @@ import os
 import re
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from io import StringIO
-from typing import Any, cast
+from typing import ClassVar, cast
 
 import structlog
 from structlog.dev import (
@@ -24,7 +24,6 @@ from structlog.dev import (
   Column,
   ConsoleRenderer,
   KeyValueColumnFormatter,
-  _pad,
 )
 from structlog.typing import EventDict, Processor
 
@@ -32,6 +31,12 @@ from eavesdrop.common.proc import FloatPrecisionProcessor, LoggerFilterProcessor
 
 # Store program start time for relative timestamps
 _PROGRAM_START_TIME = time.time()
+
+
+def _pad_value(value: str, width: int) -> str:
+  """Pad a rendered value to the target width."""
+  missing = width - len(value)
+  return value + " " * max(0, missing)
 
 
 def hex_to_ansi_fg(hex_color: int) -> str:
@@ -71,6 +76,7 @@ class RegexValueColumnFormatter:
   width: int = 0
   prefix: str = ""
   postfix: str = ""
+  _compiled_patterns: list[tuple[re.Pattern[str], str]] = field(init=False)
 
   def __post_init__(self) -> None:
     """Compile regex patterns for efficiency."""
@@ -82,14 +88,14 @@ class RegexValueColumnFormatter:
     sio = StringIO()
 
     if self.prefix:
-      sio.write(self.prefix)
-      sio.write(self.reset_style)
+      _ = sio.write(self.prefix)
+      _ = sio.write(self.reset_style)
 
     if self.key_style is not None:
-      sio.write(self.key_style)
-      sio.write(key)
-      sio.write(self.reset_style)
-      sio.write("=")
+      _ = sio.write(self.key_style)
+      _ = sio.write(key)
+      _ = sio.write(self.reset_style)
+      _ = sio.write("=")
 
     # Determine value style based on regex matching
     value_str = self.value_repr(value)
@@ -100,33 +106,33 @@ class RegexValueColumnFormatter:
         value_style = style
         break
 
-    sio.write(value_style)
-    sio.write(_pad(value_str, self.width))
-    sio.write(self.reset_style)
+    _ = sio.write(value_style)
+    _ = sio.write(_pad_value(value_str, self.width))
+    _ = sio.write(self.reset_style)
 
     if self.postfix:
-      sio.write(self.postfix)
-      sio.write(self.reset_style)
+      _ = sio.write(self.postfix)
+      _ = sio.write(self.reset_style)
 
     return sio.getvalue()
 
 
 class NerdStyles:
-  reset = RESET_ALL
-  bright = BRIGHT
+  reset: ClassVar[str] = RESET_ALL
+  bright: ClassVar[str] = BRIGHT
 
-  level_critical = RED
-  level_exception = RED
-  level_error = RED
-  level_warn = YELLOW
-  level_info = GREEN
-  level_debug = GREEN
-  level_notset = RED_BACK
+  level_critical: ClassVar[str] = RED
+  level_exception: ClassVar[str] = RED
+  level_error: ClassVar[str] = RED
+  level_warn: ClassVar[str] = YELLOW
+  level_info: ClassVar[str] = GREEN
+  level_debug: ClassVar[str] = GREEN
+  level_notset: ClassVar[str] = RED_BACK
 
-  timestamp = DIM
-  logger_name = BLUE
-  kv_key = CYAN
-  kv_value = MAGENTA
+  timestamp: ClassVar[str] = DIM
+  logger_name: ClassVar[str] = BLUE
+  kv_key: ClassVar[str] = CYAN
+  kv_value: ClassVar[str] = MAGENTA
 
 
 def _relative_time_processor(
@@ -198,15 +204,17 @@ def _compact_level_processor(
     },
   }
 
-  if "level" in event_dict:
-    original_level = event_dict["level"]
+  typed_event_dict = cast(dict[str, object], event_dict)
+
+  if "level" in typed_event_dict:
+    original_level = str(typed_event_dict["level"])
     if original_level in level_mapping:
       colors = level_mapping[original_level]
-      event_dict["level"] = (
+      typed_event_dict["level"] = (
         f"{colors['bracket']}[{reset}{colors['text']}{colors['bracket']}]{reset}"
       )
     else:
-      event_dict["level"] = original_level
+      typed_event_dict["level"] = original_level
 
   return event_dict
 
@@ -216,12 +224,14 @@ def _debug_event_colorer(
 ) -> EventDict:
   """Color the event text purple for debug level messages."""
   # Check both the original level and processed level
-  level = event_dict.get("level", "")
-  if ("debug" in str(level).lower() or level == "debug") and "event" in event_dict:
+  typed_event_dict = cast(dict[str, object], event_dict)
+  level = str(typed_event_dict.get("level", ""))
+  event = typed_event_dict.get("event")
+  if "debug" in level.lower() and isinstance(event, str):
     # Color debug event text with #908caa
     debug_color = hex_to_ansi_fg(0x908CAA)
     reset = "\x1b[0m"
-    event_dict["event"] = f"{debug_color}{event_dict['event']}{reset}"
+    typed_event_dict["event"] = f"{debug_color}{event}{reset}"
 
   return event_dict
 
@@ -255,7 +265,7 @@ def setup_logging(
   # Add correlation ID if provided
   if correlation_id:
     shared_processors.insert(0, structlog.contextvars.merge_contextvars)
-    structlog.contextvars.bind_contextvars(correlation_id=correlation_id)
+    _ = structlog.contextvars.bind_contextvars(correlation_id=correlation_id)
 
   # Configure output format
   if json_output:
@@ -366,9 +376,7 @@ def setup_logging(
   root_logger.setLevel(level)
 
   # Propogate the logs of some libraries
-  for liblog in [
-    logging.getLogger(_liblog) for _liblog in ["websockets", "httpcore.http11"]
-  ]:
+  for liblog in [logging.getLogger(_liblog) for _liblog in ["websockets", "httpcore.http11"]]:
     liblog.handlers.clear()
     liblog.setLevel(logging.WARNING)
     liblog.propagate = True
@@ -380,7 +388,7 @@ def setup_logging(
 
 
 def get_logger(
-  name: str | None = None, *args: list[object], **initial_values: Any
+  name: str | None = None, *args: object, **initial_values: object
 ) -> structlog.stdlib.BoundLogger:
   """Get a structured logger instance."""
   return cast(

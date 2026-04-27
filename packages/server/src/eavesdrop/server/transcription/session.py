@@ -7,7 +7,8 @@ with audio buffer timing to enable comprehensive transcription logging.
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Protocol
+from types import TracebackType
+from typing import TYPE_CHECKING, Protocol, Self, override
 
 from structlog.stdlib import BoundLogger
 
@@ -44,7 +45,12 @@ class TracerProtocol(Protocol):
     """
     ...
 
-  def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+  def __exit__(
+    self,
+    exc_type: type[BaseException] | None,
+    exc_val: BaseException | None,
+    exc_tb: TracebackType | None,
+  ) -> None:
     """Exit context manager and record elapsed time.
 
     :param exc_type: Exception type if an exception occurred.
@@ -53,7 +59,7 @@ class TracerProtocol(Protocol):
     """
     ...
 
-  def __call__(self, *args, **kwargs) -> None:
+  def __call__(self, *args: object, **kwargs: object) -> None:
     """Process stage-specific results and perform logging or other actions.
 
     The signature and behavior varies by tracer type - see specific tracer
@@ -212,7 +218,7 @@ class TranscriptionSession:
   # Segment chain tracking
   completed_segments: list["Segment"] = field(default_factory=list)
 
-  def __post_init__(self):
+  def __post_init__(self) -> None:
     """Initialize the session logger."""
     self.logger = get_logger("trace", stream=self.stream_name)
 
@@ -295,7 +301,7 @@ class TranscriptionSession:
       return f"+{start:.2f}s~{duration * 1000:.3f}ms~+{start + duration:.2f}s"
 
     start_time, _ = self.get_absolute_time_range()
-    visualization_parts = [f"+{start_time:.2f}s"]
+    visualization_parts: list[str] = [f"+{start_time:.2f}s"]
 
     last_end_sample = 0
 
@@ -353,7 +359,7 @@ class TranscriptionSession:
     timing_parts = [f"{stage}={time * 1000:.3f}ms" for stage, time in self.stage_timings.items()]
     timing_str = " ".join(timing_parts)
 
-    result_parts = []
+    result_parts: list[str] = []
     if self.generation_attempts > 0:
       result_parts.append(f"attempts={self.generation_attempts}")
     if self.final_temperature > 0:
@@ -379,7 +385,7 @@ class TranscriptionSession:
     ]
     timing_str = " ".join(timing_parts)
 
-    result_parts = []
+    result_parts: list[str] = []
     if self.generation_attempts > 0:
       result_parts.append(f"attempts={self.generation_attempts}")
     if self.final_temperature > 0:
@@ -430,16 +436,21 @@ class BaseTracer:
     :param stage_name: Name of the processing stage.
     :type stage_name: str
     """
-    self.session = session
-    self.stage_name = stage_name
+    self.session: TranscriptionSession = session
+    self.stage_name: str = stage_name
     self.start_time: float = 0.0
 
-  def __enter__(self):
+  def __enter__(self) -> Self:
     """Start timing the stage."""
     self.start_time = time.perf_counter()
     return self
 
-  def __exit__(self, exc_type, exc_val, exc_tb):
+  def __exit__(
+    self,
+    exc_type: type[BaseException] | None,
+    exc_val: BaseException | None,
+    exc_tb: TracebackType | None,
+  ) -> None:
     """Stop timing and record the duration."""
     elapsed = time.perf_counter() - self.start_time
     # Record timing even on exceptions for debugging purposes
@@ -449,7 +460,12 @@ class BaseTracer:
 class VadStageTracer(BaseTracer):
   """Tracer for VAD audio preprocessing stage."""
 
-  def __call__(self, speech_chunks: list[SpeechChunk] | None, sample_rate: int, total_samples: int):
+  def __call__(
+    self,
+    speech_chunks: list[SpeechChunk] | None,
+    sample_rate: int,
+    total_samples: int,
+  ) -> None:
     """Record VAD results and generate visualization.
 
     :param speech_chunks: Speech chunks detected by VAD, or None if no VAD.
@@ -501,7 +517,7 @@ class VadStageTracer(BaseTracer):
 class FeatureStageTracer(BaseTracer):
   """Tracer for feature extraction stage."""
 
-  def __call__(self):
+  def __call__(self) -> None:
     """Record feature extraction completion (no specific data to log)."""
     pass
 
@@ -509,7 +525,7 @@ class FeatureStageTracer(BaseTracer):
 class InferenceStageTracer(BaseTracer):
   """Tracer for model inference stage."""
 
-  def __call__(self, attempts: int, final_temperature: float):
+  def __call__(self, attempts: int, final_temperature: float) -> None:
     """Record generation results for pipeline summary.
 
     :param attempts: Number of temperature attempts made during generation.
@@ -523,13 +539,19 @@ class InferenceStageTracer(BaseTracer):
 class PipelineTracer(BaseTracer):
   """Tracer for the entire transcription pipeline."""
 
-  def __exit__(self, exc_type, exc_val, exc_tb):
+  @override
+  def __exit__(
+    self,
+    exc_type: type[BaseException] | None,
+    exc_val: BaseException | None,
+    exc_tb: TracebackType | None,
+  ) -> None:
     """Stop timing and log the complete pipeline summary."""
     # Call parent to record timing
     super().__exit__(exc_type, exc_val, exc_tb)
 
     # Format stage timings with "stage_" prefix and millisecond formatting
-    stage_fields = {}
+    stage_fields: dict[str, str] = {}
     for stage_name, timing in self.session.stage_timings.items():
       if timing >= 0:
         stage_fields[f"stage_{stage_name}"] = f"{timing * 1000:.3f}ms"
@@ -537,7 +559,7 @@ class PipelineTracer(BaseTracer):
         stage_fields[f"stage_{stage_name}"] = "FAILED"
 
     # Add generation metadata if available
-    extra_fields = {}
+    extra_fields: dict[str, int | str] = {}
     if self.session.generation_attempts > 0:
       extra_fields["generation_attempts"] = self.session.generation_attempts
     if self.session.final_temperature > 0:
@@ -552,7 +574,7 @@ class PipelineTracer(BaseTracer):
       **extra_fields,
     )
 
-  def __call__(self):
+  def __call__(self) -> None:
     """No-op for pipeline tracer - summary is logged in __exit__."""
     pass
 
@@ -560,7 +582,7 @@ class PipelineTracer(BaseTracer):
 class SegmentStageTracer(BaseTracer):
   """Tracer for segment processing stage."""
 
-  def __call__(self, segments: Iterable["Segment"]):
+  def __call__(self, segments: Iterable["Segment"]) -> None:
     """Record final segment results and log summary.
 
     :param segments: Final transcribed segments.
@@ -591,13 +613,18 @@ class SegmentStageTracer(BaseTracer):
 class NoopTracer:
   """No-op tracer that does nothing - for use with NoopSession."""
 
-  def __enter__(self):
+  def __enter__(self) -> Self:
     return self
 
-  def __exit__(self, exc_type, exc_val, exc_tb):
+  def __exit__(
+    self,
+    exc_type: type[BaseException] | None,
+    exc_val: BaseException | None,
+    exc_tb: TracebackType | None,
+  ) -> None:
     pass
 
-  def __call__(self, *args, **kwargs):
+  def __call__(self, *args: object, **kwargs: object) -> None:
     pass
 
 
@@ -611,14 +638,20 @@ class NoopSession:
     return ""
 
   def format_vad_visualization(
-    self, speech_chunks: list[SpeechChunk] | None, sample_rate: int, total_samples: int
+    self,
+    speech_chunks: list[SpeechChunk] | None,
+    sample_rate: int,
+    total_samples: int,
   ) -> str:
+    del speech_chunks, sample_rate, total_samples
     return ""
 
   def update_audio_context(self, start_offset: float, duration: float) -> None:
+    del start_offset, duration
     pass
 
   def record_generation_result(self, attempts: int, final_temp: float) -> None:
+    del attempts, final_temp
     pass
 
   def format_pipeline_summary(self) -> str:
@@ -642,7 +675,7 @@ class NoopSession:
 
 
 # Default no-op session instance
-_noop_session = NoopSession()
+noop_session: TranscriptionSessionProtocol = NoopSession()
 
 
 def create_session(stream_name: str) -> TranscriptionSession:

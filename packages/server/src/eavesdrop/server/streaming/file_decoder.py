@@ -7,17 +7,19 @@ used by the streaming pipeline: mono, 16kHz, float32 PCM.
 import asyncio
 
 import numpy as np
+from numpy.typing import NDArray
 
 CANONICAL_SAMPLE_RATE_HZ = 16_000
 CANONICAL_CHANNELS = 1
 CANONICAL_DTYPE = np.float32
+Float32Audio = NDArray[np.float32]
 
 
 class FileDecodeError(RuntimeError):
   """Raised when finite-file audio cannot be decoded into canonical format."""
 
 
-async def decode_file_bytes_to_canonical_audio(file_bytes: bytes) -> np.ndarray:
+async def decode_file_bytes_to_canonical_audio(file_bytes: bytes) -> Float32Audio:
   """Decode uploaded file bytes to canonical mono 16kHz float32 audio.
 
   :param file_bytes: Raw uploaded file bytes (WAV/MP3/AAC).

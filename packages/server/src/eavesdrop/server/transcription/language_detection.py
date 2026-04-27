@@ -7,22 +7,27 @@ This module provides focused functionality for:
 - Language probability analysis
 """
 
-from typing import NamedTuple, TypedDict
+from math import log2
+from typing import NamedTuple, TypedDict, cast
 
-import ctranslate2
 import numpy as np
-from faster_whisper.audio import pad_or_trim
-from faster_whisper.feature_extractor import FeatureExtractor
-from faster_whisper.tokenizer import Tokenizer
-from faster_whisper.vad import (
-  VadOptions,
-  collect_chunks,
-  get_speech_timestamps,
-)
+from structlog.stdlib import BoundLogger
 
 from eavesdrop.common import get_logger
+from eavesdrop.server.transcription.audio_processing import FloatAudio, WhisperFeatures
 from eavesdrop.server.transcription.models import LanguageProbability, SegmentDict, WordDict
 from eavesdrop.server.transcription.utils import summarize_array
+from eavesdrop.server.transcription.vendor_types import (
+  FeatureExtractorLike,
+  StorageViewLike,
+  TokenizerLike,
+  VadOptionsLike,
+  WhisperModelLike,
+  load_collect_chunks,
+  load_get_speech_timestamps,
+  load_pad_or_trim,
+  load_vad_options,
+)
 
 # Private module constants for anomaly detection thresholds
 _WORD_PROBABILITY_THRESHOLD = 0.15
@@ -33,6 +38,10 @@ _SEGMENT_ANOMALY_SCORE_THRESHOLD = 3.0
 _SEGMENT_ANOMALY_SCORE_OFFSET = 0.01
 _MAX_WORDS_FOR_ANOMALY_CHECK = 8
 _ANOMALY_IGNORED_PUNCTUATION = '"\'"¿([{-"\'.。,，!！?？:：")]}、'
+pad_or_trim = load_pad_or_trim()
+collect_chunks = load_collect_chunks()
+get_speech_timestamps = load_get_speech_timestamps()
+VadOptions = load_vad_options()
 
 
 class LanguageAnalysisResult(TypedDict):
@@ -66,8 +75,8 @@ class LanguageDetector:
 
   def __init__(
     self,
-    model: ctranslate2.models.Whisper,
-    feature_extractor: FeatureExtractor,
+    model: WhisperModelLike,
+    feature_extractor: FeatureExtractorLike,
   ):
     """Initialize the language detector.
 
@@ -76,12 +85,12 @@ class LanguageDetector:
     :param feature_extractor: Feature extractor for processing audio
     :type feature_extractor: FeatureExtractor
     """
-    self.model = model
-    self.feature_extractor = feature_extractor
-    self.logger = get_logger("lang")
+    self.model: WhisperModelLike = model
+    self.feature_extractor: FeatureExtractorLike = feature_extractor
+    self.logger: BoundLogger = get_logger("lang")
 
   def resolve_language(
-    self, language: str | None, features: np.ndarray
+    self, language: str | None, features: WhisperFeatures
   ) -> tuple[LanguageProbability, list[LanguageProbability]]:
     """Resolve the language for transcription based on input and model capabilities.
 
@@ -142,10 +151,10 @@ class LanguageDetector:
 
   def detect_language(
     self,
-    audio: np.ndarray | None = None,
-    features: np.ndarray | None = None,
+    audio: FloatAudio | None = None,
+    features: WhisperFeatures | None = None,
     vad_filter: bool = False,
-    vad_parameters: VadOptions = VadOptions(),
+    vad_parameters: VadOptionsLike | None = None,
     language_detection_segments: int = 1,
     language_detection_threshold: float = 0.5,
   ) -> LanguageDetectionResult:
@@ -173,21 +182,24 @@ class LanguageDetector:
     :rtype: LanguageDetectionResult
     """
     self.logger.debug(
-      f"Detecting language: vad_filter={vad_filter}, segments={language_detection_segments}, "
-      f"threshold={language_detection_threshold}"
+      f"Detecting language: vad_filter={vad_filter}, segments={language_detection_segments}, threshold={language_detection_threshold}"
     )
 
     if not (audio is not None or features is not None):
       raise ValueError("Either `audio` or `features` must be provided.")
 
     if audio is not None:
+      source_audio = audio
       if vad_filter:
-        speech_chunks = get_speech_timestamps(audio, vad_parameters)
-        audio_chunks, _ = collect_chunks(audio, speech_chunks)
-        audio = np.concatenate(audio_chunks, axis=0)
+        resolved_vad_parameters = vad_parameters or VadOptions()
+        speech_chunks = get_speech_timestamps(source_audio, resolved_vad_parameters)
+        audio_chunks, _ = collect_chunks(source_audio, speech_chunks)
+        source_audio = cast(FloatAudio, np.concatenate(audio_chunks, axis=0))
 
-      audio = audio[: language_detection_segments * self.feature_extractor.n_samples]
-      features = self.feature_extractor(audio)
+      segment_audio: FloatAudio = source_audio[
+        : language_detection_segments * self.feature_extractor.n_samples
+      ]
+      features = self.feature_extractor(segment_audio)
 
     assert features is not None  # Should be guaranteed by logic above
     features = features[..., : language_detection_segments * self.feature_extractor.nb_max_frames]
@@ -225,8 +237,7 @@ class LanguageDetector:
       )
       if language_probability > language_detection_threshold:
         self.logger.debug(
-          "Language detection threshold met: "
-          f"{language_probability:.3f} > {language_detection_threshold}"
+          f"Language detection threshold met: {language_probability:.3f} > {language_detection_threshold}"
         )
         break
       detected_language_info.setdefault(language, []).append(language_probability)
@@ -248,7 +259,7 @@ class LanguageDetector:
       all_probabilities=all_language_probs,
     )
 
-  def _encode(self, features: np.ndarray) -> ctranslate2.StorageView:
+  def _encode(self, features: WhisperFeatures) -> StorageViewLike:
     """Encode features using the Whisper model.
 
     :param features: Audio features to encode
@@ -274,13 +285,13 @@ class LanguageDetector:
     # Convert to CTranslate2 storage format
     from eavesdrop.server.transcription.utils import get_ctranslate2_storage
 
-    features = get_ctranslate2_storage(features)
-    encoded = self.model.encode(features, to_cpu=to_cpu)
+    storage_view = get_ctranslate2_storage(features)
+    encoded = self.model.encode(storage_view, to_cpu=to_cpu)
     self.logger.debug("Language detection model.encode complete", to_cpu=to_cpu)
     return encoded
 
   def update_tokenizer_language(
-    self, tokenizer: Tokenizer, encoder_output: ctranslate2.StorageView
+    self, tokenizer: TokenizerLike, encoder_output: StorageViewLike
   ) -> str:
     """Detect and update tokenizer language for current segment.
 
@@ -311,8 +322,8 @@ class AnomalyDetector:
     :param punctuation: String of punctuation characters to ignore in anomaly detection
     :type punctuation: str
     """
-    self.punctuation = punctuation
-    self.logger = get_logger("anomaly")
+    self.punctuation: str = punctuation
+    self.logger: BoundLogger = get_logger("anomaly")
 
   def word_anomaly_score(self, word: WordDict) -> float:
     """Calculate anomaly score for a word based on probability and duration.
@@ -388,7 +399,7 @@ class AnomalyDetector:
     :returns: List of tuples containing (segment_index, is_anomaly, total_score)
     :rtype: list[SegmentAnomalyResult]
     """
-    results = []
+    results: list[SegmentAnomalyResult] = []
     for i, segment in enumerate(segments):
       is_anomaly = self.is_segment_anomaly(segment)
 
@@ -416,7 +427,7 @@ class LanguageProbabilityAnalyzer:
 
   def __init__(self):
     """Initialize the language probability analyzer."""
-    self.logger = get_logger("lang")
+    self.logger: BoundLogger = get_logger("lang")
 
   def get_top_languages(
     self, all_language_probs: list[tuple[str, float]], top_n: int = 5
@@ -463,7 +474,7 @@ class LanguageProbabilityAnalyzer:
     entropy = 0.0
     for _, prob in all_language_probs:
       if prob > 0:
-        entropy -= prob * np.log2(prob)
+        entropy -= prob * log2(prob)
 
     return entropy
 

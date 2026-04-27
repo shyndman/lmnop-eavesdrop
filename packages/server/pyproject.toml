@@ -82,6 +82,11 @@ reportUnknownMemberType = "error"           # Keep: catches type info loss from 
 reportUnannotatedClassAttribute = "error"   # Keep: requires explicit types on class attributes
 reportUnknownVariableType = "error"         # Keep: fix via local stubs + typed Pydantic validators
 
+executionEnvironments = [
+  { root = "tests", reportAny = "none", reportExplicitAny = "none", reportImplicitOverride = "none", reportMissingTypeStubs = "none", reportMissingParameterType = "none", reportMissingTypeArgument = "none", reportPrivateUsage = "none", reportUnannotatedClassAttribute = "none", reportUnnecessaryCast = "none", reportUnknownArgumentType = "none", reportUnknownLambdaType = "none", reportUnknownMemberType = "none", reportUnknownParameterType = "none", reportUnknownVariableType = "none", reportUnusedCallResult = "none", reportUnusedImport = "none", reportUnusedParameter = "none" },
+  { root = "src" },
+]
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"
@@ -104,10 +109,10 @@ indent-style = "space"
 line-ending = "auto"
 
 [tool.uv.sources]
-eavesdrop-wire = {path = "../wire", editable = true}
+eavesdrop-wire = { workspace = true }
 torch = {index = "pytorch-cpu"}
 torchaudio = {index = "pytorch-cpu"}
-eavesdrop-common = { path = "../common", editable = true }
+eavesdrop-common = { workspace = true }
 
 [[tool.uv.index]]
 name = "pypi"

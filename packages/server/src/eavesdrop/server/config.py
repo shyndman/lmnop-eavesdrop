@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from typing import cast
 
 import yaml
 from pydantic import BaseModel, Field, model_validator, validate_call
@@ -44,7 +45,7 @@ class BufferConfig:
     if self.cleanup_duration >= self.max_buffer_duration:
       raise ValueError(
         f"cleanup_duration ({self.cleanup_duration}s) must be less than "
-        f"max_buffer_duration ({self.max_buffer_duration}s)"
+        + f"max_buffer_duration ({self.max_buffer_duration}s)"
       )
     return self
 
@@ -144,36 +145,38 @@ class TranscriptionConfig(BaseModel):
 
   @model_validator(mode="before")
   @classmethod
-  def validate_model_configuration(cls, values: dict) -> dict:
+  def validate_model_configuration(cls, values: object) -> object:
     """Validate model/custom_model mutual exclusion and reject device_index input."""
     if not isinstance(values, dict):
       return values
 
-    model = values.get("model")
-    custom_model = values.get("custom_model")
+    config_values = cast(dict[str, object], values)
+
+    model = config_values.get("model")
+    custom_model = config_values.get("custom_model")
 
     # Check mutual exclusion
     if model and custom_model:
       raise ValueError(
         "Cannot specify both 'model' and 'custom_model' in the same configuration. "
-        "Use 'model' for standard Whisper models (e.g. 'distil-medium.en') or "
-        "'custom_model' for a path to a local model file."
+        + "Use 'model' for standard Whisper models (e.g. 'distil-medium.en') or "
+        + "'custom_model' for a path to a local model file."
       )
 
     # If neither specified, use default model
     if not model and not custom_model:
-      values["model"] = "distil-medium.en"
+      config_values["model"] = "distil-medium.en"
 
     # Reject device_index in input - it should be computed from gpu_name
-    if "device_index" in values:
+    if "device_index" in config_values:
       raise ValueError(
         "device_index cannot be specified in config file. "
-        "Use 'gpu_name' instead to specify the GPU device, and device_index will be "
-        "computed automatically."
+        + "Use 'gpu_name' instead to specify the GPU device, and device_index will be "
+        + "computed automatically."
       )
 
     # Reject obsolete or computed VAD fields before VadOptions silently ignores them.
-    vad_params = values.get("vad_parameters")
+    vad_params = config_values.get("vad_parameters")
     if vad_params and isinstance(vad_params, dict):
       obsolete_keys = [key for key in ("onset", "offset") if key in vad_params]
       if obsolete_keys:
@@ -182,18 +185,18 @@ class TranscriptionConfig(BaseModel):
         replacement_text = ", ".join(f"'{key}' -> '{replacements[key]}'" for key in obsolete_keys)
         raise ValueError(
           "Obsolete VAD parameter(s) in vad_parameters: "
-          f"{obsolete_keys_text}. "
-          f"Use upstream faster-whisper names instead: {replacement_text}."
+          + f"{obsolete_keys_text}. "
+          + f"Use upstream faster-whisper names instead: {replacement_text}."
         )
 
       if "min_silence_duration_ms" in vad_params:
         raise ValueError(
           "min_silence_duration_ms cannot be specified in vad_parameters. "
-          "It is automatically set from 'silence_completion_threshold' to keep "
-          "VAD segmentation and segment completion behavior aligned."
+          + "It is automatically set from 'silence_completion_threshold' to keep "
+          + "VAD segmentation and segment completion behavior aligned."
         )
 
-    return values
+    return config_values
 
   @model_validator(mode="after")
   def resolve_gpu_device_index(self) -> "TranscriptionConfig":
@@ -330,7 +333,7 @@ def load_config_from_file(config_path: FilePath) -> EavesdropConfig:
   try:
     # Load YAML content
     with open(config_path, "r", encoding="utf-8") as file:
-      config_data = yaml.safe_load(file)
+      config_data = cast(object, yaml.safe_load(file))
 
   except yaml.YAMLError as e:
     raise ValueError(f"Invalid YAML in configuration file: {e}") from e

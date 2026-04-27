@@ -1,11 +1,16 @@
 """Word-timestamp alignment and timing calculation for Whisper transcription."""
 
-import ctranslate2
+from itertools import accumulate
+
 import numpy as np
-from faster_whisper.tokenizer import Tokenizer
 
 from eavesdrop.server.transcription.models import SegmentDict, WordDict, WordTimingDict
 from eavesdrop.server.transcription.utils import merge_punctuations
+from eavesdrop.server.transcription.vendor_types import (
+  StorageViewLike,
+  TokenizerLike,
+  WhisperModelLike,
+)
 
 # Private module constants for timing thresholds and calculations
 _DEFAULT_MEDIAN_FILTER_WIDTH = 7
@@ -56,16 +61,16 @@ class WordAlignmentProcessor:
     :param median_filter_width: Width for median filtering in alignment
     :type median_filter_width: int
     """
-    self.frames_per_second = frames_per_second
-    self.tokens_per_second = tokens_per_second
-    self.median_filter_width = median_filter_width
+    self.frames_per_second: float = frames_per_second
+    self.tokens_per_second: float = tokens_per_second
+    self.median_filter_width: int = median_filter_width
 
   def find_alignment(
     self,
-    model: ctranslate2.models.Whisper,
-    tokenizer: Tokenizer,
+    model: WhisperModelLike,
+    tokenizer: TokenizerLike,
     text_tokens: list[list[int]],
-    encoder_output: ctranslate2.StorageView,
+    encoder_output: StorageViewLike,
     num_frames: int,
   ) -> list[list[WordTimingDict]]:
     """Find word alignments using the Whisper model's alignment capabilities.
@@ -111,8 +116,8 @@ class WordAlignmentProcessor:
     for result, text_token in zip(results, text_tokens):
       text_token_probs = result.text_token_probs
       alignments = result.alignments
-      text_indices = np.array([pair[0] for pair in alignments])
-      time_indices = np.array([pair[1] for pair in alignments])
+      text_indices = [pair[0] for pair in alignments]
+      time_indices = [pair[1] for pair in alignments]
 
       words, word_tokens = tokenizer.split_to_word_tokens(text_token + [tokenizer.eot])
       if len(word_tokens) <= 1:
@@ -121,33 +126,46 @@ class WordAlignmentProcessor:
         return_list.append([])
         continue
 
-      word_boundaries = np.pad(np.cumsum([len(t) for t in word_tokens[:-1]]), (1, 0))
+      word_boundaries = [0, *accumulate(len(t) for t in word_tokens[:-1])]
       if len(word_boundaries) <= 1:
         return_list.append([])
         continue
 
-      jumps = np.pad(np.diff(text_indices), (1, 0), constant_values=1).astype(bool)
-      jump_times = time_indices[jumps] / self.tokens_per_second
-      start_times = jump_times[word_boundaries[:-1]]
-      end_times = jump_times[word_boundaries[1:]]
+      jumps = [
+        True,
+        *[current != previous for previous, current in zip(text_indices, text_indices[1:])],
+      ]
+      jump_times = [
+        time_index / self.tokens_per_second
+        for time_index, is_jump in zip(time_indices, jumps)
+        if is_jump
+      ]
+      start_times = [jump_times[index] for index in word_boundaries[:-1]]
+      end_times = [jump_times[index] for index in word_boundaries[1:]]
       word_probabilities = [
-        np.mean(text_token_probs[i:j]) for i, j in zip(word_boundaries[:-1], word_boundaries[1:])
+        float(np.mean(text_token_probs[i:j]))
+        for i, j in zip(word_boundaries[:-1], word_boundaries[1:])
       ]
 
-      return_list.append(
-        [
+      aligned_words: list[WordTimingDict] = []
+      for word, tokens, start, end, probability in zip(
+        words,
+        word_tokens,
+        start_times,
+        end_times,
+        word_probabilities,
+      ):
+        aligned_words.append(
           {
             "word": word,
             "tokens": tokens,
-            "start": start,
-            "end": end,
-            "probability": probability,
+            "start": float(start),
+            "end": float(end),
+            "probability": float(probability),
           }
-          for word, tokens, start, end, probability in zip(
-            words, word_tokens, start_times, end_times, word_probabilities
-          )
-        ]
-      )
+        )
+
+      return_list.append(aligned_words)
 
     return return_list
 
@@ -161,7 +179,7 @@ class TimingProcessor:
     :param frames_per_second: Number of frames per second in the audio
     :type frames_per_second: float
     """
-    self.frames_per_second = frames_per_second
+    self.frames_per_second: float = frames_per_second
 
   def calculate_duration_statistics(self, alignment: list[WordTimingDict]) -> tuple[float, float]:
     """Calculate median and maximum duration thresholds for word timing.
@@ -275,15 +293,17 @@ class WordTimestampAligner:
     :param tokens_per_second: Number of tokens per second for time conversion
     :type tokens_per_second: float
     """
-    self.alignment_processor = WordAlignmentProcessor(frames_per_second, tokens_per_second)
-    self.timing_processor = TimingProcessor(frames_per_second)
+    self.alignment_processor: WordAlignmentProcessor = WordAlignmentProcessor(
+      frames_per_second, tokens_per_second
+    )
+    self.timing_processor: TimingProcessor = TimingProcessor(frames_per_second)
 
   def add_word_timestamps(
     self,
     segments: list[list[SegmentDict]],
-    model: ctranslate2.models.Whisper,
-    tokenizer: Tokenizer,
-    encoder_output: ctranslate2.StorageView,
+    model: WhisperModelLike,
+    tokenizer: TokenizerLike,
+    encoder_output: StorageViewLike,
     num_frames: int,
     prepend_punctuations: str,
     append_punctuations: str,
@@ -342,7 +362,7 @@ class WordTimestampAligner:
     )
 
   def _extract_text_tokens(
-    self, segments: list[list[SegmentDict]], tokenizer: Tokenizer
+    self, segments: list[list[SegmentDict]], tokenizer: TokenizerLike
   ) -> list[list[list[int]]]:
     """Extract text tokens from segments, filtering out EOT tokens."""
     text_tokens_per_segment: list[list[list[int]]] = []

@@ -1,7 +1,7 @@
-from typing import Any
+from collections.abc import MutableMapping
+from typing import cast
 
 import numpy as np
-from structlog.typing import EventDict, WrappedLogger
 
 
 class FloatPrecisionProcessor:
@@ -18,10 +18,10 @@ class FloatPrecisionProcessor:
   def __init__(
     self,
     digits: int = 3,
-    only_fields: set[str] = set(),
-    not_fields: set[str] = set(),
+    only_fields: set[str] | None = None,
+    not_fields: set[str] | None = None,
     np_array_to_list: bool = True,
-  ):
+  ) -> None:
     """
     Create a FloatRounder processor. That rounds floats to the given number of digits.
 
@@ -31,12 +31,12 @@ class FloatPrecisionProcessor:
     :param not_fields: A set specifying fields not to round
     :param np_array_to_list: Whether to cast np.array to list for nicer printing
     """
-    self.digits = digits
-    self.np_array_to_list = np_array_to_list
-    self.only_fields = only_fields
-    self.not_fields = not_fields
+    self.digits: int = digits
+    self.np_array_to_list: bool = np_array_to_list
+    self.only_fields: set[str] = only_fields or set()
+    self.not_fields: set[str] = not_fields or set()
 
-  def _round(self, value: Any):
+  def _round(self, value: object) -> object:
     """
     Round floats, unpack lists, convert np.arrays to lists
 
@@ -49,21 +49,28 @@ class FloatPrecisionProcessor:
     # convert np.array to list
     if self.np_array_to_list:
       if isinstance(value, np.ndarray):
-        return self._round(list(value))
+        return self._round(cast(object, value.tolist()))
     # round values in lists recursively (to handle lists of lists)
     if isinstance(value, list):
-      for idx, item in enumerate(value):
-        value[idx] = self._round(item)
-      return value
+      list_value = cast(list[object], value)
+      for idx, item in enumerate(list_value):
+        list_value[idx] = self._round(item)
+      return list_value
     # similarly, round values in dicts recursively
     if isinstance(value, dict):
-      for k, v in value.items():
-        value[k] = self._round(v)
-      return value
+      dict_value = cast(dict[object, object], value)
+      for key, item in dict_value.items():
+        dict_value[key] = self._round(item)
+      return dict_value
     # return any other values as they are
     return value
 
-  def __call__(self, _: WrappedLogger, __: str, event_dict: EventDict):
+  def __call__(
+    self,
+    _: object,
+    __: str,
+    event_dict: MutableMapping[str, object],
+  ) -> MutableMapping[str, object]:
     for key, value in event_dict.items():
       if len(self.only_fields) > 0 and key not in self.only_fields:
         continue

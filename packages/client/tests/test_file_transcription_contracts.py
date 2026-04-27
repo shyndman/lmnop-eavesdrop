@@ -1,12 +1,33 @@
 """Contract tests for one-shot ``EavesdropClient.transcribe_file`` behavior."""
 
 import asyncio
+from typing import Protocol, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from eavesdrop.client.connection import WebSocketConnection
 from eavesdrop.client.core import EavesdropClient, FileTranscriptionResult
 from eavesdrop.wire import Segment, TranscriptionMessage
+
+
+class _AsyncMockAssertions(Protocol):
+  def assert_awaited_once(self) -> None: ...
+
+  def assert_awaited_once_with(self, *args: object, **kwargs: object) -> None: ...
+
+
+class _FileConnectionDouble(Protocol):
+  send_file_bytes: _AsyncMockAssertions
+  send_end_of_audio: _AsyncMockAssertions
+
+
+def _assert_awaited_once(mock: object) -> None:
+  cast(_AsyncMockAssertions, mock).assert_awaited_once()
+
+
+def _assert_awaited_once_with(mock: object, *args: object) -> None:
+  cast(_AsyncMockAssertions, mock).assert_awaited_once_with(*args)
 
 
 def _segment(*, segment_id: int, text: str, completed: bool) -> Segment:
@@ -50,7 +71,7 @@ async def test_transcribe_file_timeout_cleans_up_connection(tmp_path) -> None:
   client = EavesdropClient.transcriber(audio_device="default")
   client.disconnect = AsyncMock()
 
-  async def _slow_operation(*, file_bytes: bytes) -> FileTranscriptionResult:
+  async def _slow_operation(file_bytes: bytes) -> FileTranscriptionResult:
     await asyncio.sleep(1.0)
     raise AssertionError("operation should have timed out")
 
@@ -73,7 +94,7 @@ async def test_transcribe_file_cancellation_cleans_up_connection(tmp_path) -> No
 
   gate = asyncio.Event()
 
-  async def _blocking_operation(*, file_bytes: bytes) -> FileTranscriptionResult:
+  async def _blocking_operation(file_bytes: bytes) -> FileTranscriptionResult:
     await gate.wait()
     raise AssertionError("operation should have been cancelled")
 
@@ -94,14 +115,15 @@ async def test_transcribe_file_operation_uploads_file_bytes_and_eof() -> None:
   """One-shot operation must upload bytes, send EOF, then reduce terminal output."""
   client = EavesdropClient.transcriber(audio_device="default")
 
-  fake_connection = MagicMock()
-  fake_connection.send_file_bytes = AsyncMock()
-  fake_connection.send_end_of_audio = AsyncMock()
+  fake_connection = cast(_FileConnectionDouble, MagicMock())
+  fake_connection.send_file_bytes = cast(_AsyncMockAssertions, AsyncMock())
+  fake_connection.send_end_of_audio = cast(_AsyncMockAssertions, AsyncMock())
 
   async def _connect_with_fake_connection(
-    setup_options,
+    setup_options: object,
   ) -> None:
-    client._connection = fake_connection
+    _ = setup_options
+    client._connection = cast(WebSocketConnection, cast(object, fake_connection))
     client._connected = True
 
   expected_result = FileTranscriptionResult(segments=[], text="", language=None, warnings=[])
@@ -111,9 +133,9 @@ async def test_transcribe_file_operation_uploads_file_bytes_and_eof() -> None:
   result = await client._transcribe_file_operation(file_bytes=b"abc")
 
   assert result == expected_result
-  client.connect.assert_awaited_once()
-  fake_connection.send_file_bytes.assert_awaited_once_with(b"abc")
-  fake_connection.send_end_of_audio.assert_awaited_once()
+  _assert_awaited_once(client.connect)
+  _assert_awaited_once_with(fake_connection.send_file_bytes, b"abc")
+  _assert_awaited_once(fake_connection.send_end_of_audio)
 
 
 @pytest.mark.asyncio

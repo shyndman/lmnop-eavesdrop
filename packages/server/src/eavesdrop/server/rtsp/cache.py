@@ -12,6 +12,7 @@ from collections import deque
 from typing import TypedDict
 
 from pydantic.dataclasses import dataclass
+from structlog.stdlib import BoundLogger
 
 from eavesdrop.common import get_logger
 from eavesdrop.server.config import RTSPCacheConfig
@@ -62,12 +63,12 @@ class StreamCache:
         stream_name: Name of the stream this cache serves
         cache_config: Cache duration configuration
     """
-    self.stream_name = stream_name
-    self.cache_config = cache_config
+    self.stream_name: str = stream_name
+    self.cache_config: RTSPCacheConfig = cache_config
     self._entries: deque[CacheEntry] = deque()
-    self._lock = asyncio.Lock()
-    self._has_listeners = False
-    self.logger = get_logger("rtsp/cache", stream=stream_name)
+    self._lock: asyncio.Lock = asyncio.Lock()
+    self._has_listeners: bool = False
+    self.logger: BoundLogger = get_logger("rtsp/cache", stream=stream_name)
 
   async def add_transcription(self, segments: list[Segment], language: str | None = None) -> None:
     """
@@ -212,7 +213,7 @@ class StreamCache:
 
     # Remove entries from the left (oldest) until we hit non-expired entries
     while self._entries and self._entries[0].timestamp < cutoff_time:
-      self._entries.popleft()
+      _ = self._entries.popleft()
 
     removed_count = initial_count - len(self._entries)
     if removed_count > 0:
@@ -239,10 +240,10 @@ class RTSPTranscriptionCache:
     :param
         cache_config: Cache duration configuration
     """
-    self.cache_config = cache_config
+    self.cache_config: RTSPCacheConfig = cache_config
     self._stream_caches: dict[str, StreamCache] = {}
-    self._lock = asyncio.Lock()
-    self.logger = get_logger("rtsp/cache")
+    self._lock: asyncio.Lock = asyncio.Lock()
+    self.logger: BoundLogger = get_logger("rtsp/cache")
 
     self.logger.info(
       "Initialized RTSP transcription cache",

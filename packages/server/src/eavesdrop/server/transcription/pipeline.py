@@ -1,14 +1,13 @@
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
+from structlog.stdlib import BoundLogger
+
 if TYPE_CHECKING:
   from eavesdrop.server.transcription.session import TranscriptionSessionProtocol
 
-import numpy as np
-from faster_whisper.tokenizer import _LANGUAGE_CODES
-
 from eavesdrop.common import get_logger
-from eavesdrop.server.transcription.audio_processing import AudioProcessor
+from eavesdrop.server.transcription.audio_processing import AudioProcessor, FloatAudio
 from eavesdrop.server.transcription.generation_strategies import GenerationStrategies
 from eavesdrop.server.transcription.hallucination_filter import HallucinationFilter
 from eavesdrop.server.transcription.language_detection import (
@@ -16,14 +15,25 @@ from eavesdrop.server.transcription.language_detection import (
   LanguageDetector,
 )
 from eavesdrop.server.transcription.model_setup import (
+  ModelFiles,
   WhisperModelConfig,
   load_whisper_model,
 )
-from eavesdrop.server.transcription.models import TranscriptionInfo, VadParameters
+from eavesdrop.server.transcription.models import (
+  FeatureExtractorConfig,
+  TranscriptionInfo,
+  VadParameters,
+)
 from eavesdrop.server.transcription.prompt_builder import PromptBuilder
 from eavesdrop.server.transcription.request_runner import RequestRunner
 from eavesdrop.server.transcription.segment_decoder import SegmentDecoder
 from eavesdrop.server.transcription.segment_processor import SegmentProcessor
+from eavesdrop.server.transcription.vendor_types import (
+  FeatureExtractorLike,
+  TokenizerLike,
+  WhisperModelLike,
+  load_language_codes,
+)
 from eavesdrop.server.transcription.word_alignment import WordTimestampAligner
 from eavesdrop.wire import Segment
 
@@ -31,6 +41,7 @@ from eavesdrop.wire import Segment
 # Contains both prepended ('"\'"¿([{-') and appended ('"\'.。,，!！?？:：")]}、') punctuation marks
 # Used for merging punctuation with adjacent words during timestamp alignment
 _PUNCTUATION = '"\'"¿([{-"\'.。,，!！?？:：")]}、'
+LANGUAGE_CODES = load_language_codes()
 
 
 class WhisperModel:
@@ -44,8 +55,8 @@ class WhisperModel:
     num_workers: int = 1,
     download_root: str | None = None,
     local_files_only: bool = False,
-    files: dict | None = None,
-    **model_kwargs,
+    files: ModelFiles | None = None,
+    **model_kwargs: object,
   ):
     """Initializes the Whisper model.
 
@@ -77,8 +88,8 @@ class WhisperModel:
         to file contents as file-like or bytes objects. If this is set, model_path acts as an
         identifier for this model.
     """
-    self.logger = get_logger("shh")
-    self._last_vad_log_time = 0  # Track when we last logged VAD filtering
+    self.logger: BoundLogger = get_logger("shh")
+    self._last_vad_log_time: int = 0  # Track when we last logged VAD filtering
 
     # Use our new whisper module for model loading
     config = WhisperModelConfig(
@@ -98,31 +109,39 @@ class WhisperModel:
     model_bundle = load_whisper_model(config)
 
     # Extract components for backward compatibility
-    self.model = model_bundle.model
-    self.hf_tokenizer = model_bundle.hf_tokenizer
-    self.feature_extractor = model_bundle.feature_extractor
-    self.feat_kwargs = model_bundle.feature_kwargs
+    self.model: WhisperModelLike = model_bundle.model
+    self.hf_tokenizer: TokenizerLike = model_bundle.hf_tokenizer
+    self.feature_extractor: FeatureExtractorLike = model_bundle.feature_extractor
+    self.feat_kwargs: FeatureExtractorConfig = model_bundle.feature_kwargs
 
     # Copy computed properties for backward compatibility
-    self.input_stride = model_bundle.input_stride
-    self.num_samples_per_token = model_bundle.num_samples_per_token
-    self.frames_per_second = model_bundle.frames_per_second
-    self.tokens_per_second = model_bundle.tokens_per_second
-    self.time_precision = model_bundle.time_precision
-    self.max_length = model_bundle.max_length
+    self.input_stride: int = model_bundle.input_stride
+    self.num_samples_per_token: int = model_bundle.num_samples_per_token
+    self.frames_per_second: int = model_bundle.frames_per_second
+    self.tokens_per_second: int = model_bundle.tokens_per_second
+    self.time_precision: float = model_bundle.time_precision
+    self.max_length: int = model_bundle.max_length
 
     # Initialize processors with our new modules
-    self.audio_processor = AudioProcessor(self.feature_extractor)
-    self.language_detector = LanguageDetector(self.model, self.feature_extractor)
-    self.word_aligner = WordTimestampAligner(self.frames_per_second, self.tokens_per_second)
-    self.prompt_builder = PromptBuilder(self.max_length)
-    self.segment_processor = SegmentProcessor(self.time_precision, self.input_stride)
-    self.generation_strategies = GenerationStrategies(self.max_length, self.time_precision)
+    self.audio_processor: AudioProcessor = AudioProcessor(self.feature_extractor)
+    self.language_detector: LanguageDetector = LanguageDetector(self.model, self.feature_extractor)
+    self.word_aligner: WordTimestampAligner = WordTimestampAligner(
+      self.frames_per_second, self.tokens_per_second
+    )
+    self.prompt_builder: PromptBuilder = PromptBuilder(self.max_length)
+    self.segment_processor: SegmentProcessor = SegmentProcessor(
+      self.time_precision, self.input_stride
+    )
+    self.generation_strategies: GenerationStrategies = GenerationStrategies(
+      self.max_length, self.time_precision
+    )
 
     # Initialize anomaly detector and hallucination filter
-    self.hallucination_filter = HallucinationFilter(AnomalyDetector(_PUNCTUATION))
+    self.hallucination_filter: HallucinationFilter = HallucinationFilter(
+      AnomalyDetector(_PUNCTUATION)
+    )
 
-    self.segment_decoder = SegmentDecoder(
+    self.segment_decoder: SegmentDecoder = SegmentDecoder(
       model=self.model,
       feature_extractor=self.feature_extractor,
       frames_per_second=self.frames_per_second,
@@ -134,7 +153,7 @@ class WhisperModel:
       generation_strategies=self.generation_strategies,
       hallucination_filter=self.hallucination_filter,
     )
-    self.request_runner = RequestRunner(
+    self.request_runner: RequestRunner = RequestRunner(
       logger=self.logger,
       model=self.model,
       hf_tokenizer=self.hf_tokenizer,
@@ -146,11 +165,11 @@ class WhisperModel:
   @property
   def supported_languages(self) -> list[str]:
     """The languages supported by the model."""
-    return list(_LANGUAGE_CODES) if self.model.is_multilingual else ["en"]
+    return list(LANGUAGE_CODES) if self.model.is_multilingual else ["en"]
 
   def transcribe(
     self,
-    audio: np.ndarray,
+    audio: FloatAudio,
     session: "TranscriptionSessionProtocol | None" = None,
     language: str | None = None,
     initial_prompt: str | None = None,
@@ -199,9 +218,9 @@ class WhisperModel:
 
     # Use noop session if none provided
     if session is None:
-      from eavesdrop.server.transcription.session import _noop_session
+      from eavesdrop.server.transcription.session import noop_session
 
-      session = _noop_session
+      session = noop_session
 
     # Update session timing context with real buffer timing
     session.update_audio_context(

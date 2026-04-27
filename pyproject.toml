@@ -9,7 +9,11 @@ package = false
 
 [tool.uv.workspace]
 members = [
-    "packages/active-listener",
+  "packages/active-listener",
+  "packages/client",
+  "packages/common",
+  "packages/server",
+  "packages/wire",
 ]
 
 [tool.basedpyright]
@@ -27,16 +31,134 @@ include = [
   "packages/active-listener/tests",
 ]
 ignore = ["**/.venv"]
-defineConstant = { DEBUG = true }
+defineConstant = {DEBUG = true}
 reportMissingImports = "error"
 deprecateTypingAliases = true
 reportDeprecated = "information"
 pythonPlatform = "Linux"
 
-executionEnvironments = [
-  { root = "packages/common", extraPaths = ["packages/common/src"] },
-  { root = "packages/wire", extraPaths = ["packages/wire/src", "packages/common/src"] },
-  { root = "packages/client", extraPaths = ["packages/client/src", "packages/wire/src", "packages/common/src"] },
-  { root = "packages/server", extraPaths = ["packages/server/src", "packages/wire/src", "packages/common/src"] },
-  { root = "packages/active-listener", extraPaths = ["packages/active-listener/src", "packages/client/src", "packages/wire/src", "packages/common/src"] },
-]
+# These test-only execution environments are a deliberate compromise.
+#
+# We still want repo-root basedpyright to understand each package's tests,
+# including their monorepo-local imports, so each `extraPaths` list points
+# basedpyright at the corresponding package `src/` trees. `extraPaths` only
+# affects import resolution; it does not mute diagnostics by itself.
+#
+# We then selectively turn off a handful of high-noise rules for tests only.
+# The goal is to keep production code (`packages/*/src`) under normal scrutiny
+# while avoiding a flood of test-only diagnostics around mocks, assertions,
+# callback signatures, and untyped third-party test seams. If a rule is turned
+# off here, that is a statement about test ergonomics only — not source code.
+#
+# In short:
+# - `packages/*/src` stays fully checked
+# - `packages/*/tests` gets package-local import roots plus a narrower rule set
+# - `extraPaths` is here so tests resolve imports correctly from the repo root
+[[tool.basedpyright.executionEnvironments]]
+root = "packages/active-listener/tests"
+extraPaths = ["packages/active-listener/src", "packages/client/src", "packages/wire/src", "packages/common/src"]
+# reportAny = "none"
+reportMissingTypeStubs = "none"
+reportMissingParameterType = "none"
+reportMissingTypeArgument = "none"
+reportPrivateUsage = "none"
+reportUnannotatedClassAttribute = "none"
+reportUnknownLambdaType = "none"
+reportUnknownArgumentType = "none"
+reportUnknownMemberType = "none"
+reportUnknownParameterType = "none"
+reportUnknownVariableType = "none"
+reportUnusedCallResult = "none"
+reportUnusedParameter = "none"
+
+[[tool.basedpyright.executionEnvironments]]
+root = "packages/client/tests"
+extraPaths = ["packages/client/src", "packages/wire/src", "packages/common/src"]
+# reportAny = "none"
+reportImplicitOverride = "none"
+reportMissingTypeStubs = "none"
+reportMissingParameterType = "none"
+reportMissingTypeArgument = "none"
+reportPrivateUsage = "none"
+reportUnannotatedClassAttribute = "none"
+reportUnknownLambdaType = "none"
+reportUnknownArgumentType = "none"
+reportUnknownMemberType = "none"
+reportUnknownParameterType = "none"
+reportUnknownVariableType = "none"
+reportUnusedCallResult = "none"
+reportUnusedParameter = "none"
+
+[[tool.basedpyright.executionEnvironments]]
+root = "packages/common/tests"
+extraPaths = ["packages/common/src"]
+# reportAny = "none"
+reportImplicitOverride = "none"
+reportMissingTypeStubs = "none"
+reportMissingParameterType = "none"
+reportMissingTypeArgument = "none"
+reportPrivateUsage = "none"
+reportUnannotatedClassAttribute = "none"
+reportUnknownLambdaType = "none"
+reportUnknownArgumentType = "none"
+reportUnknownMemberType = "none"
+reportUnknownParameterType = "none"
+reportUnknownVariableType = "none"
+reportUnusedCallResult = "none"
+reportUnusedParameter = "none"
+
+[[tool.basedpyright.executionEnvironments]]
+root = "packages/server/tests"
+extraPaths = ["packages/server/src", "packages/wire/src", "packages/common/src"]
+# reportAny = "none"
+reportImplicitOverride = "none"
+reportMissingTypeStubs = "none"
+reportMissingParameterType = "none"
+reportMissingTypeArgument = "none"
+reportPrivateUsage = "none"
+reportUnannotatedClassAttribute = "none"
+reportUnknownLambdaType = "none"
+reportUnknownArgumentType = "none"
+reportUnknownMemberType = "none"
+reportUnknownParameterType = "none"
+reportUnknownVariableType = "none"
+reportUnusedCallResult = "none"
+reportUnusedParameter = "none"
+
+[[tool.basedpyright.executionEnvironments]]
+root = "packages/wire/tests"
+extraPaths = ["packages/wire/src", "packages/common/src"]
+# reportAny = "none"
+reportImplicitOverride = "none"
+reportMissingTypeStubs = "none"
+reportMissingParameterType = "none"
+reportMissingTypeArgument = "none"
+reportPrivateUsage = "none"
+reportUnannotatedClassAttribute = "none"
+reportUnknownLambdaType = "none"
+reportUnknownArgumentType = "none"
+reportUnknownMemberType = "none"
+reportUnknownParameterType = "none"
+reportUnknownVariableType = "none"
+reportUnusedCallResult = "none"
+reportUnusedParameter = "none"
+
+[[tool.basedpyright.executionEnvironments]]
+root = "packages/common"
+extraPaths = ["packages/common/src"]
+
+[[tool.basedpyright.executionEnvironments]]
+root = "packages/wire"
+extraPaths = ["packages/wire/src", "packages/common/src"]
+
+[[tool.basedpyright.executionEnvironments]]
+root = "packages/client"
+extraPaths = ["packages/client/src", "packages/wire/src", "packages/common/src"]
+
+[[tool.basedpyright.executionEnvironments]]
+root = "packages/server"
+extraPaths = ["packages/server/src", "packages/wire/src", "packages/common/src"]
+
+[[tool.basedpyright.executionEnvironments]]
+root = "packages/active-listener"
+extraPaths = ["packages/active-listener/src", "packages/client/src", "packages/wire/src", "packages/common/src"]

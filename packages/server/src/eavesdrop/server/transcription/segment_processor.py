@@ -6,9 +6,8 @@ anomaly detection for identifying potentially hallucinated or problematic segmen
 
 from typing import NamedTuple, TypedDict
 
-from faster_whisper.tokenizer import Tokenizer
-
 from eavesdrop.server.transcription.models import SegmentDict
+from eavesdrop.server.transcription.vendor_types import TokenizerLike
 
 
 class SegmentTimingResult(NamedTuple):
@@ -37,12 +36,12 @@ class SegmentProcessor:
     :param input_stride: Input stride for seeking calculations.
     :type input_stride: int
     """
-    self.time_precision = time_precision
-    self.input_stride = input_stride
+    self.time_precision: float = time_precision
+    self.input_stride: int = input_stride
 
   def split_segments_by_timestamps(
     self,
-    tokenizer: Tokenizer,
+    tokenizer: TokenizerLike,
     tokens: list[int],
     time_offset: float,
     segment_size: int,
@@ -110,7 +109,7 @@ class SegmentProcessor:
     self,
     consecutive_timestamps: list[int],
     tokens: list[int],
-    tokenizer: Tokenizer,
+    tokenizer: TokenizerLike,
     time_offset: float,
     seek: int,
     segment_size: int,
@@ -154,7 +153,7 @@ class SegmentProcessor:
   def _process_single_segment(
     self,
     tokens: list[int],
-    tokenizer: Tokenizer,
+    tokenizer: TokenizerLike,
     time_offset: float,
     segment_duration: float,
     seek: int,

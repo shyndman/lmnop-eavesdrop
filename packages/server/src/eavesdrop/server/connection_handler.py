@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from structlog.stdlib import BoundLogger
 from websockets.asyncio.server import ServerConnection
 from websockets.exceptions import ConnectionClosed
 
@@ -78,9 +79,9 @@ class WebSocketConnectionHandler:
     client_initializer: ClientInitializer,
     subscriber_manager: "RTSPSubscriberManager | None" = None,
   ) -> None:
-    self._client_initializer = client_initializer
-    self._subscriber_manager = subscriber_manager
-    self._logger = get_logger("svr/conn")
+    self._client_initializer: ClientInitializer = client_initializer
+    self._subscriber_manager: RTSPSubscriberManager | None = subscriber_manager
+    self._logger: BoundLogger = get_logger("svr/conn")
 
   @property
   def subscriber_manager(self) -> "RTSPSubscriberManager | None":
@@ -105,38 +106,39 @@ class WebSocketConnectionHandler:
       self._logger.info("handle_connection: New client connected")
 
       # Check WebSocket headers to determine client type
-      headers = websocket.request.headers if websocket.request else {}
+      headers = self._request_headers(websocket)
       client_type = headers.get(WebSocketHeaders.CLIENT_TYPE, ClientType.TRANSCRIBER)
 
       if client_type == ClientType.RTSP_SUBSCRIBER:
-        result = await self._handle_subscriber_connection(websocket, dict(headers))
+        result = await self._handle_subscriber_connection(websocket, headers)
         return SubscriberConnection() if result else None
 
       while True:
         raw_msg: str = await websocket.recv(decode=True)
         message = deserialize_message(raw_msg)
 
-        match (client_type, message):
-          case (ClientType.TRANSCRIBER, TranscriptionSetupMessage()):
+        if client_type == ClientType.TRANSCRIBER:
+          if isinstance(message, TranscriptionSetupMessage):
             client = await self._handle_transcriber_connection(websocket, message)
             if not client:
               return None
             return TranscriberConnection(client=client, source_mode=message.options.source_mode)
 
-          case (ClientType.TRANSCRIBER, FlushControlMessage()):
+          if isinstance(message, FlushControlMessage):
             await self._send_error(websocket, PRE_SETUP_FLUSH_REJECTION)
             continue
 
-          case (ClientType.TRANSCRIBER, UtteranceCancelledMessage()):
+          if isinstance(message, UtteranceCancelledMessage):
             await self._send_error(websocket, PRE_SETUP_UTTERANCE_CANCEL_REJECTION)
             continue
 
-          case (ClientType.HEALTH_CHECK, HealthCheckRequest()):
-            await self._handle_health_check(websocket, message)
-            return None
+          return None
 
-          case _:
-            return None
+        if client_type == ClientType.HEALTH_CHECK and isinstance(message, HealthCheckRequest):
+          await self._handle_health_check(websocket, message)
+          return None
+
+        return None
 
     except ConnectionClosed:
       self._logger.info("handle_connection: Connection closed by client")
@@ -145,10 +147,8 @@ class WebSocketConnectionHandler:
     except (KeyboardInterrupt, SystemExit):
       raise
 
-    return None
-
   async def _handle_health_check(
-    self, websocket: ServerConnection, message: HealthCheckRequest
+    self, websocket: ServerConnection, _message: HealthCheckRequest
   ) -> None:
     """
     Handle health check requests by logging and closing the connection.
@@ -160,6 +160,13 @@ class WebSocketConnectionHandler:
     """
     self._logger.info("Health check successful", websocket_id=websocket.id)
     await websocket.close()
+
+  def _request_headers(self, websocket: ServerConnection) -> dict[str, str]:
+    """Extract request headers as a plain string map."""
+    if websocket.request is None:
+      return {}
+
+    return {key: value for key, value in websocket.request.headers.raw_items()}
 
   async def _handle_transcriber_connection(
     self, websocket: ServerConnection, message: TranscriptionSetupMessage

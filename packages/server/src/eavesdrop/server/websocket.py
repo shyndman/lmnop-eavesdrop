@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from structlog.stdlib import BoundLogger
 from websockets.asyncio.server import ServerConnection, serve
@@ -21,10 +21,10 @@ class WebSocketClientManager:
     Initializes the WebSocketClientManager for tracking client connections.
     """
     self.clients: dict[ServerConnection, WebSocketStreamingClient] = {}
-    self.start_times = {}
+    self.start_times: dict[ServerConnection, float] = {}
     self.logger: BoundLogger = get_logger("ws/mgr")
 
-  def add_client(self, websocket: ServerConnection, client):
+  def add_client(self, websocket: ServerConnection, client: WebSocketStreamingClient) -> None:
     """
     Adds a client and their connection start time to the tracking dictionaries.
 
@@ -46,7 +46,7 @@ class WebSocketClientManager:
     """
     return self.clients.get(websocket)
 
-  def remove_client(self, websocket):
+  def remove_client(self, websocket: ServerConnection) -> None:
     """
     Removes a client and their connection start time from the tracking dictionaries. Performs
     cleanup on the client if necessary.
@@ -59,7 +59,7 @@ class WebSocketClientManager:
       client.cleanup()
     else:
       self.logger.debug("No client found for websocket during removal")
-    self.start_times.pop(websocket, None)
+    _ = self.start_times.pop(websocket, None)
     self.logger.debug(f"Client removed. Remaining clients: {len(self.clients)}")
 
 
@@ -69,29 +69,26 @@ class WebSocketServer:
   def __init__(
     self,
     handler: Callable[[ServerConnection], Awaitable[None]],
-    host,
-    port,
-    **kwargs,
-  ):
-    self.handler = handler
-    self.host = host
-    self.port = port
-    self.kwargs = kwargs
-    self.logger = get_logger("ws/svr")
+    host: str,
+    port: int,
+  ) -> None:
+    self.handler: Callable[[ServerConnection], Awaitable[None]] = handler
+    self.host: str = host
+    self.port: int = port
+    self.logger: BoundLogger = get_logger("ws/svr")
 
-  async def start(self):
+  async def start(self) -> None:
     self.logger.info(f"Starting WebSocket server on {self.host}:{self.port}")
     async with serve(
       self.handler,
       self.host,
       self.port,
-      **self.kwargs,
     ):
       await asyncio.Future()  # run forever
 
-  async def error_handling_wrapper(self, websocket: ServerConnection):
+  async def error_handling_wrapper(self, websocket: ServerConnection) -> None:
     """Wrapper that catches and logs connection errors without crashing"""
-    addr = websocket.remote_address
+    addr = cast(object, websocket.remote_address)
 
     try:
       self.logger.info("Connection begin", address=addr, websocket_id=websocket.id)
@@ -109,5 +106,10 @@ class WebSocketServer:
     except Exception:
       self.logger.exception("Connection unexpected error", websocket_id=websocket.id)
 
-  def __exit__(self, *args):
+  def __exit__(
+    self,
+    exc_type: type[BaseException] | None,
+    exc_val: BaseException | None,
+    exc_tb: object | None,
+  ) -> None:
     pass

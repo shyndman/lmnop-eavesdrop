@@ -7,9 +7,13 @@ Handles buffering of audio frames with configurable cleanup and processing param
 import threading
 
 import numpy as np
+import structlog
+from numpy.typing import NDArray
 
 from eavesdrop.common import get_logger
 from eavesdrop.server.config import BufferConfig
+
+Float32Audio = NDArray[np.float32]
 
 
 class AudioStreamBuffer:
@@ -43,10 +47,10 @@ class AudioStreamBuffer:
                 cleanup policies, and processing thresholds.
     """
     self.config: BufferConfig = config
-    self.logger = get_logger("snd/buf")
+    self.logger: structlog.stdlib.BoundLogger = get_logger("snd/buf")
 
     # Audio buffer state
-    self.frames_np: np.ndarray | None = None
+    self.frames_np: Float32Audio | None = None
     """Raw audio data as a NumPy array. None when buffer is empty."""
 
     self.buffer_start_time: float = 0.0
@@ -63,10 +67,10 @@ class AudioStreamBuffer:
     """
 
     # Thread synchronization
-    self.lock = threading.Lock()
+    self.lock: threading.Lock = threading.Lock()
     """Protects buffer state from concurrent access."""
 
-  def add_frames(self, frame_np: np.ndarray) -> None:
+  def add_frames(self, frame_np: Float32Audio) -> None:
     """
     Add new audio frames to the end of the buffer.
 
@@ -97,7 +101,7 @@ class AudioStreamBuffer:
       else:
         self.frames_np = np.concatenate((self.frames_np, frame_np), axis=0)
 
-  def get_chunk_for_processing(self) -> tuple[np.ndarray, float, float]:
+  def get_chunk_for_processing(self) -> tuple[Float32Audio, float, float]:
     """
     Extract all unprocessed audio data from the buffer.
 
@@ -117,7 +121,7 @@ class AudioStreamBuffer:
     """
     with self.lock:
       if self.frames_np is None:
-        return np.array([]), 0.0, self.processed_up_to_time
+        return np.array([], dtype=np.float32), 0.0, self.processed_up_to_time
 
       offset_diff = self.processed_up_to_time - self.buffer_start_time
       samples_take = max(0, int(offset_diff * self.config.sample_rate))

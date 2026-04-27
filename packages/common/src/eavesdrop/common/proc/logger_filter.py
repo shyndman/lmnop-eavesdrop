@@ -1,5 +1,11 @@
+from typing import Protocol
+
 from structlog import DropEvent
-from structlog.typing import EventDict, WrappedLogger
+from structlog.typing import EventDict
+
+
+class LoggerWithName(Protocol):
+  name: str
 
 
 class LoggerFilterProcessor:
@@ -23,6 +29,8 @@ class LoggerFilterProcessor:
       logger.info("This will be logged")
   """
 
+  logger_name: str
+
   def __init__(self, logger_name: str):
     """
     Initialize the LoggerFilterProcessor.
@@ -32,16 +40,16 @@ class LoggerFilterProcessor:
     """
     self.logger_name = logger_name
 
-  def __call__(self, logger: WrappedLogger, __: str, event_dict: EventDict):
+  def __call__(self, logger: LoggerWithName, __: str, event_dict: EventDict) -> EventDict:
     """
     Process a log event.
 
     :param logger: The logger instance that generated the event.
     :param method_name: The logging method name (e.g., "info", "error").
     :param event_dict: The log event dictionary.
-    :return: The event_dict if the event should be processed, or None to ignore it.
+    :return: The event_dict if the event should be processed.
     """
     if logger.name == self.logger_name or logger.name.startswith(f"{self.logger_name}."):
       return event_dict
-    else:
-      raise DropEvent(f"Filtered out by LoggerFilterProcessor, logger={logger.name}")
+
+    raise DropEvent(f"Filtered out by LoggerFilterProcessor, logger={logger.name}")

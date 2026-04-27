@@ -28,8 +28,8 @@ build-backend = "hatchling.build"
 packages = ["src/eavesdrop"]
 
 [tool.uv.sources]
-eavesdrop-wire = {path = "../wire", editable = true}
-eavesdrop-common = { path = "../common", editable = true }
+eavesdrop-wire = { workspace = true }
+eavesdrop-common = { workspace = true }
 
 [tool.basedpyright]
 include = ["src"]

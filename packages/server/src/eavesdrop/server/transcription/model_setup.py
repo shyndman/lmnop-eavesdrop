@@ -7,17 +7,20 @@ without handling transcription logic.
 
 import json
 import os
-from inspect import signature
-from typing import TypedDict, cast
-
-import ctranslate2
-import tokenizers
-from faster_whisper.feature_extractor import FeatureExtractor
-from faster_whisper.tokenizer import _LANGUAGE_CODES
-from faster_whisper.utils import download_model
+from typing import cast, TypedDict
 
 from eavesdrop.common import get_logger
 from eavesdrop.server.transcription.models import FeatureExtractorConfig
+from eavesdrop.server.transcription.vendor_types import (
+  FeatureExtractorLike,
+  TokenizerLike,
+  WhisperModelLike,
+  load_ctranslate2_whisper,
+  load_download_model,
+  load_feature_extractor,
+  load_hf_tokenizer_factory,
+  load_language_codes,
+)
 
 # Private module constants
 _DEFAULT_INPUT_STRIDE = 2
@@ -26,6 +29,14 @@ _DEFAULT_MAX_LENGTH = 448
 _DEFAULT_CPU_THREADS = 0
 _DEFAULT_NUM_WORKERS = 1
 _DEFAULT_DEVICE_INDEX = 0
+
+FeatureExtractor = load_feature_extractor()
+TokenizerFactory = load_hf_tokenizer_factory()
+WhisperFactory = load_ctranslate2_whisper()
+download_model = load_download_model()
+LANGUAGE_CODES = load_language_codes()
+
+ModelFiles = dict[str, object]
 
 
 class ModelPathResolution(TypedDict):
@@ -49,8 +60,8 @@ class WhisperModelConfig:
     num_workers: int = _DEFAULT_NUM_WORKERS,
     download_root: str | None = None,
     local_files_only: bool = False,
-    files: dict | None = None,
-    **model_kwargs,
+    files: ModelFiles | None = None,
+    **model_kwargs: object,
   ):
     """Initialize Whisper model configuration.
 
@@ -79,16 +90,16 @@ class WhisperModelConfig:
     :type files: dict | None
     :param model_kwargs: Additional arguments passed to CTranslate2 model.
     """
-    self.model_size_or_path = model_size_or_path
-    self.device = device
-    self.device_index = device_index
-    self.compute_type = compute_type
-    self.cpu_threads = cpu_threads
-    self.num_workers = num_workers
-    self.download_root = download_root
-    self.local_files_only = local_files_only
-    self.files = files
-    self.model_kwargs = model_kwargs
+    self.model_size_or_path: str = model_size_or_path
+    self.device: str = device
+    self.device_index: int | list[int] = device_index
+    self.compute_type: str = compute_type
+    self.cpu_threads: int = cpu_threads
+    self.num_workers: int = num_workers
+    self.download_root: str | None = download_root
+    self.local_files_only: bool = local_files_only
+    self.files: ModelFiles | None = files
+    self.model_kwargs: dict[str, object] = model_kwargs
 
 
 class WhisperModelBundle:
@@ -96,9 +107,9 @@ class WhisperModelBundle:
 
   def __init__(
     self,
-    model: ctranslate2.models.Whisper,
-    feature_extractor: FeatureExtractor,
-    hf_tokenizer: tokenizers.Tokenizer,
+    model: WhisperModelLike,
+    feature_extractor: FeatureExtractorLike,
+    hf_tokenizer: TokenizerLike,
     model_path: str,
     feature_kwargs: FeatureExtractorConfig,
   ):
@@ -115,26 +126,26 @@ class WhisperModelBundle:
     :param feature_kwargs: Configuration used for the feature extractor.
     :type feature_kwargs: FeatureExtractorConfig
     """
-    self.model = model
-    self.feature_extractor = feature_extractor
-    self.hf_tokenizer = hf_tokenizer
-    self.model_path = model_path
-    self.feature_kwargs = feature_kwargs
+    self.model: WhisperModelLike = model
+    self.feature_extractor: FeatureExtractorLike = feature_extractor
+    self.hf_tokenizer: TokenizerLike = hf_tokenizer
+    self.model_path: str = model_path
+    self.feature_kwargs: FeatureExtractorConfig = feature_kwargs
 
     # Computed properties derived from feature extractor
-    self.input_stride = _DEFAULT_INPUT_STRIDE
-    self.num_samples_per_token = self.feature_extractor.hop_length * self.input_stride
-    self.frames_per_second = (
+    self.input_stride: int = _DEFAULT_INPUT_STRIDE
+    self.num_samples_per_token: int = self.feature_extractor.hop_length * self.input_stride
+    self.frames_per_second: int = (
       self.feature_extractor.sampling_rate // self.feature_extractor.hop_length
     )
-    self.tokens_per_second = self.feature_extractor.sampling_rate // self.num_samples_per_token
-    self.time_precision = _DEFAULT_TIME_PRECISION
-    self.max_length = _DEFAULT_MAX_LENGTH
+    self.tokens_per_second: int = self.feature_extractor.sampling_rate // self.num_samples_per_token
+    self.time_precision: float = _DEFAULT_TIME_PRECISION
+    self.max_length: int = _DEFAULT_MAX_LENGTH
 
   @property
   def supported_languages(self) -> list[str]:
     """The languages supported by the model."""
-    return list(_LANGUAGE_CODES) if self.model.is_multilingual else ["en"]
+    return list(LANGUAGE_CODES) if self.model.is_multilingual else ["en"]
 
 
 def _resolve_model_path(config: WhisperModelConfig) -> ModelPathResolution:
@@ -150,8 +161,8 @@ def _resolve_model_path(config: WhisperModelConfig) -> ModelPathResolution:
 
   if config.files:
     model_path = config.model_size_or_path
-    tokenizer_bytes = config.files.pop("tokenizer.json", None)
-    preprocessor_bytes = config.files.pop("preprocessor_config.json", None)
+    tokenizer_bytes = _read_embedded_bytes(config.files.pop("tokenizer.json", None))
+    preprocessor_bytes = _read_embedded_bytes(config.files.pop("preprocessor_config.json", None))
   elif os.path.isdir(config.model_size_or_path):
     model_path = config.model_size_or_path
   else:
@@ -168,9 +179,7 @@ def _resolve_model_path(config: WhisperModelConfig) -> ModelPathResolution:
   }
 
 
-def _load_ctranslate2_model(
-  config: WhisperModelConfig, model_path: str
-) -> ctranslate2.models.Whisper:
+def _load_ctranslate2_model(config: WhisperModelConfig, model_path: str) -> WhisperModelLike:
   """Load the CTranslate2 Whisper model.
 
   :param config: The model configuration.
@@ -180,7 +189,7 @@ def _load_ctranslate2_model(
   :returns: The loaded CTranslate2 Whisper model.
   :rtype: ctranslate2.models.Whisper
   """
-  return ctranslate2.models.Whisper(
+  return WhisperFactory(
     model_path,
     device=config.device,
     device_index=config.device_index,
@@ -194,7 +203,7 @@ def _load_ctranslate2_model(
 
 def _load_hf_tokenizer(
   model_path: str, tokenizer_bytes: bytes | None, is_multilingual: bool
-) -> tokenizers.Tokenizer:
+) -> TokenizerLike:
   """Load the HuggingFace tokenizer.
 
   :param model_path: Path to the model directory.
@@ -209,12 +218,72 @@ def _load_hf_tokenizer(
   tokenizer_file = os.path.join(model_path, "tokenizer.json")
 
   if tokenizer_bytes:
-    return tokenizers.Tokenizer.from_buffer(tokenizer_bytes)
+    return TokenizerFactory.from_buffer(tokenizer_bytes)
   elif os.path.isfile(tokenizer_file):
-    return tokenizers.Tokenizer.from_file(tokenizer_file)
+    return TokenizerFactory.from_file(tokenizer_file)
   else:
     model_name = "openai/whisper-tiny" + ("" if is_multilingual else ".en")
-    return tokenizers.Tokenizer.from_pretrained(model_name)
+    return TokenizerFactory.from_pretrained(model_name)
+
+
+def _read_embedded_bytes(value: object) -> bytes | None:
+  if value is None:
+    return None
+
+  if isinstance(value, bytes):
+    return value
+
+  if isinstance(value, bytearray):
+    return bytes(value)
+
+  if isinstance(value, memoryview):
+    return value.tobytes()
+
+  read = getattr(value, "read", None)
+  if callable(read):
+    embedded_bytes = read()
+    if isinstance(embedded_bytes, bytes):
+      return embedded_bytes
+    if isinstance(embedded_bytes, bytearray):
+      return bytes(embedded_bytes)
+    if isinstance(embedded_bytes, memoryview):
+      return embedded_bytes.tobytes()
+
+  return None
+
+
+def _coerce_feature_extractor_config(raw_config: object) -> FeatureExtractorConfig:
+  if not isinstance(raw_config, dict):
+    return {}
+
+  raw_config_items = cast(dict[object, object], raw_config)
+  config_items: dict[str, object] = {
+    key: value for key, value in raw_config_items.items() if isinstance(key, str)
+  }
+
+  filtered_config: FeatureExtractorConfig = {}
+
+  feature_size = config_items.get("feature_size")
+  if isinstance(feature_size, int):
+    filtered_config["feature_size"] = feature_size
+
+  sampling_rate = config_items.get("sampling_rate")
+  if isinstance(sampling_rate, int):
+    filtered_config["sampling_rate"] = sampling_rate
+
+  hop_length = config_items.get("hop_length")
+  if isinstance(hop_length, int):
+    filtered_config["hop_length"] = hop_length
+
+  chunk_length = config_items.get("chunk_length")
+  if isinstance(chunk_length, int):
+    filtered_config["chunk_length"] = chunk_length
+
+  n_fft = config_items.get("n_fft")
+  if isinstance(n_fft, int):
+    filtered_config["n_fft"] = n_fft
+
+  return filtered_config
 
 
 def _get_feature_extractor_config(
@@ -231,29 +300,26 @@ def _get_feature_extractor_config(
   :raises json.JSONDecodeError: If the preprocessor config cannot be parsed.
   """
   logger = get_logger("shh/conf")
-  config = {}
+  raw_config: object = {}
 
   try:
     config_path = os.path.join(model_path, "preprocessor_config.json")
     if preprocessor_bytes:
-      config = json.loads(preprocessor_bytes)
+      raw_config = cast(object, json.loads(preprocessor_bytes))
     elif os.path.isfile(config_path):
       with open(config_path, "r", encoding="utf-8") as file:
-        config = json.load(file)
+        raw_config = cast(object, json.load(file))
     else:
-      return cast(FeatureExtractorConfig, config)
+      return {}
 
-    # Filter to only valid FeatureExtractor parameters
-    valid_keys = signature(FeatureExtractor.__init__).parameters.keys()
-    filtered_config = {k: v for k, v in config.items() if k in valid_keys}
-    return cast(FeatureExtractorConfig, filtered_config)
+    return _coerce_feature_extractor_config(raw_config)
 
   except json.JSONDecodeError:
     logger.exception("Could not load preprocessor config")
     raise
 
 
-def _create_feature_extractor(feature_kwargs: FeatureExtractorConfig) -> FeatureExtractor:
+def _create_feature_extractor(feature_kwargs: FeatureExtractorConfig) -> FeatureExtractorLike:
   """Create and configure the feature extractor.
 
   :param feature_kwargs: Configuration for the feature extractor.
@@ -286,8 +352,7 @@ def load_whisper_model(config: WhisperModelConfig) -> WhisperModelBundle:
   model = _load_ctranslate2_model(config, path_resolution["model_path"])
 
   logger.info(
-    "Initialized CTranslate2 Whisper model: path='%s', device='%s', device_index=%s, "
-    "compute_type='%s', cpu_threads=%d, num_workers=%d, is_multilingual=%s",
+    "Initialized CTranslate2 Whisper model: path='%s', device='%s', device_index=%s, compute_type='%s', cpu_threads=%d, num_workers=%d, is_multilingual=%s",
     path_resolution["model_path"],
     config.device,
     config.device_index,
@@ -336,8 +401,8 @@ def create_whisper_model(
   num_workers: int = _DEFAULT_NUM_WORKERS,
   download_root: str | None = None,
   local_files_only: bool = False,
-  files: dict | None = None,
-  **model_kwargs,
+  files: ModelFiles | None = None,
+  **model_kwargs: object,
 ) -> WhisperModelBundle:
   """Convenience function to create a Whisper model with default configuration.
 

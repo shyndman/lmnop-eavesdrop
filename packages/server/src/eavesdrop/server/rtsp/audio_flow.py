@@ -1,12 +1,14 @@
 import asyncio
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 import numpy as np
+import structlog
 
 from eavesdrop.common import get_logger
 from eavesdrop.server.constants import SAMPLE_RATE
 from eavesdrop.server.streaming.interfaces import (
   AudioSource,
+  Float32Audio,
   TranscriptionResult,
   TranscriptionSink,
 )
@@ -67,7 +69,8 @@ class RTSPAudioSource(AudioSource):
     self.bytes_per_sample: int = 2  # 16-bit PCM
     self.closed: bool = False
 
-  async def read_audio(self) -> np.ndarray | None:
+  @override
+  async def read_audio(self) -> Float32Audio | None:
     """
     Read from FFmpeg queue and convert to numpy array.
     Returns None when stream ends.
@@ -92,6 +95,7 @@ class RTSPAudioSource(AudioSource):
       # No audio available - return empty array to keep processor alive
       return np.array([], dtype=np.float32)
 
+  @override
   def close(self) -> None:
     self.closed = True
 
@@ -146,11 +150,12 @@ class RTSPTranscriptionSink(TranscriptionSink):
     :param logger_name: Logger name for log routing and filtering.
     """
     self.stream_name: str = stream_name
-    self.logger = get_logger(logger_name, stream=stream_name)
+    self.logger: structlog.stdlib.BoundLogger = get_logger(logger_name, stream=stream_name)
     self.transcription_count: int = 0
-    self.subscriber_manager = subscriber_manager
-    self.transcription_cache = transcription_cache
+    self.subscriber_manager: RTSPSubscriberManager = subscriber_manager
+    self.transcription_cache: RTSPTranscriptionCache = transcription_cache
 
+  @override
   async def send_result(self, result: TranscriptionResult) -> None:
     """Log transcription results and send to WebSocket subscribers if available."""
     self.transcription_count += 1
@@ -229,6 +234,7 @@ class RTSPTranscriptionSink(TranscriptionSink):
         transcription_number=self.transcription_count,
       )
 
+  @override
   async def send_error(self, error: str) -> None:
     """Log transcription errors and notify subscribers."""
     self.logger.error("Transcription error", error=error)
@@ -245,10 +251,12 @@ class RTSPTranscriptionSink(TranscriptionSink):
         notification_error=str(e),
       )
 
+  @override
   async def send_language_detection(self, language: str, probability: float) -> None:
     """Log language detection results (no subscriber notification needed)."""
     self.logger.info("Language detected", language=language, probability=probability)
 
+  @override
   async def send_server_ready(self, backend: str) -> None:
     """Log server ready status and notify subscribers stream is online."""
     self.logger.info("Server ready", backend=backend)
@@ -261,6 +269,7 @@ class RTSPTranscriptionSink(TranscriptionSink):
     except Exception as e:
       self.logger.error("Failed to notify subscribers of stream online status", error=str(e))
 
+  @override
   async def disconnect(self) -> None:
     """Log disconnection and notify subscribers stream is offline."""
     self.logger.info("Stream disconnected", total_transcriptions=self.transcription_count)

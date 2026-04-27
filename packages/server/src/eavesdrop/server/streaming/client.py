@@ -8,8 +8,10 @@ import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from enum import StrEnum
+from typing import Protocol, cast
 
 import numpy as np
+import structlog
 from websockets.asyncio.server import ServerConnection
 from websockets.exceptions import ConnectionClosed
 
@@ -27,7 +29,9 @@ from eavesdrop.server.streaming.file_decoder import (
 )
 from eavesdrop.server.streaming.file_queue import FileAudioQueue
 from eavesdrop.server.streaming.flush_state import LiveSessionFlushState
+from eavesdrop.server.streaming.interfaces import Float32Audio
 from eavesdrop.server.streaming.processor import StreamingTranscriptionProcessor
+from eavesdrop.server.transcription.session import TranscriptionSession
 from eavesdrop.server.transcription.session import create_session
 from eavesdrop.wire import (
   FlushControlMessage,
@@ -56,6 +60,16 @@ class FileLifecycleState(StrEnum):
   TERMINAL = "terminal"
 
 
+class StreamingProcessorLike(Protocol):
+  language: str | None
+
+  async def initialize(self) -> None: ...
+  async def start_processing(self) -> None: ...
+  async def stop_processing(self) -> None: ...
+  def add_audio_frames(self, frames: Float32Audio) -> None: ...
+  def mark_source_exhausted(self) -> None: ...
+
+
 class WebSocketStreamingClient:
   """High-level facade for WebSocket streaming transcription."""
 
@@ -63,7 +77,7 @@ class WebSocketStreamingClient:
     self,
     websocket: ServerConnection,
     stream_name: str,
-    get_audio_func: Callable[[ServerConnection], Awaitable[np.ndarray | bool]],
+    get_audio_func: Callable[[ServerConnection], Awaitable[Float32Audio | bool]],
     transcription_config: TranscriptionConfig,
     source_mode: TranscriptionSourceMode = TranscriptionSourceMode.LIVE,
   ) -> None:
@@ -74,38 +88,43 @@ class WebSocketStreamingClient:
     :param stream_name: Unique identifier for the client.
     :type stream_name: str
     :param get_audio_func: Function to get live audio frames from websocket.
-    :type get_audio_func: Callable[[ServerConnection], Awaitable[np.ndarray | bool]]
+    :type get_audio_func: Callable[[ServerConnection], Awaitable[Float32Audio | bool]]
     :param transcription_config: Configuration for transcription processing.
     :type transcription_config: TranscriptionConfig
     :param source_mode: Session source mode used for routing live vs file lifecycle.
     :type source_mode: TranscriptionSourceMode
     """
-    self.websocket = websocket
-    self.stream_name = stream_name
-    self.source_mode = source_mode
-    self.logger = get_logger("ws/client", stream=stream_name)
+    self.websocket: ServerConnection = websocket
+    self.stream_name: str = stream_name
+    self.source_mode: TranscriptionSourceMode = source_mode
+    self.logger: structlog.stdlib.BoundLogger = get_logger("ws/client", stream=stream_name)
 
     # Initialize session and components
-    self.session = create_session(stream_name)
-    self.buffer = AudioStreamBuffer(transcription_config.buffer)
-    self._flush_state = LiveSessionFlushState()
-    self.audio_source = WebSocketAudioSource(websocket, get_audio_func)
-    self.transcription_sink = WebSocketTranscriptionSink(websocket, stream_name)
-    self.processor = StreamingTranscriptionProcessor(
-      buffer=self.buffer,
-      sink=self.transcription_sink,
-      config=transcription_config,
-      stream_name=stream_name,
-      session=self.session,
-      flush_state=self._flush_state,
+    self.session: TranscriptionSession = create_session(stream_name)
+    self.buffer: AudioStreamBuffer = AudioStreamBuffer(transcription_config.buffer)
+    self._flush_state: LiveSessionFlushState = LiveSessionFlushState()
+    self.audio_source: WebSocketAudioSource = WebSocketAudioSource(websocket, get_audio_func)
+    self.transcription_sink: WebSocketTranscriptionSink = WebSocketTranscriptionSink(
+      websocket, stream_name
+    )
+    self.processor: StreamingProcessorLike = cast(
+      StreamingProcessorLike,
+      StreamingTranscriptionProcessor(
+        buffer=self.buffer,
+        sink=self.transcription_sink,
+        config=transcription_config,
+        stream_name=stream_name,
+        session=self.session,
+        flush_state=self._flush_state,
+      ),
     )
 
     # Shared state tracking
     self._processing_task: asyncio.Task[None] | None = None
     self._audio_task: asyncio.Task[None] | None = None
     self._completion_task: asyncio.Task[None] | None = None
-    self._exit = False
-    self._stopped = False
+    self._exit: bool = False
+    self._stopped: bool = False
 
     # File-mode state tracking
     self._file_state: FileLifecycleState = FileLifecycleState.TERMINAL
@@ -113,7 +132,7 @@ class WebSocketStreamingClient:
     self._file_ingest_task: asyncio.Task[None] | None = None
     self._file_feed_task: asyncio.Task[None] | None = None
     self._file_observability_task: asyncio.Task[None] | None = None
-    self._file_ingested_seconds = 0.0
+    self._file_ingested_seconds: float = 0.0
 
   async def start(self) -> asyncio.Task[None]:
     """Start the streaming transcription process and return completion task."""
@@ -188,10 +207,7 @@ class WebSocketStreamingClient:
         await self._handle_file_text_frame(frame_data)
         continue
 
-      if isinstance(frame_data, bytes):
-        frame_bytes = frame_data
-      else:
-        frame_bytes = bytes(frame_data)
+      frame_bytes = frame_data
 
       if frame_bytes == b"END_OF_AUDIO":
         break
@@ -208,7 +224,7 @@ class WebSocketStreamingClient:
     for chunk_start in range(0, decoded_audio.shape[0], chunk_size_samples):
       chunk_end = chunk_start + chunk_size_samples
       chunk = decoded_audio[chunk_start:chunk_end]
-      await self._file_queue.enqueue(chunk)
+      _ = await self._file_queue.enqueue(chunk)
       self._file_ingested_seconds += chunk.shape[0] / CANONICAL_SAMPLE_RATE_HZ
 
     await self._file_queue.mark_producer_done()
@@ -271,21 +287,26 @@ class WebSocketStreamingClient:
       if not self._audio_task or not self._processing_task:
         raise RuntimeError("Tasks not properly initialized")
 
+      tasks: list[asyncio.Task[None]] = [self._audio_task, self._processing_task]
       done, pending = await asyncio.wait(
-        [self._audio_task, self._processing_task],
+        tasks,
         return_when=asyncio.FIRST_COMPLETED,
       )
 
       for task in pending:
-        task.cancel()
+        _ = task.cancel()
         try:
           await task
         except asyncio.CancelledError:
           pass
 
       for task in done:
-        if task.exception():
-          raise task.exception()
+        if task.cancelled():
+          raise asyncio.CancelledError
+
+        task_exception = task.exception()
+        if task_exception is not None:
+          raise task_exception
 
     except Exception:
       self.logger.exception("Error in completion wait")
@@ -307,14 +328,14 @@ class WebSocketStreamingClient:
     await self.processor.stop_processing()
 
     if self._processing_task and not self._processing_task.done():
-      self._processing_task.cancel()
+      _ = self._processing_task.cancel()
       try:
         await self._processing_task
       except asyncio.CancelledError:
         pass
 
     if self._audio_task and not self._audio_task.done():
-      self._audio_task.cancel()
+      _ = self._audio_task.cancel()
       try:
         await self._audio_task
       except asyncio.CancelledError:
@@ -327,7 +348,7 @@ class WebSocketStreamingClient:
 
   async def _cancel_file_mode_aux_tasks(self) -> None:
     """Cancel file-mode auxiliary tasks that are not part of live mode."""
-    auxiliary_tasks = [
+    auxiliary_tasks: list[asyncio.Task[None] | None] = [
       getattr(self, "_file_ingest_task", None),
       getattr(self, "_file_feed_task", None),
       getattr(self, "_file_observability_task", None),
@@ -335,13 +356,13 @@ class WebSocketStreamingClient:
 
     for auxiliary_task in auxiliary_tasks:
       if auxiliary_task and not auxiliary_task.done():
-        auxiliary_task.cancel()
+        _ = auxiliary_task.cancel()
         try:
           await auxiliary_task
         except asyncio.CancelledError:
           pass
 
-  def add_frames(self, frames: np.ndarray) -> None:
+  def add_frames(self, frames: Float32Audio) -> None:
     """Add audio frames to the processor buffer."""
     self.processor.add_audio_frames(frames)
 
@@ -410,7 +431,7 @@ class WebSocketStreamingClient:
           await self._handle_live_text_frame(frame_data)
           continue
 
-        frame_bytes = frame_data if isinstance(frame_data, bytes) else bytes(frame_data)
+        frame_bytes = frame_data
         if frame_bytes == b"END_OF_AUDIO":
           self.logger.debug("End of audio stream received")
           break

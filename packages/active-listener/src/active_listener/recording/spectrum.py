@@ -93,9 +93,9 @@ class SpectrumAnalyzer:
       return
 
     first_write_count = min(ROLLING_BUFFER_SIZE - self._write_index, sample_count)
-    self._buffer[
-      self._write_index : self._write_index + first_write_count
-    ] = samples[:first_write_count]
+    self._buffer[self._write_index : self._write_index + first_write_count] = samples[
+      :first_write_count
+    ]
 
     remaining_count = sample_count - first_write_count
     if remaining_count > 0:
@@ -133,9 +133,7 @@ class SpectrumAnalyzer:
 
 def compute_spectrum_frame(latest_window: AudioSamples) -> QuantizedSpectrumFrame:
   windowed_samples: AudioSamples = latest_window * WINDOW
-  spectrum: SpectrumMagnitudes = (
-    np.abs(np.fft.rfft(windowed_samples)) / FFT_MAGNITUDE_NORMALIZATION
-  )
+  spectrum: SpectrumMagnitudes = np.abs(np.fft.rfft(windowed_samples)) / FFT_MAGNITUDE_NORMALIZATION
   interpolated_bars: SpectrumMagnitudes = np.interp(
     BAR_CENTERS_HZ,
     FFT_FREQUENCIES_HZ,

@@ -1,20 +1,22 @@
+import asyncio
 from pathlib import Path
+from typing import Protocol, cast
 
 import numpy as np
+from structlog.stdlib import BoundLogger
 from websockets.asyncio.server import ServerConnection
 from websockets.exceptions import ConnectionClosed, InvalidMessage
 
 from eavesdrop.common import get_logger
-from eavesdrop.server.config import load_config_from_file
+from eavesdrop.server.config import TranscriptionConfig, load_config_from_file
 from eavesdrop.server.connection_handler import (
   SubscriberConnection,
   TranscriberConnection,
   WebSocketConnectionHandler,
 )
 from eavesdrop.server.rtsp import RTSPStreamCoordinator
-from eavesdrop.server.streaming import (
-  WebSocketStreamingClient,
-)
+from eavesdrop.server.streaming import WebSocketStreamingClient
+from eavesdrop.server.streaming.interfaces import Float32Audio
 from eavesdrop.server.websocket import WebSocketClientManager, WebSocketServer
 from eavesdrop.wire import (
   ErrorMessage,
@@ -29,12 +31,23 @@ RTSP_FLUSH_REJECTION = "Flush rejected: control_flush is unsupported for RTSP su
 RTSP_UTTERANCE_CANCEL_REJECTION = "Utterance cancel rejected: control_utterance_cancelled is unsupported for RTSP subscriber sessions"
 
 
+class ClientManagerProtocol(Protocol):
+  def add_client(self, websocket: ServerConnection, client: WebSocketStreamingClient) -> None: ...
+
+  def get_client(self, websocket: ServerConnection) -> WebSocketStreamingClient | None: ...
+
+  def remove_client(self, websocket: ServerConnection) -> None: ...
+
+
 # TODO: Introduce a common pathway for message deserialization
 class TranscriptionServer:
   def __init__(self):
-    self.client_manager = WebSocketClientManager()
-    self.no_voice_activity_chunks = 0
-    self.logger = get_logger("svr")
+    self.client_manager: ClientManagerProtocol = cast(
+      ClientManagerProtocol, WebSocketClientManager()
+    )
+    self.no_voice_activity_chunks: int = 0
+    self.logger: BoundLogger = get_logger("svr")
+    self.transcription_config: TranscriptionConfig | None = None
 
     # RTSP coordinator for stream management
     self._rtsp_coordinator: RTSPStreamCoordinator | None = None
@@ -44,6 +57,9 @@ class TranscriptionServer:
   async def initialize_client(
     self, websocket: ServerConnection, msg: TranscriptionSetupMessage
   ) -> WebSocketStreamingClient:
+    if self.transcription_config is None:
+      raise RuntimeError("Transcription config not loaded")
+
     self.logger.debug(f"initialize_client: Starting initialization for client {msg.stream}")
 
     # Use config transcription settings as defaults, allow client overrides
@@ -85,12 +101,12 @@ class TranscriptionServer:
 
     # Start the client and get the completion task
     completion_task = await client.start()
-    client._completion_task = completion_task
+    setattr(client, "_completion_task", completion_task)
     self.client_manager.add_client(websocket, client)
 
     return client
 
-  async def get_audio_from_websocket(self, websocket: ServerConnection) -> np.ndarray | bool:
+  async def get_audio_from_websocket(self, websocket: ServerConnection) -> Float32Audio | bool:
     """
     Receives audio buffer from websocket and creates a numpy array out of it.
     """
@@ -127,9 +143,12 @@ class TranscriptionServer:
             stream=client.stream_name,
             source_mode=source_mode,
           )
-          if client._completion_task is None:
+          completion_task = cast(
+            asyncio.Task[None] | None, getattr(client, "_completion_task", None)
+          )
+          if completion_task is None:
             raise RuntimeError("TranscriberConnection missing completion task — client not started")
-          await client._completion_task
+          await completion_task
     except (ConnectionClosed, InvalidMessage):
       self.logger.info("Connection closed by client")
     except (KeyboardInterrupt, SystemExit):
@@ -219,10 +238,10 @@ class TranscriptionServer:
 
   async def run(
     self,
-    host,
+    host: str,
     config_path: str,
-    port=9090,
-  ):
+    port: int = 9090,
+  ) -> None:
     """
     Run the transcription server.
     """
@@ -236,7 +255,7 @@ class TranscriptionServer:
       self.logger.error("Configuration validation failed", error=str(e), config_path=config_path)
       self.logger.error(
         "Please check your configuration file format and values. "
-        "See documentation for valid configuration structure."
+        + "See documentation for valid configuration structure."
       )
       raise
     except Exception as e:

@@ -1,4 +1,4 @@
-from typing import NamedTuple
+from typing import NamedTuple, override
 
 from rich.pretty import pretty_repr
 
@@ -6,6 +6,7 @@ from rich.pretty import pretty_repr
 class Pretty(NamedTuple):
   value: object
 
+  @override
   def __str__(self) -> str:
     return pretty_repr(self.value)
 
@@ -15,21 +16,25 @@ class Unit(NamedTuple):
 
 
 class Seconds(Unit):
+  @override
   def __str__(self) -> str:
     return f"{self.value:.3}s"
 
 
 class Milliseconds(Unit):
+  @override
   def __str__(self) -> str:
     return f"{self.value:.3}ms"
 
 
 class Microseconds(Unit):
+  @override
   def __str__(self) -> str:
     return f"{self.value:.3}μs"
 
 
 class Samples(Unit):
+  @override
   def __str__(self) -> str:
     return f"{self.value:.3} samples"
 
@@ -41,5 +46,6 @@ class Range(NamedTuple):
   start: Unit
   end: Unit
 
+  @override
   def __str__(self) -> str:
     return f"{self.start}{_EN_DASH}{self.end}"

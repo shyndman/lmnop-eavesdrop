@@ -29,6 +29,11 @@ deprecateTypingAliases = true
 reportDeprecated = "information"
 pythonPlatform = "Linux"
 
+executionEnvironments = [
+  { root = "tests", reportAny = "none", reportExplicitAny = "none", reportImplicitOverride = "none", reportMissingTypeStubs = "none", reportMissingParameterType = "none", reportMissingTypeArgument = "none", reportPrivateUsage = "none", reportUnannotatedClassAttribute = "none", reportUnnecessaryCast = "none", reportUnknownArgumentType = "none", reportUnknownLambdaType = "none", reportUnknownMemberType = "none", reportUnknownParameterType = "none", reportUnknownVariableType = "none", reportUnusedCallResult = "none", reportUnusedImport = "none", reportUnusedParameter = "none" },
+  { root = "src" },
+]
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"

@@ -5,6 +5,8 @@ Consolidates RTSP component management that was previously scattered across
 TranscriptionServer methods.
 """
 
+from structlog.stdlib import BoundLogger
+
 from eavesdrop.common import get_logger
 from eavesdrop.server.config import RTSPConfig, TranscriptionConfig
 from eavesdrop.server.rtsp.cache import RTSPTranscriptionCache
@@ -36,13 +38,13 @@ class RTSPStreamCoordinator:
     rtsp_config: RTSPConfig,
     transcription_config: TranscriptionConfig,
   ) -> None:
-    self._rtsp_config = rtsp_config
-    self._transcription_config = transcription_config
+    self._rtsp_config: RTSPConfig = rtsp_config
+    self._transcription_config: TranscriptionConfig = transcription_config
     self._cache: RTSPTranscriptionCache | None = None
     self._subscriber_manager: RTSPSubscriberManager | None = None
     self._client_manager: RTSPClientManager | None = None
-    self._initialized = False
-    self._logger = get_logger("rtsp/coord")
+    self._initialized: bool = False
+    self._logger: BoundLogger = get_logger("rtsp/coord")
 
   @property
   def subscriber_manager(self) -> RTSPSubscriberManager | None:

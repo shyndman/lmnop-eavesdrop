@@ -5,20 +5,26 @@ ensure high-quality transcriptions by trying different generation parameters
 when quality thresholds are not met.
 """
 
+import math
 from typing import NamedTuple
 
-import ctranslate2
-from faster_whisper.tokenizer import Tokenizer
+from structlog.stdlib import BoundLogger
 
 from eavesdrop.common import get_logger
 from eavesdrop.server.transcription.models import TranscriptionOptions
 from eavesdrop.server.transcription.utils import get_compression_ratio
+from eavesdrop.server.transcription.vendor_types import (
+  StorageViewLike,
+  TokenizerLike,
+  WhisperGenerationResultLike,
+  WhisperModelLike,
+)
 
 
 class GenerationResult(NamedTuple):
   """Result from Whisper generation with quality metrics."""
 
-  result: ctranslate2.models.WhisperGenerationResult
+  result: WhisperGenerationResultLike
   avg_logprob: float
   temperature: float
   compression_ratio: float
@@ -31,11 +37,10 @@ def _create_max_length_error(
   """Create a descriptive error message for when prompt + max_new_tokens exceeds max_length."""
   return (
     f"The length of the prompt is {prompt_length}, and the `max_new_tokens` "
-    f"{max_new_tokens}. Thus, the combined length of the prompt "
-    f"and `max_new_tokens` is: {combined_length}. This exceeds the "
-    f"`max_length` of the Whisper model: {max_length}. "
-    "You should either reduce the length of your prompt, or "
-    "reduce the value of `max_new_tokens`, "
+    f"{max_new_tokens}. Thus, the combined length of the prompt and `max_new_tokens` "
+    f"is: {combined_length}. This exceeds the `max_length` of the Whisper model: "
+    f"{max_length}. You should either reduce the length of your prompt, or reduce "
+    "the value of `max_new_tokens`, "
     f"so that their combined length is less that {max_length}."
   )
 
@@ -51,16 +56,16 @@ class GenerationStrategies:
     :param time_precision: Time precision for timestamp calculations.
     :type time_precision: float
     """
-    self.max_length = max_length
-    self.time_precision = time_precision
-    self.logger = get_logger("shh/gen")
+    self.max_length: int = max_length
+    self.time_precision: float = time_precision
+    self.logger: BoundLogger = get_logger("shh/gen")
 
   def generate_with_fallback(
     self,
-    model: ctranslate2.models.Whisper,
-    encoder_output: ctranslate2.StorageView,
+    model: WhisperModelLike,
+    encoder_output: StorageViewLike,
     prompt: list[int],
-    tokenizer: Tokenizer,
+    tokenizer: TokenizerLike,
     transcription_options: TranscriptionOptions,
   ) -> GenerationResult:
     """Generate transcription with temperature fallback strategy.
@@ -83,9 +88,12 @@ class GenerationStrategies:
     :rtype: GenerationResult
     :raises ValueError: If prompt + max_new_tokens exceeds model's max_length.
     """
-    decode_result = None
-    all_results = []
-    below_cr_threshold_results = []
+    if not transcription_options.temperatures:
+      raise ValueError("At least one decoding temperature is required")
+
+    decode_result: GenerationResult | None = None
+    all_results: list[GenerationResult] = []
+    below_cr_threshold_results: list[GenerationResult] = []
 
     max_initial_timestamp_index = int(
       round(transcription_options.max_initial_timestamp / self.time_precision)
@@ -134,7 +142,7 @@ class GenerationStrategies:
         self.logger.debug(f"Using beam search with beam_size {transcription_options.beam_size}")
 
       # Generate transcription
-      result = model.generate(
+      generation_results: list[WhisperGenerationResultLike] = model.generate(
         encoder_output,
         [prompt],
         length_penalty=transcription_options.length_penalty,
@@ -146,21 +154,24 @@ class GenerationStrategies:
         suppress_tokens=transcription_options.suppress_tokens,
         max_initial_timestamp_index=max_initial_timestamp_index,
         **kwargs,
-      )[0]
+      )
+      result: WhisperGenerationResultLike = generation_results[0]
 
       tokens = result.sequences_ids[0]
 
       # Calculate quality metrics
       seq_len = len(tokens)
-      cum_logprob = result.scores[0] * (seq_len**transcription_options.length_penalty)
-      avg_logprob = cum_logprob / (seq_len + 1)
+      cum_logprob: float = result.scores[0] * math.pow(
+        seq_len, transcription_options.length_penalty
+      )
+      avg_logprob: float = cum_logprob / (seq_len + 1)
 
       text = tokenizer.decode(tokens).strip()
       compression_ratio = get_compression_ratio(text)
 
       self.logger.debug(
-        f"Generated text (temp={temperature}): '{text[:50]}...', "
-        f"compression_ratio: {compression_ratio:.3f}, avg_logprob: {avg_logprob:.3f}"
+        f"Generated text (temp={temperature}): '{text[:50]}...', compression_ratio: "
+        + f"{compression_ratio:.3f}, avg_logprob: {avg_logprob:.3f}"
       )
 
       decode_result = GenerationResult(
@@ -204,7 +215,9 @@ class GenerationStrategies:
         break
     else:
       # All temperatures failed, select the result with highest average log probability
-      decode_result = max(below_cr_threshold_results or all_results, key=lambda x: x.avg_logprob)
+      decode_result = max(
+        below_cr_threshold_results or all_results, key=lambda result: result.avg_logprob
+      )
       # Update temperature to pass final value for prompt_reset_on_temperature
       decode_result = GenerationResult(
         result=decode_result.result,
@@ -213,5 +226,4 @@ class GenerationStrategies:
         compression_ratio=decode_result.compression_ratio,
         attempts=attempt_count,
       )
-
     return decode_result

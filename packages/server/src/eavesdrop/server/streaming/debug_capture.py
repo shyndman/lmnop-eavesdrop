@@ -7,15 +7,27 @@ across TranscriptionServer and StreamingTranscriptionProcessor.
 
 import os
 import time
+from importlib import import_module
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Protocol, cast
 
 import numpy as np
+import structlog
+from numpy.typing import NDArray
 
 from eavesdrop.common import get_logger
 
-if TYPE_CHECKING:
-  from eavesdrop.server.streaming.processor import AudioChunk
+Float32Audio = NDArray[np.float32]
+
+
+class AudioChunkLike(Protocol):
+  data: Float32Audio
+  start_time: float
+  duration: float
+
+
+class SoundFileModule(Protocol):
+  def write(self, file: str, data: Float32Audio, samplerate: int) -> None: ...
 
 
 class AudioDebugCapture:
@@ -40,11 +52,11 @@ class AudioDebugCapture:
     stream_name: str,
     sample_rate: int = 16000,
   ) -> None:
-    self._output_path = output_path
-    self._stream_name = stream_name
-    self._sample_rate = sample_rate
-    self._chunk_count = 0
-    self._logger = get_logger("debug/capture", stream=stream_name)
+    self._output_path: Path = output_path
+    self._stream_name: str = stream_name
+    self._sample_rate: int = sample_rate
+    self._chunk_count: int = 0
+    self._logger: structlog.stdlib.BoundLogger = get_logger("debug/capture", stream=stream_name)
 
     # Ensure output directory exists
     os.makedirs(str(output_path), exist_ok=True)
@@ -69,7 +81,7 @@ class AudioDebugCapture:
     """Get the number of chunks captured so far."""
     return self._chunk_count
 
-  def capture(self, chunk: "AudioChunk") -> None:
+  def capture(self, chunk: AudioChunkLike) -> None:
     """
     Write an audio chunk to a WAV file.
 
@@ -77,12 +89,12 @@ class AudioDebugCapture:
     timing information. The chunk's audio data is written as a single WAV file.
 
     :param chunk: Audio chunk with data and timing metadata.
-    :type chunk: AudioChunk
+    :type chunk: AudioChunkLike
     """
     timestamp = int(time.time())
     chunk_id = f"{chunk.start_time:.3f}_{chunk.duration:.3f}"
     filename = self._output_path / f"{self._stream_name}_{timestamp}_{chunk_id}_post.wav"
-    import soundfile as sf
+    sf = cast(SoundFileModule, cast(object, import_module("soundfile")))
 
     try:
       sf.write(str(filename), chunk.data, self._sample_rate)
@@ -97,7 +109,7 @@ class AudioDebugCapture:
 
   def capture_raw(
     self,
-    audio_data: np.ndarray,
+    audio_data: Float32Audio,
     start_time: float,
     duration: float,
   ) -> None:
@@ -108,7 +120,7 @@ class AudioDebugCapture:
     AudioChunk object.
 
     :param audio_data: Audio samples as float32 numpy array.
-    :type audio_data: np.ndarray
+    :type audio_data: Float32Audio
     :param start_time: Start time of the audio in seconds.
     :type start_time: float
     :param duration: Duration of the audio in seconds.
@@ -117,7 +129,7 @@ class AudioDebugCapture:
     timestamp = int(time.time())
     chunk_id = f"{start_time:.3f}_{duration:.3f}"
     filename = self._output_path / f"{self._stream_name}_{timestamp}_{chunk_id}_post.wav"
-    import soundfile as sf
+    sf = cast(SoundFileModule, cast(object, import_module("soundfile")))
 
     try:
       sf.write(str(filename), audio_data, self._sample_rate)

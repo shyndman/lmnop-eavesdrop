@@ -287,6 +287,6 @@ class RecordingSession:
     _ = await asyncio.gather(threshold_task, return_exceptions=True)
 
 
-def _format_word_timing(index: int, word: TimedWord) -> str:
+def _format_word_timing(_index: int, word: TimedWord) -> str:
   duration_s = word.end_s - word.start_s
   return f"{word.text}   {word.start_s:.3f}-{word.end_s:.3f} ({duration_s:.3f})"

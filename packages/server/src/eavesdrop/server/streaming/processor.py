@@ -5,14 +5,18 @@ Streaming transcription processor with integrated Faster Whisper transcriber.
 from __future__ import annotations
 
 import asyncio
+from importlib import import_module
 import os
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict, cast
 
 import numpy as np
+from numpy.typing import NDArray
+from structlog.stdlib import BoundLogger
 
 from eavesdrop.common import Pretty, Range, Seconds, get_logger
 from eavesdrop.server.config import TranscriptionConfig
@@ -21,22 +25,61 @@ from eavesdrop.server.streaming.buffer import AudioStreamBuffer
 from eavesdrop.server.streaming.debug_capture import AudioDebugCapture
 from eavesdrop.server.streaming.flush_state import LiveSessionFlushState, PendingFlush
 from eavesdrop.server.streaming.interfaces import TranscriptionResult, TranscriptionSink
-from eavesdrop.server.transcription.models import SpeechChunk, TranscriptionInfo
+from eavesdrop.server.transcription.models import SpeechChunk, TranscriptionInfo, VadParameters
 from eavesdrop.server.transcription.session import TranscriptionSession
 from eavesdrop.server.transcription.utils import summarize_array
+from eavesdrop.server.transcription.vendor_types import (
+  ContainsModel,
+  TransformersConverterFactory,
+  load_contains_model,
+  load_torch,
+  load_transformers_converter,
+)
 from eavesdrop.wire import Segment
 
 if TYPE_CHECKING:
   from eavesdrop.server.transcription.pipeline import WhisperModel
+  from eavesdrop.server.transcription.session import TranscriptionSessionProtocol
 
 tracing_logger = get_logger("tracing")
+
+Float32Audio = NDArray[np.float32]
+SnapshotDownload = Callable[..., str]
+
+
+def _load_snapshot_download() -> SnapshotDownload:
+  return cast(SnapshotDownload, getattr(import_module("huggingface_hub"), "snapshot_download"))
+
+
+class ClientSegmentDict(TypedDict):
+  id: str
+  start: str
+  end: str
+  text: str
+  completed: bool
+
+
+class FormattedSegmentDict(TypedDict):
+  start: str
+  end: str
+  text: str
+  completed: bool
+
+
+class TracingClientSegmentDict(TypedDict):
+  id: int
+  start: str
+  end: str
+  text: str
+  completed: bool
+  synthetic: bool
 
 
 @dataclass
 class AudioChunk:
   """Audio data with associated metadata for processing."""
 
-  data: np.ndarray
+  data: Float32Audio
   duration: float
   start_time: float
 
@@ -83,13 +126,13 @@ class StreamingTranscriptionProcessor:
     stream_name: str,
     flush_state: LiveSessionFlushState | None = None,
   ) -> None:
-    self.buffer = buffer
-    self.sink = sink
-    self.config = config
-    self.stream_name = stream_name
+    self.buffer: AudioStreamBuffer = buffer
+    self.sink: TranscriptionSink = sink
+    self.config: TranscriptionConfig = config
+    self.stream_name: str = stream_name
     self.session: TranscriptionSession = session
-    self.flush_state = flush_state
-    self.logger = get_logger("proc", stream=self.stream_name)
+    self.flush_state: LiveSessionFlushState | None = flush_state
+    self.logger: BoundLogger = get_logger("proc", stream=self.stream_name)
 
     # Transcription state
     self.exit: bool = False
@@ -103,7 +146,7 @@ class StreamingTranscriptionProcessor:
     # Model attributes
     self.transcriber: WhisperModel | None = None
     self.compute_type: str = ""
-    self.model_sizes = [
+    self.model_sizes: list[str] = [
       "tiny",
       "tiny.en",
       "base",
@@ -121,7 +164,7 @@ class StreamingTranscriptionProcessor:
       "large-v3-turbo",
       "turbo",
     ]
-    self.vad_parameters = config.vad_parameters
+    self.vad_parameters: VadParameters = config.vad_parameters
 
     # Initialize debug capture if configured
     self._debug_capture: AudioDebugCapture | None = None
@@ -134,8 +177,7 @@ class StreamingTranscriptionProcessor:
 
   async def initialize(self) -> None:
     """Initialize the transcriber model."""
-    import torch
-
+    torch = load_torch()
     device = "cuda" if torch.cuda.is_available() else "cpu"
     self.logger.debug("Selected device", device=device)
 
@@ -213,20 +255,18 @@ class StreamingTranscriptionProcessor:
 
   def _is_local_ct2_model(self, model_ref: str) -> bool:
     """Check if model reference points to a local CTranslate2 model."""
-    import ctranslate2
-
-    return os.path.isdir(model_ref) and ctranslate2.contains_model(model_ref)
+    contains_model: ContainsModel = load_contains_model()
+    return os.path.isdir(model_ref) and contains_model(model_ref)
 
   def _download_and_convert_model(self, model_ref: str) -> str:
     """Download model from HuggingFace and convert to CTranslate2 if needed."""
-    import ctranslate2
-    from huggingface_hub import snapshot_download
-
+    contains_model: ContainsModel = load_contains_model()
+    snapshot_download = _load_snapshot_download()
     self.logger.debug("Downloading model from HuggingFace", model=model_ref)
     local_snapshot = snapshot_download(repo_id=model_ref, repo_type="model")
     self.logger.debug("Downloaded model", path=local_snapshot)
 
-    if ctranslate2.contains_model(local_snapshot):
+    if contains_model(local_snapshot):
       self.logger.debug("Downloaded model is already in CTranslate2 format")
       return local_snapshot
 
@@ -234,24 +274,24 @@ class StreamingTranscriptionProcessor:
 
   def _convert_to_ct2(self, model_ref: str, local_snapshot: str) -> str:
     """Convert downloaded model to CTranslate2 format."""
-    import ctranslate2
-
+    contains_model: ContainsModel = load_contains_model()
+    transformers_converter: TransformersConverterFactory = load_transformers_converter()
     cache_root = os.path.expanduser(os.path.join(CACHE_PATH, "whisper-ct2-models/"))
     os.makedirs(cache_root, exist_ok=True)
     safe_name = model_ref.replace("/", "--")
     ct2_dir = os.path.join(cache_root, safe_name)
     self.logger.debug("CTranslate2 cache directory", path=ct2_dir)
 
-    if ctranslate2.contains_model(ct2_dir):
+    if contains_model(ct2_dir):
       self.logger.debug("CTranslate2 model already exists in cache")
       return ct2_dir
 
     self.logger.info("Converting to CTranslate2", model=model_ref, output_dir=ct2_dir)
-    ct2_converter = ctranslate2.converters.TransformersConverter(
+    ct2_converter = transformers_converter(
       local_snapshot,
       copy_files=["tokenizer.json", "preprocessor_config.json"],
     )
-    ct2_converter.convert(
+    _ = ct2_converter.convert(
       output_dir=ct2_dir,
       quantization=self.compute_type,
       force=False,
@@ -274,7 +314,7 @@ class StreamingTranscriptionProcessor:
     """Mark that no additional audio will arrive for this session."""
     self._source_exhausted = True
 
-  def add_audio_frames(self, frames: np.ndarray) -> None:
+  def add_audio_frames(self, frames: Float32Audio) -> None:
     """Add audio frames to the buffer for processing."""
     self.buffer.add_frames(frames)
 
@@ -424,7 +464,7 @@ class StreamingTranscriptionProcessor:
     if flush_boundary_reached:
       self._discard_short_tail_after_flush()
       if self.flush_state is not None:
-        self.flush_state.complete()
+        _ = self.flush_state.complete()
 
   def _discard_short_tail_after_flush(self) -> None:
     """Drop an unprocessable residual tail once a flush response has been emitted."""
@@ -473,7 +513,7 @@ class StreamingTranscriptionProcessor:
     """Consume one pending flush interrupt before expensive work begins."""
     if self.flush_state is None or not self.flush_state.interrupt.is_set():
       return False
-    self.flush_state.clear_interrupt()
+    _ = self.flush_state.clear_interrupt()
     self.logger.info("Pending flush interrupts worker pass before commit")
     return True
 
@@ -536,7 +576,7 @@ class StreamingTranscriptionProcessor:
         return_when=asyncio.FIRST_COMPLETED,
       )
       for task in pending:
-        task.cancel()
+        _ = task.cancel()
       for task in pending:
         try:
           await task
@@ -545,13 +585,13 @@ class StreamingTranscriptionProcessor:
       return sleep_task in done
     finally:
       if not sleep_task.done():
-        sleep_task.cancel()
+        _ = sleep_task.cancel()
       if not wake_task.done():
-        wake_task.cancel()
+        _ = wake_task.cancel()
 
   def _transcribe_audio(
     self, chunk: AudioChunk
-  ) -> tuple[list[Segment] | None, TranscriptionInfo | None, list[SpeechChunk] | None]:
+  ) -> tuple[list[Segment] | None, TranscriptionInfo, list[SpeechChunk] | None]:
     """Transcribe audio sample using the Faster Whisper model."""
     if not self.transcriber:
       raise RuntimeError("Transcriber not initialized")
@@ -577,15 +617,15 @@ class StreamingTranscriptionProcessor:
       vad_parameters=self.vad_parameters,
       absolute_stream_start=chunk.start_time,
       hotwords=" ".join(self.config.hotwords) if self.config.hotwords else None,
-      session=self.session,
+      session=cast("TranscriptionSessionProtocol", cast(object, self.session)),
       start_offset=self.buffer.processed_up_to_time,
       beam_size=self.config.beam_size,
       word_timestamps=self.config.word_timestamps,
     )
     self.logger.debug(
       "Returned from transcriber.transcribe",
-      info_present=info is not None,
-      speech_chunk_count=len(info.speech_chunks) if info and info.speech_chunks else 0,
+      info_present=True,
+      speech_chunk_count=len(info.speech_chunks) if info.speech_chunks else 0,
     )
     result_list = list(result) if result else None
     self.logger.debug(
@@ -594,7 +634,7 @@ class StreamingTranscriptionProcessor:
     )
 
     # Store VAD speech chunks for silence analysis
-    speech_chunks = info.speech_chunks if info else None
+    speech_chunks = info.speech_chunks
 
     # TRACING: Audio characteristics analysis
     sample_rate = 16000  # Standard Whisper sample rate
@@ -715,7 +755,7 @@ class StreamingTranscriptionProcessor:
 
     # Apply explicit completion rule: all but last segment are completed
     # Plus enhanced rule: last segment can also complete based on silence
-    current_incomplete_segment = None
+    current_incomplete_segment: Segment | None = None
     silence_threshold = self.config.silence_completion_threshold
 
     for i, segment in enumerate(result):
@@ -776,12 +816,13 @@ class StreamingTranscriptionProcessor:
       self.buffer.advance_processed_boundary(duration)
 
     # Prepare segments for client: last N completed + current incomplete
-    segments_for_client = []
+    segments_for_client: list[Segment] = []
 
     # Add the last N completed segments from session
-    segments_for_client.extend(
+    recent_completed_segments: list[Segment] = list(
       self.session.most_recent_completed_segments(self.config.send_last_n_segments)
     )
+    segments_for_client.extend(recent_completed_segments)
 
     # Ensure client invariant: always have an incomplete segment at the tail
     if current_incomplete_segment:
@@ -801,7 +842,7 @@ class StreamingTranscriptionProcessor:
       return
 
     # TRACING: Final client output
-    client_segments = [
+    client_segments: list[TracingClientSegmentDict] = [
       {
         "id": seg.id,
         "start": f"{seg.start:.2f}s",
@@ -832,20 +873,22 @@ class StreamingTranscriptionProcessor:
     self.logger.debug("Sending segments to client", segments=segments_for_client)
     await self.sink.send_result(transcription_result)
 
-  def _update_segments(self, segments: list[Segment], duration: float) -> None:
+  def _update_segments(self, segments: list[Segment], _duration: float) -> None:
     """Process segments and update transcript."""
     # Update internal transcript for translation queue
     for segment in segments:
       if segment.completed and segment.text.strip():
         self.text.append(segment.text)
 
-  def _prepare_segments(self, last_segment: dict | None = None) -> list[dict]:
+  def _prepare_segments(
+    self, last_segment: ClientSegmentDict | None = None
+  ) -> list[ClientSegmentDict]:
     """Prepare segments for client using session completed segments."""
-    segments: list[dict] = []
+    segments: list[ClientSegmentDict] = []
 
     if self.session and self.session.completed_segments:
       # Convert Segment objects to dict format for client
-      completed_dicts = []
+      completed_dicts: list[ClientSegmentDict] = []
       for seg in self.session.completed_segments:
         completed_dicts.append(
           {
@@ -1001,7 +1044,9 @@ class StreamingTranscriptionProcessor:
       time_offset=self.buffer.processed_up_to_time,
     )
 
-  def _format_segment(self, start: float, end: float, text: str, completed: bool = False) -> dict:
+  def _format_segment(
+    self, start: float, end: float, text: str, completed: bool = False
+  ) -> FormattedSegmentDict:
     """Format a transcription segment."""
     return {
       "start": "{:.3f}".format(start),

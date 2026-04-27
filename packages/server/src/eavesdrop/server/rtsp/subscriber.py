@@ -7,6 +7,7 @@ rather than sending audio for transcription.
 
 from typing import TYPE_CHECKING, Literal
 
+from structlog.stdlib import BoundLogger
 from websockets.asyncio.server import ServerConnection
 
 from eavesdrop.common import get_logger
@@ -40,11 +41,11 @@ class RTSPSubscriberManager:
     :param available_streams: Set of available RTSP stream names
     :param transcription_cache: Cache for storing and retrieving transcription history
     """
-    self.available_streams = available_streams
-    self.transcription_cache = transcription_cache
+    self.available_streams: set[str] = available_streams
+    self.transcription_cache: RTSPTranscriptionCache = transcription_cache
     self.stream_subscribers: dict[str, ServerConnection] = {}
     self.subscriber_streams: dict[ServerConnection, set[str]] = {}
-    self.logger = get_logger("rtsp/sub")
+    self.logger: BoundLogger = get_logger("rtsp/sub")
 
   def validate_stream_names(self, requested_streams: list[str]) -> tuple[list[str], list[str]]:
     """
@@ -86,7 +87,7 @@ class RTSPSubscriberManager:
     )
 
     # Disconnect any existing subscribers for these streams (single listener policy)
-    disconnected_clients = set()
+    disconnected_clients: set[ServerConnection] = set()
     for stream_name in valid_streams:
       if existing_websocket := self.stream_subscribers.get(stream_name, None):
         disconnected_clients.add(existing_websocket)
@@ -204,7 +205,7 @@ class RTSPSubscriberManager:
     :param reason: Reason for disconnection
     """
     try:
-      await self._send_message_to_websocket(websocket, ErrorMessage(message=reason))
+      _ = await self._send_message_to_websocket(websocket, ErrorMessage(message=reason))
       await websocket.close()
 
       self.logger.info("Disconnected subscriber", client=id(websocket), reason=reason)
@@ -227,7 +228,7 @@ class RTSPSubscriberManager:
     """Get set of streams that have active subscribers."""
     return set(self.stream_subscribers.keys())
 
-  def get_subscriber_info(self) -> dict:
+  def get_subscriber_info(self) -> dict[str, object]:
     """Get detailed subscriber information for debugging."""
     return {
       "total_subscribers": len(self.subscriber_streams),

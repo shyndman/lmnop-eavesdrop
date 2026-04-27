@@ -1,18 +1,27 @@
 import zlib
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, cast
+from typing import cast
 
 import numpy as np
+from numpy.typing import NDArray
 
 from eavesdrop.server.transcription.models import SpeechChunk, WordTimingDict
-from eavesdrop.wire import Segment
+from eavesdrop.server.transcription.vendor_types import (
+  SpeechTimestampsMapLike,
+  StorageViewLike,
+  TokenizerLike,
+  load_speech_timestamps_map,
+  load_storage_view,
+)
+from eavesdrop.wire import Segment, Word
 
-if TYPE_CHECKING:
-  import ctranslate2
-  from faster_whisper.tokenizer import Tokenizer
+NumericArray = NDArray[np.generic]
+VadSpeechChunk = dict[str, int]
+SpeechTimestampsMap = load_speech_timestamps_map()
+StorageView = load_storage_view()
 
 
-def summarize_array(name: str, array: np.ndarray) -> dict[str, object]:
+def summarize_array(name: str, array: NumericArray) -> dict[str, object]:
   summary: dict[str, object] = {
     f"{name}_shape": tuple(int(dim) for dim in array.shape),
     f"{name}_dtype": str(array.dtype),
@@ -35,13 +44,13 @@ def restore_speech_timestamps(
   speech_chunks: list[SpeechChunk],
   sampling_rate: int,
 ) -> Iterable[Segment]:
-  from faster_whisper.vad import SpeechTimestampsMap
-
-  ts_map = SpeechTimestampsMap(cast(list[dict], speech_chunks), sampling_rate)
+  ts_map: SpeechTimestampsMapLike = SpeechTimestampsMap(
+    cast(list[VadSpeechChunk], speech_chunks), sampling_rate
+  )
 
   for segment in segments:
     if segment.words:
-      words = []
+      words: list[Word] = []
       for word in segment.words:
         # Ensure the word start and end times are resolved to the same chunk.
         middle = (word.start + word.end) / 2
@@ -89,12 +98,10 @@ def finalize_recording_timestamps(
   return segments
 
 
-def get_ctranslate2_storage(segment: np.ndarray) -> "ctranslate2.StorageView":
-  import ctranslate2
-
-  segment = np.ascontiguousarray(segment)
-  segment = ctranslate2.StorageView.from_array(segment)
-  return segment
+def get_ctranslate2_storage(segment: NumericArray) -> StorageViewLike:
+  contiguous_segment = np.ascontiguousarray(segment)
+  storage_view = StorageView.from_array(cast(NDArray[np.float32], contiguous_segment))
+  return storage_view
 
 
 def get_compression_ratio(text: str) -> float:
@@ -103,10 +110,10 @@ def get_compression_ratio(text: str) -> float:
 
 
 def get_suppressed_tokens(
-  tokenizer: "Tokenizer",
-  suppress_tokens: list[int],
+  tokenizer: TokenizerLike,
+  suppress_tokens: list[int] | None,
 ) -> list[int]:
-  if -1 in suppress_tokens:
+  if suppress_tokens is not None and -1 in suppress_tokens:
     suppress_tokens = [t for t in suppress_tokens if t >= 0]
     suppress_tokens.extend(tokenizer.non_speech_tokens)
   elif suppress_tokens is None or len(suppress_tokens) == 0:

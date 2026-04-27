@@ -4,9 +4,11 @@ Audio capture and streaming functionality for Eavesdrop client.
 
 import asyncio
 from collections.abc import Callable
+from importlib import import_module
+from typing import Protocol, cast
 
 import numpy as np
-import sounddevice as sd
+from numpy.typing import NDArray
 
 # Audio configuration constants (WhisperLive compatible)
 SAMPLE_RATE = 16000
@@ -14,18 +16,51 @@ CHANNELS = 1
 DTYPE = np.float32
 BLOCKSIZE = 0
 
+Float32Audio = NDArray[np.float32]
+
+
+class InputStreamLike(Protocol):
+  def start(self) -> None: ...
+
+  def stop(self) -> None: ...
+
+  def close(self) -> None: ...
+
+
+class SoundDeviceModule(Protocol):
+  def InputStream(
+    self,
+    *,
+    device: str | int | None,
+    channels: int,
+    samplerate: int,
+    dtype: np.dtype[np.float32] | type[np.float32],
+    latency: str,
+    blocksize: int,
+    callback: Callable[[Float32Audio, int, object, object], None],
+  ) -> InputStreamLike: ...
+
+
+sd = cast(SoundDeviceModule, cast(object, import_module("sounddevice")))
+
 
 class AudioCapture:
   """Handles audio capture from microphone and streaming to server."""
 
   def __init__(self, on_error: Callable[[str], None], audio_device: str | int | None = None):
     self.audio_queue: asyncio.Queue[bytes] = asyncio.Queue()
-    self.audio_stream: sd.InputStream | None = None
-    self.recording = False
-    self.on_error = on_error
-    self.audio_device = audio_device
+    self.audio_stream: InputStreamLike | None = None
+    self.recording: bool = False
+    self.on_error: Callable[[str], None] = on_error
+    self.audio_device: str | int | None = audio_device
 
-  def audio_callback(self, indata: np.ndarray, frames: int, time_info, status):
+  def audio_callback(
+    self,
+    indata: Float32Audio,
+    _frames: int,
+    _time_info: object,
+    status: object,
+  ) -> None:
     """Sounddevice audio callback."""
     if status:
       self.on_error(f"Audio status: {status}")

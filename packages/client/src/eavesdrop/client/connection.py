@@ -45,16 +45,18 @@ class WebSocketConnection:
     on_transcription_message: Callable[[TranscriptionMessage], None] | None = None,
     on_disconnect: Callable[[str | None], None] | None = None,
   ):
-    self.host = host
-    self.port = port
-    self.stream_name = stream_name
-    self.on_ready = on_ready
-    self.on_transcription = on_transcription
-    self.on_error = on_error
-    self.client_type = client_type
-    self.stream_names = stream_names or []
-    self.on_transcription_message = on_transcription_message
-    self.on_disconnect = on_disconnect
+    self.host: str = host
+    self.port: int = port
+    self.stream_name: str = stream_name
+    self.on_ready: Callable[[str], None] = on_ready
+    self.on_transcription: Callable[[str], None] = on_transcription
+    self.on_error: Callable[[str], None] = on_error
+    self.client_type: ClientType = client_type
+    self.stream_names: list[str] = stream_names or []
+    self.on_transcription_message: Callable[[TranscriptionMessage], None] | None = (
+      on_transcription_message
+    )
+    self.on_disconnect: Callable[[str | None], None] | None = on_disconnect
 
     self._logger: BoundLogger = get_logger(
       "client/conn",
@@ -65,15 +67,15 @@ class WebSocketConnection:
     )
 
     self.ws: ClientConnection | None = None
-    self.connected = False
-    self._disconnect_notified = False
+    self.connected: bool = False
+    self._disconnect_notified: bool = False
 
     # Latency tracking
     self.first_audio_sent_time: float | None = None
     self.session_end_sent_time: float | None = None
-    self.first_response_received = False
-    self.session_end_received = False
-    self.audio_sending_started = False
+    self.first_response_received: bool = False
+    self.session_end_received: bool = False
+    self.audio_sending_started: bool = False
 
   async def connect(self, transcription_options: UserTranscriptionOptions | None = None):
     """Establish WebSocket connection to server."""
@@ -121,11 +123,8 @@ class WebSocketConnection:
         # Convert bytes to string if necessary
         if isinstance(m, str):
           message = m
-        elif isinstance(m, bytes):
-          message = m.decode("utf-8")
         else:
-          # Handle memoryview or other buffer types
-          message = bytes(m).decode("utf-8")
+          message = m.decode("utf-8")
 
         await self._process_message(message)
     except Exception as e:
@@ -272,7 +271,7 @@ class WebSocketConnection:
       self.on_error(f"Error sending file bytes: {e}")
       raise
 
-  def reset_session_tracking(self):
+  def reset_session_tracking(self) -> None:
     """Reset session tracking variables."""
     self.first_response_received = False
     self.session_end_received = False

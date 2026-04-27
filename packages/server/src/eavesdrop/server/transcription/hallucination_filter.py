@@ -4,10 +4,13 @@ This module provides sophisticated filtering logic to detect and remove likely
 hallucinated segments based on silence gap analysis and anomaly detection.
 """
 
+from typing import final
+
 from eavesdrop.server.transcription.language_detection import AnomalyDetector
 from eavesdrop.server.transcription.models import SegmentDict
 
 
+@final
 class HallucinationFilter:
   """Filters out likely hallucinated segments using silence gap analysis."""
 

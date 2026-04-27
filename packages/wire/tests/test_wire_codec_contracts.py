@@ -7,6 +7,7 @@ These tests lock down the wire protocol API boundary:
 """
 
 import json
+from typing import TypedDict, cast
 
 import pytest
 from pydantic import ValidationError
@@ -31,6 +32,21 @@ from eavesdrop.wire.transcription import (
   UserTranscriptionOptions,
   Word,
 )
+
+
+class _WordPayload(TypedDict):
+  start: float
+  end: float
+
+
+class _SegmentPayload(TypedDict):
+  start: float
+  end: float
+  words: list[_WordPayload]
+
+
+class _TranscriptionWirePayload(TypedDict):
+  segments: list[dict[str, object]]
 
 
 def _build_contract_segment() -> Segment:
@@ -132,7 +148,7 @@ def test_decode_preserves_transcription_metadata_fields() -> None:
     )
   )
 
-  payload = json.loads(encoded)
+  payload = cast(_TranscriptionWirePayload, json.loads(encoded))
   assert "time_offset" not in payload["segments"][0]
   assert "absolute_start_time" not in payload["segments"][0]
   assert "absolute_end_time" not in payload["segments"][0]
@@ -255,7 +271,7 @@ def test_wire_payload_records_and_words_use_same_recording_timeline() -> None:
     )
   )
 
-  payload = json.loads(encoded)["segments"][0]
+  payload = cast(dict[str, list[_SegmentPayload]], json.loads(encoded))["segments"][0]
 
   assert "time_offset" not in payload
   assert payload["start"] == pytest.approx(22.0)

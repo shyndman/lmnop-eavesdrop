@@ -4,14 +4,9 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
   from eavesdrop.server.transcription.session import TranscriptionSessionProtocol
 
-import ctranslate2
-import numpy as np
-import tokenizers
-from faster_whisper.tokenizer import Tokenizer
-from faster_whisper.vad import VadOptions
 from structlog.stdlib import BoundLogger
 
-from eavesdrop.server.transcription.audio_processing import AudioProcessor
+from eavesdrop.server.transcription.audio_processing import AudioProcessor, FloatAudio
 from eavesdrop.server.transcription.language_detection import LanguageDetector
 from eavesdrop.server.transcription.models import (
   TranscriptionInfo,
@@ -25,32 +20,40 @@ from eavesdrop.server.transcription.utils import (
   restore_speech_timestamps,
   summarize_array,
 )
+from eavesdrop.server.transcription.vendor_types import (
+  TokenizerLike,
+  WhisperModelLike,
+  load_vad_options,
+  load_whisper_tokenizer,
+)
 from eavesdrop.wire import Segment
 
 # Whisper has a couple of modes of operation. For now, we only use transcription.
 _TRANSCRIBE_TASK = "transcribe"
+VadOptions = load_vad_options()
+Tokenizer = load_whisper_tokenizer()
 
 
 class RequestRunner:
   def __init__(
     self,
     logger: BoundLogger,
-    model: ctranslate2.models.Whisper,
-    hf_tokenizer: tokenizers.Tokenizer,
+    model: WhisperModelLike,
+    hf_tokenizer: TokenizerLike,
     audio_processor: AudioProcessor,
     language_detector: LanguageDetector,
     segment_decoder: SegmentDecoder,
-  ):
-    self.logger = logger
-    self.model = model
-    self.hf_tokenizer = hf_tokenizer
-    self.audio_processor = audio_processor
-    self.language_detector = language_detector
-    self.segment_decoder = segment_decoder
+  ) -> None:
+    self.logger: BoundLogger = logger
+    self.model: WhisperModelLike = model
+    self.hf_tokenizer: TokenizerLike = hf_tokenizer
+    self.audio_processor: AudioProcessor = audio_processor
+    self.language_detector: LanguageDetector = language_detector
+    self.segment_decoder: SegmentDecoder = segment_decoder
 
   def run(
     self,
-    audio: np.ndarray,
+    audio: FloatAudio,
     session: "TranscriptionSessionProtocol",
     language: str | None = None,
     initial_prompt: str | None = None,

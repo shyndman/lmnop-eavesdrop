@@ -11,30 +11,104 @@ Usage:
 """
 
 import argparse
+from importlib import import_module
 import sys
+from os import PathLike
 from pathlib import Path
+from typing import Protocol, TypedDict, cast
 
 import numpy as np
-import soundfile as sf
-from faster_whisper.vad import VadOptions, get_speech_timestamps
+from numpy.typing import NDArray
 
 from eavesdrop.common import get_logger
 
 logger = get_logger("vad-debug")
 
+Float32Audio = NDArray[np.float32]
 
-def load_and_prepare_audio(wav_path: Path) -> tuple[np.ndarray, int]:
+
+class SpeechTimestamp(TypedDict):
+  start: int
+  end: int
+
+
+class SoundFileModule(Protocol):
+  def read(
+    self,
+    file: str | PathLike[str],
+    frames: int = -1,
+    start: int = 0,
+    stop: int | None = None,
+    dtype: str = "float64",
+    always_2d: bool = False,
+    fill_value: object | None = None,
+    out: object | None = None,
+    samplerate: object | None = None,
+    channels: object | None = None,
+    format: object | None = None,
+    subtype: object | None = None,
+    endian: object | None = None,
+    closefd: bool = True,
+  ) -> tuple[Float32Audio, int]: ...
+
+
+class VadOptionsLike(Protocol):
+  threshold: float
+  neg_threshold: float
+  min_speech_duration_ms: int
+  max_speech_duration_s: float
+  min_silence_duration_ms: int
+  speech_pad_ms: int
+
+
+class VadOptionsConstructor(Protocol):
+  def __call__(
+    self,
+    *,
+    threshold: float = ...,
+    neg_threshold: float = ...,
+    min_speech_duration_ms: int = ...,
+    max_speech_duration_s: float = ...,
+    min_silence_duration_ms: int = ...,
+    speech_pad_ms: int = ...,
+  ) -> VadOptionsLike: ...
+
+
+class VadModule(Protocol):
+  VadOptions: VadOptionsConstructor
+
+  def get_speech_timestamps(
+    self,
+    audio: Float32Audio,
+    vad_options: VadOptionsLike | None = None,
+    sampling_rate: int = 16000,
+    **kwargs: object,
+  ) -> list[SpeechTimestamp]: ...
+
+
+class DebugVadArgs(Protocol):
+  wav_file: Path
+  silence_threshold: float
+  test_all_params: bool
+
+
+sf = cast(SoundFileModule, cast(object, import_module("soundfile")))
+vad_module = cast(VadModule, cast(object, import_module("faster_whisper.vad")))
+VadOptions: VadOptionsConstructor = vad_module.VadOptions
+get_speech_timestamps = vad_module.get_speech_timestamps
+
+
+def load_and_prepare_audio(wav_path: Path) -> tuple[Float32Audio, int]:
   """Load WAV file and convert to format expected by VAD (16kHz mono float32)."""
   logger.info(f"Loading audio file: {wav_path}")
 
   # Load audio file
   audio, sample_rate = sf.read(wav_path, dtype="float32")
-
   logger.info(f"Original audio: {audio.shape} samples at {sample_rate}Hz")
 
   # Convert stereo to mono if needed
   if len(audio.shape) > 1:
-    audio = np.mean(audio, axis=1)
+    audio = cast(Float32Audio, np.mean(audio, axis=1))
     logger.info("Converted stereo to mono")
 
   # Resample to 16kHz if needed (simple approach)
@@ -48,7 +122,7 @@ def load_and_prepare_audio(wav_path: Path) -> tuple[np.ndarray, int]:
   return audio, sample_rate
 
 
-def create_vad_options(silence_completion_threshold: float = 0.8) -> VadOptions:
+def create_vad_options(silence_completion_threshold: float = 0.8) -> VadOptionsLike:
   """Create VAD options matching the server configuration."""
   vad_options = VadOptions()
 
@@ -58,7 +132,9 @@ def create_vad_options(silence_completion_threshold: float = 0.8) -> VadOptions:
   return vad_options
 
 
-def analyze_with_vad(audio: np.ndarray, sample_rate: int, vad_options: VadOptions):
+def analyze_with_vad(
+  audio: Float32Audio, sample_rate: int, vad_options: VadOptionsLike
+) -> list[SpeechTimestamp]:
   """Run VAD analysis and print detailed results."""
   logger.info("Running VAD analysis...")
   logger.info("VAD Parameters:")
@@ -117,25 +193,25 @@ def analyze_with_vad(audio: np.ndarray, sample_rate: int, vad_options: VadOption
   return speech_timestamps
 
 
-def analyze_audio_characteristics(audio: np.ndarray, sample_rate: int):
+def analyze_audio_characteristics(audio: Float32Audio, sample_rate: int) -> None:
   """Analyze audio characteristics that might affect VAD."""
   logger.info("Audio Analysis:")
 
   # RMS energy
-  rms = np.sqrt(np.mean(audio**2))
+  rms = cast(float, np.sqrt(np.mean(audio**2)))
   logger.info(f"  RMS Energy: {rms:.6f}")
 
   # Peak amplitude
-  peak = np.max(np.abs(audio))
+  peak = cast(float, np.max(np.abs(audio)))
   logger.info(f"  Peak Amplitude: {peak:.6f}")
 
   # Dynamic range
   if peak > 0:
-    dynamic_range_db = 20 * np.log10(peak / (rms + 1e-10))
+    dynamic_range_db = cast(float, 20 * np.log10(peak / (rms + 1e-10)))
     logger.info(f"  Dynamic Range: {dynamic_range_db:.1f} dB")
 
   # Zero crossing rate (rough measure of speech characteristics)
-  zero_crossings = np.sum(np.diff(np.signbit(audio)))
+  zero_crossings = cast(int, np.sum(np.diff(np.signbit(audio))))
   zcr = zero_crossings / len(audio) * sample_rate
   logger.info(f"  Zero Crossing Rate: {zcr:.1f} Hz")
 
@@ -148,7 +224,7 @@ def analyze_audio_characteristics(audio: np.ndarray, sample_rate: int):
     logger.warning("  ⚠️  Very low zero crossing rate - might not be speech-like")
 
 
-def test_different_vad_settings(audio: np.ndarray, sample_rate: int):
+def test_different_vad_settings(audio: Float32Audio, sample_rate: int) -> None:
   """Test different VAD parameter combinations."""
   logger.info("Testing different VAD parameter combinations...")
 
@@ -179,7 +255,7 @@ def test_different_vad_settings(audio: np.ndarray, sample_rate: int):
       logger.error(f"Error with {name}: {e}")
 
 
-def main():
+def main() -> None:
   """Main entry point for VAD debug tool."""
   parser = argparse.ArgumentParser(
     description="Debug VAD (Voice Activity Detection) with audio files",
@@ -191,18 +267,18 @@ Examples:
     eavesdrop-debug-vad --test-all-params noisy_audio.wav
         """,
   )
-  parser.add_argument("wav_file", type=Path, help="Input WAV file to analyze")
-  parser.add_argument(
+  _ = parser.add_argument("wav_file", type=Path, help="Input WAV file to analyze")
+  _ = parser.add_argument(
     "--silence-threshold",
     type=float,
     default=0.8,
     help="Silence completion threshold in seconds (default: 0.8)",
   )
-  parser.add_argument(
+  _ = parser.add_argument(
     "--test-all-params", action="store_true", help="Test multiple VAD parameter combinations"
   )
 
-  args = parser.parse_args()
+  args = cast(DebugVadArgs, cast(object, parser.parse_args()))
 
   # Validate input file
   if not args.wav_file.exists():

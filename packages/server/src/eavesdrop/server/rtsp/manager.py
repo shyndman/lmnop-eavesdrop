@@ -1,6 +1,8 @@
 import asyncio
 from typing import TYPE_CHECKING, TypedDict
 
+from structlog.stdlib import BoundLogger
+
 from eavesdrop.common import get_logger
 from eavesdrop.server.config import TranscriptionConfig
 from eavesdrop.server.rtsp.client import RTSPTranscriptionClient
@@ -57,7 +59,7 @@ class RTSPClientManager:
     transcription_config: TranscriptionConfig,
     subscriber_manager: "RTSPSubscriberManager",
     transcription_cache: "RTSPTranscriptionCache",
-  ):
+  ) -> None:
     """
     Initialize the RTSP client manager.
 
@@ -66,17 +68,17 @@ class RTSPClientManager:
         subscriber_manager: Manager for WebSocket subscribers
         transcription_cache: Cache for storing transcription history
     """
-    self.transcription_config = transcription_config
-    self.subscriber_manager = subscriber_manager
-    self.transcription_cache = transcription_cache
+    self.transcription_config: TranscriptionConfig = transcription_config
+    self.subscriber_manager: RTSPSubscriberManager = subscriber_manager
+    self.transcription_cache: RTSPTranscriptionCache = transcription_cache
     self.clients: dict[str, RTSPTranscriptionClient] = {}
     self.tasks: dict[str, asyncio.Task[None]] = {}
-    self.logger = get_logger("rtsp/mgr")
+    self.logger: BoundLogger = get_logger("rtsp/mgr")
 
     # Statistics
-    self.total_streams_created = 0
-    self.active_streams = 0
-    self.failed_streams = 0
+    self.total_streams_created: int = 0
+    self.active_streams: int = 0
+    self.failed_streams: int = 0
 
   async def add_stream(self, stream_name: str, rtsp_url: str) -> bool:
     """
@@ -125,10 +127,10 @@ class RTSPClientManager:
       self.logger.exception("Failed to add RTSP stream", stream=stream_name)
 
       # Clean up partial state
-      self.clients.pop(stream_name, None)
+      _ = self.clients.pop(stream_name, None)
       task = self.tasks.pop(stream_name, None)
       if task and not task.done():
-        task.cancel()
+        _ = task.cancel()
 
       return False
 
@@ -156,7 +158,7 @@ class RTSPClientManager:
       # Cancel and clean up task
       task = self.tasks[stream_name]
       if not task.done():
-        task.cancel()
+        _ = task.cancel()
         try:
           await task
         except asyncio.CancelledError:
@@ -187,8 +189,8 @@ class RTSPClientManager:
     """
     self.logger.info("Starting all RTSP streams", stream_count=len(stream_config))
 
-    successful_streams = []
-    failed_streams = []
+    successful_streams: list[str] = []
+    failed_streams: list[str] = []
 
     for stream_name, rtsp_url in stream_config.items():
       try:
@@ -222,7 +224,7 @@ class RTSPClientManager:
     self.logger.info("Stopping all RTSP streams", active_streams=self.active_streams)
 
     # Stop all clients concurrently
-    stop_tasks = []
+    stop_tasks: list[asyncio.Task[None]] = []
     for stream_name, client in self.clients.items():
       self.logger.debug("Stopping RTSP stream", stream=stream_name)
       stop_task = asyncio.create_task(client.stop())
@@ -231,19 +233,19 @@ class RTSPClientManager:
 
     # Wait for all stops to complete
     if stop_tasks:
-      await asyncio.gather(*stop_tasks, return_exceptions=True)
+      _ = await asyncio.gather(*stop_tasks, return_exceptions=True)
 
     # Cancel any remaining tasks
-    cancel_tasks = []
+    cancel_tasks: list[asyncio.Task[None]] = []
     for stream_name, task in self.tasks.items():
       if not task.done():
         self.logger.debug("Cancelling RTSP task", stream=stream_name)
-        task.cancel()
+        _ = task.cancel()
         cancel_tasks.append(task)
 
     # Wait for cancellations
     if cancel_tasks:
-      await asyncio.gather(*cancel_tasks, return_exceptions=True)
+      _ = await asyncio.gather(*cancel_tasks, return_exceptions=True)
 
     # Clean up tracking
     self.clients.clear()
@@ -270,7 +272,11 @@ class RTSPClientManager:
 
     for stream_name, client in self.clients.items():
       task = self.tasks.get(stream_name)
-      status["streams"][stream_name] = {
+      segments_processed = 0
+      if client.processor is not None:
+        segments_processed = len(client.processor.session.completed_segments)
+
+      stream_status: StreamStatusDict = {
         "url": client.rtsp_url,
         "reconnect_count": client.reconnect_count,
         "chunks_read": client.chunks_read,
@@ -283,7 +289,9 @@ class RTSPClientManager:
         "processed_duration": client.stream_buffer.processed_duration,
         "available_duration": client.stream_buffer.available_duration,
         "processor_active": client.processor is not None and not client.processor.exit,
+        "segments_processed": segments_processed,
       }
+      status["streams"][stream_name] = stream_status
 
     return status
 
@@ -301,7 +309,7 @@ class RTSPClientManager:
 
     This can be called periodically to recover from unexpected failures.
     """
-    failed_streams = []
+    failed_streams: list[str] = []
 
     for stream_name, task in list(self.tasks.items()):
       if task.done() and not self.clients[stream_name].stopped:
@@ -316,9 +324,9 @@ class RTSPClientManager:
         rtsp_url = client.rtsp_url
 
         # Remove the failed stream
-        await self.remove_stream(stream_name)
+        _ = await self.remove_stream(stream_name)
 
         # Re-add it to restart
-        await self.add_stream(stream_name, rtsp_url)
+        _ = await self.add_stream(stream_name, rtsp_url)
 
         self.logger.info("Restarted failed stream", stream=stream_name)

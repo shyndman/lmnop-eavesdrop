@@ -3,11 +3,17 @@ from dataclasses import dataclass, field
 from typing import NamedTuple
 
 import numpy as np
-from faster_whisper.audio import pad_or_trim
+from numpy.typing import NDArray
 
 from eavesdrop.common import get_logger
 from eavesdrop.server.transcription.models import SegmentDict, TranscriptionOptions
+from eavesdrop.server.transcription.vendor_types import load_pad_or_trim
 from eavesdrop.wire import Segment, Word
+
+WhisperFeatures = NDArray[np.float32]
+pad_or_trim = load_pad_or_trim()
+
+__all__ = ["_TranscribeSegmentsResult", "_TranscribeContext"]
 
 
 class _TranscribeSegmentsResult(NamedTuple):
@@ -22,7 +28,7 @@ class _TranscribeContext:
   """Context manager for transcription loop state and calculations."""
 
   # Input parameters
-  features: np.ndarray
+  features: WhisperFeatures
   time_per_frame: float
   max_segment_frames: int  # nb_max_frames from feature extractor
   frames_per_second: float
@@ -96,7 +102,7 @@ class _TranscribeContext:
     """Check if we've processed all frames."""
     return self.seek >= self.total_frames
 
-  def extract_segment(self) -> np.ndarray:
+  def extract_segment(self) -> WhisperFeatures:
     """Extract and pad current audio segment."""
     segment = self.features[:, self.seek : self.seek + self.segment_size]
     return pad_or_trim(segment)

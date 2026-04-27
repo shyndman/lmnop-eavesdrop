@@ -5,7 +5,7 @@ including context from previous transcriptions, hotwords, and prefixes to
 improve transcription accuracy across audio boundaries.
 """
 
-from faster_whisper.tokenizer import Tokenizer
+from eavesdrop.server.transcription.vendor_types import TokenizerLike
 
 
 class PromptBuilder:
@@ -17,12 +17,12 @@ class PromptBuilder:
     :param max_length: Maximum sequence length supported by the model.
     :type max_length: int
     """
-    self.max_length = max_length
-    self._max_context_len = max_length // 2 - 1
+    self.max_length: int = max_length
+    self._max_context_len: int = max_length // 2 - 1
 
   def build_prompt(
     self,
-    tokenizer: Tokenizer,
+    tokenizer: TokenizerLike,
     previous_tokens: list[int],
     without_timestamps: bool = False,
     prefix: str | None = None,
@@ -67,7 +67,9 @@ class PromptBuilder:
 
     return prompt
 
-  def encode_initial_prompt(self, tokenizer: Tokenizer, initial_prompt: str | None) -> list[int]:
+  def encode_initial_prompt(
+    self, tokenizer: TokenizerLike, initial_prompt: str | None
+  ) -> list[int]:
     """Encode the initial prompt text into tokens.
 
     :param tokenizer: The Whisper tokenizer for encoding the prompt text.
@@ -81,7 +83,7 @@ class PromptBuilder:
 
   def _append_previous(
     self,
-    tokenizer: Tokenizer,
+    tokenizer: TokenizerLike,
     previous_tokens: list[int],
     hotwords: str | None,
     prompt: list[int],
@@ -103,7 +105,7 @@ class PromptBuilder:
 
   def _append_prefix(
     self,
-    tokenizer: Tokenizer,
+    tokenizer: TokenizerLike,
     without_timestamps: bool,
     prefix: str,
     prompt: list[int],

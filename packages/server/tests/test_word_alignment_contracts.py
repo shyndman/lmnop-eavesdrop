@@ -1,9 +1,7 @@
 """Contract tests for word-alignment integration with CTranslate2 APIs."""
 
-from typing import NamedTuple
-
-import ctranslate2
-from faster_whisper.tokenizer import Tokenizer
+from collections.abc import Callable
+from typing import NamedTuple, override, cast
 
 from eavesdrop.server.transcription.models import SegmentDict, WordTimingDict
 from eavesdrop.server.transcription.word_alignment import (
@@ -56,8 +54,8 @@ class _FakeWhisperModel:
 class _FakeTokenizer:
   """Minimal tokenizer API needed by WordAlignmentProcessor."""
 
-  sot_sequence = [50257]
-  eot = 50256
+  sot_sequence: list[int] = [50257]
+  eot: int = 50256
 
   def split_to_word_tokens(self, tokens: list[int]) -> tuple[list[str], list[list[int]]]:
     non_eot_tokens = tokens[:-1]
@@ -74,17 +72,74 @@ class _RecordingAlignmentProcessor(WordAlignmentProcessor):
     self.received_text_tokens: list[list[int]] | None = None
     self.received_num_frames: int | None = None
 
+  @override
   def find_alignment(
     self,
-    model: ctranslate2.models.Whisper,
-    tokenizer: Tokenizer,
+    model: object,
+    tokenizer: object,
     text_tokens: list[list[int]],
-    encoder_output: ctranslate2.StorageView,
+    encoder_output: object,
     num_frames: int,
   ) -> list[list[WordTimingDict]]:
     self.received_text_tokens = text_tokens
     self.received_num_frames = num_frames
     return [[] for _ in text_tokens]
+
+
+def _find_alignment(
+  processor: WordAlignmentProcessor,
+  model: _FakeWhisperModel,
+  tokenizer: _FakeTokenizer,
+  text_tokens: list[list[int]],
+  encoder_output: _FakeStorageView,
+  num_frames: int,
+) -> list[list[WordTimingDict]]:
+  find_alignment = cast(
+    Callable[
+      [_FakeWhisperModel, _FakeTokenizer, list[list[int]], _FakeStorageView, int],
+      list[list[WordTimingDict]],
+    ],
+    processor.find_alignment,
+  )
+  return find_alignment(model, tokenizer, text_tokens, encoder_output, num_frames)
+
+
+def _add_word_timestamps(
+  aligner: WordTimestampAligner,
+  *,
+  segments: list[list[SegmentDict]],
+  model: _FakeWhisperModel,
+  tokenizer: _FakeTokenizer,
+  encoder_output: _FakeStorageView,
+  num_frames: int,
+  last_speech_timestamp: float,
+) -> float:
+  add_word_timestamps = cast(
+    Callable[
+      [
+        list[list[SegmentDict]],
+        _FakeWhisperModel,
+        _FakeTokenizer,
+        _FakeStorageView,
+        int,
+        str,
+        str,
+        float,
+      ],
+      float,
+    ],
+    aligner.add_word_timestamps,
+  )
+  return add_word_timestamps(
+    segments,
+    model,
+    tokenizer,
+    encoder_output,
+    num_frames,
+    "",
+    "",
+    last_speech_timestamp,
+  )
 
 
 def _segment(seek: int, start: float, end: float, tokens: list[int]) -> SegmentDict:
@@ -101,12 +156,8 @@ def test_find_alignment_batches_segment_sequences_for_ctranslate2_signature() ->
   model = _FakeWhisperModel()
   tokenizer = _FakeTokenizer()
 
-  alignments = processor.find_alignment(
-    model=model,
-    tokenizer=tokenizer,
-    text_tokens=[[770, 318], [42]],
-    encoder_output=_FakeStorageView(),
-    num_frames=467,
+  alignments = _find_alignment(
+    processor, model, tokenizer, [[770, 318], [42]], _FakeStorageView(), 467
   )
 
   assert model.received_text_tokens == [[770, 318], [42]]
@@ -133,14 +184,13 @@ def test_add_word_timestamps_builds_one_token_sequence_per_segment_group() -> No
     ],
   ]
 
-  last_speech_timestamp = aligner.add_word_timestamps(
+  last_speech_timestamp = _add_word_timestamps(
+    aligner,
     segments=segments,
     model=_FakeWhisperModel(),
     tokenizer=tokenizer,
     encoder_output=_FakeStorageView(),
     num_frames=467,
-    prepend_punctuations="",
-    append_punctuations="",
     last_speech_timestamp=1.5,
   )
 

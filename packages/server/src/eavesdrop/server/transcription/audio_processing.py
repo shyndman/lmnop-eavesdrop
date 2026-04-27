@@ -5,29 +5,40 @@ and feature extraction coordination for the transcription pipeline.
 """
 
 import time
-from typing import NamedTuple
+from typing import NamedTuple, cast
 
 import numpy as np
-from faster_whisper.feature_extractor import FeatureExtractor
-from faster_whisper.utils import format_timestamp
-from faster_whisper.vad import (
-  VadOptions,
-  collect_chunks,
-  get_speech_timestamps,
-)
+from numpy.typing import NDArray
+from structlog.stdlib import BoundLogger
 
 from eavesdrop.common import get_logger
 from eavesdrop.server.transcription.models import SpeechChunk
+from eavesdrop.server.transcription.vendor_types import (
+  FeatureExtractorLike,
+  VadOptionsLike,
+  load_collect_chunks,
+  load_format_timestamp,
+  load_get_speech_timestamps,
+  load_vad_options,
+)
 
 # Private module constants
 _VAD_LOG_THROTTLE_SECONDS = 60.0  # Throttle VAD complete silence logging to 1 minute
 _MINIMUM_AUDIO_DURATION = 0.0  # Minimum audio duration to process
 
+FloatAudio = NDArray[np.float32] | NDArray[np.float64]
+WhisperFeatures = NDArray[np.float32]
+VadSpeechChunk = dict[str, int]
+format_timestamp = load_format_timestamp()
+collect_chunks = load_collect_chunks()
+get_speech_timestamps = load_get_speech_timestamps()
+VadOptions = load_vad_options()
+
 
 class AudioValidationResult(NamedTuple):
   """Result of audio validation and preprocessing."""
 
-  audio: np.ndarray
+  audio: FloatAudio
   duration: float
   duration_after_vad: float
   speech_chunks: list[SpeechChunk] | None
@@ -37,15 +48,15 @@ class AudioValidationResult(NamedTuple):
 class AudioProcessor:
   """Handles audio preprocessing, VAD filtering, and segmentation for transcription."""
 
-  def __init__(self, feature_extractor: FeatureExtractor):
+  def __init__(self, feature_extractor: FeatureExtractorLike):
     """Initialize the audio processor.
 
     :param feature_extractor: The feature extractor instance for audio processing.
     :type feature_extractor: FeatureExtractor
     """
-    self._feature_extractor = feature_extractor
-    self._logger = get_logger("snd/proc")
-    self._last_vad_log_time = 0.0
+    self._feature_extractor: FeatureExtractorLike = feature_extractor
+    self._logger: BoundLogger = get_logger("snd/proc")
+    self._last_vad_log_time: float = 0.0
 
   @property
   def sampling_rate(self) -> int:
@@ -54,9 +65,9 @@ class AudioProcessor:
 
   def validate_and_preprocess_audio(
     self,
-    audio: np.ndarray,
+    audio: FloatAudio,
     vad_filter: bool = False,
-    vad_parameters: VadOptions = VadOptions(),
+    vad_parameters: VadOptionsLike | None = None,
   ) -> AudioValidationResult:
     """Validate and preprocess audio data for transcription.
 
@@ -76,14 +87,16 @@ class AudioProcessor:
     original_duration = audio.shape[0] / sampling_rate
     processed_audio = audio
     duration_after_vad = original_duration
-    speech_chunks = None
+    speech_chunks: list[SpeechChunk] | None = None
     is_complete_silence = False
 
     # Apply VAD filtering if requested
     if vad_filter:
-      speech_chunks: list[SpeechChunk] = get_speech_timestamps(audio, vad_parameters)
-      audio_chunks, _ = collect_chunks(audio, speech_chunks)
-      processed_audio = np.concatenate(audio_chunks, axis=0)
+      resolved_vad_parameters = vad_parameters or VadOptions()
+      raw_speech_chunks = get_speech_timestamps(audio, resolved_vad_parameters)
+      speech_chunks = cast(list[SpeechChunk], raw_speech_chunks)
+      audio_chunks, _ = collect_chunks(audio, raw_speech_chunks)
+      processed_audio = cast(FloatAudio, np.concatenate(audio_chunks, axis=0))
       duration_after_vad = processed_audio.shape[0] / sampling_rate
       is_complete_silence = duration_after_vad <= _MINIMUM_AUDIO_DURATION
 
@@ -101,7 +114,7 @@ class AudioProcessor:
       is_complete_silence=is_complete_silence,
     )
 
-  def extract_features(self, audio: np.ndarray) -> np.ndarray:
+  def extract_features(self, audio: FloatAudio) -> WhisperFeatures:
     """Extract features from audio using the configured feature extractor.
 
     :param audio: Preprocessed audio array.
@@ -114,11 +127,11 @@ class AudioProcessor:
       self._logger.debug("Feature extraction skipped - audio is empty", audio_shape=audio.shape)
       # Return empty features for empty audio
       # Use n_mels as the feature dimension
-      return np.empty((80, 0))  # Default Whisper n_mels is 80
+      return np.empty((80, 0), dtype=np.float32)  # Default Whisper n_mels is 80
 
     return self._feature_extractor(audio)
 
-  def prepare_segments_for_detection(self, audio: np.ndarray, max_segments: int = 1) -> np.ndarray:
+  def prepare_segments_for_detection(self, audio: FloatAudio, max_segments: int = 1) -> FloatAudio:
     """Prepare audio segments for language detection.
 
     :param audio: Input audio array.
@@ -167,7 +180,7 @@ class AudioProcessor:
       )
 
 
-def validate_audio_input(audio: np.ndarray) -> None:
+def validate_audio_input(audio: object) -> None:
   """Validate audio input meets basic requirements.
 
   :param audio: Audio array to validate.
@@ -180,5 +193,5 @@ def validate_audio_input(audio: np.ndarray) -> None:
   if audio.ndim != 1:
     raise ValueError(f"Audio must be 1D array, got {audio.ndim}D")
 
-  if audio.dtype not in (np.float32, np.float64):
+  if audio.dtype not in (np.dtype(np.float32), np.dtype(np.float64)):
     raise ValueError(f"Audio must be float32 or float64, got {audio.dtype}")

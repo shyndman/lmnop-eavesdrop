@@ -1,20 +1,20 @@
 import asyncio
-from typing import TYPE_CHECKING
+from types import TracebackType
+from typing import TYPE_CHECKING, Self, override
 
 import structlog
+from structlog.stdlib import BoundLogger
 
 from eavesdrop.common import get_logger
+from eavesdrop.server.config import TranscriptionConfig
 from eavesdrop.server.rtsp.audio_flow import RTSPAudioSource, RTSPTranscriptionSink
 from eavesdrop.server.streaming.buffer import AudioStreamBuffer
-from eavesdrop.server.streaming.processor import (
-  StreamingTranscriptionProcessor,
-  TranscriptionConfig,
-)
+from eavesdrop.server.streaming.processor import StreamingTranscriptionProcessor
 from eavesdrop.server.transcription.session import create_session
 
 if TYPE_CHECKING:
   from eavesdrop.server.rtsp.cache import RTSPTranscriptionCache
-  from eavesdrop.server.rtsp.manager import RTSPSubscriberManager
+  from eavesdrop.server.rtsp.subscriber import RTSPSubscriberManager
 
 
 class RTSPClient:
@@ -40,21 +40,21 @@ class RTSPClient:
     :param rtsp_url: The RTSP URL to connect to
     :param audio_queue: An asyncio.Queue to receive audio chunks
     """
-    self.stream_name = stream_name
-    self.rtsp_url = rtsp_url
-    self.audio_queue = audio_queue
+    self.stream_name: str = stream_name
+    self.rtsp_url: str = rtsp_url
+    self.audio_queue: asyncio.Queue[bytes] = audio_queue
 
     # Process tracking
     self.process: asyncio.subprocess.Process | None = None
-    self.stopped = False
+    self.stopped: bool = False
 
     # Logging with stream context
-    self.logger = get_logger("rtsp/client", stream=stream_name)
+    self.logger: BoundLogger = get_logger("rtsp/client", stream=stream_name)
 
     # Statistics tracking
-    self.chunks_read = 0
-    self.total_bytes = 0
-    self.reconnect_count = 0
+    self.chunks_read: int = 0
+    self.total_bytes: int = 0
+    self.reconnect_count: int = 0
 
   async def _create_ffmpeg_process(self) -> asyncio.subprocess.Process:
     """
@@ -304,7 +304,7 @@ class RTSPClient:
 
           # Cancel any remaining tasks
           for task in pending:
-            task.cancel()
+            _ = task.cancel()
             try:
               await task
             except asyncio.CancelledError:
@@ -380,17 +380,17 @@ class RTSPClient:
       if self.process.returncode is None:
         # First try graceful termination
         self.logger.debug("Terminating FFmpeg process gracefully")
-        self.process.terminate()
+        _ = self.process.terminate()
 
         try:
           # Wait up to 5 seconds for graceful shutdown
-          await asyncio.wait_for(self.process.wait(), timeout=5.0)
+          _ = await asyncio.wait_for(self.process.wait(), timeout=5.0)
           self.logger.debug("FFmpeg process terminated gracefully")
         except asyncio.TimeoutError:
           # Force kill if graceful termination fails
           self.logger.warning("FFmpeg process did not terminate gracefully, force killing")
-          self.process.kill()
-          await self.process.wait()
+          _ = self.process.kill()
+          _ = await self.process.wait()
           self.logger.debug("FFmpeg process force killed")
       else:
         self.logger.debug("FFmpeg process already terminated", exit_code=self.process.returncode)
@@ -403,16 +403,25 @@ class RTSPClient:
     finally:
       self.process = None
 
-  async def __aenter__(self):
+  async def __aenter__(self) -> Self:
     """Async context manager entry."""
     return self
 
-  async def __aexit__(self, exc_type, exc_val, exc_tb):
+  async def __aexit__(
+    self,
+    exc_type: type[BaseException] | None,
+    exc_val: BaseException | None,
+    exc_tb: TracebackType | None,
+  ) -> None:
     """Async context manager exit - ensures cleanup."""
     await self.stop()
 
 
 class RTSPTranscriptionClient(RTSPClient):
+  process: asyncio.subprocess.Process | None
+  reconnect_count: int
+  stopped: bool
+
   def __init__(
     self,
     stream_name: str,
@@ -425,22 +434,23 @@ class RTSPTranscriptionClient(RTSPClient):
     super().__init__(stream_name, rtsp_url, asyncio.Queue(maxsize=100))
 
     # Store config for session creation on reconnect
-    self.transcription_config = transcription_config
-    self.subscriber_manager = subscriber_manager
-    self.transcription_cache = transcription_cache
+    self.transcription_config: TranscriptionConfig = transcription_config
+    self.subscriber_manager: RTSPSubscriberManager = subscriber_manager
+    self.transcription_cache: RTSPTranscriptionCache = transcription_cache
 
     # Create abstracted components (session will be created per connection)
-    self.audio_source = RTSPAudioSource(self.audio_queue)
-    self.stream_buffer = AudioStreamBuffer(transcription_config.buffer)
-    self.transcription_sink = RTSPTranscriptionSink(
+    self.audio_source: RTSPAudioSource = RTSPAudioSource(self.audio_queue)
+    self.stream_buffer: AudioStreamBuffer = AudioStreamBuffer(transcription_config.buffer)
+    self.transcription_sink: RTSPTranscriptionSink = RTSPTranscriptionSink(
       stream_name, subscriber_manager, transcription_cache
     )
     self.processor: StreamingTranscriptionProcessor | None = None
 
     # Statistics (preserved from current implementation)
-    self.transcriptions_completed = 0
-    self.transcription_errors = 0
+    self.transcriptions_completed: int = 0
+    self.transcription_errors: int = 0
 
+  @override
   async def run(self) -> None:
     """Enhanced run method with new processing architecture"""
     with structlog.contextvars.bound_contextvars(stream=self.stream_name):
@@ -483,7 +493,7 @@ class RTSPTranscriptionClient(RTSPClient):
           )
 
           for task in pending:
-            task.cancel()
+            _ = task.cancel()
             try:
               await task
             except asyncio.CancelledError:
@@ -543,6 +553,7 @@ class RTSPTranscriptionClient(RTSPClient):
     except Exception:
       self.logger.exception("Audio feeding task failed")
 
+  @override
   async def stop(self) -> None:
     """Enhanced stop with new component cleanup"""
     if self.stopped:

@@ -1,22 +1,47 @@
 """Tests for the AudioDebugCapture class."""
 
-from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable, cast
+import wave
 
 import numpy as np
 import pytest
-import soundfile as sf
+from numpy.typing import NDArray
 
 from eavesdrop.server.streaming.debug_capture import AudioDebugCapture
+from eavesdrop.server.streaming.processor import AudioChunk
 
 
-@dataclass
-class MockAudioChunk:
-  """Mock AudioChunk for testing."""
+Float32Audio = NDArray[np.float32]
 
-  data: np.ndarray
-  duration: float
-  start_time: float
+
+def _chunk(*, start_time: float = 0.0, duration: float = 1.0) -> AudioChunk:
+  return AudioChunk(
+    data=np.zeros(16000, dtype=np.float32),
+    duration=duration,
+    start_time=start_time,
+  )
+
+
+def _capture_raw(
+  capture: AudioDebugCapture,
+  audio_data: Float32Audio,
+  *,
+  start_time: float,
+  duration: float,
+) -> None:
+  capture_raw = cast(Callable[[Float32Audio, float, float], None], capture.capture_raw)
+  capture_raw(audio_data, start_time, duration)
+
+
+def _read_wav(path: Path) -> tuple[Float32Audio, int]:
+  with wave.open(str(path), "rb") as wav_file:
+    sample_rate = wav_file.getframerate()
+    sample_count = wav_file.getnframes()
+    frame_bytes = wav_file.readframes(sample_count)
+
+  pcm16 = np.frombuffer(frame_bytes, dtype=np.int16)
+  return pcm16.astype(np.float32) / 32768.0, sample_rate
 
 
 class TestAudioDebugCapture:
@@ -43,7 +68,7 @@ class TestAudioDebugCapture:
     output_path = tmp_path / "nested" / "debug" / "path"
     assert not output_path.exists()
 
-    AudioDebugCapture(
+    _ = AudioDebugCapture(
       output_path=output_path,
       stream_name="test",
       sample_rate=16000,
@@ -65,16 +90,12 @@ class TestCaptureChunk:
     )
 
   @pytest.fixture
-  def mock_chunk(self) -> MockAudioChunk:
+  def mock_chunk(self) -> AudioChunk:
     """Create a mock audio chunk with 1 second of audio."""
-    return MockAudioChunk(
-      data=np.zeros(16000, dtype=np.float32),
-      duration=1.0,
-      start_time=0.0,
-    )
+    return _chunk()
 
   def test_capture_writes_wav_file(
-    self, capture: AudioDebugCapture, mock_chunk: MockAudioChunk, tmp_path: Path
+    self, capture: AudioDebugCapture, mock_chunk: AudioChunk, tmp_path: Path
   ) -> None:
     """Test that capture writes a WAV file."""
     capture.capture(mock_chunk)
@@ -85,7 +106,7 @@ class TestCaptureChunk:
     assert "_post.wav" in wav_files[0].name
 
   def test_capture_increments_chunk_count(
-    self, capture: AudioDebugCapture, mock_chunk: MockAudioChunk
+    self, capture: AudioDebugCapture, mock_chunk: AudioChunk
   ) -> None:
     """Test that capture increments the chunk count."""
     assert capture.chunk_count == 0
@@ -100,16 +121,8 @@ class TestCaptureChunk:
     self, capture: AudioDebugCapture, tmp_path: Path
   ) -> None:
     """Test that multiple captures create unique filenames."""
-    chunk1 = MockAudioChunk(
-      data=np.zeros(16000, dtype=np.float32),
-      duration=1.0,
-      start_time=0.0,
-    )
-    chunk2 = MockAudioChunk(
-      data=np.zeros(16000, dtype=np.float32),
-      duration=1.0,
-      start_time=1.0,
-    )
+    chunk1 = _chunk(start_time=0.0)
+    chunk2 = _chunk(start_time=1.0)
 
     capture.capture(chunk1)
     capture.capture(chunk2)
@@ -122,7 +135,7 @@ class TestCaptureChunk:
   def test_capture_wav_file_is_valid(self, capture: AudioDebugCapture, tmp_path: Path) -> None:
     """Test that captured WAV file can be read back."""
     audio_data = np.random.rand(16000).astype(np.float32)
-    chunk = MockAudioChunk(
+    chunk = AudioChunk(
       data=audio_data,
       duration=1.0,
       start_time=0.0,
@@ -134,12 +147,12 @@ class TestCaptureChunk:
     assert len(wav_files) == 1
 
     # Read the file back and verify
-    read_data, read_sr = sf.read(wav_files[0])
+    typed_read_data, read_sr = _read_wav(wav_files[0])
     assert read_sr == 16000
-    assert len(read_data) == 16000
+    assert len(typed_read_data) == 16000
     # Check audio data matches (within WAV encoding tolerance)
     # WAV encoding introduces small precision loss, so use decimal=4
-    np.testing.assert_array_almost_equal(read_data, audio_data, decimal=4)
+    np.testing.assert_array_almost_equal(typed_read_data, audio_data, decimal=4)
 
 
 class TestCaptureRaw:
@@ -158,7 +171,7 @@ class TestCaptureRaw:
     """Test that capture_raw writes a WAV file."""
     audio_data = np.zeros(16000, dtype=np.float32)
 
-    capture.capture_raw(audio_data, start_time=0.0, duration=1.0)
+    _capture_raw(capture, audio_data, start_time=0.0, duration=1.0)
 
     wav_files = list((tmp_path / "debug").glob("*.wav"))
     assert len(wav_files) == 1
@@ -169,7 +182,7 @@ class TestCaptureRaw:
     audio_data = np.zeros(16000, dtype=np.float32)
 
     assert capture.chunk_count == 0
-    capture.capture_raw(audio_data, start_time=0.0, duration=1.0)
+    _capture_raw(capture, audio_data, start_time=0.0, duration=1.0)
     assert capture.chunk_count == 1
 
 
@@ -192,11 +205,7 @@ class TestClose:
 
   def test_close_after_captures(self, capture: AudioDebugCapture) -> None:
     """Test that close works after captures."""
-    chunk = MockAudioChunk(
-      data=np.zeros(16000, dtype=np.float32),
-      duration=1.0,
-      start_time=0.0,
-    )
+    chunk = _chunk()
     capture.capture(chunk)
     capture.capture(chunk)
 
