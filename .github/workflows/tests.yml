@@ -1,0 +1,257 @@
+name: Python Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      global: ${{ steps.filter.outputs.global }}
+      common: ${{ steps.filter.outputs.common }}
+      wire: ${{ steps.filter.outputs.wire }}
+      client: ${{ steps.filter.outputs.client }}
+      server: ${{ steps.filter.outputs.server }}
+      active_listener: ${{ steps.filter.outputs.active_listener }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+
+      - name: Filter paths
+        id: filter
+        uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d
+        with:
+          filters: |
+            global:
+              - '.github/workflows/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
+              - '.python-version'
+            common:
+              - 'packages/common/**'
+            wire:
+              - 'packages/wire/**'
+            client:
+              - 'packages/client/**'
+            server:
+              - 'packages/server/**'
+            active_listener:
+              - 'packages/active-listener/**'
+
+  test-common:
+    name: Test common
+    needs: changes
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      needs.changes.outputs.global == 'true' ||
+      needs.changes.outputs.common == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/common
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version-file: .python-version
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
+        with:
+          version: '0.9.26'
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --locked
+
+      - name: Run tests
+        run: uv run pytest -q
+
+  test-wire:
+    name: Test wire
+    needs: changes
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      needs.changes.outputs.global == 'true' ||
+      needs.changes.outputs.common == 'true' ||
+      needs.changes.outputs.wire == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/wire
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version-file: .python-version
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
+        with:
+          version: '0.9.26'
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --locked
+
+      - name: Run tests
+        run: uv run pytest -q
+
+  test-client:
+    name: Test client
+    needs: changes
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      needs.changes.outputs.global == 'true' ||
+      needs.changes.outputs.common == 'true' ||
+      needs.changes.outputs.wire == 'true' ||
+      needs.changes.outputs.client == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/client
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version-file: .python-version
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
+        with:
+          version: '0.9.26'
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --locked
+
+      - name: Run tests
+        run: uv run pytest -q
+
+  test-server:
+    name: Test server
+    needs: changes
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      needs.changes.outputs.global == 'true' ||
+      needs.changes.outputs.common == 'true' ||
+      needs.changes.outputs.wire == 'true' ||
+      needs.changes.outputs.server == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/server
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version-file: .python-version
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
+        with:
+          version: '0.9.26'
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --locked
+
+      - name: Run tests
+        run: uv run pytest -q
+
+  test-active-listener:
+    name: Test active-listener
+    needs: changes
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      needs.changes.outputs.global == 'true' ||
+      needs.changes.outputs.common == 'true' ||
+      needs.changes.outputs.wire == 'true' ||
+      needs.changes.outputs.client == 'true' ||
+      needs.changes.outputs.active_listener == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/active-listener
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version-file: .python-version
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
+        with:
+          version: '0.9.26'
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --locked
+
+      - name: Run tests
+        run: uv run pytest -q
+
+  tests-status:
+    name: Tests status
+    if: always()
+    needs:
+      - changes
+      - test-common
+      - test-wire
+      - test-client
+      - test-server
+      - test-active-listener
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check job results
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          TEST_COMMON_RESULT: ${{ needs.test-common.result }}
+          TEST_WIRE_RESULT: ${{ needs.test-wire.result }}
+          TEST_CLIENT_RESULT: ${{ needs.test-client.result }}
+          TEST_SERVER_RESULT: ${{ needs.test-server.result }}
+          TEST_ACTIVE_LISTENER_RESULT: ${{ needs.test-active-listener.result }}
+        run: |
+          for result in \
+            "$CHANGES_RESULT" \
+            "$TEST_COMMON_RESULT" \
+            "$TEST_WIRE_RESULT" \
+            "$TEST_CLIENT_RESULT" \
+            "$TEST_SERVER_RESULT" \
+            "$TEST_ACTIVE_LISTENER_RESULT"; do
+            case "$result" in
+              success|skipped)
+                ;;
+              *)
+                echo "Upstream job result was: $result"
+                exit 1
+                ;;
+            esac
+          done
