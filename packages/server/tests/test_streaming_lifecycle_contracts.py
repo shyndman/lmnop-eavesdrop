@@ -17,6 +17,7 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 from websockets.asyncio.server import ServerConnection
+from websockets.datastructures import Headers
 
 from eavesdrop.server.config import BufferConfig, TranscriptionConfig
 from eavesdrop.server.connection_handler import (
@@ -100,6 +101,7 @@ class _LoggerRecorder:
 
 @dataclass
 class _LoggerDouble:
+  debug: _LoggerRecorder = field(default_factory=_LoggerRecorder)
   info: _LoggerRecorder = field(default_factory=_LoggerRecorder)
 
 
@@ -107,7 +109,7 @@ class _FakeRequest:
   """Minimal request object exposing websocket headers for routing tests."""
 
   def __init__(self, headers: dict[str, str] | None = None) -> None:
-    self.headers: dict[str, str] = headers or {}
+    self.headers: Headers = Headers(headers or {})
 
 
 class _SequentialRecvWebSocket:

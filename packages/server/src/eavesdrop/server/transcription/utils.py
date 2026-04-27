@@ -17,8 +17,6 @@ from eavesdrop.wire import Segment, Word
 
 NumericArray = NDArray[np.generic]
 VadSpeechChunk = dict[str, int]
-SpeechTimestampsMap = load_speech_timestamps_map()
-StorageView = load_storage_view()
 
 
 def summarize_array(name: str, array: NumericArray) -> dict[str, object]:
@@ -44,7 +42,8 @@ def restore_speech_timestamps(
   speech_chunks: list[SpeechChunk],
   sampling_rate: int,
 ) -> Iterable[Segment]:
-  ts_map: SpeechTimestampsMapLike = SpeechTimestampsMap(
+  speech_timestamps_map = load_speech_timestamps_map()
+  ts_map: SpeechTimestampsMapLike = speech_timestamps_map(
     cast(list[VadSpeechChunk], speech_chunks), sampling_rate
   )
 
@@ -99,8 +98,9 @@ def finalize_recording_timestamps(
 
 
 def get_ctranslate2_storage(segment: NumericArray) -> StorageViewLike:
+  storage_view_factory = load_storage_view()
   contiguous_segment = np.ascontiguousarray(segment)
-  storage_view = StorageView.from_array(cast(NDArray[np.float32], contiguous_segment))
+  storage_view = storage_view_factory.from_array(cast(NDArray[np.float32], contiguous_segment))
   return storage_view
 
 

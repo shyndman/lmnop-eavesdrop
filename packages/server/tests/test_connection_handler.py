@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, cast, final
 
 import pytest
 from websockets.asyncio.server import ServerConnection
+from websockets.datastructures import Headers
 from websockets.exceptions import ConnectionClosed
 
 from eavesdrop.server.connection_handler import (
@@ -29,7 +30,7 @@ if TYPE_CHECKING:
 @final
 @dataclass
 class FakeRequest:
-  headers: dict[str, str]
+  headers: Headers
 
 
 @final
@@ -45,7 +46,7 @@ class FakeWebSocket:
   request: FakeRequest = field(init=False)
 
   def __post_init__(self) -> None:
-    self.request = FakeRequest(self.headers)
+    self.request = FakeRequest(Headers(self.headers))
 
   async def recv(self, decode: bool = True) -> str:
     del decode

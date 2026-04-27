@@ -41,7 +41,8 @@ class SoundDeviceModule(Protocol):
   ) -> InputStreamLike: ...
 
 
-sd = cast(SoundDeviceModule, cast(object, import_module("sounddevice")))
+def _load_sounddevice() -> SoundDeviceModule:
+  return cast(SoundDeviceModule, cast(object, import_module("sounddevice")))
 
 
 class AudioCapture:
@@ -76,7 +77,8 @@ class AudioCapture:
       return
 
     try:
-      self.audio_stream = sd.InputStream(
+      sounddevice = _load_sounddevice()
+      self.audio_stream = sounddevice.InputStream(
         device=self.audio_device,
         channels=CHANNELS,
         samplerate=SAMPLE_RATE,
