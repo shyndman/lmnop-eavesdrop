@@ -13,8 +13,13 @@ import pytest
 
 from eavesdrop.server.config import BufferConfig, TranscriptionConfig
 from eavesdrop.server.streaming.buffer import AudioStreamBuffer
+from eavesdrop.server.streaming.flush_state import LiveSessionFlushState
 from eavesdrop.server.streaming.interfaces import TranscriptionResult
-from eavesdrop.server.streaming.processor import StreamingTranscriptionProcessor
+from eavesdrop.server.streaming.processor import (
+  ChunkTranscriptionResult,
+  StreamingTranscriptionProcessor,
+  TranscriptionPassStatus,
+)
 from eavesdrop.server.transcription.session import TranscriptionSession, create_session
 from eavesdrop.wire import Segment
 
@@ -81,6 +86,29 @@ def _create_processor(
     config=config,
     session=session,
     stream_name="stream-1",
+  )
+
+
+def _create_processor_with_buffer(
+  *,
+  send_last_n_segments: int,
+  session: TranscriptionSession,
+  sink: RecordingSink,
+  buffer: AudioStreamBuffer,
+  flush_state: LiveSessionFlushState,
+) -> StreamingTranscriptionProcessor:
+  """Create a processor using explicit buffer and flush-state collaborators."""
+  config = TranscriptionConfig(
+    send_last_n_segments=send_last_n_segments,
+    silence_completion_threshold=0.8,
+  )
+  return StreamingTranscriptionProcessor(
+    buffer=buffer,
+    sink=sink,
+    config=config,
+    session=session,
+    stream_name="stream-1",
+    flush_state=flush_state,
   )
 
 
@@ -217,6 +245,49 @@ async def test_flush_force_complete_converts_tail_to_completed_history() -> None
 
 
 @pytest.mark.asyncio
+async def test_flush_completion_discards_audio_through_accepted_boundary() -> None:
+  """A completed flush must clear all audio that belonged to the committed operation."""
+  session = create_session("stream-1")
+  sink = RecordingSink()
+  buffer = AudioStreamBuffer(BufferConfig(sample_rate=16000, min_chunk_duration=1.0))
+  flush_state = LiveSessionFlushState()
+  processor = _create_processor_with_buffer(
+    send_last_n_segments=3,
+    session=session,
+    sink=sink,
+    buffer=buffer,
+    flush_state=flush_state,
+  )
+  buffer.add_frames(np.ones(int(5.0 * buffer.config.sample_rate), dtype=np.float32))
+  buffer.advance_processed_boundary(2.0)
+  pending_flush = flush_state.accept(
+    boundary_sample=buffer.get_buffer_end_sample(),
+    force_complete=True,
+  )
+
+  assert pending_flush is not None
+
+  await processor._process_transcription_result(
+    ChunkTranscriptionResult(
+      status=TranscriptionPassStatus.TRANSCRIBED,
+      chunk_start_sample=int(2.0 * buffer.config.sample_rate),
+      chunk_sample_count=int(3.0 * buffer.config.sample_rate),
+      segments=[_segment(start=2.2, end=2.8, text="committed", time_offset=2.0)],
+      info=None,
+      processing_time=0.0,
+      audio_duration=3.0,
+      speech_chunks=None,
+    )
+  )
+
+  assert sink.results[-1].flush_complete is True
+  assert [segment.text for segment in session.completed_segments] == ["committed"]
+  assert buffer.available_duration == 0.0
+  assert buffer.total_duration == 0.0
+  assert buffer.processed_up_to_time == 5.0
+
+
+@pytest.mark.asyncio
 async def test_flush_without_force_complete_preserves_existing_incomplete_tail() -> None:
   """Non-forcing flush responses keep the tentative tail incomplete and singular."""
   session = create_session("stream-1")
@@ -233,7 +304,7 @@ async def test_flush_without_force_complete_preserves_existing_incomplete_tail()
     flush_complete=True,
     force_complete=False,
   )
-  processor._discard_short_tail_after_flush()
+  _ = processor.buffer.discard_unprocessed_audio()
 
   flush_result = sink.results[-1]
   output_segments = flush_result.segments

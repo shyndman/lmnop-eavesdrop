@@ -5,12 +5,12 @@ Streaming transcription processor with integrated Faster Whisper transcriber.
 from __future__ import annotations
 
 import asyncio
-from importlib import import_module
 import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
+from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict, cast
 
@@ -462,25 +462,20 @@ class StreamingTranscriptionProcessor:
     )
 
     if flush_boundary_reached:
-      self._discard_short_tail_after_flush()
+      self._discard_flushed_audio(pending_flush)
       if self.flush_state is not None:
         _ = self.flush_state.complete()
 
-  def _discard_short_tail_after_flush(self) -> None:
-    """Drop an unprocessable residual tail once a flush response has been emitted."""
-    available_duration = self.buffer.available_duration
-    if available_duration <= 0:
-      return
+  def _discard_flushed_audio(self, pending_flush: PendingFlush | None) -> None:
+    """Drop buffered audio through the accepted flush boundary after emitting the response."""
+    if pending_flush is None:
+      raise RuntimeError("Cannot discard flushed audio without a pending flush boundary")
 
-    min_chunk_duration = self.buffer.config.min_chunk_duration
-    if available_duration >= min_chunk_duration:
-      return
-
-    discarded_duration = self.buffer.discard_unprocessed_audio()
+    discarded_duration = self.buffer.discard_through_sample(pending_flush.boundary_sample)
     self.logger.info(
-      "Discarded residual short tail after flush",
+      "Discarded flushed audio",
       discarded_duration_s=f"{discarded_duration:.3f}",
-      min_chunk_duration_s=f"{min_chunk_duration:.3f}",
+      boundary_sample=pending_flush.boundary_sample,
     )
 
   async def _wait_for_next_interval(self, processing_time: float) -> None:
