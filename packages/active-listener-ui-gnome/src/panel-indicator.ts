@@ -19,7 +19,6 @@ export type PanelIndicatorActions = {
   toggleRecording(): void;
   setLlmActive(active: boolean): void;
   openPreferences(): void;
-  showOverlayPreview(): void;
   restartService(): void;
   stopService(): void;
 };
@@ -72,10 +71,8 @@ export class PanelIndicator {
       this.actions.openPreferences();
     });
 
-    const showOverlayItem = new PopupMenu.PopupMenuItem('Show overlay');
-    showOverlayItem.connect('activate', () => {
-      this.actions.showOverlayPreview();
-    });
+    const serviceControlsSeparator = new PopupMenu.PopupSeparatorMenuItem();
+    const preferencesSeparator = new PopupMenu.PopupSeparatorMenuItem();
 
     this.restartServiceItem = new PopupMenu.PopupMenuItem('Restart service');
     this.restartServiceItem.connect('activate', () => {
@@ -93,10 +90,11 @@ export class PanelIndicator {
 
     this.button.menu.addMenuItem(this.recordingControlItem);
     this.button.menu.addMenuItem(this.llmRewritingItem);
-    this.button.menu.addMenuItem(preferencesItem);
-    this.button.menu.addMenuItem(showOverlayItem);
-    this.button.menu.addMenuItem(this.restartServiceItem);
+    this.button.menu.addMenuItem(serviceControlsSeparator);
     this.button.menu.addMenuItem(this.stopServiceItem);
+    this.button.menu.addMenuItem(this.restartServiceItem);
+    this.button.menu.addMenuItem(preferencesSeparator);
+    this.button.menu.addMenuItem(preferencesItem);
     this.updateMenuSensitivity();
   }
 

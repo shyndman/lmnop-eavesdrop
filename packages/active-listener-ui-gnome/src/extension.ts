@@ -23,9 +23,6 @@ export default class ActiveListenerIndicatorExtension extends Extension {
       openPreferences: () => {
         this.openPreferences();
       },
-      showOverlayPreview: () => {
-        this.overlay?.showPreview();
-      },
       restartService: () => {
         void this.runServiceAction('RestartUnit');
       },

@@ -10,7 +10,6 @@ import type {
 } from './active-listener-service-client.js';
 import { TranscriptOverlayView } from './transcript-overlay-view.js';
 
-const OVERLAY_MESSAGE = 'Overlay PoC';
 const TRANSCRIPT_LOG_SAMPLE_INTERVAL = 180;
 
 export class TranscriptOverlayController {
@@ -31,9 +30,6 @@ export class TranscriptOverlayController {
 
   constructor() {
     this.view = new TranscriptOverlayView();
-    this.view.setTranscriptDisplay(
-      buildTranscriptDisplay([{ text: OVERLAY_MESSAGE, isCommand: false, isComplete: true }]),
-    );
   }
 
   destroy(): void {
@@ -60,13 +56,6 @@ export class TranscriptOverlayController {
       this.view.clearSpectrum();
       this.resetTranscriptOverlay();
     }
-  }
-
-  showPreview(text: string = OVERLAY_MESSAGE): void {
-    this.view.setTranscriptDisplay(
-      buildTranscriptDisplay([{ text, isCommand: false, isComplete: true }]),
-    );
-    this.view.show();
   }
 
   applyTranscriptionUpdate(update: TranscriptionUpdate): void {
