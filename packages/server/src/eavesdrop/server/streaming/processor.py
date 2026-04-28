@@ -907,7 +907,9 @@ class StreamingTranscriptionProcessor:
       segments_for_client.append(synthetic_segment)
 
     # Advance buffer pointer based on completed segments
-    self._advance_buffer_by_completed_segments(speech_chunks, silence_threshold, duration)
+    self._advance_buffer_by_completed_segments(
+      speech_chunks, silence_threshold, duration, current_incomplete_segment
+    )
 
     if not emit_result:
       self.logger.debug("Suppressing ordinary emission while flush remains pending")
@@ -992,8 +994,6 @@ class StreamingTranscriptionProcessor:
     audio_duration: float,
   ) -> bool:
     """Determine if segment should be completed based on silence after speech."""
-    sample_rate = self.buffer.config.sample_rate
-
     if not speech_chunks:
       # No speech in current chunk - check if we have a segment from previous speech
       # If the segment exists and we have sufficient silence duration, complete it
@@ -1007,33 +1007,43 @@ class StreamingTranscriptionProcessor:
         return True
       return False
 
-    # Convert speech chunks from samples to seconds
-    last_speech_time = max(chunk["end"] for chunk in speech_chunks) / sample_rate
+    # VAD speaks chunk-relative samples. Segment timestamps are recording-relative;
+    # convert before comparing because recording time is the canonical timeline.
+    chunk_start_recording_time = self.buffer.processed_up_to_time
+    last_speech_chunk_time = self._last_speech_chunk_time(speech_chunks)
+    last_speech_recording_time = chunk_start_recording_time + last_speech_chunk_time
 
-    # Time since last speech in this audio chunk
-    chunk_end_time = audio_duration
-    silence_duration = chunk_end_time - last_speech_time
+    # Time since last speech in this audio chunk.
+    chunk_end_recording_time = chunk_start_recording_time + audio_duration
+    silence_duration = chunk_end_recording_time - last_speech_recording_time
 
     # If we have enough silence after the segment ends, mark it complete
     if (
-      segment.end <= last_speech_time + silence_threshold and silence_duration >= silence_threshold
+      segment.absolute_end_time <= last_speech_recording_time + silence_threshold
+      and silence_duration >= silence_threshold
     ):
       tracing_logger.info(
         "Completing segment due to silence after speech",
         segment_id=segment.id,
         silence_duration=f"{silence_duration:.2f}s",
-        last_speech_time=f"{last_speech_time:.2f}s",
+        last_speech_recording_time=f"{last_speech_recording_time:.2f}s",
         threshold=f"{silence_threshold:.2f}s",
       )
       return True
 
     return False
 
+  def _last_speech_chunk_time(self, speech_chunks: list[SpeechChunk]) -> float:
+    """Return the last VAD speech end as chunk-relative seconds."""
+    sample_rate = self.buffer.config.sample_rate
+    return max(chunk["end"] for chunk in speech_chunks) / sample_rate
+
   def _advance_buffer_by_completed_segments(
     self,
     speech_chunks: list[SpeechChunk] | None,
     silence_threshold: float,
     audio_duration: float,
+    current_incomplete_segment: Segment | None,
   ) -> None:
     """Advance buffer pointer based on speech boundaries and completed segments."""
     # Get the last completed segment to determine how far we can advance
@@ -1061,13 +1071,13 @@ class StreamingTranscriptionProcessor:
       )
 
     # Additionally, if we have pure silence after completion, advance through it
-    if speech_chunks:
-      sample_rate = self.buffer.config.sample_rate
-      last_speech_time = max(chunk["end"] for chunk in speech_chunks) / sample_rate
+    if speech_chunks and current_incomplete_segment is None:
+      last_speech_time = self._last_speech_chunk_time(speech_chunks)
       chunk_end_time = audio_duration
       silence_after_speech = chunk_end_time - last_speech_time
 
-      # If we have significant silence, advance through most of it
+      # This advance amount is chunk-relative by nature. Only apply it after the
+      # recording-relative tail is closed, or the client can lose an open segment.
       if silence_after_speech > silence_threshold * 2:
         additional_advance = silence_after_speech - silence_threshold
         self.buffer.advance_processed_boundary(additional_advance)
@@ -1092,8 +1102,7 @@ class StreamingTranscriptionProcessor:
     # Determine where the synthetic segment should start
     if speech_chunks:
       # Start after the last detected speech + threshold
-      sample_rate = self.buffer.config.sample_rate
-      last_speech_time = max(chunk["end"] for chunk in speech_chunks) / sample_rate
+      last_speech_time = self._last_speech_chunk_time(speech_chunks)
       synthetic_start = last_speech_time + silence_threshold
     else:
       # No speech detected, start at current buffer position

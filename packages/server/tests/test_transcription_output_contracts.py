@@ -20,6 +20,7 @@ from eavesdrop.server.streaming.processor import (
   StreamingTranscriptionProcessor,
   TranscriptionPassStatus,
 )
+from eavesdrop.server.transcription.models import SpeechChunk
 from eavesdrop.server.transcription.session import TranscriptionSession, create_session
 from eavesdrop.wire import Segment
 
@@ -212,6 +213,71 @@ async def test_recording_relative_timestamps_remain_monotonic_across_multiple_up
   latest_output = sink.results[-1].segments
   assert [segment.text for segment in latest_output[:-1]] == ["alpha", "bravo", "charlie"]
   assert latest_output[-1].completed is False
+
+
+@pytest.mark.asyncio
+async def test_silence_completion_converts_vad_chunk_times_to_recording_timeline() -> None:
+  """Chunk-relative VAD boundaries must complete recording-relative segment timestamps."""
+  session = create_session("stream-1")
+  sink = RecordingSink()
+  processor = _create_processor(send_last_n_segments=3, session=session, sink=sink)
+  processor.buffer.advance_processed_boundary(26.934)
+  speech_chunks: list[SpeechChunk] = [{"start": 720 * 16, "end": 5280 * 16}]
+
+  await processor._handle_transcription_output(
+    result=[
+      _segment(
+        start=28.614,
+        end=32.974,
+        text="account I can't remember what it's called",
+        time_offset=26.934,
+      )
+    ],
+    duration=8.612,
+    speech_chunks=speech_chunks,
+  )
+
+  assert [segment.text for segment in session.completed_segments] == [
+    "account I can't remember what it's called"
+  ]
+  assert sink.results[-1].segments[-2].completed is True
+  assert sink.results[-1].segments[-1].completed is False
+
+
+@pytest.mark.asyncio
+async def test_incomplete_tail_blocks_silence_advancement_past_completed_history() -> None:
+  """Silence skipping must not consume audio while a recording-relative tail is open."""
+  session = create_session("stream-1")
+  sink = RecordingSink()
+  processor = _create_processor(send_last_n_segments=3, session=session, sink=sink)
+  processor.buffer.advance_processed_boundary(26.934)
+  session.add_completed_segment(
+    _segment(
+      start=22.534,
+      end=26.934,
+      text="I also have a retirement account",
+      time_offset=19.154,
+      completed=True,
+    )
+  )
+  speech_chunks: list[SpeechChunk] = [{"start": 720 * 16, "end": 5280 * 16}]
+
+  await processor._handle_transcription_output(
+    result=[
+      _segment(
+        start=28.614,
+        end=34.000,
+        text="account I can't remember what it's called",
+        time_offset=26.934,
+      )
+    ],
+    duration=8.612,
+    speech_chunks=speech_chunks,
+  )
+
+  assert session.completed_segments[-1].text == "I also have a retirement account"
+  assert sink.results[-1].segments[-1].completed is False
+  assert processor.buffer.processed_up_to_time == pytest.approx(26.934)
 
 
 @pytest.mark.asyncio
