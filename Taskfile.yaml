@@ -160,6 +160,12 @@ tasks:
     cmds:
       - uv sync --all-extras --all-groups
 
+  typecheck:
+    desc: Run the workspace type checker
+    dir: .
+    cmds:
+      - uv run basedpyright
+
   typecheck-server:
     desc: Run the server type checker with host-only transcription deps
     dir: packages/server

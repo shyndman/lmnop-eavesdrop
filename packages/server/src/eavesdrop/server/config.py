@@ -10,6 +10,7 @@ from pydantic.types import FilePath
 from eavesdrop.common import get_logger
 from eavesdrop.server.constants import CACHE_PATH, SINGLE_MODEL
 from eavesdrop.server.transcription.models import VadParameters
+from eavesdrop.server.transcription.vendor_types import load_torch
 
 logger = get_logger("cfg")
 
@@ -213,7 +214,7 @@ class TranscriptionConfig(BaseModel):
 
   def _resolve_gpu_device_index(self, gpu_name: str) -> int:
     """Resolve GPU device index from GPU name."""
-    import torch
+    torch = load_torch()
 
     if not torch.cuda.is_available():
       return 0

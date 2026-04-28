@@ -52,6 +52,11 @@ repos:
         args: [--locked, --project, packages/server]
   - repo: local
     hooks:
+      - id: basedpyright
+        name: basedpyright
+        entry: uv run basedpyright
+        language: system
+        pass_filenames: false
       - id: eslint
         name: eslint
         entry: bash -c "cd packages/active-listener-ui-electron && pnpm run lint"
