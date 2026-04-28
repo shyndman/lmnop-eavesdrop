@@ -74,7 +74,7 @@ class Segment(BaseModel):
   compression_ratio: float
   """Ratio of text length to token count, used for hallucination detection."""
 
-  words: list[Word] | None
+  words: list[Word] | None = None
   """Word-level timing breakdown when word timestamps are enabled, None otherwise."""
 
   temperature: float | None

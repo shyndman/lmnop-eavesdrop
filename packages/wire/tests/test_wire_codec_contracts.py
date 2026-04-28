@@ -325,6 +325,36 @@ def test_flush_satisfying_transcription_serializes_flush_complete_true() -> None
   _ = deserialize_message(encoded)
 
 
+def test_transcription_segment_words_none_round_trips_when_omitted() -> None:
+  encoded = serialize_message(
+    TranscriptionMessage(
+      timestamp=1_700_000_007.5,
+      stream="stream-no-words",
+      segments=[
+        Segment(
+          id=5150,
+          seek=0,
+          start=1.0,
+          end=1.0,
+          text="",
+          tokens=[],
+          avg_logprob=0.0,
+          compression_ratio=1.0,
+          temperature=0.0,
+          completed=False,
+        )
+      ],
+      flush_complete=True,
+    )
+  )
+
+  assert '"words"' not in encoded
+  decoded = deserialize_message(encoded)
+
+  assert decoded.type == "transcription"
+  assert decoded.segments[0].words is None
+
+
 def test_deserialize_rejects_unknown_discriminator_type() -> None:
   payload = '{"type":"unknown_event","timestamp":1700000003.0}'
 
