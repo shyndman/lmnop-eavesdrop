@@ -111,6 +111,30 @@ def test_reduce_new_segments_falls_back_when_sentinel_is_missing() -> None:
   assert reduction.missing_last_id is True
 
 
+def test_apply_segment_reduction_skips_duplicate_segments_after_missing_sentinel() -> None:
+  state = RecordingReducerState(
+    seen_segment_ids={8},
+    completed_words=[TimedWord(text="reset", start_s=0.0, end_s=0.2, is_complete=True)],
+    first_word_start=0.0,
+    last_word_end=0.2,
+  )
+
+  reduction = reduce_new_segments(
+    [
+      _segment(8, "reset", words=[_word("reset", start=0.0, end=0.2)]),
+      _segment(9, "two", words=[_word("two", start=0.2, end=0.4)]),
+      _segment(10, "tail", words=[_word("tail", start=0.4, end=0.6)]),
+    ],
+    last_id=999,
+  )
+
+  apply_segment_reduction(state, reduction)
+
+  assert reduction.missing_last_id is True
+  assert [word.text for word in state.completed_words] == ["reset", "two"]
+  assert [word.text for word in state.incomplete_words] == ["tail"]
+
+
 def test_build_transcription_update_returns_normalized_runs() -> None:
   reduction = reduce_new_segments(
     [_segment(11, "alpha"), _segment(12, "tail")],

@@ -69,6 +69,7 @@ class RecordingReducerState:
   """
 
   last_id: int | None = None
+  seen_segment_ids: set[int] = field(default_factory=set)
   completed_words: list[TimedWord] = field(default_factory=list)
   incomplete_words: list[TimedWord] = field(default_factory=list)
   closed_command_spans: list[TimeSpan] = field(default_factory=list)
@@ -206,12 +207,16 @@ def apply_segment_reduction(state: RecordingReducerState, reduction: SegmentRedu
       _require_word_timestamps([incomplete_segment])
 
   for segment in reduction.segments:
+    if segment.id in state.seen_segment_ids:
+      continue
+
     for word in segment_words(segment, is_complete=True):
       state.completed_words.append(word)
       if state.first_word_start is None or word.start_s < state.first_word_start:
         state.first_word_start = word.start_s
       if state.last_word_end is None or word.end_s > state.last_word_end:
         state.last_word_end = word.end_s
+    state.seen_segment_ids.add(segment.id)
 
   incomplete_segment = reduction.incomplete_segment
   if incomplete_segment is None:

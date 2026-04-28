@@ -94,12 +94,15 @@ class CapturedRecordingAudio:
 class FinishedRecording:
   """Immutable recording snapshot handed from session teardown to finalization.
 
+  :param recording_id: Foreground recording epoch identifier.
+  :type recording_id: str
   :param reducer_state: Final reducer state captured at recording finish.
   :type reducer_state: RecordingReducerState
   :param captured_audio: Immutable microphone capture snapshot for the recording.
   :type captured_audio: CapturedRecordingAudio
   """
 
+  recording_id: str
   reducer_state: RecordingReducerState
   captured_audio: CapturedRecordingAudio
 
@@ -115,7 +118,7 @@ class ActiveListenerClient(Protocol):
     """Close the live connection."""
     ...
 
-  async def start_streaming(self) -> None:
+  async def start_streaming(self, recording_id: str) -> None:
     """Begin microphone capture and upstream streaming."""
     ...
 
@@ -123,11 +126,16 @@ class ActiveListenerClient(Protocol):
     """Stop microphone capture for the active recording."""
     ...
 
-  async def cancel_utterance(self) -> None:
+  async def cancel_utterance(self, recording_id: str) -> None:
     """Discard the current live utterance without closing the session."""
     ...
 
-  async def flush(self, *, force_complete: bool = True) -> TranscriptionMessage:
+  async def flush(
+    self,
+    recording_id: str,
+    *,
+    force_complete: bool = True,
+  ) -> TranscriptionMessage:
     """Request a committed transcription flush from the server."""
     ...
 

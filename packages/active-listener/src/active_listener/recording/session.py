@@ -74,6 +74,7 @@ class RecordingSession:
   logger: BoundLogger
   audio_buffer: RecordingAudioBuffer
   _connection_last_id: int | None = None
+  _recording_id: str | None = None
   _recording_reducer_state: RecordingReducerState | None = None
   _recording_grab_stack: AsyncExitStack | None = None
   _release_recording_grab: RecordingGrabRelease | None = None
@@ -85,6 +86,10 @@ class RecordingSession:
   def is_recording(self) -> bool:
     return self._recording_reducer_state is not None
 
+  @property
+  def active_recording_id(self) -> str | None:
+    return self._recording_id
+
   def reset_connection_cursor(self) -> None:
     self.logger.debug(
       "transcription connection cursor reset",
@@ -92,7 +97,7 @@ class RecordingSession:
     )
     self._connection_last_id = None
 
-  async def start_recording(self) -> None:
+  async def start_recording(self, recording_id: str) -> None:
     if self._recording_grab_stack is not None or self._release_recording_grab is not None:
       raise ActiveListenerRuntimeError("recording grab entered twice")
 
@@ -105,19 +110,22 @@ class RecordingSession:
 
     self._recording_grab_stack = grab_stack
     self._release_recording_grab = release_recording_grab
+    self._recording_id = recording_id
     self._recording_started_monotonic_s = time.monotonic()
-    self._recording_reducer_state = RecordingReducerState(last_id=self._connection_last_id)
+    self._recording_reducer_state = RecordingReducerState()
     self.audio_buffer.start()
     self._last_transcription_runs = []
+    self._connection_last_id = None
     self.logger.debug(
       "recording session started",
-      seeded_last_id=self._connection_last_id,
+      recording_id=recording_id,
     )
 
   async def stop_recording(self) -> None:
     await self._exit_recording(close_open_command_span=False)
 
   async def finish_recording(self) -> FinishedRecording:
+    recording_id = self._require_recording_id()
     reducer_state = self._require_recording_reducer_state()
     captured_audio = CapturedRecordingAudio(
       pcm_f32le=self.audio_buffer.finish(),
@@ -133,6 +141,7 @@ class RecordingSession:
       captured_audio_bytes=len(captured_audio.pcm_f32le),
     )
     return FinishedRecording(
+      recording_id=recording_id,
       reducer_state=reducer_state,
       captured_audio=captured_audio,
     )
@@ -190,6 +199,16 @@ class RecordingSession:
     self,
     message: TranscriptionMessage,
   ) -> TranscriptionUpdate | None:
+    recording_id = self._require_recording_id()
+    if message.recording_id != recording_id:
+      self.logger.warning(
+        "transcription message ignored for inactive recording",
+        stream=message.stream,
+        recording_id=message.recording_id,
+        active_recording_id=recording_id,
+      )
+      return None
+
     reducer_state = self._require_recording_reducer_state()
     return self.ingest_transcription_message(reducer_state, message)
 
@@ -275,6 +294,7 @@ class RecordingSession:
 
     self._release_recording_grab = None
     self._recording_grab_stack = None
+    self._recording_id = None
     self._recording_reducer_state = None
     self._recording_started_monotonic_s = None
     self._last_transcription_runs = []
@@ -294,11 +314,21 @@ class RecordingSession:
       raise ActiveListenerRuntimeError("recording finish requested without reducer state")
     return reducer_state
 
+  def _require_recording_id(self) -> str:
+    recording_id = self._recording_id
+    if recording_id is None:
+      raise ActiveListenerRuntimeError("recording id requested without active recording")
+    return recording_id
+
   def recording_elapsed_s(self, now_monotonic_s: float) -> float:
     recording_started_monotonic_s = self._recording_started_monotonic_s
     if recording_started_monotonic_s is None:
       raise ActiveListenerRuntimeError("recording timeline requested without start anchor")
-    return now_monotonic_s - recording_started_monotonic_s
+    elapsed_samples = max(
+      0,
+      int(round((now_monotonic_s - recording_started_monotonic_s) * SAMPLE_RATE_HZ)),
+    )
+    return elapsed_samples / SAMPLE_RATE_HZ
 
   async def _commit_pending_caps_hold(self, start_s: float) -> None:
     try:

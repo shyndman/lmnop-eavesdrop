@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import secrets
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -206,29 +207,38 @@ class ActiveListenerService:
       return decision
 
     if decision is AppActionDecision.START_RECORDING:
+      await self._recording_finalizer.wait_for_pending_flushes()
+
+      recording_id = secrets.token_hex(8)
       self._was_playing_before_recording = await self._pause_media_if_playing()
       self._start_spectrum_analysis()
       try:
-        await self.client.start_streaming()
-        await self._recording_session.start_recording()
+        await self._recording_session.start_recording(recording_id)
+        await self.client.start_streaming(recording_id)
         self.phase = ForegroundPhase.RECORDING
         await self.dbus_service.set_state(self.phase)
         self.logger.info("recording started")
         return decision
       except Exception:
         try:
+          if self._recording_session.is_recording:
+            await self._recording_session.stop_recording()
           await self._stop_spectrum_analysis()
         finally:
           await self._resume_media_if_needed()
         raise
 
     if decision is AppActionDecision.CANCEL_RECORDING:
+      recording_id = self._recording_session.active_recording_id
+      if recording_id is None:
+        raise RuntimeError("cancel requested without active recording id")
+
       self.phase = ForegroundPhase.IDLE
       try:
         await self._stop_spectrum_analysis()
         await self._recording_session.stop_recording()
         await self.dbus_service.set_state(self.phase)
-        await self.client.cancel_utterance()
+        await self.client.cancel_utterance(recording_id)
         self._recording_session.reset_connection_cursor()
         self.logger.info("recording cancelled")
         return decision
@@ -240,12 +250,17 @@ class ActiveListenerService:
       finished_recording = await self._recording_session.finish_recording()
       await self._stop_spectrum_analysis()
       await self.dbus_service.set_state(self.phase)
-      finalization_task = asyncio.create_task(
-        self._recording_finalizer.finalize_recording(
-          disconnect_generation=self.disconnect_generation,
-          finished_recording=finished_recording,
+      self._recording_finalizer.reserve_flush()
+      try:
+        finalization_task = asyncio.create_task(
+          self._recording_finalizer.finalize_recording(
+            disconnect_generation=self.disconnect_generation,
+            finished_recording=finished_recording,
+          )
         )
-      )
+      except Exception:
+        self._recording_finalizer.cancel_reserved_flush()
+        raise
       self._background_tasks.add(finalization_task)
       finalization_task.add_done_callback(self._background_tasks.discard)
       self.logger.info("recording finished", background_finalization=True)

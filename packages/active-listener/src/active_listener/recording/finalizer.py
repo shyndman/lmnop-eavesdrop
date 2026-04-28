@@ -99,6 +99,26 @@ class RecordingFinalizer:
   current_disconnect_generation: DisconnectGenerationReader
   _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
   _flush_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+  _pending_flushes: int = 0
+  _pending_flushes_drained: asyncio.Event = field(default_factory=asyncio.Event)
+
+  def __post_init__(self) -> None:
+    _ = self._pending_flushes_drained.set()
+
+  def reserve_flush(self) -> None:
+    self._pending_flushes += 1
+    _ = self._pending_flushes_drained.clear()
+
+  async def wait_for_pending_flushes(self) -> None:
+    _ = await self._pending_flushes_drained.wait()
+
+  def cancel_reserved_flush(self) -> None:
+    self._release_reserved_flush()
+
+  def _release_reserved_flush(self) -> None:
+    self._pending_flushes -= 1
+    if self._pending_flushes == 0:
+      _ = self._pending_flushes_drained.set()
 
   async def finalize_recording(
     self,
@@ -109,7 +129,10 @@ class RecordingFinalizer:
     reducer_state = finished_recording.reducer_state
     try:
       async with self._flush_lock:
-        message = await self.client.flush(force_complete=True)
+        try:
+          message = await self.client.flush(finished_recording.recording_id, force_complete=True)
+        finally:
+          self._release_reserved_flush()
     except Exception:
       self.logger.exception("recording finalization failed")
       return

@@ -310,6 +310,9 @@ class FakeClient:
   start_calls: int = 0
   stop_calls: int = 0
   cancel_calls: int = 0
+  start_recording_ids: list[str] = field(default_factory=list)
+  cancel_recording_ids: list[str] = field(default_factory=list)
+  flush_recording_ids: list[str] = field(default_factory=list)
   flush_calls: list[bool] = field(default_factory=list)
   flush_results: list[asyncio.Future[TranscriptionMessage] | TranscriptionMessage | Exception] = (
     field(default_factory=list)
@@ -322,16 +325,19 @@ class FakeClient:
   async def disconnect(self) -> None:
     self.disconnect_calls += 1
 
-  async def start_streaming(self) -> None:
+  async def start_streaming(self, recording_id: str) -> None:
     self.start_calls += 1
+    self.start_recording_ids.append(recording_id)
 
   async def stop_streaming(self) -> None:
     self.stop_calls += 1
 
-  async def cancel_utterance(self) -> None:
+  async def cancel_utterance(self, recording_id: str) -> None:
     self.cancel_calls += 1
+    self.cancel_recording_ids.append(recording_id)
 
-  async def flush(self, *, force_complete: bool = True) -> TranscriptionMessage:
+  async def flush(self, recording_id: str, *, force_complete: bool = True) -> TranscriptionMessage:
+    self.flush_recording_ids.append(recording_id)
     self.flush_calls.append(force_complete)
     result = self.flush_results.pop(0)
     if isinstance(result, Exception):
@@ -395,8 +401,9 @@ class FailingStartClient(FakeClient):
   """Client stand-in whose start-streaming path fails."""
 
   @override
-  async def start_streaming(self) -> None:
+  async def start_streaming(self, recording_id: str) -> None:
     self.start_calls += 1
+    self.start_recording_ids.append(recording_id)
     raise RuntimeError("start failed")
 
 
@@ -555,12 +562,38 @@ def _pending_caps_gesture(session: RecordingSession) -> PendingCapsGesture | Non
   return cast(PendingCapsGesture | None, getattr(session, "_pending_caps_gesture"))
 
 
+def _active_recording_id(service: ActiveListenerService) -> str:
+  recording_id = _recording_session(service).active_recording_id
+  assert recording_id is not None
+  return recording_id
+
+
 def _message(
+  *segments: Segment,
+  stream: str = "stream-1",
+  recording_id: str | None = None,
+  flush_complete: bool | None = True,
+) -> TranscriptionMessage:
+  return TranscriptionMessage(
+    stream=stream,
+    segments=list(segments),
+    recording_id=recording_id,
+    flush_complete=flush_complete,
+  )
+
+
+def _live_message(
+  service: ActiveListenerService,
   *segments: Segment,
   stream: str = "stream-1",
   flush_complete: bool | None = True,
 ) -> TranscriptionMessage:
-  return TranscriptionMessage(stream=stream, segments=list(segments), flush_complete=flush_complete)
+  return _message(
+    *segments,
+    stream=stream,
+    recording_id=_active_recording_id(service),
+    flush_complete=flush_complete,
+  )
 
 
 def _transcription_event(message: TranscriptionMessage) -> TranscriptionEvent:
@@ -767,6 +800,8 @@ async def test_start_and_cancel_recording_toggle_grab_and_streaming() -> None:
   assert harness.client.start_calls == 1
   assert harness.client.stop_calls == 1
   assert harness.client.cancel_calls == 1
+  assert len(harness.client.start_recording_ids) == 1
+  assert harness.client.cancel_recording_ids == [harness.client.start_recording_ids[0]]
   assert harness.keyboard.grab_calls == 1
   assert harness.keyboard.ungrab_calls == 1
   assert spectrum_analyzer.start_calls == 1
@@ -850,7 +885,8 @@ async def test_cancel_clears_connection_cursor_for_discarded_utterance() -> None
   _ = await service.handle_action(AppAction.START_OR_FINISH)
   await service.handle_client_event(
     _transcription_event(
-      _message(
+      _live_message(
+        service,
         _segment(1, "alpha", completed=True),
         _segment(2, "draft", completed=False),
         flush_complete=False,
@@ -1384,6 +1420,42 @@ async def test_start_and_finish_publish_recording_and_idle_states() -> None:
   assert harness.dbus_service.signals == []
   assert client.cancel_calls == 0
   assert client.flush_calls == [True]
+  assert len(client.start_recording_ids) == 1
+  assert client.flush_recording_ids == [client.start_recording_ids[0]]
+
+
+@pytest.mark.asyncio
+async def test_new_start_waits_for_finished_recording_flush_to_complete() -> None:
+  pending_flush: asyncio.Future[TranscriptionMessage] = asyncio.Future()
+  client = FakeClient(flush_results=[pending_flush])
+  harness = _service(client=client)
+  service = harness.service
+
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
+  first_recording_id = client.start_recording_ids[0]
+
+  finish_decision = await service.handle_action(AppAction.START_OR_FINISH)
+  second_start = asyncio.create_task(service.handle_action(AppAction.START_OR_FINISH))
+  await asyncio.sleep(0)
+
+  assert finish_decision is AppActionDecision.FINISH_RECORDING
+  assert second_start.done() is False
+  assert client.flush_recording_ids == [first_recording_id]
+
+  pending_flush.set_result(
+    _message(
+      _segment(1, "alpha", completed=True),
+      _segment(2, "tail", completed=False),
+      recording_id=first_recording_id,
+    )
+  )
+  start_decision = await second_start
+
+  assert start_decision is AppActionDecision.START_RECORDING
+  assert len(client.start_recording_ids) == 2
+  assert client.start_recording_ids[1] != first_recording_id
+
+  _ = await service.handle_action(AppAction.CANCEL)
 
 
 @pytest.mark.asyncio
@@ -1606,6 +1678,7 @@ async def test_cancel_recording_discards_captured_audio_before_next_recording() 
   finished_recording = await _recording_session(harness.service).finish_recording()
 
   assert finished_recording == FinishedRecording(
+    recording_id=finished_recording.recording_id,
     reducer_state=finished_recording.reducer_state,
     captured_audio=CapturedRecordingAudio(
       pcm_f32le=second_chunk,
@@ -1633,6 +1706,7 @@ async def test_disconnect_discards_captured_audio_before_next_recording() -> Non
   finished_recording = await _recording_session(harness.service).finish_recording()
 
   assert finished_recording == FinishedRecording(
+    recording_id=finished_recording.recording_id,
     reducer_state=finished_recording.reducer_state,
     captured_audio=CapturedRecordingAudio(
       pcm_f32le=second_chunk,
@@ -1748,7 +1822,8 @@ async def test_transcription_events_are_consumed_only_while_recording() -> None:
   _ = await service.handle_action(AppAction.START_OR_FINISH)
   await service.handle_client_event(
     _transcription_event(
-      _message(
+      _live_message(
+        service,
         _segment(1, "alpha", completed=True),
         _segment(2, "draft", completed=False),
         flush_complete=False,
@@ -1836,7 +1911,8 @@ async def test_cancel_clears_connection_cursor_for_next_recording() -> None:
   _ = await service.handle_action(AppAction.START_OR_FINISH)
   await service.handle_client_event(
     _transcription_event(
-      _message(
+      _live_message(
+        service,
         _segment(1, "alpha", completed=True),
         _segment(2, "tail", completed=False),
         flush_complete=False,
@@ -1862,10 +1938,9 @@ async def test_new_recording_ignores_completed_history_before_seeded_cursor() ->
         _segment(2, "tail", completed=False),
       ),
       _message(
-        _segment(1, "alpha", completed=True),
-        _segment(2, "bravo", completed=True),
-        _segment(3, "charlie", completed=True),
-        _segment(4, "tail", completed=False),
+        _segment(1, "bravo", completed=True),
+        _segment(2, "charlie", completed=True),
+        _segment(3, "tail", completed=False),
       ),
     ]
   )
@@ -1921,7 +1996,7 @@ async def test_reconnected_session_resets_connection_cursor_before_next_recordin
 
 
 @pytest.mark.asyncio
-async def test_new_recording_can_start_while_older_finalization_waits() -> None:
+async def test_new_recording_waits_while_older_finalization_flush_is_pending() -> None:
   pending_flush = asyncio.get_running_loop().create_future()
   client = FakeClient(
     flush_results=[
@@ -1938,14 +2013,19 @@ async def test_new_recording_can_start_while_older_finalization_waits() -> None:
 
   _ = await service.handle_action(AppAction.START_OR_FINISH)
   _ = await service.handle_action(AppAction.START_OR_FINISH)
-  _ = await service.handle_action(AppAction.START_OR_FINISH)
-  _ = await service.handle_action(AppAction.START_OR_FINISH)
+  blocked_start = asyncio.create_task(service.handle_action(AppAction.START_OR_FINISH))
+  await asyncio.sleep(0)
+
+  assert blocked_start.done() is False
+
   pending_flush.set_result(
     _message(
       _segment(2, "first", completed=True),
       _segment(3, "tail", completed=False),
     )
   )
+  assert await blocked_start is AppActionDecision.START_RECORDING
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
   await service.wait_for_background_tasks()
 
   assert client.start_calls == 2
@@ -2055,7 +2135,8 @@ async def test_finished_recording_emits_joined_text_from_live_updates_and_flush(
   _ = await service.handle_action(AppAction.START_OR_FINISH)
   await service.handle_client_event(
     _transcription_event(
-      _message(
+      _live_message(
+        service,
         _segment(1, "alpha", completed=True),
         _segment(2, "draft", completed=False),
         flush_complete=False,
@@ -2064,7 +2145,8 @@ async def test_finished_recording_emits_joined_text_from_live_updates_and_flush(
   )
   await service.handle_client_event(
     _transcription_event(
-      _message(
+      _live_message(
+        service,
         _segment(1, "alpha", completed=True),
         _segment(2, "bravo", completed=True),
         _segment(3, "draft", completed=False),
@@ -2098,7 +2180,8 @@ async def test_missing_transcription_sentinel_warns_and_falls_back_to_window() -
   _ = await service.handle_action(AppAction.START_OR_FINISH)
   await service.handle_client_event(
     _transcription_event(
-      _message(
+      _live_message(
+        service,
         _segment(1, "alpha", completed=True),
         _segment(2, "tail", completed=False),
         flush_complete=False,
@@ -2107,7 +2190,8 @@ async def test_missing_transcription_sentinel_warns_and_falls_back_to_window() -
   )
   await service.handle_client_event(
     _transcription_event(
-      _message(
+      _live_message(
+        service,
         _segment(7, "restart", completed=True),
         _segment(8, "draft", completed=False),
         flush_complete=False,
