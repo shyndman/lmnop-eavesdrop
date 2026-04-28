@@ -20,6 +20,7 @@ from eavesdrop.wire.messages import (
   FlushControlMessage,
   HealthCheckRequest,
   LanguageDetectionMessage,
+  RecordingStartedMessage,
   ServerReadyMessage,
   StreamStatusMessage,
   TranscriptionMessage,
@@ -104,14 +105,22 @@ def _build_contract_segment() -> Segment:
       stream="stream-a",
       message="operator stop",
     ),
+    RecordingStartedMessage(
+      timestamp=1_700_000_000.625,
+      stream="stream-a",
+      recording_id="rec-123",
+      sample_rate_hz=16000,
+    ),
     FlushControlMessage(
       timestamp=1_700_000_000.65,
       stream="stream-a",
+      recording_id="rec-123",
       force_complete=False,
     ),
     UtteranceCancelledMessage(
       timestamp=1_700_000_000.66,
       stream="stream-a",
+      recording_id="rec-123",
     ),
     HealthCheckRequest(timestamp=1_700_000_000.7),
     TranscriptionSetupMessage(
@@ -144,6 +153,7 @@ def test_decode_preserves_transcription_metadata_fields() -> None:
       stream="stream-1",
       segments=[_build_contract_segment()],
       language="fr",
+      recording_id="rec-456",
       flush_complete=True,
     )
   )
@@ -159,6 +169,7 @@ def test_decode_preserves_transcription_metadata_fields() -> None:
   assert decoded.timestamp == 1_700_000_001.0
   assert decoded.stream == "stream-1"
   assert decoded.language == "fr"
+  assert decoded.recording_id == "rec-456"
   assert decoded.flush_complete is True
   assert decoded.segments[0].id == 4242
   assert decoded.segments[0].text == "contract fixture"
@@ -204,6 +215,7 @@ def test_flush_control_round_trips_without_payload_loss() -> None:
     FlushControlMessage(
       timestamp=1_700_000_002.5,
       stream="stream-flush",
+      recording_id="rec-flush",
       force_complete=False,
     )
   )
@@ -218,6 +230,7 @@ def test_utterance_cancel_control_round_trips_without_payload_loss() -> None:
     UtteranceCancelledMessage(
       timestamp=1_700_000_002.6,
       stream="stream-cancel",
+      recording_id="rec-cancel",
     )
   )
 
@@ -238,6 +251,22 @@ def test_ordinary_transcription_omits_flush_complete_on_wire() -> None:
 
   assert '"flush_complete"' not in encoded
   _ = deserialize_message(encoded)
+
+
+def test_live_messages_omit_none_recording_id_on_wire() -> None:
+  encoded = serialize_message(
+    TranscriptionMessage(
+      timestamp=1_700_000_006.5,
+      stream="stream-ordinary",
+      segments=[_build_contract_segment()],
+      language="en",
+    )
+  )
+
+  assert '"recording_id"' not in encoded
+  decoded = deserialize_message(encoded)
+  assert isinstance(decoded, TranscriptionMessage)
+  assert decoded.recording_id is None
 
 
 def test_wire_payload_records_and_words_use_same_recording_timeline() -> None:

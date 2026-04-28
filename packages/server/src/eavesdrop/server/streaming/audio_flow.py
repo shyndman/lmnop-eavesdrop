@@ -171,6 +171,7 @@ class WebSocketTranscriptionSink(TranscriptionSink):
         stream=self.stream_name,
         segments=result.segments,
         language=result.language,
+        recording_id=result.recording_id,
         flush_complete=result.flush_complete,
       )
     )

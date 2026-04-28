@@ -54,6 +54,7 @@ class AudioCapture:
     self.recording: bool = False
     self.on_error: Callable[[str], None] = on_error
     self.audio_device: str | int | None = audio_device
+    self._callback_loop: asyncio.AbstractEventLoop | None = None
 
   def audio_callback(
     self,
@@ -69,7 +70,11 @@ class AudioCapture:
     if self.recording:
       # Convert to float32 and queue for transmission
       audio_data = indata.copy().astype(DTYPE)
-      self.audio_queue.put_nowait(audio_data.tobytes())
+      if self._callback_loop is not None:
+        _ = self._callback_loop.call_soon_threadsafe(
+          self.audio_queue.put_nowait,
+          audio_data.tobytes(),
+        )
 
   def start_recording(self):
     """Start audio capture from microphone."""
@@ -77,6 +82,7 @@ class AudioCapture:
       return
 
     try:
+      self._callback_loop = asyncio.get_running_loop()
       sounddevice = _load_sounddevice()
       self.audio_stream = sounddevice.InputStream(
         device=self.audio_device,
@@ -99,6 +105,7 @@ class AudioCapture:
       return
 
     self.recording = False
+    self._callback_loop = None
     if self.audio_stream:
       try:
         self.audio_stream.stop()
@@ -106,6 +113,11 @@ class AudioCapture:
         self.audio_stream = None
       except Exception as e:
         self.on_error(f"Error stopping audio: {e}")
+
+  def clear_queue(self) -> None:
+    """Drop any stale captured audio buffered between recording epochs."""
+    while not self.audio_queue.empty():
+      _ = self.audio_queue.get_nowait()
 
   async def get_audio_data(self, timeout: float = 0.1) -> bytes | None:
     """Get audio data from queue with timeout."""

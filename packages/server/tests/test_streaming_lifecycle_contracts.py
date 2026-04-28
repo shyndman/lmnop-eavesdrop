@@ -22,11 +22,13 @@ from websockets.datastructures import Headers
 from eavesdrop.server.config import BufferConfig, TranscriptionConfig
 from eavesdrop.server.connection_handler import (
   PRE_SETUP_FLUSH_REJECTION,
+  PRE_SETUP_RECORDING_START_REJECTION,
   PRE_SETUP_UTTERANCE_CANCEL_REJECTION,
   WebSocketConnectionHandler,
 )
 from eavesdrop.server.server import (
   RTSP_FLUSH_REJECTION,
+  RTSP_RECORDING_START_REJECTION,
   RTSP_UTTERANCE_CANCEL_REJECTION,
   TranscriptionServer,
 )
@@ -35,6 +37,9 @@ from eavesdrop.server.streaming.buffer import AudioStreamBuffer
 from eavesdrop.server.streaming.client import (
   LIVE_FLUSH_ALREADY_PENDING_MESSAGE,
   LIVE_FLUSH_FILE_MODE_MESSAGE,
+  LIVE_RECORDING_ID_MISMATCH_MESSAGE,
+  LIVE_RECORDING_START_FILE_MODE_MESSAGE,
+  LIVE_RECORDING_START_REQUIRED_MESSAGE,
   LIVE_UTTERANCE_CANCEL_FILE_MODE_MESSAGE,
   WebSocketStreamingClient,
 )
@@ -44,6 +49,7 @@ from eavesdrop.server.streaming.processor import AudioChunk, StreamingTranscript
 from eavesdrop.server.transcription.session import create_session
 from eavesdrop.wire import (
   FlushControlMessage,
+  RecordingStartedMessage,
   Segment,
   TranscriptionSetupMessage,
   UserTranscriptionOptions,
@@ -516,9 +522,14 @@ async def test_second_live_flush_is_rejected_and_original_flush_stays_pending() 
     _SinkDouble(disconnect=AsyncMock(), send_error=AsyncMock()),
   )
   _set_attr(client, "_flush_state", LiveSessionFlushState())
+  _set_attr(client, "_current_recording_id", "rec-1")
 
-  first_flush = serialize_message(FlushControlMessage(stream="stream-1", force_complete=False))
-  second_flush = serialize_message(FlushControlMessage(stream="stream-1", force_complete=True))
+  first_flush = serialize_message(
+    FlushControlMessage(stream="stream-1", recording_id="rec-1", force_complete=False)
+  )
+  second_flush = serialize_message(
+    FlushControlMessage(stream="stream-1", recording_id="rec-1", force_complete=True)
+  )
 
   await _client_handle_live_text_frame(client, first_flush)
   pending_flush = _get_flush_state(client).pending()
@@ -528,6 +539,125 @@ async def test_second_live_flush_is_rejected_and_original_flush_stays_pending() 
   assert _get_flush_state(client).pending() == pending_flush
   _assert_awaited_once_with(
     client.transcription_sink.send_error, LIVE_FLUSH_ALREADY_PENDING_MESSAGE
+  )
+
+
+@pytest.mark.asyncio
+async def test_recording_boundary_resets_live_buffer_session_and_flush_state() -> None:
+  """A new live recording boundary must fully reset recording-local server state."""
+  client = WebSocketStreamingClient.__new__(WebSocketStreamingClient)
+  client.logger = MagicMock()
+  client.buffer = AudioStreamBuffer(BufferConfig(sample_rate=10, min_chunk_duration=1.0))
+  client.session = create_session("stream-1")
+  client.session.update_audio_context(3.0, 0.4)
+  _set_attr(
+    client,
+    "transcription_sink",
+    _SinkDouble(disconnect=AsyncMock(), send_error=AsyncMock()),
+  )
+  _set_attr(client, "_flush_state", LiveSessionFlushState())
+  _set_attr(client, "processor", MagicMock())
+  _set_attr(client, "_current_recording_id", None)
+
+  client.session.add_completed_segment(
+    Segment(
+      id=1,
+      seek=0,
+      start=0.0,
+      end=0.2,
+      text="alpha",
+      tokens=[1, 2, 3],
+      avg_logprob=-0.25,
+      compression_ratio=1.0,
+      words=None,
+      temperature=0.0,
+      completed=True,
+    )
+  )
+  _add_frames(client.buffer, np.ones(8, dtype=np.float32))
+  client.buffer.advance_processed_boundary(0.3)
+  pending_flush = _get_flush_state(client).accept(
+    boundary_sample=client.buffer.get_buffer_end_sample(),
+    force_complete=True,
+  )
+
+  assert pending_flush is not None
+
+  await _client_handle_live_text_frame(
+    client,
+    serialize_message(
+      RecordingStartedMessage(
+        stream="stream-1",
+        recording_id="rec-2",
+        sample_rate_hz=10,
+      )
+    ),
+  )
+
+  assert client._current_recording_id == "rec-2"
+  assert client.buffer.frames_np is None
+  assert client.buffer.buffer_start_time == 0.0
+  assert client.buffer.processed_up_to_time == 0.0
+  assert client.session.completed_segments == []
+  assert client.session.audio_start_offset == 0.0
+  assert client.session.audio_duration == 0.0
+  assert _get_flush_state(client).pending() is None
+  assert _get_flush_state(client).current_generation() == 1
+  cast(MagicMock, client.processor.reset_live_recording).assert_called_once_with(
+    recording_id="rec-2",
+    generation=1,
+    preserve_language=False,
+  )
+
+
+@pytest.mark.asyncio
+async def test_live_controls_require_recording_boundary_before_epoch_exists() -> None:
+  """Flush and cancel controls must be rejected until a recording boundary is established."""
+  client = WebSocketStreamingClient.__new__(WebSocketStreamingClient)
+  _set_attr(
+    client,
+    "transcription_sink",
+    _SinkDouble(disconnect=AsyncMock(), send_error=AsyncMock()),
+  )
+  _set_attr(client, "_flush_state", LiveSessionFlushState())
+  _set_attr(client, "_current_recording_id", None)
+
+  await _client_handle_live_text_frame(
+    client,
+    serialize_message(FlushControlMessage(stream="stream-1", recording_id="rec-1")),
+  )
+  await _client_handle_live_text_frame(
+    client,
+    serialize_message(UtteranceCancelledMessage(stream="stream-1", recording_id="rec-1")),
+  )
+
+  send_error = cast(_AsyncMockAssertions, client.transcription_sink.send_error)
+  assert send_error.await_count == 2
+  cast(AsyncMock, client.transcription_sink.send_error).assert_any_await(
+    LIVE_RECORDING_START_REQUIRED_MESSAGE
+  )
+
+
+@pytest.mark.asyncio
+async def test_live_controls_reject_mismatched_recording_id() -> None:
+  """Live controls must stay scoped to the active recording epoch."""
+  client = WebSocketStreamingClient.__new__(WebSocketStreamingClient)
+  _set_attr(
+    client,
+    "transcription_sink",
+    _SinkDouble(disconnect=AsyncMock(), send_error=AsyncMock()),
+  )
+  _set_attr(client, "_flush_state", LiveSessionFlushState())
+  _set_attr(client, "_current_recording_id", "rec-active")
+
+  await _client_handle_live_text_frame(
+    client,
+    serialize_message(FlushControlMessage(stream="stream-1", recording_id="rec-stale")),
+  )
+
+  _assert_awaited_once_with(
+    client.transcription_sink.send_error,
+    LIVE_RECORDING_ID_MISMATCH_MESSAGE,
   )
 
 
@@ -559,6 +689,8 @@ async def test_live_utterance_cancel_discards_tail_without_merging_future_audio(
     _SinkDouble(disconnect=AsyncMock(), send_error=AsyncMock()),
   )
   _set_attr(client, "_flush_state", LiveSessionFlushState())
+  _set_attr(client, "_current_recording_id", "rec-1")
+  _set_attr(client, "processor", MagicMock())
 
   _add_frames(client.buffer, np.ones(8, dtype=np.float32))
   client.buffer.advance_processed_boundary(0.3)
@@ -571,7 +703,7 @@ async def test_live_utterance_cancel_discards_tail_without_merging_future_audio(
 
   await _client_handle_live_text_frame(
     client,
-    serialize_message(UtteranceCancelledMessage(stream="stream-1")),
+    serialize_message(UtteranceCancelledMessage(stream="stream-1", recording_id="rec-1")),
   )
 
   assert abs(client.buffer.processed_up_to_time - 0.3) < 1e-9
@@ -581,6 +713,11 @@ async def test_live_utterance_cancel_discards_tail_without_merging_future_audio(
   assert client.session.completed_segments == []
   assert _get_flush_state(client).pending() is None
   assert _get_flush_state(client).current_generation() == 1
+  cast(MagicMock, client.processor.reset_live_recording).assert_called_once_with(
+    recording_id="rec-1",
+    generation=1,
+    preserve_language=False,
+  )
 
   _add_frames(client.buffer, np.full(4, 0.5, dtype=np.float32))
   chunk, duration, start_time = _get_chunk(client.buffer)
@@ -595,6 +732,10 @@ async def test_live_utterance_cancel_discards_tail_without_merging_future_audio(
 @pytest.mark.parametrize(
   ("message", "expected_rejection"),
   [
+    (
+      RecordingStartedMessage(stream="stream-1", recording_id="rec-1", sample_rate_hz=16000),
+      PRE_SETUP_RECORDING_START_REJECTION,
+    ),
     (FlushControlMessage(stream="stream-1"), PRE_SETUP_FLUSH_REJECTION),
     (
       UtteranceCancelledMessage(stream="stream-1"),
@@ -603,7 +744,7 @@ async def test_live_utterance_cancel_discards_tail_without_merging_future_audio(
   ],
 )
 async def test_pre_setup_live_controls_are_rejected_without_closing_connection(
-  message: FlushControlMessage | UtteranceCancelledMessage,
+  message: RecordingStartedMessage | FlushControlMessage | UtteranceCancelledMessage,
   expected_rejection: str,
 ) -> None:
   """Live control sent before transcriber setup must be rejected while keeping the socket usable."""
@@ -637,6 +778,10 @@ async def test_pre_setup_live_controls_are_rejected_without_closing_connection(
 @pytest.mark.parametrize(
   ("message", "expected_rejection"),
   [
+    (
+      RecordingStartedMessage(stream="stream-1", recording_id="rec-1", sample_rate_hz=16000),
+      LIVE_RECORDING_START_FILE_MODE_MESSAGE,
+    ),
     (FlushControlMessage(stream="stream-1"), LIVE_FLUSH_FILE_MODE_MESSAGE),
     (
       UtteranceCancelledMessage(stream="stream-1"),
@@ -645,7 +790,7 @@ async def test_pre_setup_live_controls_are_rejected_without_closing_connection(
   ],
 )
 async def test_file_mode_live_controls_are_rejected_without_tearing_down_session(
-  message: FlushControlMessage | UtteranceCancelledMessage,
+  message: RecordingStartedMessage | FlushControlMessage | UtteranceCancelledMessage,
   expected_rejection: str,
 ) -> None:
   """File-mode uploads must reject live control frames and keep ingest alive."""
@@ -665,6 +810,10 @@ async def test_file_mode_live_controls_are_rejected_without_tearing_down_session
 @pytest.mark.parametrize(
   ("message", "expected_rejection"),
   [
+    (
+      RecordingStartedMessage(stream="cam-a", recording_id="rec-1", sample_rate_hz=16000),
+      RTSP_RECORDING_START_REJECTION,
+    ),
     (FlushControlMessage(stream="cam-a"), RTSP_FLUSH_REJECTION),
     (
       UtteranceCancelledMessage(stream="cam-a"),
@@ -673,7 +822,7 @@ async def test_file_mode_live_controls_are_rejected_without_tearing_down_session
   ],
 )
 async def test_subscriber_live_controls_are_rejected_without_closing_connection(
-  message: FlushControlMessage | UtteranceCancelledMessage,
+  message: RecordingStartedMessage | FlushControlMessage | UtteranceCancelledMessage,
   expected_rejection: str,
 ) -> None:
   """RTSP subscriber sessions must reject live controls and keep the socket open."""
@@ -687,3 +836,30 @@ async def test_subscriber_live_controls_are_rejected_without_closing_connection(
   rejection_message = deserialize_message(websocket.sent_payloads[0])
   assert rejection_message.type == "error"
   assert rejection_message.message == expected_rejection
+
+
+def test_recording_boundary_resets_chunk_start_to_zero_for_next_recording() -> None:
+  """Each accepted recording boundary must restart chunk timestamps from recording sample zero."""
+  client = WebSocketStreamingClient.__new__(WebSocketStreamingClient)
+  client.logger = MagicMock()
+  client.buffer = AudioStreamBuffer(BufferConfig(sample_rate=10, min_chunk_duration=1.0))
+  client.session = create_session("stream-1")
+  _set_attr(client, "_flush_state", LiveSessionFlushState())
+  _set_attr(client, "processor", MagicMock())
+  _set_attr(client, "_current_recording_id", None)
+
+  client._accept_recording_boundary(
+    RecordingStartedMessage(stream="stream-1", recording_id="rec-1", sample_rate_hz=10)
+  )
+  _add_frames(client.buffer, np.ones(4, dtype=np.float32))
+  _, _, first_start = _get_chunk(client.buffer)
+  client.buffer.advance_processed_boundary(0.4)
+
+  client._accept_recording_boundary(
+    RecordingStartedMessage(stream="stream-1", recording_id="rec-2", sample_rate_hz=10)
+  )
+  _add_frames(client.buffer, np.ones(4, dtype=np.float32))
+  _, _, second_start = _get_chunk(client.buffer)
+
+  assert first_start == 0.0
+  assert second_start == 0.0

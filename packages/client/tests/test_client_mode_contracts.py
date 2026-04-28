@@ -29,6 +29,8 @@ from eavesdrop.wire import (
   deserialize_message,
 )
 
+RECORDING_ID = "rec-live"
+
 
 class FakeWebSocket:
   """Deterministic in-memory websocket stand-in used by connect-path tests."""
@@ -115,12 +117,16 @@ class RecordingAudioCapture:
   def __init__(self) -> None:
     self.start_calls = 0
     self.stop_calls = 0
+    self.clear_calls = 0
 
   def start_recording(self) -> None:
     self.start_calls += 1
 
   def stop_recording(self) -> None:
     self.stop_calls += 1
+
+  def clear_queue(self) -> None:
+    self.clear_calls += 1
 
   async def get_audio_data(self, timeout: float = 0.1) -> bytes | None:
     return None
@@ -139,6 +145,9 @@ class ScriptedAudioCapture:
   def stop_recording(self) -> None:
     return None
 
+  def clear_queue(self) -> None:
+    return None
+
   async def get_audio_data(self, timeout: float = 0.1) -> bytes | None:
     _ = timeout
     if self._chunks:
@@ -154,21 +163,29 @@ class RecordingConnection:
   def __init__(self) -> None:
     self.audio_chunks: list[bytes] = []
     self.command_log: list[str] = []
+    self.recording_start_ids: list[str] = []
     self.flush_commands: list[bool] = []
+    self.flush_recording_ids: list[str] = []
     self.flush_sent = asyncio.Event()
-    self.cancel_requests = 0
+    self.cancel_recording_ids: list[str] = []
+
+  async def send_recording_started(self, recording_id: str, sample_rate_hz: int) -> None:
+    assert sample_rate_hz == 16000
+    self.recording_start_ids.append(recording_id)
+    self.command_log.append("recording_started")
 
   async def send_audio_data(self, audio_data: bytes) -> None:
     self.audio_chunks.append(audio_data)
     self.command_log.append("audio")
 
-  async def send_flush_control(self, *, force_complete: bool = True) -> None:
+  async def send_flush_control(self, recording_id: str, *, force_complete: bool = True) -> None:
+    self.flush_recording_ids.append(recording_id)
     self.flush_commands.append(force_complete)
     self.command_log.append("flush")
     self.flush_sent.set()
 
-  async def send_utterance_cancelled(self) -> None:
-    self.cancel_requests += 1
+  async def send_utterance_cancelled(self, recording_id: str) -> None:
+    self.cancel_recording_ids.append(recording_id)
     self.command_log.append("cancel")
 
   def is_connected(self) -> bool:
@@ -297,13 +314,14 @@ async def test_connection_serializes_utterance_cancel_control_message() -> None:
   connection.ws = cast(ClientConnection, cast(object, fake_ws))
   connection.connected = True
 
-  await connection.send_utterance_cancelled()
+  await connection.send_utterance_cancelled(RECORDING_ID)
 
   assert len(fake_ws.sent_payloads) == 1
   encoded = cast(str, fake_ws.sent_payloads[0])
   decoded = deserialize_message(encoded)
   assert decoded.type == "control_utterance_cancelled"
   assert decoded.stream == "stream-cancel"
+  assert decoded.recording_id == RECORDING_ID
 
 
 @pytest.mark.asyncio
@@ -503,14 +521,16 @@ async def test_streaming_tracks_dedicated_audio_loop_task(
 
   monkeypatch.setattr(client, "_audio_streaming_loop", fake_audio_streaming_loop)
 
-  await client.start_streaming()
+  await client.start_streaming(RECORDING_ID)
   await asyncio.wait_for(loop_started.wait(), timeout=0.2)
   audio_loop_task = client._audio_loop_task
 
   assert client.is_streaming() is True
   assert audio_capture.start_calls == 1
+  assert audio_capture.clear_calls == 1
   assert audio_loop_task is not None
   assert audio_loop_task.done() is False
+  assert connection.recording_start_ids == [RECORDING_ID]
 
   stop_task = asyncio.create_task(client.stop_streaming())
   await asyncio.sleep(0)
@@ -559,7 +579,7 @@ async def test_start_streaming_awaits_prior_loop_and_flush_stays_valid(
 
   monkeypatch.setattr(client, "_audio_streaming_loop", fake_audio_streaming_loop)
 
-  await client.start_streaming()
+  await client.start_streaming(RECORDING_ID)
   await asyncio.wait_for(loop_ready.wait(), timeout=0.2)
   first_task = client._audio_loop_task
 
@@ -567,7 +587,7 @@ async def test_start_streaming_awaits_prior_loop_and_flush_stays_valid(
   await asyncio.sleep(0)
 
   loop_ready = asyncio.Event()
-  second_start = asyncio.create_task(client.start_streaming())
+  second_start = asyncio.create_task(client.start_streaming("rec-next"))
   await asyncio.sleep(0)
   assert first_stop.done() is False
   assert second_start.done() is False
@@ -602,13 +622,14 @@ async def test_start_streaming_awaits_prior_loop_and_flush_stays_valid(
         stream="stream-live",
         segments=[_segment("done")],
         language="en",
+        recording_id="rec-next",
         flush_complete=True,
       )
     )
 
   deliver_task = asyncio.create_task(_deliver_flush_response())
   try:
-    result = await client.flush(force_complete=False)
+    result = await client.flush("rec-next", force_complete=False)
   finally:
     keepalive.set()
     await asyncio.gather(message_task, deliver_task)
@@ -616,9 +637,11 @@ async def test_start_streaming_awaits_prior_loop_and_flush_stays_valid(
   assert entered_loops == 2
   assert max_concurrent_loops == 1
   assert audio_capture.start_calls == 2
+  assert audio_capture.clear_calls == 2
   assert audio_capture.stop_calls == 2
   assert client._audio_loop_task is None
   assert connection.flush_commands == [False]
+  assert connection.flush_recording_ids == ["rec-next"]
   assert result.flush_complete is True
 
 
@@ -646,14 +669,14 @@ async def test_cancel_utterance_waits_for_stream_stop_before_sending_control(
 
   monkeypatch.setattr(client, "_audio_streaming_loop", fake_audio_streaming_loop)
 
-  await client.start_streaming()
+  await client.start_streaming(RECORDING_ID)
   await asyncio.wait_for(loop_started.wait(), timeout=0.2)
 
-  cancel_task = asyncio.create_task(client.cancel_utterance())
+  cancel_task = asyncio.create_task(client.cancel_utterance(RECORDING_ID))
   await asyncio.sleep(0)
 
   assert cancel_task.done() is False
-  assert connection.cancel_requests == 0
+  assert connection.cancel_recording_ids == []
   assert audio_capture.stop_calls == 1
 
   release_tail.set()
@@ -661,8 +684,8 @@ async def test_cancel_utterance_waits_for_stream_stop_before_sending_control(
 
   assert client.is_streaming() is False
   assert connection.audio_chunks == [b"tail"]
-  assert connection.cancel_requests == 1
-  assert connection.command_log == ["audio", "cancel"]
+  assert connection.cancel_recording_ids == [RECORDING_ID]
+  assert connection.command_log == ["recording_started", "audio", "cancel"]
 
   client._message_task.cancel()
   await asyncio.gather(client._message_task, return_exceptions=True)
@@ -712,6 +735,97 @@ async def test_audio_streaming_loop_skips_capture_callback_when_unset() -> None:
 
 
 @pytest.mark.asyncio
+async def test_start_streaming_drains_stale_message_and_transcription_event_queues(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """A new recording start must clear stale per-recording client state before capture begins."""
+
+  client = EavesdropClient.transcriber(audio_device="default")
+  audio_capture = RecordingAudioCapture()
+  connection = RecordingConnection()
+  client._connected = True
+  client._event_stream_open = True
+  client._audio_capture = cast(AudioCapture, cast(object, audio_capture))
+  client._connection = cast(WebSocketConnection, cast(object, connection))
+  client._message_queue.put_nowait(
+    TranscriptionMessage(
+      stream="stream-live",
+      segments=[_segment("stale")],
+      language="en",
+      recording_id="old-recording",
+      flush_complete=True,
+    )
+  )
+  client._event_queue.put_nowait(
+    TranscriptionEvent(
+      stream="stream-live",
+      message=TranscriptionMessage(
+        stream="stream-live",
+        segments=[_segment("stale")],
+        language="en",
+        recording_id="old-recording",
+      ),
+    )
+  )
+  client._event_queue.put_nowait(ConnectedEvent(stream="stream-live"))
+
+  loop_started = asyncio.Event()
+  allow_exit = asyncio.Event()
+
+  async def fake_audio_streaming_loop() -> None:
+    loop_started.set()
+    await allow_exit.wait()
+
+  monkeypatch.setattr(client, "_audio_streaming_loop", fake_audio_streaming_loop)
+
+  await client.start_streaming(RECORDING_ID)
+  await asyncio.wait_for(loop_started.wait(), timeout=0.2)
+
+  assert audio_capture.clear_calls == 1
+  assert client._message_queue.empty() is True
+  preserved_event = client._event_queue.get_nowait()
+  assert preserved_event == ConnectedEvent(stream="stream-live")
+  assert client._event_queue.empty() is True
+
+  allow_exit.set()
+  await client.stop_streaming()
+  if client._audio_loop_task is not None:
+    await client._audio_loop_task
+
+
+def test_on_transcription_message_drops_stale_recording_messages() -> None:
+  """Live transcriber callbacks must filter stale recording epochs before queueing."""
+
+  client = EavesdropClient.transcriber(audio_device="default")
+  client._current_recording_id = RECORDING_ID
+  client._event_stream_open = True
+
+  client._on_transcription_message(
+    TranscriptionMessage(
+      stream="stream-live",
+      segments=[_segment("stale")],
+      language="en",
+      recording_id="old-recording",
+    )
+  )
+  client._on_transcription_message(
+    TranscriptionMessage(
+      stream="stream-live",
+      segments=[_segment("fresh")],
+      language="en",
+      recording_id=RECORDING_ID,
+    )
+  )
+
+  assert client._message_queue.qsize() == 1
+  queued_message = client._message_queue.get_nowait()
+  assert queued_message.recording_id == RECORDING_ID
+  queued_event = client._event_queue.get_nowait()
+  assert isinstance(queued_event, TranscriptionEvent)
+  assert queued_event.message.recording_id == RECORDING_ID
+
+
+@pytest.mark.asyncio
 async def test_flush_waits_for_new_flush_complete_message() -> None:
   """flush() must drop stale buffered completions and return the new flush response."""
 
@@ -719,17 +833,27 @@ async def test_flush_waits_for_new_flush_complete_message() -> None:
   connection = RecordingConnection()
   client._connected = True
   client._connection = cast(WebSocketConnection, cast(object, connection))
+  client._current_recording_id = RECORDING_ID
 
   stale_message = TranscriptionMessage(
     stream="stream-live",
     segments=[_segment("stale")],
     language="en",
+    recording_id=RECORDING_ID,
+    flush_complete=True,
+  )
+  wrong_recording_message = TranscriptionMessage(
+    stream="stream-live",
+    segments=[_segment("wrong")],
+    language="en",
+    recording_id="wrong-recording",
     flush_complete=True,
   )
   fresh_message = TranscriptionMessage(
     stream="stream-live",
     segments=[_segment("fresh")],
     language="en",
+    recording_id=RECORDING_ID,
     flush_complete=True,
   )
   client._message_queue.put_nowait(stale_message)
@@ -740,16 +864,18 @@ async def test_flush_waits_for_new_flush_complete_message() -> None:
 
   async def _deliver_fresh_message() -> None:
     await connection.flush_sent.wait()
+    client._message_queue.put_nowait(wrong_recording_message)
     client._message_queue.put_nowait(fresh_message)
 
   deliver_task = asyncio.create_task(_deliver_fresh_message())
   try:
-    result = await client.flush(force_complete=True)
+    result = await client.flush(RECORDING_ID, force_complete=True)
   finally:
     keepalive.set()
     await asyncio.gather(message_task, deliver_task)
 
   assert connection.flush_commands == [True]
+  assert connection.flush_recording_ids == [RECORDING_ID]
   assert result == fresh_message
 
 
@@ -761,22 +887,24 @@ async def test_flush_rejects_second_local_waiter_before_second_send() -> None:
   connection = RecordingConnection()
   client._connected = True
   client._connection = cast(WebSocketConnection, cast(object, connection))
+  client._current_recording_id = RECORDING_ID
 
   keepalive = asyncio.Event()
   message_task = asyncio.create_task(_hold_open(keepalive))
   client._message_task = message_task
 
-  first_flush = asyncio.create_task(client.flush())
+  first_flush = asyncio.create_task(client.flush(RECORDING_ID))
   await connection.flush_sent.wait()
 
   with pytest.raises(RuntimeError, match="already in progress"):
-    await client.flush()
+    await client.flush(RECORDING_ID)
 
   client._message_queue.put_nowait(
     TranscriptionMessage(
       stream="stream-live",
       segments=[_segment("done")],
       language="en",
+      recording_id=RECORDING_ID,
       flush_complete=True,
     )
   )
@@ -798,12 +926,13 @@ async def test_flush_surfaces_server_rejection_message() -> None:
   connection = RecordingConnection()
   client._connected = True
   client._connection = cast(WebSocketConnection, cast(object, connection))
+  client._current_recording_id = RECORDING_ID
 
   keepalive = asyncio.Event()
   message_task = asyncio.create_task(_hold_open(keepalive))
   client._message_task = message_task
 
-  flush_task = asyncio.create_task(client.flush(force_complete=True))
+  flush_task = asyncio.create_task(client.flush(RECORDING_ID, force_complete=True))
   await connection.flush_sent.wait()
   client._on_error("server refused flush")
 
@@ -825,12 +954,13 @@ async def test_flush_surfaces_disconnect_reason_when_socket_drops() -> None:
   connection = RecordingConnection()
   client._connected = True
   client._connection = cast(WebSocketConnection, cast(object, connection))
+  client._current_recording_id = RECORDING_ID
 
   keepalive = asyncio.Event()
   message_task = asyncio.create_task(_hold_open(keepalive))
   client._message_task = message_task
 
-  flush_task = asyncio.create_task(client.flush(force_complete=True))
+  flush_task = asyncio.create_task(client.flush(RECORDING_ID, force_complete=True))
   await connection.flush_sent.wait()
   client._on_disconnect("socket lost during flush")
 

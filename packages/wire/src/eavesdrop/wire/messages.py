@@ -45,6 +45,10 @@ class TranscriptionMessage(BaseMessage):
   stream: str = Field(description="Stream name for RTSP subscribers")
   segments: list[Segment] = Field(description="List of transcription segments")
   language: str | None = Field(default=None, description="Detected or specified language code")
+  recording_id: str | None = Field(
+    default=None,
+    description="Live recording epoch identifier, omitted for file and RTSP paths",
+  )
   flush_complete: bool | None = Field(
     default=None,
     description="True only for the response that satisfies an accepted flush request",
@@ -122,11 +126,25 @@ class TranscriptionSetupMessage(BaseMessage):
 
 
 @dataclass(kw_only=True)
+class RecordingStartedMessage(BaseMessage):
+  """Message declaring the start of a new live recording epoch."""
+
+  type: Literal["control_recording_started"] = "control_recording_started"
+  stream: str = Field(description="Stream name or client identifier")
+  recording_id: str = Field(description="Opaque foreground recording identifier")
+  sample_rate_hz: int = Field(description="Recording sample rate in Hz")
+
+
+@dataclass(kw_only=True)
 class FlushControlMessage(BaseMessage):
   """Message requesting an in-session live transcription flush."""
 
   type: Literal["control_flush"] = "control_flush"
   stream: str = Field(description="Stream name or client identifier")
+  recording_id: str | None = Field(
+    default=None,
+    description="Live recording epoch identifier, omitted outside active-listener live mode",
+  )
   force_complete: bool = Field(
     default=True,
     description="Whether the server should force-complete the current tentative tail",
@@ -139,3 +157,7 @@ class UtteranceCancelledMessage(BaseMessage):
 
   type: Literal["control_utterance_cancelled"] = "control_utterance_cancelled"
   stream: str = Field(description="Stream name or client identifier")
+  recording_id: str | None = Field(
+    default=None,
+    description="Live recording epoch identifier, omitted outside active-listener live mode",
+  )

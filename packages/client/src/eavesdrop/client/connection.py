@@ -2,6 +2,7 @@
 WebSocket connection and protocol handling for Eavesdrop client.
 """
 
+import asyncio
 import time
 from collections.abc import Callable
 
@@ -15,6 +16,7 @@ from eavesdrop.wire import (
   DisconnectMessage,
   ErrorMessage,
   FlushControlMessage,
+  RecordingStartedMessage,
   ServerReadyMessage,
   TranscriptionMessage,
   TranscriptionSetupMessage,
@@ -69,6 +71,7 @@ class WebSocketConnection:
     self.ws: ClientConnection | None = None
     self.connected: bool = False
     self._disconnect_notified: bool = False
+    self._send_lock: asyncio.Lock = asyncio.Lock()
 
     # Latency tracking
     self.first_audio_sent_time: float | None = None
@@ -150,7 +153,7 @@ class WebSocketConnection:
           # Handle transcription messages differently for different client types
           if self.client_type == ClientType.TRANSCRIBER:
             # For transcriber mode, check stream name match
-            if transcription.stream == self.stream_name and transcription.segments:
+            if transcription.stream == self.stream_name:
               # Call both callbacks for backward compatibility
               if self.on_transcription_message:
                 self.on_transcription_message(transcription)
@@ -200,7 +203,7 @@ class WebSocketConnection:
         self.audio_sending_started = True
         self.first_audio_sent_time = time.time()
 
-      await self.ws.send(audio_data)
+      await self._send_bytes(audio_data)
     except Exception as e:
       self.on_error(f"Error sending audio data: {e}")
 
@@ -210,11 +213,30 @@ class WebSocketConnection:
       return
 
     try:
-      await self.ws.send(b"END_OF_AUDIO")
+      await self._send_bytes(b"END_OF_AUDIO")
     except Exception as e:
       self.on_error(f"Error sending END_OF_AUDIO: {e}")
 
-  async def send_flush_control(self, *, force_complete: bool = True) -> None:
+  async def send_recording_started(self, recording_id: str, sample_rate_hz: int) -> None:
+    """Send the live recording boundary control before any audio bytes."""
+    if not self.ws or not self.connected:
+      return
+
+    try:
+      await self._send_text(
+        serialize_message(
+          RecordingStartedMessage(
+            stream=self.stream_name,
+            recording_id=recording_id,
+            sample_rate_hz=sample_rate_hz,
+          )
+        )
+      )
+    except Exception as e:
+      self.on_error(f"Error sending recording start control: {e}")
+      raise
+
+  async def send_flush_control(self, recording_id: str, *, force_complete: bool = True) -> None:
     """Send a live flush control message over the websocket.
 
     :param force_complete: Whether the server should force-complete the current tail segment.
@@ -226,21 +248,25 @@ class WebSocketConnection:
     try:
       flush_message = FlushControlMessage(
         stream=self.stream_name,
+        recording_id=recording_id,
         force_complete=force_complete,
       )
-      await self.ws.send(serialize_message(flush_message))
+      await self._send_text(serialize_message(flush_message))
     except Exception as e:
       self.on_error(f"Error sending flush control: {e}")
       raise
 
-  async def send_utterance_cancelled(self) -> None:
+  async def send_utterance_cancelled(self, recording_id: str) -> None:
     """Send a live utterance-cancel control message over the websocket."""
     if not self.ws or not self.connected:
       return
 
     try:
-      cancel_message = UtteranceCancelledMessage(stream=self.stream_name)
-      await self.ws.send(serialize_message(cancel_message))
+      cancel_message = UtteranceCancelledMessage(
+        stream=self.stream_name,
+        recording_id=recording_id,
+      )
+      await self._send_text(serialize_message(cancel_message))
     except Exception as e:
       self.on_error(f"Error sending utterance cancel control: {e}")
       raise
@@ -266,10 +292,24 @@ class WebSocketConnection:
     try:
       for offset in range(0, len(file_bytes), chunk_size):
         chunk = file_bytes[offset : offset + chunk_size]
-        await self.ws.send(chunk)
+        await self._send_bytes(chunk)
     except Exception as e:
       self.on_error(f"Error sending file bytes: {e}")
       raise
+
+  async def _send_text(self, payload: str) -> None:
+    if not self.ws:
+      return
+
+    async with self._send_lock:
+      await self.ws.send(payload)
+
+  async def _send_bytes(self, payload: bytes) -> None:
+    if not self.ws:
+      return
+
+    async with self._send_lock:
+      await self.ws.send(payload)
 
   def reset_session_tracking(self) -> None:
     """Reset session tracking variables."""

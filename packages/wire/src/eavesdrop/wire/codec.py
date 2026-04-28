@@ -13,6 +13,7 @@ from .messages import (
   FlushControlMessage,
   HealthCheckRequest,
   LanguageDetectionMessage,
+  RecordingStartedMessage,
   ServerReadyMessage,
   StreamStatusMessage,
   TranscriptionMessage,
@@ -24,6 +25,7 @@ type Message = (
   TranscriptionMessage
   | StreamStatusMessage
   | ErrorMessage
+  | RecordingStartedMessage
   | FlushControlMessage
   | UtteranceCancelledMessage
   | LanguageDetectionMessage
@@ -49,9 +51,7 @@ def serialize_message(message: Message) -> str:
   """
   message_type = type(message)
   adapter = TypeAdapter(message_type)
-  if isinstance(message, TranscriptionMessage) and message.flush_complete is None:
-    return adapter.dump_json(message, exclude={"flush_complete"}).decode("utf-8")
-  return adapter.dump_json(message).decode("utf-8")
+  return adapter.dump_json(message, exclude_none=True).decode("utf-8")
 
 
 def deserialize_message(json_str: str) -> Message:

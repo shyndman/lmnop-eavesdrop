@@ -97,6 +97,7 @@ class ChunkTranscriptionResult:
   audio_duration: float
   speech_chunks: list[SpeechChunk] | None = None
   utterance_generation: int = 0
+  recording_id: str | None = None
 
 
 class TranscriptionPassStatus(str, Enum):
@@ -141,6 +142,7 @@ class StreamingTranscriptionProcessor:
     self._minimum_chunk_wait_logged: bool = False
     self.language: str | None = config.language
     self.text: list[str] = []
+    self.recording_id: str | None = None
 
     # Segment processing state - repetition logic removed
 
@@ -319,6 +321,26 @@ class StreamingTranscriptionProcessor:
     """Add audio frames to the buffer for processing."""
     self.buffer.add_frames(frames)
 
+  def reset_live_recording(
+    self,
+    *,
+    recording_id: str | None,
+    generation: int,
+    preserve_language: bool = True,
+  ) -> None:
+    """Reset processor-local recording state after a new epoch or cancellation."""
+    self.recording_id = recording_id
+    self.text = []
+    if not preserve_language:
+      self.language = self.config.language
+
+    self.logger.info(
+      "processor live recording reset",
+      recording_id=recording_id,
+      generation=generation,
+      preserve_language=preserve_language,
+    )
+
   async def _transcription_loop(self) -> None:
     """Main processing loop: get audio → transcribe → send results → wait."""
     while not self.exit:
@@ -462,6 +484,14 @@ class StreamingTranscriptionProcessor:
       )
       return
 
+    if result.recording_id != self.recording_id:
+      self.logger.info(
+        "Dropping stale transcription result after recording boundary",
+        result_recording_id=result.recording_id,
+        active_recording_id=self.recording_id,
+      )
+      return
+
     pending_flush = self._pending_flush()
     flush_boundary_reached = pending_flush is not None and self._covers_flush_boundary(
       result, pending_flush
@@ -563,6 +593,7 @@ class StreamingTranscriptionProcessor:
         audio_duration=chunk.duration,
         speech_chunks=None,
         utterance_generation=utterance_generation,
+        recording_id=self.recording_id,
       )
 
     result, info, speech_chunks = self._transcribe_audio(chunk)
@@ -576,6 +607,7 @@ class StreamingTranscriptionProcessor:
       audio_duration=chunk.duration,
       speech_chunks=speech_chunks,
       utterance_generation=utterance_generation,
+      recording_id=self.recording_id,
     )
 
   def _covers_flush_boundary(
@@ -908,6 +940,7 @@ class StreamingTranscriptionProcessor:
     transcription_result = TranscriptionResult(
       segments=segments_for_client,
       language=self.language,
+      recording_id=self.recording_id,
       flush_complete=flush_complete or None,
     )
     self.logger.debug("Sending segments to client", segments=segments_for_client)
@@ -1068,12 +1101,13 @@ class StreamingTranscriptionProcessor:
 
     # Always create to maintain client invariant - place at end if necessary
     actual_start = min(synthetic_start, duration)
+    recording_start = self.buffer.processed_up_to_time + actual_start
 
     return Segment(
       id=compute_segment_chain_id(0, ""),  # Baseline ID for incomplete
       seek=0,
-      start=actual_start,
-      end=actual_start,  # Zero-duration synthetic segment
+      start=recording_start,
+      end=recording_start,  # Zero-duration synthetic segment
       text="",  # Empty text is fine for client state machine
       tokens=[],
       avg_logprob=0.0,
@@ -1081,7 +1115,7 @@ class StreamingTranscriptionProcessor:
       words=None,
       temperature=0.0,
       completed=False,
-      time_offset=self.buffer.processed_up_to_time,
+      time_offset=0.0,
     )
 
   def _format_segment(

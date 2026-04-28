@@ -27,6 +27,9 @@ class TranscriptionResult:
   language: str | None = None
   """Detected or specified language code."""
 
+  recording_id: str | None = None
+  """Live recording epoch identifier, omitted outside active-listener live mode."""
+
   flush_complete: bool | None = None
   """True only for the single response that satisfies an accepted flush."""
 

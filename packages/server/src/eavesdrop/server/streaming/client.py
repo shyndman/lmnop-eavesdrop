@@ -34,6 +34,7 @@ from eavesdrop.server.streaming.processor import StreamingTranscriptionProcessor
 from eavesdrop.server.transcription.session import TranscriptionSession, create_session
 from eavesdrop.wire import (
   FlushControlMessage,
+  RecordingStartedMessage,
   TranscriptionSourceMode,
   UtteranceCancelledMessage,
   deserialize_message,
@@ -44,6 +45,18 @@ FILE_OBSERVABILITY_INTERVAL_SECONDS = 5.0
 FILE_QUEUE_WARNING_FILL_RATIO = 0.85
 LIVE_FLUSH_ALREADY_PENDING_MESSAGE = "Flush rejected: another flush is already pending"
 LIVE_FLUSH_FILE_MODE_MESSAGE = "Flush rejected: control_flush is unsupported during file upload"
+LIVE_RECORDING_START_FILE_MODE_MESSAGE = (
+  "Recording start rejected: control_recording_started is unsupported during file upload"
+)
+LIVE_RECORDING_START_REQUIRED_MESSAGE = (
+  "Live control rejected: control_recording_started is required before live controls"
+)
+LIVE_RECORDING_ID_MISMATCH_MESSAGE = (
+  "Live control rejected: recording_id does not match the active recording epoch"
+)
+LIVE_AUDIO_BEFORE_RECORDING_START_MESSAGE = (
+  "Live audio rejected: control_recording_started is required before audio frames"
+)
 LIVE_UTTERANCE_CANCEL_FILE_MODE_MESSAGE = (
   "Utterance cancel rejected: control_utterance_cancelled is unsupported during file upload"
 )
@@ -67,6 +80,13 @@ class StreamingProcessorLike(Protocol):
   async def stop_processing(self) -> None: ...
   def add_audio_frames(self, frames: Float32Audio) -> None: ...
   def mark_source_exhausted(self) -> None: ...
+  def reset_live_recording(
+    self,
+    *,
+    recording_id: str | None,
+    generation: int,
+    preserve_language: bool = True,
+  ) -> None: ...
 
 
 class WebSocketStreamingClient:
@@ -108,13 +128,16 @@ class WebSocketStreamingClient:
     )
     self.processor: StreamingProcessorLike = cast(
       StreamingProcessorLike,
-      StreamingTranscriptionProcessor(
-        buffer=self.buffer,
-        sink=self.transcription_sink,
-        config=transcription_config,
-        stream_name=stream_name,
-        session=self.session,
-        flush_state=self._flush_state,
+      cast(
+        object,
+        StreamingTranscriptionProcessor(
+          buffer=self.buffer,
+          sink=self.transcription_sink,
+          config=transcription_config,
+          stream_name=stream_name,
+          session=self.session,
+          flush_state=self._flush_state,
+        ),
       ),
     )
 
@@ -132,6 +155,7 @@ class WebSocketStreamingClient:
     self._file_feed_task: asyncio.Task[None] | None = None
     self._file_observability_task: asyncio.Task[None] | None = None
     self._file_ingested_seconds: float = 0.0
+    self._current_recording_id: str | None = None
 
   async def start(self) -> asyncio.Task[None]:
     """Start the streaming transcription process and return completion task."""
@@ -377,6 +401,10 @@ class WebSocketStreamingClient:
       await self.transcription_sink.send_error(LIVE_FLUSH_FILE_MODE_MESSAGE)
       return
 
+    if isinstance(message, RecordingStartedMessage):
+      await self.transcription_sink.send_error(LIVE_RECORDING_START_FILE_MODE_MESSAGE)
+      return
+
     if isinstance(message, UtteranceCancelledMessage):
       await self.transcription_sink.send_error(LIVE_UTTERANCE_CANCEL_FILE_MODE_MESSAGE)
       return
@@ -393,20 +421,37 @@ class WebSocketStreamingClient:
       await self.transcription_sink.send_error("Invalid live control frame")
       return
 
+    if isinstance(message, RecordingStartedMessage):
+      self._accept_recording_boundary(message)
+      return
+
+    if not isinstance(message, (FlushControlMessage, UtteranceCancelledMessage)):
+      await self.transcription_sink.send_error(f"{LIVE_FLUSH_UNEXPECTED_MESSAGE}: {message.type}")
+      return
+
+    if self._current_recording_id is None:
+      await self.transcription_sink.send_error(LIVE_RECORDING_START_REQUIRED_MESSAGE)
+      return
+
+    if message.recording_id != self._current_recording_id:
+      await self.transcription_sink.send_error(LIVE_RECORDING_ID_MISMATCH_MESSAGE)
+      return
+
     if isinstance(message, UtteranceCancelledMessage):
       active_utterance_generation = self._flush_state.cancel_active_utterance()
       self.session.reset_utterance()
       discarded_duration = self.buffer.discard_unprocessed_audio()
+      self.processor.reset_live_recording(
+        recording_id=self._current_recording_id,
+        generation=active_utterance_generation,
+        preserve_language=False,
+      )
       self.logger.info(
         "Discarded live utterance tail",
         active_utterance_generation=active_utterance_generation,
         discarded_duration_s=f"{discarded_duration:.3f}",
         processed_up_to_time_s=f"{self.buffer.processed_up_to_time:.3f}",
       )
-      return
-
-    if not isinstance(message, FlushControlMessage):
-      await self.transcription_sink.send_error(f"{LIVE_FLUSH_UNEXPECTED_MESSAGE}: {message.type}")
       return
 
     pending_flush = self._flush_state.accept(
@@ -438,6 +483,10 @@ class WebSocketStreamingClient:
           self.logger.debug("End of audio stream received")
           break
 
+        if self._current_recording_id is None:
+          await self.transcription_sink.send_error(LIVE_AUDIO_BEFORE_RECORDING_START_MESSAGE)
+          continue
+
         self.add_frames(np.frombuffer(frame_bytes, dtype=np.float32))
 
       except ConnectionClosed:
@@ -455,3 +504,27 @@ class WebSocketStreamingClient:
   def cleanup(self) -> None:
     """Perform cleanup tasks."""
     self.logger.info("Cleaning up WebSocket streaming client", stream=self.stream_name)
+
+  def _accept_recording_boundary(self, message: RecordingStartedMessage) -> None:
+    """Reset all live recording-local state for a newly accepted epoch."""
+    if message.sample_rate_hz != self.buffer.config.sample_rate:
+      raise ValueError(
+        "control_recording_started sample_rate_hz does not match server buffer sample rate"
+      )
+
+    generation = self._flush_state.start_recording(message.recording_id)
+    self._current_recording_id = message.recording_id
+    self.buffer.reset()
+    self.session.reset_utterance()
+    self.session.update_audio_context(0.0, 0.0)
+    self.processor.reset_live_recording(
+      recording_id=message.recording_id,
+      generation=generation,
+      preserve_language=False,
+    )
+    self.logger.info(
+      "Accepted live recording boundary",
+      recording_id=message.recording_id,
+      sample_rate_hz=message.sample_rate_hz,
+      generation=generation,
+    )

@@ -14,7 +14,7 @@ from types import TracebackType
 
 from structlog.stdlib import BoundLogger
 
-from eavesdrop.client.audio import AudioCapture
+from eavesdrop.client.audio import SAMPLE_RATE, AudioCapture
 from eavesdrop.client.connection import WebSocketConnection
 from eavesdrop.client.events import (
   ConnectedEvent,
@@ -104,6 +104,7 @@ class EavesdropClient:
     self._event_stream_open: bool = False
     self._reconnect_enabled: bool = False
     self._live_setup_options: UserTranscriptionOptions | None = None
+    self._current_recording_id: str | None = None
     self._logger: BoundLogger = get_logger(
       "client/core",
       client_type=client_type.value,
@@ -367,9 +368,10 @@ class EavesdropClient:
     self._disconnect_event.clear()
     self._disconnect_reason = None
     self._flush_error = None
+    self._current_recording_id = None
     self._clear_event_queue()
 
-  async def start_streaming(self) -> None:
+  async def start_streaming(self, recording_id: str) -> None:
     """Start audio streaming (transcriber mode only)."""
     if self._client_type != ClientType.TRANSCRIBER:
       raise RuntimeError("start_streaming() only supported in transcriber mode")
@@ -383,7 +385,15 @@ class EavesdropClient:
     if not self._audio_capture:
       raise RuntimeError("Audio capture not initialized")
 
+    if not self._connection:
+      raise RuntimeError("Connection not initialized")
+
     await self._await_prior_audio_loop()
+    self._current_recording_id = recording_id
+    self._audio_capture.clear_queue()
+    self._clear_message_queue()
+    self._clear_event_queue()
+    await self._connection.send_recording_started(recording_id, SAMPLE_RATE)
 
     # Start audio capture
     self._audio_capture.start_recording()
@@ -409,7 +419,7 @@ class EavesdropClient:
 
     await self._await_prior_audio_loop()
 
-  async def cancel_utterance(self) -> None:
+  async def cancel_utterance(self, recording_id: str) -> None:
     """Cancel the current live utterance without closing the websocket session.
 
     :raises RuntimeError: If cancel is unsupported for the current mode/session.
@@ -428,8 +438,14 @@ class EavesdropClient:
     ):
       raise RuntimeError("cancel_utterance() requires an active live transcriber connection")
 
+    if self._current_recording_id != recording_id:
+      raise RuntimeError("cancel_utterance() requires the active recording id")
+
     await self.stop_streaming()
-    await self._connection.send_utterance_cancelled()
+    await self._connection.send_utterance_cancelled(recording_id)
+    self._current_recording_id = None
+    self._clear_message_queue()
+    self._clear_event_queue()
 
   async def _reconnect_loop(self) -> None:
     """Reconnect a live transcriber session on a fixed retry cadence."""
@@ -475,7 +491,7 @@ class EavesdropClient:
     finally:
       self._reconnect_task = None
 
-  async def flush(self, *, force_complete: bool = True) -> TranscriptionMessage:
+  async def flush(self, recording_id: str, *, force_complete: bool = True) -> TranscriptionMessage:
     """Request a live transcription flush and await the terminal flush response.
 
     This API is only valid for active transcriber websocket sessions. The client drains
@@ -508,12 +524,15 @@ class EavesdropClient:
     if self._flush_waiting:
       raise RuntimeError("flush() already in progress")
 
+    if self._current_recording_id != recording_id:
+      raise RuntimeError("flush() requires the active recording id")
+
     self._flush_waiting = True
     self._flush_error = None
 
     try:
       self._clear_message_queue()
-      await self._connection.send_flush_control(force_complete=force_complete)
+      await self._connection.send_flush_control(recording_id, force_complete=force_complete)
 
       while True:
         if self._flush_error is not None:
@@ -529,7 +548,7 @@ class EavesdropClient:
             raise RuntimeError(self._flush_disconnect_message())
           continue
 
-        if message.flush_complete is True:
+        if message.recording_id == recording_id and message.flush_complete is True:
           return message
     finally:
       self._flush_waiting = False
@@ -682,14 +701,21 @@ class EavesdropClient:
     return new_segments[-1].id
 
   def _clear_message_queue(self) -> None:
-    """Drain stale buffered messages before starting a one-shot file operation."""
+    """Drain stale buffered messages before a new operation or recording epoch."""
     while not self._message_queue.empty():
       _ = self._message_queue.get_nowait()
 
   def _clear_event_queue(self) -> None:
-    """Drain buffered iterator events when the client is explicitly closed."""
+    """Drain stale transcription iterator events while preserving connection events."""
+    preserved_events: list[LiveClientEvent] = []
     while not self._event_queue.empty():
-      _ = self._event_queue.get_nowait()
+      event = self._event_queue.get_nowait()
+      if isinstance(event, TranscriptionEvent):
+        continue
+      preserved_events.append(event)
+
+    for event in preserved_events:
+      self._event_queue.put_nowait(event)
 
   def _flush_disconnect_message(self) -> str:
     """Build a truthful flush failure message from current disconnect state."""
@@ -763,8 +789,34 @@ class EavesdropClient:
 
   def _on_transcription_message(self, message: TranscriptionMessage) -> None:
     """Handle full TranscriptionMessage from connection."""
+    if not self._should_accept_transcription_message(message):
+      self._logger.debug(
+        "dropping stale transcription message",
+        stream=message.stream,
+        recording_id=message.recording_id,
+        active_recording_id=self._current_recording_id,
+      )
+      return
+
     self._message_queue.put_nowait(message)
     self._emit_event(TranscriptionEvent(stream=message.stream, message=message))
+
+  def _should_accept_transcription_message(self, message: TranscriptionMessage) -> bool:
+    """Return whether an incoming transcription belongs to the current client epoch."""
+    if self._client_type != ClientType.TRANSCRIBER:
+      return True
+
+    if (
+      self._live_setup_options
+      and self._live_setup_options.source_mode == TranscriptionSourceMode.FILE
+    ):
+      return True
+
+    current_recording_id = self._current_recording_id
+    if current_recording_id is None:
+      return True
+
+    return message.recording_id == current_recording_id
 
   def _on_transcription_text(self, _text: str) -> None:
     """Handle legacy transcription text callback from existing connection."""

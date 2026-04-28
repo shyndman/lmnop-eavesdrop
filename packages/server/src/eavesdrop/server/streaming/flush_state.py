@@ -25,6 +25,7 @@ class LiveSessionFlushState:
     self._lock: threading.Lock = threading.Lock()
     self._pending_flush: PendingFlush | None = None
     self._active_utterance_generation: int = 0
+    self._current_recording_id: str | None = None
     self._wakeup: asyncio.Event = asyncio.Event()
     self._interrupt: threading.Event = threading.Event()
 
@@ -32,6 +33,22 @@ class LiveSessionFlushState:
     """Return the current active-utterance generation."""
     with self._lock:
       return self._active_utterance_generation
+
+  def current_recording_id(self) -> str | None:
+    """Return the active live recording epoch identifier."""
+    with self._lock:
+      return self._current_recording_id
+
+  def start_recording(self, recording_id: str) -> int:
+    """Reset live-session control state for a newly accepted recording epoch."""
+    with self._lock:
+      self._active_utterance_generation += 1
+      self._current_recording_id = recording_id
+      self._pending_flush = None
+      generation = self._active_utterance_generation
+      self._wakeup.set()
+      self._interrupt.set()
+      return generation
 
   def begin_wait(self, *, observed_generation: int) -> bool:
     """Prepare an async wait without racing against new flush acceptance.

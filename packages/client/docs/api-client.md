@@ -46,7 +46,7 @@ class EavesdropClient:
     async def disconnect(self) -> None: ...
 
     # Transcriber mode control (raises error on subscriber mode)
-    async def start_streaming(self) -> None: ...
+    async def start_streaming(self, recording_id: str) -> None: ...
     async def stop_streaming(self) -> None: ...
 
     # Status checks
@@ -59,9 +59,12 @@ class EavesdropClient:
 ### Transcriber Mode (Audio → Transcription)
 
 ```python
+import uuid
+
 # Basic usage with context manager
 async with EavesdropClient(mode="transcriber", audio_device="USB Audio") as client:
-    await client.start_streaming()
+    recording_id = uuid.uuid4().hex
+    await client.start_streaming(recording_id)
 
     async for transcription in client:
         print(f"Stream: {transcription.stream}")
@@ -83,7 +86,7 @@ client = EavesdropClient(
 )
 
 await client.connect()
-await client.start_streaming()
+await client.start_streaming(uuid.uuid4().hex)
 
 async for transcription in client:
     # Process rich transcription data
@@ -131,7 +134,7 @@ client4 = EavesdropClient(audio_device=None)           # Default device
 
 ### Transcriber Mode Lifecycle
 1. `connect()` → WebSocket connection + session setup + microphone starts (no audio transmission)
-2. `start_streaming()` → Begin sending captured audio packets to server
+2. `start_streaming(recording_id)` → Declare a new live recording epoch, then begin sending audio
 3. `stop_streaming()` → Stop sending audio (microphone stays "warm"/capturing)
 4. `disconnect()` → Close WebSocket + stop microphone capture
 

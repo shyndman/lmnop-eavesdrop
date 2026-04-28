@@ -177,9 +177,8 @@ class RequestRunner:
           segments, speech_chunks, self.audio_processor.sampling_rate
         )
 
-      # Ensure all timestamps are recording-relative
-      if absolute_stream_start > 0:
-        segments = finalize_recording_timestamps(segments, absolute_stream_start)
+      # Ensure all timestamps are recording-relative.
+      segments = finalize_recording_timestamps(segments, absolute_stream_start)
 
       tracer(segments)
 

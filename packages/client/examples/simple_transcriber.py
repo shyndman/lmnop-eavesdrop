@@ -10,6 +10,7 @@ import argparse
 import asyncio
 import os
 import sys
+import uuid
 from typing import cast
 
 from eavesdrop.client import EavesdropClient
@@ -55,8 +56,9 @@ async def test_transcriber(
     print(f"   Connection status: {client.is_connected()}")
 
     # Start streaming
+    recording_id = uuid.uuid4().hex
     print("\nStarting audio streaming...")
-    await client.start_streaming()
+    await client.start_streaming(recording_id)
     print("✅ Streaming started")
     print(f"   Streaming status: {client.is_streaming()}")
 
