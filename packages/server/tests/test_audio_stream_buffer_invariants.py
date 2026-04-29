@@ -1,4 +1,8 @@
-"""Deterministic contract tests for :class:`AudioStreamBuffer` timeline invariants."""
+"""Deterministic contract tests for :class:`AudioStreamBuffer` timeline invariants.
+
+Live WebSocket recording boundaries reset buffer zero, so these buffer offsets
+also model recording-relative seconds for the active recording.
+"""
 
 from typing import Callable, cast
 
@@ -63,7 +67,7 @@ def test_chunk_extraction_boundaries_around_min_chunk_duration() -> None:
 
 
 def test_processed_boundary_advances_monotonically_with_repeated_advancement() -> None:
-  """Repeated positive advances must move processed time strictly forward."""
+  """Repeated positive advances must move the recording-relative cursor forward."""
   config = _make_config()
   buffer = AudioStreamBuffer(config)
   _add_frames(buffer, _frames(4.0, sample_rate=config.sample_rate))
@@ -84,7 +88,7 @@ def test_processed_boundary_advances_monotonically_with_repeated_advancement() -
 
 
 def test_cleanup_keeps_processed_boundary_safe_when_buffer_is_trimmed() -> None:
-  """Cleanup must not leave processed time behind the trimmed buffer start."""
+  """Cleanup must not leave processed recording time behind the trimmed buffer start."""
   config = _make_config()
   buffer = AudioStreamBuffer(config)
 
@@ -148,7 +152,7 @@ def test_discard_through_sample_preserves_audio_after_boundary() -> None:
 
 
 def test_discard_through_sample_uses_buffer_sample_index_truncation() -> None:
-  """Flush cleanup must use the same sample indexing as buffer boundary capture."""
+  """Flush cleanup must use the same recording-relative sample index as capture."""
   config = _make_config()
   buffer = AudioStreamBuffer(config)
   buffer.advance_processed_boundary(0.26)
@@ -165,7 +169,7 @@ def test_discard_through_sample_uses_buffer_sample_index_truncation() -> None:
 
 
 def test_discard_through_sample_does_not_move_buffer_start_backwards() -> None:
-  """Stale flush boundaries must not rewind the buffer timeline."""
+  """Stale flush boundaries must not rewind the recording-relative buffer timeline."""
   config = _make_config()
   buffer = AudioStreamBuffer(config)
   buffer.advance_processed_boundary(0.26)
@@ -207,7 +211,7 @@ def test_clip_if_stalled_respects_enabled_disabled_and_threshold_boundaries() ->
 
 
 def test_processed_position_beyond_buffer_end_never_exposes_invalid_chunk_domain() -> None:
-  """Overshoot in processed time must still yield bounded chunk extraction."""
+  """Overshoot in recording-relative processed time still yields bounded chunks."""
   config = _make_config()
   buffer = AudioStreamBuffer(config)
   _add_frames(buffer, _frames(2.0, sample_rate=config.sample_rate))

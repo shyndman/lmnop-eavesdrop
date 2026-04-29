@@ -5,6 +5,8 @@ These tests pin orchestration guarantees around completion handling:
 - Pending task cancellation happens before stop orchestration.
 - Stop processing/disconnect occurs before source shutdown.
 - Active-task teardown remains bounded.
+- Live recording boundaries reset buffer/session zero, making subsequent
+  buffer offsets recording-relative for the active recording.
 """
 
 import asyncio
@@ -544,7 +546,7 @@ async def test_second_live_flush_is_rejected_and_original_flush_stays_pending() 
 
 @pytest.mark.asyncio
 async def test_recording_boundary_resets_live_buffer_session_and_flush_state() -> None:
-  """A new live recording boundary must fully reset recording-local server state."""
+  """A new live boundary must reset server state to recording-relative zero."""
   client = WebSocketStreamingClient.__new__(WebSocketStreamingClient)
   client.logger = MagicMock()
   client.buffer = AudioStreamBuffer(BufferConfig(sample_rate=10, min_chunk_duration=1.0))

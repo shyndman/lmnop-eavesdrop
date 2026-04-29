@@ -24,6 +24,13 @@ class AudioStreamBuffer:
   cleanup to prevent excessive memory usage, and extraction of audio chunks
   for transcription processing.
 
+  Timeline model:
+    Buffer times are offsets from this buffer's zero. In live WebSocket mode
+    the client resets the buffer at each accepted recording boundary, so buffer
+    zero is also recording-relative zero for the active recording. Absolute
+    sample indexes are sample-rate projections of that same buffer timeline;
+    NumPy indexes remain buffer-relative array positions.
+
   Thread Safety:
     All public methods and properties are thread-safe and protected by an
     internal lock. Multiple threads can safely call any combination of methods
@@ -55,15 +62,18 @@ class AudioStreamBuffer:
 
     self.buffer_start_time: float = 0.0
     """
-    Timestamp offset for the start of the frames_np buffer in seconds.
-    Tracks how much audio has been discarded from the beginning due to cleanup.
+    Buffer offset for the start of the frames_np buffer in seconds.
+    Tracks how much audio has been discarded from buffer zero due to cleanup.
+    In live WebSocket mode this is also recording-relative seconds for the
+    active recording because recording boundaries reset the buffer.
     """
 
     self.processed_up_to_time: float = 0.0
     """
-    Timestamp offset for processed audio in seconds.
+    Buffer offset for processed audio in seconds.
     Marks the boundary between processed and unprocessed audio within the buffer.
-    Always >= frames_offset.
+    Always >= buffer_start_time. In live mode this is recording-relative seconds
+    for the active recording.
     """
 
     # Thread synchronization
@@ -86,7 +96,7 @@ class AudioStreamBuffer:
     with self.lock:
       max_buffer_samples = self.config.max_buffer_duration * self.config.sample_rate
       if self.frames_np is not None and self.frames_np.shape[0] > max_buffer_samples:
-        # Remove old audio data
+        # Remove old audio data and advance the buffer/recording-relative start offset.
         self.buffer_start_time += self.config.cleanup_duration
         samples_to_remove = int(self.config.cleanup_duration * self.config.sample_rate)
         self.frames_np = self.frames_np[samples_to_remove:]
@@ -113,7 +123,8 @@ class AudioStreamBuffer:
         A tuple containing:
         - audio_data: Unprocessed audio as float32 NumPy array, or empty array if none.
         - duration: Duration of the returned audio chunk in seconds.
-        - start_time: Absolute stream time where this chunk begins.
+        - start_time: Buffer offset where this chunk begins. In live WebSocket
+          mode this is recording-relative seconds for the active recording.
 
     Note:
         The returned array is always a copy, so modifications won't affect
@@ -123,9 +134,9 @@ class AudioStreamBuffer:
       if self.frames_np is None:
         return np.array([], dtype=np.float32), 0.0, self.processed_up_to_time
 
-      offset_diff = self.processed_up_to_time - self.buffer_start_time
-      samples_take = max(0, int(offset_diff * self.config.sample_rate))
-      input_bytes = self.frames_np[samples_take:].copy()
+      processed_offset = self.processed_up_to_time - self.buffer_start_time
+      buffer_relative_start_index = max(0, int(processed_offset * self.config.sample_rate))
+      input_bytes = self.frames_np[buffer_relative_start_index:].copy()
       chunk_start_time = self.processed_up_to_time
 
     duration = input_bytes.shape[0] / self.config.sample_rate
@@ -133,6 +144,9 @@ class AudioStreamBuffer:
 
   def get_buffer_end_sample(self) -> int:
     """Return the current absolute sample index at the end of the buffer.
+
+    In live WebSocket mode this absolute index is recording-relative because
+    the buffer is reset to sample zero at each accepted recording boundary.
 
     :returns: Absolute sample index representing the current buffered-audio end.
     :rtype: int
@@ -156,7 +170,8 @@ class AudioStreamBuffer:
 
     Note:
         This is typically called after successful transcription to "consume"
-        the processed audio from the buffer's perspective.
+        the processed audio from the buffer's perspective. For live WebSocket
+        recordings, the resulting boundary is recording-relative.
     """
     with self.lock:
       self.processed_up_to_time += offset
@@ -185,9 +200,9 @@ class AudioStreamBuffer:
       if self.frames_np is None:
         return
 
-      offset_diff = self.processed_up_to_time - self.buffer_start_time
-      unprocessed_start = int(offset_diff * self.config.sample_rate)
-      unprocessed_samples = self.frames_np[unprocessed_start:].shape[0]
+      processed_offset = self.processed_up_to_time - self.buffer_start_time
+      buffer_relative_unprocessed_start = int(processed_offset * self.config.sample_rate)
+      unprocessed_samples = self.frames_np[buffer_relative_unprocessed_start:].shape[0]
 
       if unprocessed_samples > self.config.max_stall_duration * self.config.sample_rate:
         duration = self.frames_np.shape[0] / self.config.sample_rate
@@ -210,7 +225,8 @@ class AudioStreamBuffer:
 
     Clears all audio data and resets timeline tracking to zero.
     This is typically used when starting a new transcription session
-    or recovering from errors.
+    or recovering from errors. In live WebSocket mode it is called at recording
+    boundaries, making buffer zero equal recording-relative zero.
     """
     with self.lock:
       self.frames_np = None
@@ -219,6 +235,9 @@ class AudioStreamBuffer:
 
   def discard_unprocessed_audio(self) -> float:
     """Discard buffered audio at and after the processed boundary.
+
+    Live utterance cancellation drops only the unprocessed tail; the preserved
+    processed boundary remains recording-relative for the active recording.
 
     :returns: Duration in seconds discarded from the unprocessed tail.
     :rtype: float
@@ -229,9 +248,11 @@ class AudioStreamBuffer:
         return 0.0
 
       processed_offset = self.processed_up_to_time - self.buffer_start_time
-      processed_samples = max(0, int(processed_offset * self.config.sample_rate))
-      processed_samples = min(processed_samples, self.frames_np.shape[0])
-      discarded_samples = self.frames_np.shape[0] - processed_samples
+      buffer_relative_processed_index = max(0, int(processed_offset * self.config.sample_rate))
+      buffer_relative_processed_index = min(
+        buffer_relative_processed_index, self.frames_np.shape[0]
+      )
+      discarded_samples = self.frames_np.shape[0] - buffer_relative_processed_index
 
       self.frames_np = None
       self.buffer_start_time = self.processed_up_to_time
@@ -240,6 +261,9 @@ class AudioStreamBuffer:
 
   def discard_through_sample(self, boundary_sample: int) -> float:
     """Discard buffered audio through an absolute sample boundary.
+
+    In live WebSocket mode ``boundary_sample`` is recording-relative because
+    flush boundaries are captured from a buffer reset at recording start.
 
     :param boundary_sample: Absolute sample index through which buffered audio is discarded.
     :type boundary_sample: int
@@ -260,16 +284,16 @@ class AudioStreamBuffer:
       buffer_start_sample = int(self.buffer_start_time * sample_rate)
       buffer_end_sample = buffer_start_sample + self.frames_np.shape[0]
       discard_end_sample = min(max(boundary_sample, buffer_start_sample), buffer_end_sample)
-      samples_to_remove = discard_end_sample - buffer_start_sample
+      buffer_relative_samples_to_remove = discard_end_sample - buffer_start_sample
       discarded_unprocessed_samples = max(0, discard_end_sample - processed_sample)
 
-      if samples_to_remove <= 0:
+      if buffer_relative_samples_to_remove <= 0:
         return 0.0
 
-      if samples_to_remove >= self.frames_np.shape[0]:
+      if buffer_relative_samples_to_remove >= self.frames_np.shape[0]:
         self.frames_np = None
       else:
-        self.frames_np = self.frames_np[samples_to_remove:]
+        self.frames_np = self.frames_np[buffer_relative_samples_to_remove:]
 
       boundary_time = max(self.buffer_start_time, discard_end_sample / sample_rate)
       self.buffer_start_time = boundary_time
@@ -299,8 +323,8 @@ class AudioStreamBuffer:
       if self.frames_np is None:
         return 0.0
       offset_diff = self.processed_up_to_time - self.buffer_start_time
-      processed_samples = int(offset_diff * self.config.sample_rate)
-      samples_available = max(0, self.frames_np.shape[0] - processed_samples)
+      buffer_relative_processed_index = int(offset_diff * self.config.sample_rate)
+      samples_available = max(0, self.frames_np.shape[0] - buffer_relative_processed_index)
       return samples_available / self.config.sample_rate
 
   @property

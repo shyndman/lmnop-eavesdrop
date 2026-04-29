@@ -77,7 +77,11 @@ class TracingClientSegmentDict(TypedDict):
 
 @dataclass
 class AudioChunk:
-  """Audio data with associated metadata for processing."""
+  """Audio data with associated metadata for processing.
+
+  ``start_time`` is a buffer offset. In live WebSocket mode recording boundaries
+  reset the buffer, so the value is recording-relative for the active recording.
+  """
 
   data: Float32Audio
   duration: float
@@ -89,6 +93,8 @@ class ChunkTranscriptionResult:
   """Result of transcribing an audio chunk."""
 
   status: "TranscriptionPassStatus"
+  # Absolute sample indexes are in the buffer timeline. In live WebSocket mode,
+  # recording boundaries reset the buffer, so these are recording-relative samples.
   chunk_start_sample: int
   chunk_sample_count: int
   segments: list[Segment] | None
@@ -328,7 +334,12 @@ class StreamingTranscriptionProcessor:
     generation: int,
     preserve_language: bool = True,
   ) -> None:
-    """Reset processor-local recording state after a new epoch or cancellation."""
+    """Reset processor-local recording state after a new epoch or cancellation.
+
+    A recording boundary resets the upstream buffer/session to recording-relative
+    zero. Utterance cancellation preserves that recording-relative base while
+    discarding only the unprocessed tail.
+    """
     self.recording_id = recording_id
     self.text = []
     if not preserve_language:
@@ -436,8 +447,8 @@ class StreamingTranscriptionProcessor:
     tracing_logger.info("\n\n")
     tracing_logger.info(
       "Processing audio chunk",
-      chunk_start=f"{start_time:.2f}s",
-      chunk_end=f"{start_time + duration:.2f}s",
+      recording_relative_chunk_start=f"{start_time:.2f}s",
+      recording_relative_chunk_end=f"{start_time + duration:.2f}s",
       chunk_duration=f"{duration:.2f}s",
       buffer_available=f"{available_duration:.2f}s",
       buffer_total=f"{total_duration:.2f}s",
@@ -517,7 +528,11 @@ class StreamingTranscriptionProcessor:
         _ = self.flush_state.complete()
 
   def _discard_flushed_audio(self, pending_flush: PendingFlush | None) -> None:
-    """Drop buffered audio through the accepted flush boundary after emitting the response."""
+    """Drop buffered audio through the accepted flush boundary after emitting the response.
+
+    The boundary is an absolute buffer sample index. In live WebSocket mode the
+    buffer was reset at recording start, so the sample index is recording-relative.
+    """
     if pending_flush is None:
       raise RuntimeError("Cannot discard flushed audio without a pending flush boundary")
 
@@ -525,7 +540,7 @@ class StreamingTranscriptionProcessor:
     self.logger.info(
       "Discarded flushed audio",
       discarded_duration_s=f"{discarded_duration:.3f}",
-      boundary_sample=pending_flush.boundary_sample,
+      recording_relative_boundary_sample=pending_flush.boundary_sample,
     )
 
   async def _wait_for_next_interval(self, processing_time: float) -> None:
@@ -562,7 +577,11 @@ class StreamingTranscriptionProcessor:
     return self.flush_state.pending()
 
   def _chunk_start_sample(self, chunk: AudioChunk) -> int:
-    """Convert an audio chunk's absolute start time to an absolute sample index."""
+    """Convert a chunk's buffer start offset to an absolute buffer sample index.
+
+    Live WebSocket recording boundaries reset the buffer, so this sample index
+    is recording-relative in live mode.
+    """
     return int(round(chunk.start_time * self.buffer.config.sample_rate))
 
   def _consume_precommit_interrupt(self) -> bool:
@@ -618,9 +637,9 @@ class StreamingTranscriptionProcessor:
     boundary_reached = chunk_end_sample >= pending_flush.boundary_sample
     self.logger.debug(
       "Evaluated flush boundary coverage",
-      chunk_start_sample=result.chunk_start_sample,
-      chunk_end_sample=chunk_end_sample,
-      boundary_sample=pending_flush.boundary_sample,
+      recording_relative_chunk_start_sample=result.chunk_start_sample,
+      recording_relative_chunk_end_sample=chunk_end_sample,
+      recording_relative_boundary_sample=pending_flush.boundary_sample,
       boundary_reached=boundary_reached,
     )
     return boundary_reached
@@ -670,9 +689,9 @@ class StreamingTranscriptionProcessor:
 
     self.logger.debug(
       "Entering transcriber.transcribe",
-      start_time=chunk.start_time,
+      recording_relative_start_time=chunk.start_time,
       duration=chunk.duration,
-      processed_up_to_time=self.buffer.processed_up_to_time,
+      recording_relative_processed_up_to_time=self.buffer.processed_up_to_time,
       language=self.language,
       use_vad=self.config.use_vad,
       beam_size=self.config.beam_size,
@@ -687,6 +706,8 @@ class StreamingTranscriptionProcessor:
       language=self.language,
       vad_filter=self.config.use_vad,
       vad_parameters=self.vad_parameters,
+      # Compatibility name from the transcription pipeline. The value is the
+      # canonical recording-relative chunk start for live WebSocket recordings.
       absolute_stream_start=chunk.start_time,
       hotwords=" ".join(self.config.hotwords) if self.config.hotwords else None,
       session=cast("TranscriptionSessionProtocol", cast(object, self.session)),
@@ -965,6 +986,8 @@ class StreamingTranscriptionProcessor:
       # Convert Segment objects to dict format for client
       completed_dicts: list[ClientSegmentDict] = []
       for seg in self.session.completed_segments:
+        # Compatibility helpers expose the same canonical recording-relative
+        # segment times as ``seg.start``/``seg.end`` for completed segments.
         completed_dicts.append(
           {
             "id": str(seg.id),

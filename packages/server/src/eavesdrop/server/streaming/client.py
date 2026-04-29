@@ -281,6 +281,8 @@ class WebSocketStreamingClient:
       elapsed_wall = max(current_wall_time - previous_wall_time, 0.001)
 
       ingest_rate = (self._file_ingested_seconds - previous_ingested_seconds) / elapsed_wall
+      # File-mode observability uses the buffer cursor as a session-local progress offset.
+      # Live mode resets this cursor at recording boundaries, making it recording-relative.
       processed_seconds = self.buffer.processed_up_to_time
       process_rate = (processed_seconds - previous_processed_seconds) / elapsed_wall
       enqueue_block_delta = snapshot.total_enqueue_block_s - previous_block_seconds
@@ -440,6 +442,8 @@ class WebSocketStreamingClient:
     if isinstance(message, UtteranceCancelledMessage):
       active_utterance_generation = self._flush_state.cancel_active_utterance()
       self.session.reset_utterance()
+      # Drop only the unprocessed live tail. The retained processed cursor stays
+      # recording-relative for the active recording.
       discarded_duration = self.buffer.discard_unprocessed_audio()
       self.processor.reset_live_recording(
         recording_id=self._current_recording_id,
@@ -450,6 +454,7 @@ class WebSocketStreamingClient:
         "Discarded live utterance tail",
         active_utterance_generation=active_utterance_generation,
         discarded_duration_s=f"{discarded_duration:.3f}",
+        # Live buffer reset makes this cursor recording-relative, not wall-clock time.
         processed_up_to_time_s=f"{self.buffer.processed_up_to_time:.3f}",
       )
       return
@@ -464,7 +469,7 @@ class WebSocketStreamingClient:
 
     self.logger.info(
       "Accepted live flush request",
-      boundary_sample=pending_flush.boundary_sample,
+      recording_relative_boundary_sample=pending_flush.boundary_sample,
       force_complete=pending_flush.force_complete,
     )
 
@@ -506,7 +511,12 @@ class WebSocketStreamingClient:
     self.logger.info("Cleaning up WebSocket streaming client", stream=self.stream_name)
 
   def _accept_recording_boundary(self, message: RecordingStartedMessage) -> None:
-    """Reset all live recording-local state for a newly accepted epoch."""
+    """Reset all live recording-local state for a newly accepted epoch.
+
+    The accepted boundary establishes recording-relative zero for outgoing
+    segment and word timestamps. Resetting the buffer here makes subsequent
+    buffer offsets and flush sample indexes recording-relative for this recording.
+    """
     if message.sample_rate_hz != self.buffer.config.sample_rate:
       raise ValueError(
         "control_recording_started sample_rate_hz does not match server buffer sample rate"
@@ -514,6 +524,8 @@ class WebSocketStreamingClient:
 
     generation = self._flush_state.start_recording(message.recording_id)
     self._current_recording_id = message.recording_id
+    # Recording-relative time is canonical for live output; reset every owner of
+    # timeline state so buffer/session zero matches the new recording boundary.
     self.buffer.reset()
     self.session.reset_utterance()
     self.session.update_audio_context(0.0, 0.0)
