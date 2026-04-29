@@ -1,4 +1,4 @@
-"""Regression tests for absolute timestamp behavior in transcription output."""
+"""Regression tests for recording-relative timestamp behavior in transcription output."""
 
 import json
 import sys
@@ -62,7 +62,7 @@ def test_vad_restoration_with_late_flattening_preserves_offset(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
   _install_mock_vad(monkeypatch)
-  absolute_offset = 100.0
+  recording_offset = 100.0
   local_start = 0.5
   local_end = 1.5
   word = Word(
@@ -90,11 +90,11 @@ def test_vad_restoration_with_late_flattening_preserves_offset(
   sampling_rate = 16000
 
   _ = restore_speech_timestamps([segment], speech_chunks, sampling_rate)
-  _ = finalize_recording_timestamps([segment], absolute_offset)
+  _ = finalize_recording_timestamps([segment], recording_offset)
 
-  assert abs(segment.start - (absolute_offset + local_start + 0.1)) < 1e-9
-  assert abs(word.start - (absolute_offset + local_start + 0.1)) < 1e-9
-  assert segment.time_offset == absolute_offset
+  assert abs(segment.start - (recording_offset + local_start + 0.1)) < 1e-9
+  assert abs(word.start - (recording_offset + local_start + 0.1)) < 1e-9
+  assert segment.time_offset == recording_offset
 
 
 def test_finalize_recording_timestamps_direct() -> None:
@@ -111,14 +111,14 @@ def test_finalize_recording_timestamps_direct() -> None:
   assert word.end == 50.5
 
 
-def test_segment_absolute_times_apply_offset_beyond_30_seconds() -> None:
+def test_segment_recording_relative_times_apply_offset_beyond_30_seconds() -> None:
   segment = _segment(start=2.5, end=4.0, time_offset=31.25)
 
   assert abs(segment.absolute_start_time - 33.75) < 1e-9
   assert abs(segment.absolute_end_time - 35.25) < 1e-9
 
 
-def test_absolute_times_remain_monotonic_across_window_boundaries() -> None:
+def test_recording_relative_times_remain_monotonic_across_window_boundaries() -> None:
   first = _segment(start=2.0, end=4.0, time_offset=28.0)
   second = _segment(start=0.1, end=1.1, time_offset=32.0)
 
@@ -194,9 +194,9 @@ def test_transcription_message_word_timestamps_share_recording_timeline() -> Non
   assert serialized_word["end"] == 40.6
 
 
-def test_session_reports_absolute_chunk_time_range() -> None:
+def test_session_reports_recording_relative_chunk_time_range() -> None:
   session = create_session("stream-1")
 
   session.update_audio_context(start_offset=61.0, duration=1.5)
 
-  assert session.get_absolute_time_range() == (61.0, 62.5)
+  assert session.get_recording_time_range() == (61.0, 62.5)

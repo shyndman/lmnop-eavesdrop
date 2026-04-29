@@ -1,6 +1,6 @@
 """Transcription session context for timing and logging coordination.
 
-This module provides session context that bridges client connection timing
+This module provides session context that bridges recording-relative chunk timing
 with audio buffer timing to enable comprehensive transcription logging.
 """
 
@@ -75,21 +75,21 @@ class TranscriptionSessionProtocol(Protocol):
   """Protocol defining the interface for transcription sessions.
 
   Transcription sessions coordinate timing and logging across the entire pipeline,
-  bridging client connection timing with audio buffer timing. They provide stage
+  bridging recording-relative chunk timing with audio buffer timing. They provide stage
   tracers for measurement and structured logging of pipeline execution.
 
   Sessions support both real implementations (TranscriptionSession) and no-op
   implementations (NoopSession) to eliminate conditional logic in pipeline code.
   """
 
-  def get_absolute_time_range(self) -> tuple[float, float]:
-    """Get the absolute time range of the current audio chunk.
+  def get_recording_time_range(self) -> tuple[float, float]:
+    """Get the recording-relative time range of the current audio chunk.
 
-    "Absolute" means relative to the client connection start time, not relative
-    to the current buffer or chunk. This gives the timeline position within
-    the overall transcription session.
+    Recording-relative time is the canonical timeline used for wire-facing
+    transcription segment and word timestamps. It is not relative to the current
+    buffer or decoder chunk.
 
-    :returns: Tuple of (start_time, end_time) in seconds since connection.
+    :returns: Tuple of (start_time, end_time) in recording-relative seconds.
     :rtype: tuple[float, float]
     """
     ...
@@ -97,7 +97,7 @@ class TranscriptionSessionProtocol(Protocol):
   def format_time_range(self) -> str:
     """Format the current time range as a human-readable string.
 
-    :returns: Formatted string like "+3.45s to +7.20s".
+    :returns: Formatted recording-relative range like "+3.45s to +7.20s".
     :rtype: str
     """
     ...
@@ -124,7 +124,7 @@ class TranscriptionSessionProtocol(Protocol):
   def update_audio_context(self, start_offset: float, duration: float) -> None:
     """Update the audio timing context for the current chunk.
 
-    :param start_offset: Start time offset from connection start in seconds.
+    :param start_offset: Recording-relative chunk start offset in seconds.
     :type start_offset: float
     :param duration: Duration of the audio chunk in seconds.
     :type duration: float
@@ -195,7 +195,7 @@ class TranscriptionSessionProtocol(Protocol):
 class TranscriptionSession:
   """Context object that tracks timing and metadata for a transcription session.
 
-  Bridges the gap between client connection time and audio buffer time to provide
+  Bridges the gap between recording-relative chunk time and audio buffer time to provide
   comprehensive logging across both WebSocket and RTSP clients.
 
   :param connection_start_time: When the client connection was established (perf_counter).
@@ -260,14 +260,14 @@ class TranscriptionSession:
     """Clear utterance-local completed history after the live utterance is discarded."""
     self.completed_segments.clear()
 
-  def get_absolute_time_range(self) -> tuple[float, float]:
-    """Get the absolute time range of the current audio chunk.
+  def get_recording_time_range(self) -> tuple[float, float]:
+    """Get the recording-relative time range of the current audio chunk.
 
-    "Absolute" means relative to the client connection start time, not relative
-    to the current buffer or chunk. This gives the timeline position within
-    the overall transcription session.
+    Recording-relative time is the canonical timeline used for wire-facing
+    transcription segment and word timestamps. It is not relative to the current
+    buffer or decoder chunk.
 
-    :returns: Tuple of (start_time, end_time) in seconds since connection.
+    :returns: Tuple of (start_time, end_time) in recording-relative seconds.
     :rtype: tuple[float, float]
     """
     return (self.audio_start_offset, self.audio_start_offset + self.audio_duration)
@@ -275,10 +275,10 @@ class TranscriptionSession:
   def format_time_range(self) -> str:
     """Format the time range for logging.
 
-    :returns: Formatted string like "+3.45s to +7.20s".
+    :returns: Formatted recording-relative range like "+3.45s to +7.20s".
     :rtype: str
     """
-    start, end = self.get_absolute_time_range()
+    start, end = self.get_recording_time_range()
     return f"+{start:.2f}s to +{end:.2f}s"
 
   def format_vad_visualization(
@@ -301,10 +301,10 @@ class TranscriptionSession:
     if not speech_chunks:
       # No VAD applied - show entire duration as unanalyzed
       duration = total_samples / sample_rate
-      start, _ = self.get_absolute_time_range()
+      start, _ = self.get_recording_time_range()
       return f"+{start:.2f}s~{duration * 1000:.3f}ms~+{start + duration:.2f}s"
 
-    start_time, _ = self.get_absolute_time_range()
+    start_time, _ = self.get_recording_time_range()
     visualization_parts: list[str] = [f"+{start_time:.2f}s"]
 
     last_end_sample = 0
@@ -335,7 +335,7 @@ class TranscriptionSession:
   def update_audio_context(self, start_offset: float, duration: float) -> None:
     """Update the audio timing context for the current chunk.
 
-    :param start_offset: Start time offset from connection start in seconds.
+    :param start_offset: Recording-relative chunk start offset in seconds.
     :type start_offset: float
     :param duration: Duration of the audio chunk in seconds.
     :type duration: float
@@ -480,7 +480,7 @@ class VadStageTracer(BaseTracer):
     :type total_samples: int
     """
     audio_duration = total_samples / sample_rate
-    time_start, time_end = self.session.get_absolute_time_range()
+    time_start, time_end = self.session.get_recording_time_range()
 
     if speech_chunks:
       speech_duration = sum(
@@ -635,7 +635,7 @@ class NoopTracer:
 class NoopSession:
   """No-op session that provides the same API as TranscriptionSession but does nothing."""
 
-  def get_absolute_time_range(self) -> tuple[float, float]:
+  def get_recording_time_range(self) -> tuple[float, float]:
     return (0.0, 0.0)
 
   def format_time_range(self) -> str:
