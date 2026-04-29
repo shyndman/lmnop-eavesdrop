@@ -26,7 +26,10 @@ class WordAlignmentProcessor:
   """Handles word-to-timestamp alignment using Whisper model alignment capabilities.
 
   This class determines word timing by implementing forced alignment between text tokens and audio
-  frames using Whisper's cross-attention mechanism. The process involves:
+  frames using Whisper's cross-attention mechanism. Alignment timestamps are
+  seconds relative to the decoder audio supplied to Whisper; with VAD filtering,
+  that decoder audio can be VAD-compacted and therefore is not yet the original
+  chunk or recording-relative timeline. The process involves:
 
   1. MODEL ALIGNMENT: Use Whisper's align() method to get token-to-frame alignments
       using cross-attention weights between encoder (audio) and decoder (text)
@@ -54,9 +57,9 @@ class WordAlignmentProcessor:
   ):
     """Initialize the word alignment processor.
 
-    :param frames_per_second: Number of frames per second in the audio
+    :param frames_per_second: Number of decoder frames per second in the window timeline.
     :type frames_per_second: float
-    :param tokens_per_second: Number of tokens per second for time conversion
+    :param tokens_per_second: Number of timestamp tokens per second for time conversion.
     :type tokens_per_second: float
     :param median_filter_width: Width for median filtering in alignment
     :type median_filter_width: int
@@ -75,6 +78,11 @@ class WordAlignmentProcessor:
   ) -> list[list[WordTimingDict]]:
     """Find word alignments using the Whisper model's alignment capabilities.
 
+    Returned word ``start`` and ``end`` values are seconds relative to the audio
+    represented by ``encoder_output``. If VAD filtering compacted the audio
+    before feature extraction, these are VAD-compacted chunk-local seconds until
+    restore_speech_timestamps expands them back to the original chunk timeline.
+
     :param model: The Whisper model instance used for forced alignment
     :type model: ctranslate2.models.Whisper
     :param tokenizer: Tokenizer for processing tokens and splitting into words
@@ -87,9 +95,11 @@ class WordAlignmentProcessor:
         representation with shape [batch_size, sequence_length, d_model]. Contains
         the audio context needed for cross-attention alignment.
     :type encoder_output: ctranslate2.StorageView
-    :param num_frames: Total number of audio frames in the original audio segment.
-        Used by the alignment algorithm to properly scale timestamp indices back
-        to the original audio timeline. Critical for accurate timing calculations.
+    :param num_frames: Number of decoder frames represented by ``encoder_output``.
+        This frame count belongs to the audio array given to Whisper. When VAD
+        filtering has compacted that array, it is the compacted chunk frame
+        count, not the original request chunk frame count and not a
+        recording-relative value.
     :type num_frames: int
     :returns: List of word timing dictionaries for each segment-level token sequence.
         The outer list corresponds to each input token sequence, and the inner list
@@ -101,9 +111,8 @@ class WordAlignmentProcessor:
 
     batched_num_frames = [num_frames] * len(text_tokens)
 
-    # Call Whisper's forced alignment: cross-attention between encoder (audio) and decoder (text)
-    # Returns alignment results containing text_token_probs and alignments (text_idx, time_idx)
-    # pairs
+    # Call Whisper's forced alignment: cross-attention between encoder audio frames and decoder
+    # text tokens. time_idx values are local to encoder_output's decoder-frame timeline.
     results = model.align(
       encoder_output,
       tokenizer.sot_sequence,
@@ -176,7 +185,7 @@ class TimingProcessor:
   def __init__(self, frames_per_second: float):
     """Initialize the timing processor.
 
-    :param frames_per_second: Number of frames per second in the audio
+    :param frames_per_second: Number of decoder frames per second in the window timeline.
     :type frames_per_second: float
     """
     self.frames_per_second: float = frames_per_second
@@ -238,7 +247,8 @@ class TimingProcessor:
     :type words: list[WordDict]
     :param subsegment: Segment dictionary to potentially modify
     :type subsegment: SegmentDict
-    :param last_speech_timestamp: Timestamp of the last speech segment
+    :param last_speech_timestamp: Previous speech boundary in the same chunk/window-local seconds
+        as ``words`` and ``subsegment``.
     :type last_speech_timestamp: float
     :param median_duration: Median duration for timing corrections
     :type median_duration: float
@@ -283,14 +293,20 @@ class TimingProcessor:
 
 
 class WordTimestampAligner:
-  """Main class for adding word timestamps to transcription segments."""
+  """Main class for adding word timestamps to transcription segments.
+
+  The timestamps it writes are decoder/window-local seconds. For VAD-filtered
+  requests they are additionally local to the VAD-compacted audio until the VAD
+  restoration step expands them; recording-relative seconds are assigned later
+  by finalize_recording_timestamps.
+  """
 
   def __init__(self, frames_per_second: float, tokens_per_second: float):
     """Initialize the word timestamp aligner.
 
-    :param frames_per_second: Number of frames per second in the audio
+    :param frames_per_second: Number of decoder frames per second in the window timeline.
     :type frames_per_second: float
-    :param tokens_per_second: Number of tokens per second for time conversion
+    :param tokens_per_second: Number of timestamp tokens per second for time conversion.
     :type tokens_per_second: float
     """
     self.alignment_processor: WordAlignmentProcessor = WordAlignmentProcessor(
@@ -319,13 +335,14 @@ class WordTimestampAligner:
     :type tokenizer: Tokenizer
     :param encoder_output: Encoder output from the model
     :type encoder_output: ctranslate2.StorageView
-    :param num_frames: Number of audio frames
+    :param num_frames: Number of decoder frames represented by ``encoder_output``. If VAD
+        compacted the audio, this is the compacted chunk frame count.
     :type num_frames: int
     :param prepend_punctuations: Characters to merge with following words
     :type prepend_punctuations: str
     :param append_punctuations: Characters to merge with preceding words
     :type append_punctuations: str
-    :param last_speech_timestamp: Timestamp of the last speech segment
+    :param last_speech_timestamp: Previous speech boundary in current chunk/window-local seconds.
     :type last_speech_timestamp: float
     :returns: Updated last speech timestamp
     :rtype: float
@@ -403,10 +420,12 @@ class WordTimestampAligner:
     median_max_durations: list[tuple[float, float]],
     last_speech_timestamp: float,
   ) -> float:
-    """Apply calculated timestamps to the segment words."""
+    """Apply calculated decoder/window-local timestamps to segment words."""
     for segment_idx, segment in enumerate(segments):
       word_index = 0
-      time_offset = segment[0]["seek"] / self.alignment_processor.frames_per_second
+      decoder_window_offset_seconds = (
+        segment[0]["seek"] / self.alignment_processor.frames_per_second
+      )
       median_duration, max_duration = median_max_durations[segment_idx]
 
       for subsegment_idx, subsegment in enumerate(segment):
@@ -423,8 +442,10 @@ class WordTimestampAligner:
             words.append(
               {
                 "word": timing["word"],
-                "start": round(time_offset + timing["start"], _TIMESTAMP_PRECISION),
-                "end": round(time_offset + timing["end"], _TIMESTAMP_PRECISION),
+                "start": round(
+                  decoder_window_offset_seconds + timing["start"], _TIMESTAMP_PRECISION
+                ),
+                "end": round(decoder_window_offset_seconds + timing["end"], _TIMESTAMP_PRECISION),
                 "probability": timing["probability"],
               }
             )

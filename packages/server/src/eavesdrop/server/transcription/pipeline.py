@@ -203,8 +203,12 @@ class WhisperModel:
     :param hotwords: Optional hotwords to provide as context to improve recognition of
       specific terms.
     :type hotwords: str | None
-    :param start_offset: Start time offset in seconds from stream/connection start.
+    :param start_offset: Recording-relative chunk start offset used for session logging.
     :type start_offset: float
+    :param absolute_stream_start: Recording-relative base applied at the final timestamp
+      boundary so wire-facing segment and word timestamps share the canonical
+      recording timeline.
+    :type absolute_stream_start: float
     :param beam_size: Optional override for beam search width during deterministic decoding.
     :type beam_size: int | None
     :param word_timestamps: Whether to compute detailed word-level timestamps.
@@ -222,7 +226,7 @@ class WhisperModel:
 
       session = noop_session
 
-    # Update session timing context with real buffer timing
+    # Update session timing context with recording-relative buffer timing.
     session.update_audio_context(
       start_offset=start_offset, duration=audio.shape[0] / self.audio_processor.sampling_rate
     )

@@ -36,13 +36,26 @@ VadOptions = load_vad_options()
 
 
 class AudioValidationResult(NamedTuple):
-  """Result of audio validation and preprocessing."""
+  """Result of audio validation and preprocessing.
+
+  ``duration`` is seconds on the incoming request chunk timeline before VAD.
+  ``duration_after_vad`` is seconds on the returned ``audio`` array timeline;
+  it equals ``duration`` when VAD is disabled and may be shorter when VAD
+  compacts speech. ``speech_chunks`` remain sample offsets into the original
+  request chunk audio so timestamps can later be restored before the canonical
+  recording-relative finalization boundary.
+  """
 
   audio: FloatAudio
+  """Audio array returned for downstream feature extraction and decoding."""
   duration: float
+  """Original request chunk duration in seconds before VAD compaction."""
   duration_after_vad: float
+  """Returned ``audio`` duration in seconds after optional VAD compaction."""
   speech_chunks: list[SpeechChunk] | None
+  """VAD chunk sample offsets in the original request chunk audio, if VAD ran."""
   is_complete_silence: bool
+  """Whether VAD compaction removed all speech from the request chunk."""
 
 
 class AudioProcessor:
@@ -77,7 +90,7 @@ class AudioProcessor:
     :type vad_filter: bool
     :param vad_parameters: VAD configuration options.
     :type vad_parameters: VadOptions
-    :returns: AudioValidationResult with processed audio and metadata.
+    :returns: AudioValidationResult with processed audio and timeline metadata.
     :rtype: AudioValidationResult
     """
     if audio.ndim != 1:
@@ -90,7 +103,9 @@ class AudioProcessor:
     speech_chunks: list[SpeechChunk] | None = None
     is_complete_silence = False
 
-    # Apply VAD filtering if requested
+    # Apply VAD filtering if requested. VAD compacts the returned audio array,
+    # while speech_chunks preserve original chunk sample offsets for later
+    # restoration before recording-relative timestamp finalization.
     if vad_filter:
       resolved_vad_parameters = vad_parameters or VadOptions()
       raw_speech_chunks = get_speech_timestamps(audio, resolved_vad_parameters)

@@ -44,7 +44,7 @@ class _TranscribeContext:
   # Loop state
 
   seek: int = field(default=0, init=False)
-  """Current position in audio features (frame index)."""
+  """Current decoder-window position in audio features (frame index)."""
 
   at_beginning: bool = field(default=True, init=False)
   """True if at the beginning of the audio."""
@@ -66,16 +66,16 @@ class _TranscribeContext:
 
   # Computed fields (updated on commit)
   time_offset: float = field(default=0.0, init=False)
-  """Current time offset in seconds."""
+  """Current decoder-window time offset in seconds before finalization."""
 
   window_end_time: float = field(default=0.0, init=False)
-  """End time of current processing window."""
+  """Decoder-window end time in seconds before finalization."""
 
   segment_size: int = field(default=0, init=False)
   """Size of current segment in frames."""
 
   segment_duration: float = field(default=0.0, init=False)
-  """Duration of current segment in seconds."""
+  """Chunk-local duration of current decoder segment in seconds."""
 
   context_tokens: list[int] = field(default_factory=list, init=False)
   """Tokens for current context window."""
@@ -86,7 +86,7 @@ class _TranscribeContext:
     self.all_tokens = self.initial_tokens.copy()
 
   def advance(self) -> bool:
-    """Recompute all derived values from current seek position."""
+    """Recompute chunk-local derived values from current decoder seek position."""
     if self.done():
       return False
 
@@ -108,7 +108,7 @@ class _TranscribeContext:
     return pad_or_trim(segment)
 
   def seek_next_to(self, new_seek: int):
-    """Move to next position and commit changes."""
+    """Move to the next decoder-window seek position and commit changes."""
     self.seek = new_seek
 
   def add_segment(

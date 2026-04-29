@@ -6,8 +6,10 @@ from pydantic import BaseModel, Field
 class SpeechChunk(TypedDict):
   """Represents a speech chunk from Voice Activity Detection.
 
-  Contains begin and end sample indices for a detected speech segment.
-  Returned by faster_whisper.vad.get_speech_timestamps().
+  ``start`` and ``end`` are sample offsets into the original, unfiltered audio
+  chunk passed to VAD. They are not seconds, frames, or recording-relative
+  timestamps. The chunk timeline becomes recording-relative only after
+  :func:`eavesdrop.server.transcription.utils.finalize_recording_timestamps`.
   """
 
   start: int
@@ -31,8 +33,10 @@ class FeatureExtractorConfig(TypedDict):
 class WordDict(TypedDict):
   """Word-level timing and probability information from transcription.
 
-  Contains timing boundaries and confidence scores for individual words.
-  Used in segment word arrays when word-level timestamps are enabled.
+  ``start`` and ``end`` are word boundaries in seconds. Inside the decoder they
+  are local to the current decoding window or restored audio chunk; wire-facing
+  words are recording-relative seconds after
+  :func:`eavesdrop.server.transcription.utils.finalize_recording_timestamps`.
   """
 
   start: Required[float]
@@ -44,8 +48,12 @@ class WordDict(TypedDict):
 class SegmentDict(TypedDict):
   """Segment-level transcription result with timing and token information.
 
-  Represents a contiguous speech segment with its transcribed content,
-  timing boundaries, and optional word-level breakdown.
+  Represents a contiguous speech segment with its transcribed content, timing
+  boundaries, and optional word-level breakdown. ``seek`` is a decoder-frame
+  offset into the current decoding window. ``start`` and ``end`` are seconds on
+  the decoder/window-local timeline until VAD restoration and
+  :func:`eavesdrop.server.transcription.utils.finalize_recording_timestamps`
+  convert output segments to recording-relative seconds.
   """
 
   seek: Required[int]
@@ -59,7 +67,10 @@ class WordTimingDict(TypedDict):
   """Word timing result from forced alignment processing.
 
   Contains detailed timing and token information for words computed through
-  cross-attention alignment between audio and text representations.
+  cross-attention alignment between audio and text representations. ``start``
+  and ``end`` are seconds relative to the aligned decoder audio presented to
+  Whisper; when VAD filtering is active that audio may be VAD-compacted and is
+  not yet recording-relative.
   """
 
   word: str
@@ -202,6 +213,13 @@ type LanguageProbability = tuple[str, float]
 
 
 class TranscriptionInfo(NamedTuple):
+  """Metadata returned with a transcription result.
+
+  ``duration`` and ``duration_after_vad`` are seconds for the request audio
+  chunk before and after VAD compaction. ``speech_chunks`` are sample offsets in
+  the original request chunk, not recording-relative seconds.
+  """
+
   transcription_options: TranscriptionOptions = TranscriptionOptions()
   vad_options: VadParameters = VadParameters()
   language: str = "en"

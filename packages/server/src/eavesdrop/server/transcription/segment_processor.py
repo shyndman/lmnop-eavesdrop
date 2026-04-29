@@ -26,14 +26,14 @@ class SegmentProcessorResult(TypedDict):
 
 
 class SegmentProcessor:
-  """Processes token sequences into properly timed segments with anomaly detection."""
+  """Processes token sequences into chunk-local timed segments before finalization."""
 
   def __init__(self, time_precision: float, input_stride: int):
     """Initialize the segment processor.
 
-    :param time_precision: Time precision for timestamp calculations.
+    :param time_precision: Time precision for decoder-window timestamp calculations.
     :type time_precision: float
-    :param input_stride: Input stride for seeking calculations.
+    :param input_stride: Input stride for decoder seek calculations.
     :type input_stride: int
     """
     self.time_precision: float = time_precision
@@ -48,19 +48,19 @@ class SegmentProcessor:
     segment_duration: float,
     seek: int,
   ) -> SegmentTimingResult:
-    """Split tokens into segments based on timestamp boundaries.
+    """Split tokens into chunk-local segments based on timestamp boundaries.
 
     :param tokenizer: The Whisper tokenizer for timestamp detection.
     :type tokenizer: Tokenizer
     :param tokens: List of token IDs to process.
     :type tokens: list[int]
-    :param time_offset: Time offset for the current segment.
+    :param time_offset: Decoder-window time offset for the current chunk before finalization.
     :type time_offset: float
     :param segment_size: Size of the audio segment in frames.
     :type segment_size: int
-    :param segment_duration: Duration of the segment in seconds.
+    :param segment_duration: Chunk-local duration of the segment in seconds.
     :type segment_duration: float
-    :param seek: Current seek position in frames.
+    :param seek: Current decoder seek position in frames.
     :type seek: int
     :returns: SegmentTimingResult containing processed segments and updated seek position.
     :rtype: SegmentTimingResult
@@ -115,7 +115,7 @@ class SegmentProcessor:
     segment_size: int,
     single_timestamp_ending: bool,
   ) -> SegmentProcessorResult:
-    """Process tokens with consecutive timestamps."""
+    """Process tokens with consecutive chunk-local timestamps."""
     current_segments: list[SegmentDict] = []
     slices = list(consecutive_timestamps)
 
@@ -127,6 +127,8 @@ class SegmentProcessor:
       sliced_tokens = tokens[last_slice:current_slice]
       start_timestamp_position = sliced_tokens[0] - tokenizer.timestamp_begin
       end_timestamp_position = sliced_tokens[-1] - tokenizer.timestamp_begin
+      # These generated start/end values remain decoder-window local until
+      # finalize_recording_timestamps maps them onto the canonical recording timeline.
       start_time = time_offset + start_timestamp_position * self.time_precision
       end_time = time_offset + end_timestamp_position * self.time_precision
 
@@ -144,7 +146,7 @@ class SegmentProcessor:
       # Single timestamp at the end means no speech after the last timestamp
       seek += segment_size
     else:
-      # Seek to the last timestamp position
+      # Seek to the last decoder-window timestamp position.
       last_timestamp_position = tokens[last_slice - 1] - tokenizer.timestamp_begin
       seek += last_timestamp_position * self.input_stride
 
@@ -159,7 +161,7 @@ class SegmentProcessor:
     seek: int,
     segment_size: int,
   ) -> SegmentProcessorResult:
-    """Process tokens as a single segment without consecutive timestamps."""
+    """Process tokens as one chunk-local segment without consecutive timestamps."""
     duration = segment_duration
     timestamps = [token for token in tokens if token >= tokenizer.timestamp_begin]
 
@@ -167,7 +169,7 @@ class SegmentProcessor:
       last_timestamp_position = timestamps[-1] - tokenizer.timestamp_begin
       duration = last_timestamp_position * self.time_precision
 
-    # Log whether segment has final timestamp or uses full duration
+    # Log whether the chunk-local segment has final timestamp or uses full duration.
     from eavesdrop.common import get_logger
 
     logger = get_logger("seg")
@@ -179,6 +181,8 @@ class SegmentProcessor:
       full=f"{segment_duration:.3f}s",
     )
 
+    # These generated start/end values remain decoder-window local until
+    # finalize_recording_timestamps maps them onto the canonical recording timeline.
     current_segments: list[SegmentDict] = [
       {
         "seek": seek,

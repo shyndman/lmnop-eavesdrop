@@ -42,6 +42,24 @@ def restore_speech_timestamps(
   speech_chunks: list[SpeechChunk],
   sampling_rate: int,
 ) -> Iterable[Segment]:
+  """Restore VAD-compacted timestamps to the chunk-local audio timeline.
+
+  Whisper decodes the audio array returned after VAD compaction, so segment
+  and word timestamps entering this function are seconds relative to that
+  compacted chunk-local timeline. The VAD timestamp map expands those seconds
+  back onto the original, unfiltered chunk-local timeline. The later
+  :func:`finalize_recording_timestamps` boundary is the canonical conversion
+  from chunk-local seconds to recording-relative seconds for wire output.
+
+  :param segments: Segments timed against the VAD-compacted chunk audio.
+  :type segments: Iterable[Segment]
+  :param speech_chunks: VAD speech chunks as sample offsets in the original chunk audio.
+  :type speech_chunks: list[SpeechChunk]
+  :param sampling_rate: Audio sampling rate in samples per second.
+  :type sampling_rate: int
+  :return: Segments restored to the original chunk-local timeline.
+  :rtype: Iterable[Segment]
+  """
   speech_timestamps_map = load_speech_timestamps_map()
   ts_map: SpeechTimestampsMapLike = speech_timestamps_map(
     cast(list[VadSpeechChunk], speech_chunks), sampling_rate
@@ -51,7 +69,9 @@ def restore_speech_timestamps(
     if segment.words:
       words: list[Word] = []
       for word in segment.words:
-        # Ensure the word start and end times are resolved to the same chunk.
+        # Heuristic: assign a word to the VAD chunk containing its midpoint so
+        # start/end restore through one chunk. This keeps the result chunk-local;
+        # finalize_recording_timestamps later makes recording-relative output.
         middle = (word.start + word.end) / 2
         chunk_index = ts_map.get_chunk_index(middle)
         word.start = ts_map.get_original_time(word.start, chunk_index)
@@ -74,8 +94,9 @@ def finalize_recording_timestamps(
 ) -> Iterable[Segment]:
   """Ensures all segments and words have recording-relative timestamps.
 
-  This adds the recording-level offset to chunk-local timestamps and updates
-  the internal time_offset field for compatibility.
+  This is the final canonical timestamp boundary for WebSocket/live output. It
+  adds the recording-level offset to chunk-local timestamps and updates the
+  internal time_offset field for compatibility.
 
   :param segments: The transcribed segments to normalize.
   :type segments: Iterable[Segment]
