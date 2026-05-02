@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from sdbus import (
   DbusInterfaceCommonAsync,
   SdBus,
+  SdBusUnmappedMessageError,
   dbus_method_async,
   dbus_property_async,
   sd_bus_open_user,
@@ -17,6 +18,7 @@ PLAYERCTLD_BUS_NAME = "org.mpris.MediaPlayer2.playerctld"
 PLAYERCTLD_OBJECT_PATH = "/org/mpris/MediaPlayer2"
 PLAYER_INTERFACE_NAME = "org.mpris.MediaPlayer2.Player"
 PLAYBACK_STATUS_PLAYING = "Playing"
+NO_ACTIVE_PLAYER_ERROR_NAME = "com.github.altdesktop.playerctld.NoActivePlayer"
 
 
 class PlayerctldPlayerInterface(DbusInterfaceCommonAsync, interface_name=PLAYER_INTERFACE_NAME):
@@ -42,6 +44,12 @@ class NoopMediaPlaybackController:
     return None
 
 
+def _is_no_active_player_error(exc: Exception) -> bool:
+  return isinstance(exc, SdBusUnmappedMessageError) and exc.args[:1] == (
+    NO_ACTIVE_PLAYER_ERROR_NAME,
+  )
+
+
 @dataclass
 class PlayerctldMediaPlaybackController:
   logger: BoundLogger
@@ -49,7 +57,13 @@ class PlayerctldMediaPlaybackController:
   async def pause_if_playing(self) -> bool:
     bus, player = self._open_player()
     try:
-      was_playing_before_recording = await player.playback_status == PLAYBACK_STATUS_PLAYING
+      try:
+        was_playing_before_recording = await player.playback_status == PLAYBACK_STATUS_PLAYING
+      except Exception as exc:
+        if not _is_no_active_player_error(exc):
+          raise
+        return False
+
       if not was_playing_before_recording:
         return False
 

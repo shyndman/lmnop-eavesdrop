@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable
 from dataclasses import dataclass, field
 from typing import cast
 
 import pytest
 from _pytest.monkeypatch import MonkeyPatch
+from sdbus import SdBusUnmappedMessageError
 from structlog.stdlib import BoundLogger
 
 from active_listener.infra.mpris import (
@@ -40,7 +42,7 @@ class FakeBus:
 
 @dataclass
 class FakePlayer:
-  playback_status: AwaitableValue[str]
+  playback_status: Awaitable[str]
   pause_calls: int = 0
   play_calls: int = 0
   pause_error: Exception | None = None
@@ -61,6 +63,17 @@ class AwaitableValue[T]:
   def __await__(self):
     async def _resolve() -> T:
       return self.value
+
+    return _resolve().__await__()
+
+
+@dataclass(frozen=True)
+class FailingAwaitableValue[T]:
+  error: Exception
+
+  def __await__(self):
+    async def _resolve() -> T:
+      raise self.error
 
     return _resolve().__await__()
 
@@ -105,6 +118,31 @@ async def test_pause_if_playing_skips_pause_for_non_playing_player(
   assert player.pause_calls == 0
   assert bus.close_calls == 1
   assert logger.debug_messages == []
+
+
+@pytest.mark.asyncio
+async def test_pause_if_playing_returns_false_when_playerctld_has_no_active_player(
+  monkeypatch: MonkeyPatch,
+) -> None:
+  logger = RecordingLogger()
+  bus = FakeBus()
+  player = FakePlayer(
+    playback_status=FailingAwaitableValue(
+      SdBusUnmappedMessageError(
+        "com.github.altdesktop.playerctld.NoActivePlayer",
+        "No player is being controlled by playerctld",
+      )
+    )
+  )
+
+  controller = PlayerctldMediaPlaybackController(logger=cast(BoundLogger, cast(object, logger)))
+  monkeypatch.setattr(controller, "_open_player", lambda: (bus, player))
+
+  assert await controller.pause_if_playing() is False
+  assert player.pause_calls == 0
+  assert bus.close_calls == 1
+  assert logger.debug_messages == []
+  assert logger.exception_messages == []
 
 
 @pytest.mark.asyncio
