@@ -63,7 +63,12 @@ _SYMBOL_PATTERN = re.compile(
 # Case-insensitive whole-phrase replacements applied BEFORE symbol fusion.
 # Keys are matched case-insensitively; values are substituted verbatim with
 # their canonical casing. Add freely — keep keys lowercase for readability.
-_REPLACEMENTS: dict[str, str] = {"debass": "D-Bus", "tild": "tilde", "yamel": "yaml"}
+_REPLACEMENTS: dict[str, str] = {
+  "debass": "D-Bus",
+  "hillary": "hilary",
+  "tild": "tilde",
+  "yamel": "yaml",
+}
 _REPLACEMENT_PATTERN = (
   re.compile(
     r"\b(" + "|".join(re.escape(k) for k in _REPLACEMENTS) + r")\b",
