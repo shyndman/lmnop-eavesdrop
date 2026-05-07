@@ -10,6 +10,7 @@ dependencies = [
   "evaluate",
   "jiwer",
   "kaldialign",
+  "langfuse>=4.5.1",
   "netifaces>=0.11.0",
   "numba",
   "numpy<2",

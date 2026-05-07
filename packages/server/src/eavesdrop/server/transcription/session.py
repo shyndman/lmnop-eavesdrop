@@ -6,6 +6,7 @@ with audio buffer timing to enable comprehensive transcription logging.
 
 import time
 from collections.abc import Iterable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from types import TracebackType
 from typing import TYPE_CHECKING, Protocol, Self, override
@@ -13,6 +14,11 @@ from typing import TYPE_CHECKING, Protocol, Self, override
 from structlog.stdlib import BoundLogger
 
 from eavesdrop.common import get_logger
+from eavesdrop.server.langfuse_tracing import (
+  ServerObservation,
+  start_recording_observation,
+  start_stage_observation,
+)
 from eavesdrop.server.transcription.models import SpeechChunk
 
 if TYPE_CHECKING:
@@ -131,6 +137,14 @@ class TranscriptionSessionProtocol(Protocol):
     """
     ...
 
+  def update_recording_context(self, recording_id: str | None) -> None:
+    """Update the current recording identifier for trace correlation.
+
+    :param recording_id: Live recording identifier, or None outside live recording mode.
+    :type recording_id: str | None
+    """
+    ...
+
   def record_generation_result(self, attempts: int, final_temp: float) -> None:
     """Record the results of temperature fallback generation.
 
@@ -225,6 +239,7 @@ class TranscriptionSession:
   # Audio context
   audio_start_offset: float = 0.0
   audio_duration: float = 0.0
+  recording_id: str | None = None
 
   # Segment chain management
   def get_last_completed_segment(self) -> "Segment | None":
@@ -343,6 +358,57 @@ class TranscriptionSession:
     self.audio_start_offset = start_offset
     self.audio_duration = duration
 
+  def update_recording_context(self, recording_id: str | None) -> None:
+    """Update the current live recording identifier used for trace correlation.
+
+    :param recording_id: Live recording identifier, or None outside live recording mode.
+    :type recording_id: str | None
+    """
+    self.recording_id = recording_id
+
+  def start_langfuse_observation(
+    self,
+    stage_name: str,
+  ) -> AbstractContextManager[ServerObservation | None]:
+    """Start a Langfuse observation for the current transcription stage.
+
+    :param stage_name: Canonical transcription stage name.
+    :type stage_name: str
+    :returns: Context manager for a Langfuse observation, or a no-op when disabled.
+    :rtype: AbstractContextManager[ServerObservation | None]
+    """
+    metadata: dict[str, object] = {
+      "recording_start_seconds": self.audio_start_offset,
+      "recording_end_seconds": self.audio_start_offset + self.audio_duration,
+      "audio_duration_seconds": self.audio_duration,
+    }
+    if stage_name == "total_pipeline":
+      return start_recording_observation(
+        stream=self.stream_name,
+        recording_id=self.recording_id,
+        name="server-transcription-chunk",
+        input={
+          "stream": self.stream_name,
+          "recording_id": self.recording_id,
+          "recording_start_seconds": self.audio_start_offset,
+          "recording_end_seconds": self.audio_start_offset + self.audio_duration,
+          "audio_duration_seconds": self.audio_duration,
+        },
+        metadata=metadata,
+      )
+
+    return start_stage_observation(
+      stream=self.stream_name,
+      recording_id=self.recording_id,
+      name=f"server-{stage_name.replace('_', '-')}",
+      input={
+        "stage": stage_name,
+        "recording_start_seconds": self.audio_start_offset,
+        "recording_end_seconds": self.audio_start_offset + self.audio_duration,
+      },
+      metadata=metadata,
+    )
+
   def record_generation_result(self, attempts: int, final_temp: float) -> None:
     """Record the results of temperature fallback generation.
 
@@ -443,10 +509,14 @@ class BaseTracer:
     self.session: TranscriptionSession = session
     self.stage_name: str = stage_name
     self.start_time: float = 0.0
+    self.langfuse_context: AbstractContextManager[ServerObservation | None] | None = None
+    self.langfuse_observation: ServerObservation | None = None
 
   def __enter__(self) -> Self:
     """Start timing the stage."""
     self.start_time = time.perf_counter()
+    self.langfuse_context = self.session.start_langfuse_observation(self.stage_name)
+    self.langfuse_observation = self.langfuse_context.__enter__()
     return self
 
   def __exit__(
@@ -459,6 +529,31 @@ class BaseTracer:
     elapsed = time.perf_counter() - self.start_time
     # Record timing even on exceptions for debugging purposes
     self.session.stage_timings[self.stage_name] = elapsed if exc_type is None else -1.0
+    if self.langfuse_observation is not None:
+      metadata: dict[str, object] = {
+        "duration_ms": elapsed * 1000,
+        "failed": exc_type is not None,
+      }
+      if self.stage_name == "total_pipeline":
+        metadata["stage_timings_ms"] = {
+          stage_name: timing * 1000
+          for stage_name, timing in self.session.stage_timings.items()
+          if timing >= 0
+        }
+        metadata["time_range"] = self.session.format_time_range()
+        if self.session.generation_attempts > 0:
+          metadata["generation_attempts"] = self.session.generation_attempts
+        if self.session.final_temperature > 0:
+          metadata["final_temperature"] = self.session.final_temperature
+      if exc_val is not None:
+        metadata["error"] = str(exc_val)
+      _ = self.langfuse_observation.update(
+        metadata=metadata,
+        level="ERROR" if exc_type is not None else None,
+        status_message=str(exc_val) if exc_val is not None else None,
+      )
+    if self.langfuse_context is not None:
+      _ = self.langfuse_context.__exit__(exc_type, exc_val, exc_tb)
 
 
 class VadStageTracer(BaseTracer):
@@ -499,6 +594,17 @@ class VadStageTracer(BaseTracer):
         silence=silence_duration,
         vad=vad_viz,
       )
+      if self.langfuse_observation is not None:
+        _ = self.langfuse_observation.update(
+          output={
+            "speech_chunks": speech_chunks,
+            "speech_chunk_count": len(speech_chunks),
+            "speech_duration_seconds": speech_duration,
+            "silence_duration_seconds": silence_duration,
+            "audio_duration_seconds": audio_duration,
+            "vad_visualization": vad_viz,
+          }
+        )
       return
 
     if speech_chunks == []:
@@ -508,6 +614,16 @@ class VadStageTracer(BaseTracer):
         t_end=time_end,
         total=audio_duration,
       )
+      if self.langfuse_observation is not None:
+        _ = self.langfuse_observation.update(
+          output={
+            "speech_chunks": [],
+            "speech_chunk_count": 0,
+            "speech_duration_seconds": 0.0,
+            "silence_duration_seconds": audio_duration,
+            "audio_duration_seconds": audio_duration,
+          }
+        )
       return
 
     self.session.logger.info(
@@ -516,6 +632,14 @@ class VadStageTracer(BaseTracer):
       t_end=time_end,
       total=audio_duration,
     )
+    if self.langfuse_observation is not None:
+      _ = self.langfuse_observation.update(
+        output={
+          "speech_chunks": None,
+          "audio_duration_seconds": audio_duration,
+          "vad_applied": False,
+        }
+      )
 
 
 class FeatureStageTracer(BaseTracer):
@@ -523,7 +647,8 @@ class FeatureStageTracer(BaseTracer):
 
   def __call__(self) -> None:
     """Record feature extraction completion (no specific data to log)."""
-    pass
+    if self.langfuse_observation is not None:
+      _ = self.langfuse_observation.update(output={"features_extracted": True})
 
 
 class InferenceStageTracer(BaseTracer):
@@ -538,6 +663,13 @@ class InferenceStageTracer(BaseTracer):
     :type final_temperature: float
     """
     self.session.record_generation_result(attempts, final_temperature)
+    if self.langfuse_observation is not None:
+      _ = self.langfuse_observation.update(
+        output={
+          "generation_attempts": attempts,
+          "final_temperature": final_temperature,
+        }
+      )
 
 
 class PipelineTracer(BaseTracer):
@@ -551,7 +683,7 @@ class PipelineTracer(BaseTracer):
     exc_tb: TracebackType | None,
   ) -> None:
     """Stop timing and log the complete pipeline summary."""
-    # Call parent to record timing
+    # Call parent to record timing.
     super().__exit__(exc_type, exc_val, exc_tb)
 
     # Format stage timings with "stage_" prefix and millisecond formatting
@@ -580,7 +712,7 @@ class PipelineTracer(BaseTracer):
 
   def __call__(self) -> None:
     """No-op for pipeline tracer - summary is logged in __exit__."""
-    pass
+    return
 
 
 class SegmentStageTracer(BaseTracer):
@@ -604,6 +736,23 @@ class SegmentStageTracer(BaseTracer):
       total_text_chars=total_text_chars,
       avg_chars_per_segment=total_text_chars / segment_count if segment_count > 0 else 0,
     )
+    if self.langfuse_observation is not None:
+      _ = self.langfuse_observation.update(
+        output={
+          "segment_count": segment_count,
+          "total_text_chars": total_text_chars,
+          "segments": [
+            {
+              "id": segment.id,
+              "start": segment.start,
+              "end": segment.end,
+              "text": segment.text,
+              "completed": segment.completed,
+            }
+            for segment in segments_list
+          ],
+        }
+      )
 
     # Log comprehensive pipeline summary with structured timing data
     self.session.logger.info(
@@ -652,7 +801,9 @@ class NoopSession:
 
   def update_audio_context(self, start_offset: float, duration: float) -> None:
     del start_offset, duration
-    pass
+
+  def update_recording_context(self, recording_id: str | None) -> None:
+    del recording_id
 
   def record_generation_result(self, attempts: int, final_temp: float) -> None:
     del attempts, final_temp

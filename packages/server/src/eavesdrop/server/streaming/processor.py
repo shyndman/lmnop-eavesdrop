@@ -687,6 +687,8 @@ class StreamingTranscriptionProcessor:
     if not self.transcriber:
       raise RuntimeError("Transcriber not initialized")
 
+    self.session.update_recording_context(self.recording_id)
+
     self.logger.debug(
       "Entering transcriber.transcribe",
       recording_relative_start_time=chunk.start_time,

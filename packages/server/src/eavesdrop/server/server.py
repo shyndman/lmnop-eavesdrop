@@ -14,6 +14,7 @@ from eavesdrop.server.connection_handler import (
   TranscriberConnection,
   WebSocketConnectionHandler,
 )
+from eavesdrop.server.langfuse_tracing import flush_langfuse
 from eavesdrop.server.rtsp import RTSPStreamCoordinator
 from eavesdrop.server.streaming import WebSocketStreamingClient
 from eavesdrop.server.streaming.interfaces import Float32Audio
@@ -308,6 +309,7 @@ class TranscriptionServer:
     finally:
       if self._rtsp_coordinator:
         await self._rtsp_coordinator.shutdown()
+      flush_langfuse()
 
   def cleanup(self, websocket: ServerConnection) -> None:
     """
