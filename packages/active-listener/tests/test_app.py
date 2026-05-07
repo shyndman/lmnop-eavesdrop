@@ -2331,6 +2331,44 @@ async def test_finalize_recording_normalizes_hillary_before_emitting_text() -> N
 
 
 @pytest.mark.asyncio
+async def test_finalize_recording_removes_unescaped_thank_you_mentions() -> None:
+  client = FakeClient(
+    flush_results=[
+      _message(
+        _segment(1, "alpha thank you, beta THANK YOU, gamma", completed=True),
+        _segment(2, "tail", completed=False),
+      )
+    ]
+  )
+  harness = _service(client=client)
+
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  await harness.service.wait_for_background_tasks()
+
+  assert harness.emitter.emitted == ["alpha beta gamma "]
+
+
+@pytest.mark.asyncio
+async def test_finalize_recording_keeps_escaped_thank_you_mentions() -> None:
+  client = FakeClient(
+    flush_results=[
+      _message(
+        _segment(1, "alpha escape thank you, beta escape THANK YOU,", completed=True),
+        _segment(2, "tail", completed=False),
+      )
+    ]
+  )
+  harness = _service(client=client)
+
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  await harness.service.wait_for_background_tasks()
+
+  assert harness.emitter.emitted == ["alpha thank you, beta THANK YOU, "]
+
+
+@pytest.mark.asyncio
 async def test_finalize_recording_skips_only_rewrite_when_runtime_disabled() -> None:
   client = FakeClient(
     flush_results=[

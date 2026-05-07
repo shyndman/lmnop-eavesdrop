@@ -81,6 +81,8 @@ _REPLACEMENT_PATTERN = (
   if _REPLACEMENTS
   else None
 )
+_THANK_YOU_PATTERN = re.compile(r"\b(?:(escape)\s+)?(thank you,)", re.IGNORECASE)
+_HORIZONTAL_WHITESPACE_PATTERN = re.compile(r"[ \t]{2,}")
 
 RecordingMessageIngestor = Callable[
   [RecordingReducerState, TranscriptionMessage],
@@ -290,6 +292,7 @@ class RecordingFinalizer:
 
     steps: list[PipelineStep] = [
       self._apply_replacements,
+      self._apply_thank_you_escape,
       self._replace_symbols,
     ]
 
@@ -338,6 +341,16 @@ class RecordingFinalizer:
           lambda m: _SYMBOL_WORDS[m.group(1).lower()],
           text,
         ),
+      ),
+      rewrite_result=state.rewrite_result,
+    )
+
+  async def _apply_thank_you_escape(self, state: FinalizationState) -> FinalizationState:
+    return FinalizationState(
+      text=_remove_unescaped_thank_you(state.text),
+      rewrite_input=self._rewrite_pipeline_text(
+        state.rewrite_input,
+        _remove_unescaped_thank_you,
       ),
       rewrite_result=state.rewrite_result,
     )
@@ -446,6 +459,19 @@ class RecordingFinalizer:
 
 def _count_words(text: str) -> int:
   return len(text.split())
+
+
+def _remove_unescaped_thank_you(text: str) -> str:
+  def replace_match(match: re.Match[str]) -> str:
+    if match.group(1) is None:
+      return ""
+
+    return match.group(2)
+
+  return _HORIZONTAL_WHITESPACE_PATTERN.sub(
+    " ",
+    _THANK_YOU_PATTERN.sub(replace_match, text),
+  ).strip()
 
 
 def _llm_mode(*, llm_available: bool, rewrite_ran: bool) -> str:
