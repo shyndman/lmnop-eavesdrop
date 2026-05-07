@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
-import subprocess
-import tempfile
 from decimal import Decimal
 from pathlib import Path
 from typing import cast
@@ -18,6 +16,7 @@ from active_listener.app.ports import (
   CapturedRecordingAudio,
   FinalizedTranscriptRecord,
 )
+from active_listener.infra.audio import encode_m4a
 from active_listener.infra.dbus import AppStateService
 
 TRANSCRIPT_HISTORY_FILENAME = "active-listener.sqlite3"
@@ -234,57 +233,6 @@ def insert_transcript_audio(
     """,
     (transcript_id, audio_m4a),
   )
-
-
-def encode_m4a(
-  ffmpeg_path: str,
-  pcm_f32le: bytes,
-  *,
-  sample_rate_hz: int = 16_000,
-  channels: int = 1,
-) -> bytes:
-  with tempfile.TemporaryDirectory(prefix="active-listener-audio-") as temp_dir:
-    output_path = Path(temp_dir) / "recording.m4a"
-    result = subprocess.run(
-      [
-        ffmpeg_path,
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-f",
-        "f32le",
-        "-ar",
-        str(sample_rate_hz),
-        "-ac",
-        str(channels),
-        "-i",
-        "pipe:0",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "128k",
-        "-profile:a",
-        "aac_low",
-        "-f",
-        "ipod",
-        str(output_path),
-      ],
-      input=pcm_f32le,
-      capture_output=True,
-      check=False,
-    )
-    if result.returncode != 0:
-      stderr_text = result.stderr.decode("utf-8", errors="replace").strip()
-      raise AudioArchiveError(stderr_text or "ffmpeg audio encode failed")
-
-    if not output_path.exists():
-      raise AudioArchiveError("ffmpeg completed without creating an output file")
-
-    audio_m4a = output_path.read_bytes()
-    if audio_m4a == b"":
-      raise AudioArchiveError("ffmpeg created an empty m4a file")
-
-  return audio_m4a
 
 
 def _existing_columns(connection: sqlite3.Connection) -> set[str]:

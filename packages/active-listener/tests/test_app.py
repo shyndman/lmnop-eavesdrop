@@ -50,6 +50,7 @@ from active_listener.recording.spectrum import (
   WINDOW_SIZE,
 )
 from eavesdrop.client import (
+  ConnectedEvent,
   DisconnectedEvent,
   ReconnectedEvent,
   ReconnectingEvent,
@@ -635,6 +636,7 @@ def _service(
   config: ActiveListenerConfig | None = None,
   spectrum_analyzer: FakeSpectrumAnalyzer | None = None,
   recording_audio_buffer: RecordingAudioBuffer | None = None,
+  ffmpeg_path: str | None = None,
 ) -> ServiceHarness:
   resolved_client = client or FakeClient()
   resolved_keyboard = keyboard or FakeKeyboard()
@@ -657,6 +659,7 @@ def _service(
     media_playback_controller=resolved_media_playback_controller,
     recording_audio_buffer=resolved_recording_audio_buffer,
     spectrum_analyzer=spectrum_analyzer or FakeSpectrumAnalyzer(),
+    ffmpeg_path=ffmpeg_path,
   )
   return ServiceHarness(
     service,
@@ -820,6 +823,49 @@ async def test_start_and_cancel_resume_prior_media() -> None:
 
   assert media_playback_controller.pause_calls == 1
   assert media_playback_controller.resume_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_langfuse_session_events_track_connection_and_recording_lifecycle(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  observed_calls: list[dict[str, object]] = []
+  harness = _service()
+  service = harness.service
+
+  monkeypatch.setattr(
+    "active_listener.app.service.record_session_event",
+    lambda **kwargs: observed_calls.append(kwargs),
+  )
+  monkeypatch.setattr("active_listener.app.service.secrets.token_hex", lambda _n: "recording-1")
+
+  await service.handle_client_event(ConnectedEvent(stream="stream-1"))
+  await service.handle_action(AppAction.START_OR_FINISH)
+  await service.handle_action(AppAction.CANCEL)
+  await service.handle_client_event(DisconnectedEvent(stream="stream-1", reason="socket closed"))
+
+  assert observed_calls == [
+    {
+      "session_id": "stream-1",
+      "name": "active-listener-client-connected",
+      "metadata": {"stream": "stream-1"},
+    },
+    {
+      "session_id": "stream-1",
+      "name": "active-listener-recording-started",
+      "metadata": {"stream": "stream-1", "recording_id": "recording-1"},
+    },
+    {
+      "session_id": "stream-1",
+      "name": "active-listener-recording-cancelled",
+      "metadata": {"stream": "stream-1", "recording_id": "recording-1"},
+    },
+    {
+      "session_id": "stream-1",
+      "name": "active-listener-client-disconnected",
+      "metadata": {"stream": "stream-1", "reason": "socket closed"},
+    },
+  ]
 
 
 @pytest.mark.asyncio
@@ -2367,11 +2413,14 @@ async def test_finalize_recording_does_not_archive_when_text_emission_fails() ->
 async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-  observed_calls: list[dict[str, object]] = []
+  recording_observed_calls: list[dict[str, object]] = []
+  rewrite_observed_calls: list[dict[str, object]] = []
   observed_updates: list[dict[str, object | None]] = []
 
   @dataclass
   class FakeLangfuseObservation:
+    source: str
+
     def update(
       self,
       *,
@@ -2385,6 +2434,7 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
     ) -> FakeLangfuseObservation:
       observed_updates.append(
         {
+          "source": self.source,
           "input": input,
           "output": output,
           "metadata": metadata,
@@ -2397,9 +2447,14 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
       return self
 
   @contextmanager
+  def fake_start_recording_observation(**kwargs: object) -> Iterator[FakeLangfuseObservation]:
+    recording_observed_calls.append(kwargs)
+    yield FakeLangfuseObservation(source="recording")
+
+  @contextmanager
   def fake_start_rewrite_observation(**kwargs: object) -> Iterator[FakeLangfuseObservation]:
-    observed_calls.append(kwargs)
-    yield FakeLangfuseObservation()
+    rewrite_observed_calls.append(kwargs)
+    yield FakeLangfuseObservation(source="rewrite")
 
   client = FakeClient(
     flush_results=[
@@ -2417,6 +2472,7 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
   )
   emitter = FakeEmitter()
   captured_audio = _sine_wave_bytes(440.0, 32)
+  audio_attachment = {"media": "mp3"}
 
   @dataclass
   class AssertingHistoryStore(FakeHistoryStore):
@@ -2442,6 +2498,14 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
   monkeypatch.setattr(
     "active_listener.infra.rewrite.load_active_listener_rewrite_prompt",
     _prompt_loader(_loaded_prompt_file(_prompt())),
+  )
+  monkeypatch.setattr(
+    "active_listener.recording.finalizer.build_langfuse_audio_attachment",
+    lambda **_kwargs: audio_attachment,
+  )
+  monkeypatch.setattr(
+    "active_listener.recording.finalizer.start_recording_observation",
+    fake_start_recording_observation,
   )
   monkeypatch.setattr(
     "active_listener.recording.finalizer.start_rewrite_observation",
@@ -2479,8 +2543,21 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
       ),
     )
   ]
-  assert observed_calls == [
+  assert recording_observed_calls == [
     {
+      "session_id": "stream-1",
+      "stream": "stream-1",
+      "recording_id": harness.client.flush_recording_ids[0],
+      "raw_text": "alpha",
+      "rewrite_input": "alpha",
+      "audio_attachment": audio_attachment,
+      "duration_seconds": 0.1,
+      "word_count": 1,
+    }
+  ]
+  assert rewrite_observed_calls == [
+    {
+      "session_id": "stream-1",
       "provider": "litert",
       "model": "/tmp/rewrite/model.litertlm",
       "prompt_path": "/tmp/rewrite/system.md",
@@ -2490,6 +2567,7 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
   ]
   assert observed_updates == [
     {
+      "source": "rewrite",
       "input": None,
       "output": "rewritten alpha",
       "metadata": None,
@@ -2497,6 +2575,28 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
       "status_message": None,
       "usage_details": {"input": 12, "output": 4},
       "cost_details": {"total": 0.00012},
+    },
+    {
+      "source": "recording",
+      "input": None,
+      "output": {"emitted_text": "rewritten alpha "},
+      "metadata": {
+        "component": "active-listener",
+        "stream": "stream-1",
+        "recording_id": harness.client.flush_recording_ids[0],
+        "llm_mode": "active",
+        "source": "pipeline_llm",
+        "word_count": 2,
+        "duration_seconds": 0.1,
+        "llm_model": "fake-model",
+        "tokens_in": 12,
+        "tokens_out": 4,
+        "cost": "0.00012",
+      },
+      "level": None,
+      "status_message": None,
+      "usage_details": None,
+      "cost_details": None,
     }
   ]
   assert (

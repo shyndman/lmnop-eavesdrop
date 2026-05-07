@@ -26,6 +26,7 @@ from active_listener.config.models import ActiveListenerConfig
 from active_listener.infra.dbus import AppStateService
 from active_listener.infra.emitter import TextEmitter
 from active_listener.infra.keyboard import KeyboardControlEvent, KeyboardEventKind, KeyboardInput
+from active_listener.infra.langfuse import record_session_event
 from active_listener.recording.finalizer import RecordingFinalizer
 from active_listener.recording.session import RecordingAudioBuffer, RecordingSession
 from active_listener.recording.spectrum import SpectrumAnalyzer
@@ -69,9 +70,11 @@ class ActiveListenerService:
   media_playback_controller: MediaPlaybackController
   recording_audio_buffer: RecordingAudioBuffer
   spectrum_analyzer: SpectrumRuntime = field(default_factory=_build_noop_spectrum_analyzer)
+  ffmpeg_path: str | None = None
   phase: ForegroundPhase = ForegroundPhase.IDLE
   disconnect_generation: int = 0
   _was_playing_before_recording: bool = field(default=False, init=False)
+  _current_stream: str | None = field(default=None, init=False)
   _llm_available: bool = field(default=False, init=False)
   _llm_active: bool = field(default=False, init=False)
   _recording_session: RecordingSession = field(init=False)
@@ -92,6 +95,7 @@ class ActiveListenerService:
       config=self.config,
       client=self.client,
       emitter=self.emitter,
+      ffmpeg_path=self.ffmpeg_path,
       logger=self.logger,
       rewrite_client=self.rewrite_client,
       history_store=self.history_store,
@@ -218,6 +222,10 @@ class ActiveListenerService:
         self.phase = ForegroundPhase.RECORDING
         await self.dbus_service.set_state(self.phase)
         self.logger.info("recording started")
+        self._record_session_event(
+          name="active-listener-recording-started",
+          metadata={"stream": self._current_stream, "recording_id": recording_id},
+        )
         return decision
       except Exception:
         try:
@@ -241,6 +249,10 @@ class ActiveListenerService:
         await self.client.cancel_utterance(recording_id)
         self._recording_session.reset_connection_cursor()
         self.logger.info("recording cancelled")
+        self._record_session_event(
+          name="active-listener-recording-cancelled",
+          metadata={"stream": self._current_stream, "recording_id": recording_id},
+        )
         return decision
       finally:
         await self._resume_media_if_needed()
@@ -296,13 +308,23 @@ class ActiveListenerService:
     ),
   ) -> None:
     if isinstance(event, TranscriptionEvent):
+      self._current_stream = event.stream
       await self._handle_transcription_event(event)
       return
+
+    self._current_stream = event.stream
 
     if isinstance(event, ConnectedEvent | ReconnectedEvent):
       self._recording_session.reset_connection_cursor()
 
     decision = decide_client_event(self.phase, event)
+
+    if isinstance(event, ConnectedEvent):
+      self._record_session_event(
+        session_id=event.stream,
+        name="active-listener-client-connected",
+        metadata={"stream": event.stream},
+      )
 
     if decision is ConnectionDecision.IGNORE:
       return
@@ -325,6 +347,15 @@ class ActiveListenerService:
           attempt=reconnect_event.attempt,
           retry_delay_s=reconnect_event.retry_delay_s,
         )
+        self._record_session_event(
+          session_id=reconnect_event.stream,
+          name="active-listener-client-reconnecting",
+          metadata={
+            "stream": reconnect_event.stream,
+            "attempt": reconnect_event.attempt,
+            "retry_delay_s": reconnect_event.retry_delay_s,
+          },
+        )
       return
 
     if decision is ConnectionDecision.RECONNECTED:
@@ -334,6 +365,11 @@ class ActiveListenerService:
       reconnected_event = event
       assert isinstance(reconnected_event, ReconnectedEvent)
       self.logger.info("client reconnected", stream=reconnected_event.stream)
+      self._record_session_event(
+        session_id=reconnected_event.stream,
+        name="active-listener-client-reconnected",
+        metadata={"stream": reconnected_event.stream},
+      )
       return
 
     self.disconnect_generation += 1
@@ -341,6 +377,7 @@ class ActiveListenerService:
     disconnected_event = event
     assert isinstance(disconnected_event, DisconnectedEvent)
     disconnect_reason = disconnected_event.reason or UNKNOWN_DISCONNECT_REASON
+    aborted_recording_id = self._recording_session.active_recording_id
 
     if decision is ConnectionDecision.ABORT_RECORDING:
       self.phase = ForegroundPhase.RECONNECTING
@@ -355,6 +392,15 @@ class ActiveListenerService:
           stream=disconnected_event.stream,
           reason=disconnect_reason,
         )
+        self._record_session_event(
+          session_id=disconnected_event.stream,
+          name="active-listener-recording-aborted",
+          metadata={
+            "stream": disconnected_event.stream,
+            "recording_id": aborted_recording_id,
+            "reason": disconnect_reason,
+          },
+        )
         return
       finally:
         await self._resume_media_if_needed()
@@ -365,6 +411,11 @@ class ActiveListenerService:
       "client disconnected",
       stream=disconnected_event.stream,
       reason=disconnect_reason,
+    )
+    self._record_session_event(
+      session_id=disconnected_event.stream,
+      name="active-listener-client-disconnected",
+      metadata={"stream": disconnected_event.stream, "reason": disconnect_reason},
     )
 
   async def _handle_transcription_event(self, event: TranscriptionEvent) -> None:
@@ -443,6 +494,26 @@ class ActiveListenerService:
 
     self.logger.debug("media resume requested after recording")
     return None
+
+  def _record_session_event(
+    self,
+    *,
+    name: str,
+    metadata: dict[str, object],
+    session_id: str | None = None,
+  ) -> None:
+    resolved_session_id = session_id or self._current_stream
+    if resolved_session_id is None:
+      return
+
+    try:
+      record_session_event(
+        session_id=resolved_session_id,
+        name=name,
+        metadata=metadata,
+      )
+    except Exception:
+      self.logger.exception("langfuse session event failed", name=name)
 
   def _start_spectrum_analysis(self) -> None:
     spectrum_task = self.spectrum_analyzer.start()

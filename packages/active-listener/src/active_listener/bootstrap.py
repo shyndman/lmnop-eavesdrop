@@ -118,6 +118,7 @@ async def create_service(
   media_playback_controller: MediaPlaybackController | None = None
   rewrite_client: ActiveListenerRewriteClient | None = None
   history_store: ActiveListenerTranscriptHistoryStore | None = None
+  langfuse_ffmpeg_path: str | None = None
   connect_started = False
 
   try:
@@ -127,6 +128,8 @@ async def create_service(
     raise ActiveListenerRuntimeError(str(exc)) from exc
 
   try:
+    if history_store_factory is None:
+      langfuse_ffmpeg_path = resolve_ffmpeg_path(config.ffmpeg_path, logger=logger)
     history_store = resolved_history_store_factory(config, logger, resolved_dbus_service)
     emitter = resolved_emitter_factory()
     client = resolved_client_factory(config, on_capture)
@@ -170,6 +173,7 @@ async def create_service(
     media_playback_controller=media_playback_controller,
     recording_audio_buffer=recording_audio_buffer,
     spectrum_analyzer=spectrum_analyzer,
+    ffmpeg_path=langfuse_ffmpeg_path,
   )
   if isinstance(resolved_dbus_service, SdbusDbusService):
     resolved_dbus_service.attach_recording_control(service)

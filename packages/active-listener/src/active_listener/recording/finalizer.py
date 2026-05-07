@@ -34,7 +34,11 @@ from active_listener.recording.reducer import (
 )
 from eavesdrop.wire import TranscriptionMessage
 
-from ..infra.langfuse import start_rewrite_observation
+from ..infra.langfuse import (
+  build_langfuse_audio_attachment,
+  start_recording_observation,
+  start_rewrite_observation,
+)
 
 
 @dataclass(frozen=True)
@@ -94,6 +98,7 @@ class RecordingFinalizer:
   config: ActiveListenerConfig
   client: ActiveListenerClient
   emitter: TextEmitter
+  ffmpeg_path: str | None
   logger: BoundLogger
   rewrite_client: ActiveListenerRewriteClient
   history_store: ActiveListenerTranscriptHistoryStore
@@ -159,43 +164,65 @@ class RecordingFinalizer:
         return
 
       self.logger.info("finalized raw transcript", stream=message.stream, raw_text=raw_text)
+      rewrite_input = serialize_text_runs(completed_runs)
+      audio_attachment = build_langfuse_audio_attachment(
+        captured_audio=finished_recording.captured_audio,
+        ffmpeg_path=self.ffmpeg_path,
+        logger=self.logger,
+      )
 
-      pipeline_steps = self._pipeline_steps(stream=message.stream)
-      finalization_state = await self._run_pipeline(
-        state=FinalizationState(
-          text=raw_text,
-          rewrite_input=serialize_text_runs(completed_runs),
-        ),
-        steps=pipeline_steps,
+      with start_recording_observation(
+        session_id=message.stream,
         stream=message.stream,
-      )
-      if finalization_state is None:
-        return
+        recording_id=finished_recording.recording_id,
+        raw_text=raw_text,
+        rewrite_input=rewrite_input,
+        audio_attachment=audio_attachment,
+        duration_seconds=reducer_state.duration_seconds,
+        word_count=len(reducer_state.completed_words),
+      ) as recording_observation:
+        pipeline_steps = self._pipeline_steps(stream=message.stream)
+        finalization_state = await self._run_pipeline(
+          state=FinalizationState(
+            text=raw_text,
+            rewrite_input=rewrite_input,
+          ),
+          steps=pipeline_steps,
+          stream=message.stream,
+        )
+        if finalization_state is None:
+          if recording_observation is not None:
+            _ = recording_observation.update(
+              level="ERROR",
+              status_message="finalization pipeline failed",
+            )
+          return
 
-      final_text = finalization_state.text
+        final_text = finalization_state.text
 
-      llm_mode = _llm_mode(
-        llm_available=self.current_llm_available(),
-        rewrite_ran=finalization_state.rewrite_result is not None,
-      )
-      emitted_text_source = _emitted_text_source(llm_mode)
+        llm_mode = _llm_mode(
+          llm_available=self.current_llm_available(),
+          rewrite_ran=finalization_state.rewrite_result is not None,
+        )
+        emitted_text_source = _emitted_text_source(llm_mode)
 
-      try:
-        self.emitter.emit_text(final_text)
-      except Exception:
-        self.logger.exception("text emission failed", stream=message.stream)
-        return
+        try:
+          self.emitter.emit_text(final_text)
+        except Exception:
+          if recording_observation is not None:
+            _ = recording_observation.update(level="ERROR", status_message="text emission failed")
+          self.logger.exception("text emission failed", stream=message.stream)
+          return
 
-      self.logger.info("recording finalization mode", stream=message.stream, llm_mode=llm_mode)
-      self.logger.info(
-        "text emitted",
-        stream=message.stream,
-        emitted_text=final_text,
-        text_length=len(final_text),
-        source=emitted_text_source,
-      )
-      self.history_store.record_finalized_recording(
-        FinalizedTranscriptRecord(
+        self.logger.info("recording finalization mode", stream=message.stream, llm_mode=llm_mode)
+        self.logger.info(
+          "text emitted",
+          stream=message.stream,
+          emitted_text=final_text,
+          text_length=len(final_text),
+          source=emitted_text_source,
+        )
+        finalized_record = FinalizedTranscriptRecord(
           pre_finalization_text=raw_text,
           post_finalization_text=final_text,
           llm_model=(
@@ -220,9 +247,32 @@ class RecordingFinalizer:
           ),
           word_count=_count_words(final_text),
           duration_seconds=reducer_state.duration_seconds,
-        ),
-        finished_recording.captured_audio,
-      )
+        )
+        self.history_store.record_finalized_recording(
+          finalized_record,
+          finished_recording.captured_audio,
+        )
+        if recording_observation is not None:
+          _ = recording_observation.update(
+            output={"emitted_text": final_text},
+            metadata={
+              "component": "active-listener",
+              "stream": message.stream,
+              "recording_id": finished_recording.recording_id,
+              "llm_mode": llm_mode,
+              "source": emitted_text_source,
+              "word_count": finalized_record.word_count,
+              "duration_seconds": finalized_record.duration_seconds,
+              "llm_model": finalized_record.llm_model,
+              "tokens_in": finalized_record.tokens_in,
+              "tokens_out": finalized_record.tokens_out,
+              "cost": (
+                format(finalized_record.cost, "f")
+                if finalized_record.cost is not None
+                else None
+              ),
+            },
+          )
 
   def _pipeline_steps(self, *, stream: str) -> list[PipelineStep]:
     async def rewrite_with_llm(state: FinalizationState) -> FinalizationState:
@@ -347,6 +397,7 @@ class RecordingFinalizer:
     model = _rewrite_model(rewrite_config)
 
     with start_rewrite_observation(
+      session_id=stream,
       provider=provider,
       model=model,
       prompt_path=prompt_path,
