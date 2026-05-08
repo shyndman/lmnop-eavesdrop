@@ -2335,7 +2335,11 @@ async def test_finalize_recording_removes_unescaped_thank_you_mentions() -> None
   client = FakeClient(
     flush_results=[
       _message(
-        _segment(1, "alpha thank you, beta THANK YOU, gamma", completed=True),
+        _segment(
+          1,
+          "alpha thank you beta THANK YOU, gamma Thank you. delta thank you! echo",
+          completed=True,
+        ),
         _segment(2, "tail", completed=False),
       )
     ]
@@ -2346,7 +2350,7 @@ async def test_finalize_recording_removes_unescaped_thank_you_mentions() -> None
   _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
   await harness.service.wait_for_background_tasks()
 
-  assert harness.emitter.emitted == ["alpha beta gamma "]
+  assert harness.emitter.emitted == ["alpha beta gamma delta echo "]
 
 
 @pytest.mark.asyncio
@@ -2354,7 +2358,11 @@ async def test_finalize_recording_keeps_escaped_thank_you_mentions() -> None:
   client = FakeClient(
     flush_results=[
       _message(
-        _segment(1, "alpha escape thank you, beta escape THANK YOU,", completed=True),
+        _segment(
+          1,
+          "alpha escape thank you beta escape THANK YOU, gamma escape Thank you.",
+          completed=True,
+        ),
         _segment(2, "tail", completed=False),
       )
     ]
@@ -2365,7 +2373,107 @@ async def test_finalize_recording_keeps_escaped_thank_you_mentions() -> None:
   _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
   await harness.service.wait_for_background_tasks()
 
-  assert harness.emitter.emitted == ["alpha thank you, beta THANK YOU, "]
+  assert harness.emitter.emitted == ["alpha thank you beta THANK YOU, gamma Thank you. "]
+
+
+@pytest.mark.asyncio
+async def test_finalize_recording_strips_instruction_tags_when_llm_is_disabled() -> None:
+  client = FakeClient(
+    flush_results=[
+      _message(
+        _segment(
+          1,
+          "Hello,",
+          completed=True,
+          start=0.0,
+          end=0.2,
+          words=[_word("Hello,", start=0.0, end=0.2)],
+        ),
+        _segment(
+          2,
+          "scratch that.",
+          completed=True,
+          start=0.3,
+          end=0.6,
+          words=[
+            _word("scratch", start=0.3, end=0.45),
+            _word("that.", start=0.45, end=0.6),
+          ],
+        ),
+        _segment(
+          3,
+          "thank you, Bye.",
+          completed=True,
+          start=0.7,
+          end=1.0,
+          words=[
+            _word("thank", start=0.7, end=0.8),
+            _word("you,", start=0.8, end=0.9),
+            _word("Bye.", start=0.9, end=1.0),
+          ],
+        ),
+        _segment(4, "", completed=False),
+      )
+    ]
+  )
+  harness = _service(client=client, config=_config(rewrite_enabled=True))
+
+  assert await harness.service.set_llm_active(False) is False
+
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  reducer_state = _recording_reducer_state(_recording_session(harness.service))
+  assert reducer_state is not None
+  reducer_state.closed_command_spans = [TimeSpan(start_s=0.3, end_s=0.6)]
+
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  await harness.service.wait_for_background_tasks()
+
+  assert harness.emitter.emitted == ["Hello, scratch that. Bye. "]
+  assert harness.rewrite_client.calls == []
+
+
+@pytest.mark.asyncio
+async def test_finalize_recording_injects_thank_you_instruction_when_llm_enabled(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  client = FakeClient(
+    flush_results=[
+      _message(
+        _segment(
+          1,
+          "Thank you? thank you, I want to keep going escape thank you.",
+          completed=True,
+        ),
+        _segment(2, "tail", completed=False),
+      )
+    ]
+  )
+  rewrite_client = FakeRewriteClient(rewritten_text="rewritten output")
+  harness = _service(
+    client=client,
+    rewrite_client=rewrite_client,
+    config=_config(rewrite_enabled=True),
+  )
+  monkeypatch.setattr(
+    "active_listener.infra.rewrite.load_active_listener_rewrite_prompt",
+    _prompt_loader(_loaded_prompt_file(_prompt())),
+  )
+
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  await harness.service.wait_for_background_tasks()
+
+  assert harness.emitter.emitted == ["rewritten output "]
+  assert rewrite_client.calls == [
+    {
+      "instructions": "Rewrite this transcript.",
+      "transcript": (
+        "Thank you? <instruction>remove the preceding thank you</instruction> "
+        "thank you, <instruction>remove the preceding thank you</instruction> "
+        "I want to keep going thank you."
+      ),
+    }
+  ]
 
 
 @pytest.mark.asyncio
@@ -2635,7 +2743,7 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
       "status_message": None,
       "usage_details": None,
       "cost_details": None,
-    }
+    },
   ]
   assert (
     LogRecord(
