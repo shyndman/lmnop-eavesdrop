@@ -57,7 +57,8 @@ repos:
         entry: uv run basedpyright
         language: system
         pass_filenames: false
-      - id: eslint
-        name: eslint
-        entry: bash -c "cd packages/active-listener-ui-electron && pnpm run lint"
-        language: node
+      - id: active-listener-ui-gnome
+        name: active-listener-ui-gnome
+        entry: bash -c "cd packages/active-listener-ui-gnome && pnpm run typecheck && pnpm run validate:active-listener-service-error && pnpm run validate:recording-menu-control && pnpm run validate:transcript-attributes"
+        language: system
+        pass_filenames: false
