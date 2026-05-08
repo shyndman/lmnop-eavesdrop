@@ -180,6 +180,7 @@ tasks:
   run-server:
     desc: Start the transcription server with local config
     deps: [prepare-server]
+    dotenv: ['.env']
     dir: packages/server
     cmds:
       - uv run eavesdrop-server --config config.yaml
@@ -247,6 +248,7 @@ tasks:
     # Verified ROCm runtime flags on AMD Framework 13 (Ryzen 7840U / Radeon 780M).
     desc: Run the server Docker image with ROCm runtime flags
     deps: [build-server-image]
+    dotenv: ['.env']
     dir: .
     vars:
       SERVER_IMAGE: '{{default "ghcr.io/shyndman/lmnop-eavesdrop:latest" .SERVER_IMAGE}}'
@@ -262,6 +264,9 @@ tasks:
         --name eavesdrop
         --env HSA_OVERRIDE_GFX_VERSION='{{.HSA_OVERRIDE_GFX_VERSION}}'
         --env LOG_LEVEL='{{.LOG_LEVEL}}'
+        --env LANGFUSE_PUBLIC_KEY
+        --env LANGFUSE_SECRET_KEY
+        --env LANGFUSE_BASE_URL
         --volume "$HOME/.cache/lmnop/eavesdrop-models:/root/.cache/eavesdrop"
         --volume "$PWD/packages/server/config.yaml:/app/server/config.yaml:ro"
         --env EAVESDROP_CONFIG=/app/server/config.yaml
@@ -271,6 +276,7 @@ tasks:
     # Verified ROCm runtime flags on AMD Framework 13 (Ryzen 7840U / Radeon 780M).
     desc: Run the server Docker image as a restart-always background container
     deps: [build-server-image]
+    dotenv: ['.env']
     dir: .
     vars:
       SERVER_IMAGE: '{{default "ghcr.io/shyndman/lmnop-eavesdrop:latest" .SERVER_IMAGE}}'
@@ -291,6 +297,9 @@ tasks:
         --name eavesdrop
         --env HSA_OVERRIDE_GFX_VERSION='{{.HSA_OVERRIDE_GFX_VERSION}}'
         --env LOG_LEVEL='{{.LOG_LEVEL}}'
+        --env LANGFUSE_PUBLIC_KEY
+        --env LANGFUSE_SECRET_KEY
+        --env LANGFUSE_BASE_URL
         --volume "$HOME/.cache/lmnop/eavesdrop-models:/root/.cache/eavesdrop"
         --volume "$PWD/packages/server/config.yaml:/app/server/config.yaml:ro"
         --env EAVESDROP_CONFIG=/app/server/config.yaml

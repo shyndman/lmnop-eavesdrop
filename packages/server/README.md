@@ -60,6 +60,16 @@ docker run --interactive --tty \
 
 The containerized server honors `LOG_LEVEL`, so you can raise verbosity with values like `DEBUG` when needed.
 
+## Langfuse tracing
+
+Langfuse tracing is env-driven. The `task run-server`, `task run-server-image`, and `task run-server-image-persistent` commands load the repo-root `.env`. The Docker tasks pass these variables through to the container when they are present:
+
+- `LANGFUSE_PUBLIC_KEY`
+- `LANGFUSE_SECRET_KEY`
+- `LANGFUSE_BASE_URL` when you are not using the default Langfuse cloud host
+
+For manual Docker runs, add the same `--env LANGFUSE_*` flags or provide equivalent environment variables through your container runner.
+
 ### Run Options Explained
 
 - `--device /dev/kfd` - AMD GPU compute device access
