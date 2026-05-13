@@ -7,7 +7,7 @@ without handling transcription logic.
 
 import json
 import os
-from typing import cast, TypedDict
+from typing import TypedDict, cast
 
 from eavesdrop.common import get_logger
 from eavesdrop.server.transcription.models import FeatureExtractorConfig
@@ -352,7 +352,11 @@ def load_whisper_model(config: WhisperModelConfig) -> WhisperModelBundle:
   model = _load_ctranslate2_model(config, path_resolution["model_path"])
 
   logger.info(
-    "Initialized CTranslate2 Whisper model: path='%s', device='%s', device_index=%s, compute_type='%s', cpu_threads=%d, num_workers=%d, is_multilingual=%s",
+    (
+      "Initialized CTranslate2 Whisper model: path='%s', device='%s', "
+      "device_index=%s, compute_type='%s', cpu_threads=%d, "
+      "num_workers=%d, is_multilingual=%s"
+    ),
     path_resolution["model_path"],
     config.device,
     config.device_index,

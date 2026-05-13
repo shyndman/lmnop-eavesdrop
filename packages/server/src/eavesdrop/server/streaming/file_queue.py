@@ -56,7 +56,8 @@ class FileAudioQueue:
 
     if chunk_samples > self._capacity_samples:
       raise ValueError(
-        f"Chunk exceeds queue capacity; split decoded audio before enqueueing (chunk={chunk_samples} samples, capacity={self._capacity_samples} samples)"
+        "Chunk exceeds queue capacity; split decoded audio before enqueueing "
+        + f"(chunk={chunk_samples} samples, capacity={self._capacity_samples} samples)"
       )
 
     enqueue_wait_started = time.perf_counter()

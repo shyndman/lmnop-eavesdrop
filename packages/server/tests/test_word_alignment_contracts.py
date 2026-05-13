@@ -1,7 +1,7 @@
 """Contract tests for word-alignment integration with CTranslate2 APIs."""
 
 from collections.abc import Callable
-from typing import NamedTuple, override, cast
+from typing import NamedTuple, cast, override
 
 from eavesdrop.server.transcription.models import SegmentDict, WordTimingDict
 from eavesdrop.server.transcription.word_alignment import (

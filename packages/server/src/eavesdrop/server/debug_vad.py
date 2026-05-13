@@ -11,8 +11,8 @@ Usage:
 """
 
 import argparse
-from importlib import import_module
 import sys
+from importlib import import_module
 from os import PathLike
 from pathlib import Path
 from typing import Protocol, TypedDict, cast

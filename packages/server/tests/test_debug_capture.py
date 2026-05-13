@@ -1,8 +1,8 @@
 """Tests for the AudioDebugCapture class."""
 
+import wave
 from pathlib import Path
 from typing import Callable, cast
-import wave
 
 import numpy as np
 import pytest
@@ -10,7 +10,6 @@ from numpy.typing import NDArray
 
 from eavesdrop.server.streaming.debug_capture import AudioDebugCapture
 from eavesdrop.server.streaming.processor import AudioChunk
-
 
 Float32Audio = NDArray[np.float32]
 

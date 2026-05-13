@@ -182,7 +182,10 @@ class LanguageDetector:
     :rtype: LanguageDetectionResult
     """
     self.logger.debug(
-      f"Detecting language: vad_filter={vad_filter}, segments={language_detection_segments}, threshold={language_detection_threshold}"
+      "Detecting language: vad_filter=%s, segments=%s, threshold=%s",
+      vad_filter,
+      language_detection_segments,
+      language_detection_threshold,
     )
 
     if not (audio is not None or features is not None):
@@ -237,7 +240,9 @@ class LanguageDetector:
       )
       if language_probability > language_detection_threshold:
         self.logger.debug(
-          f"Language detection threshold met: {language_probability:.3f} > {language_detection_threshold}"
+        "Language detection threshold met: %.3f > %s",
+        language_probability,
+        language_detection_threshold,
         )
         break
       detected_language_info.setdefault(language, []).append(language_probability)
