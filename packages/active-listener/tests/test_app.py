@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -431,6 +431,7 @@ class FailingStopClient(FakeClient):
 @dataclass
 class FakeRewriteClient:
   rewritten_text: str = "rewritten text"
+  corrections: dict[str, str] = field(default_factory=dict)
   error: Exception | None = None
   input_tokens: int | None = None
   output_tokens: int | None = None
@@ -458,6 +459,7 @@ class FakeRewriteClient:
       input_tokens=self.input_tokens,
       output_tokens=self.output_tokens,
       cost=self.cost,
+      corrections=self.corrections,
     )
 
   async def close(self) -> None:
@@ -513,6 +515,30 @@ class FakeHistoryStore:
 class RecordedFinalization:
   record: FinalizedTranscriptRecord
   captured_audio: CapturedRecordingAudio
+
+
+@dataclass
+class FakeCorrectionStore:
+  path: Path = Path("/tmp/active-listener.corrections.jsonc")
+  loaded_corrections: dict[str, str] = field(default_factory=dict)
+  load_started: asyncio.Event = field(default_factory=asyncio.Event)
+  load_release: asyncio.Future[dict[str, str]] | None = None
+  load_error: Exception | None = None
+  merged_corrections: list[dict[str, str]] = field(default_factory=list)
+  merge_error: Exception | None = None
+
+  async def load_async(self) -> dict[str, str]:
+    self.load_started.set()
+    if self.load_release is not None:
+      return await self.load_release
+    if self.load_error is not None:
+      raise self.load_error
+    return self.loaded_corrections
+
+  async def merge_async(self, corrections: Mapping[str, str]) -> None:
+    if self.merge_error is not None:
+      raise self.merge_error
+    self.merged_corrections.append(dict(corrections))
 
 
 def _segment(
@@ -621,6 +647,7 @@ class ServiceHarness:
   dbus_service: FakeDbusService
   media_playback_controller: FakeMediaPlaybackController
   recording_audio_buffer: RecordingAudioBuffer
+  correction_store: FakeCorrectionStore
 
 
 def _service(
@@ -636,6 +663,7 @@ def _service(
   config: ActiveListenerConfig | None = None,
   spectrum_analyzer: FakeSpectrumAnalyzer | None = None,
   recording_audio_buffer: RecordingAudioBuffer | None = None,
+  correction_store: FakeCorrectionStore | None = None,
   ffmpeg_path: str | None = None,
 ) -> ServiceHarness:
   resolved_client = client or FakeClient()
@@ -647,6 +675,7 @@ def _service(
   resolved_dbus_service = dbus_service or FakeDbusService()
   resolved_media_playback_controller = media_playback_controller or FakeMediaPlaybackController()
   resolved_recording_audio_buffer = recording_audio_buffer or RecordingAudioBuffer()
+  resolved_correction_store = correction_store or FakeCorrectionStore()
   service = ActiveListenerService(
     config=config or _config(),
     keyboard=resolved_keyboard,
@@ -658,6 +687,7 @@ def _service(
     dbus_service=resolved_dbus_service,
     media_playback_controller=resolved_media_playback_controller,
     recording_audio_buffer=resolved_recording_audio_buffer,
+    correction_store=resolved_correction_store,
     spectrum_analyzer=spectrum_analyzer or FakeSpectrumAnalyzer(),
     ffmpeg_path=ffmpeg_path,
   )
@@ -672,6 +702,7 @@ def _service(
     resolved_dbus_service,
     resolved_media_playback_controller,
     resolved_recording_audio_buffer,
+    resolved_correction_store,
   )
 
 
@@ -1731,6 +1762,7 @@ async def test_cancel_recording_discards_captured_audio_before_next_recording() 
       sample_rate_hz=SAMPLE_RATE_HZ,
       channels=1,
     ),
+    correction_load_task=finished_recording.correction_load_task,
   )
 
 
@@ -1759,6 +1791,7 @@ async def test_disconnect_discards_captured_audio_before_next_recording() -> Non
       sample_rate_hz=SAMPLE_RATE_HZ,
       channels=1,
     ),
+    correction_load_task=finished_recording.correction_load_task,
   )
 
 
@@ -2133,6 +2166,7 @@ async def test_new_commit_flushes_while_older_rewrite_is_still_running(
       input_tokens=None,
       output_tokens=None,
       cost=None,
+      corrections={},
     )
   )
   await service.wait_for_background_tasks()
@@ -2474,6 +2508,198 @@ async def test_finalize_recording_injects_thank_you_instruction_when_llm_enabled
       ),
     }
   ]
+
+
+@pytest.mark.asyncio
+async def test_correction_loading_starts_when_recording_starts() -> None:
+  correction_store = FakeCorrectionStore()
+  harness = _service(correction_store=correction_store)
+
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+
+  assert correction_store.load_started.is_set()
+
+  _ = await harness.service.handle_action(AppAction.CANCEL)
+
+
+@pytest.mark.asyncio
+async def test_finalize_recording_applies_loaded_corrections_before_rewrite(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  client = FakeClient(
+    flush_results=[
+      _message(
+        _segment(1, "I use pie torch", completed=True),
+        _segment(2, "tail", completed=False),
+      )
+    ]
+  )
+  correction_store = FakeCorrectionStore(loaded_corrections={"pie torch": "PyTorch"})
+  rewrite_client = FakeRewriteClient(rewritten_text="I use PyTorch")
+  harness = _service(
+    client=client,
+    correction_store=correction_store,
+    rewrite_client=rewrite_client,
+    config=_config(rewrite_enabled=True),
+  )
+  monkeypatch.setattr(
+    "active_listener.infra.rewrite.load_active_listener_rewrite_prompt",
+    _prompt_loader(_loaded_prompt_file(_prompt())),
+  )
+
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  await harness.service.wait_for_background_tasks()
+
+  assert rewrite_client.calls == [
+    {"instructions": "Rewrite this transcript.", "transcript": "I use PyTorch"}
+  ]
+  assert harness.emitter.emitted == ["I use PyTorch "]
+
+
+@pytest.mark.asyncio
+async def test_finalize_recording_waits_for_started_correction_load_before_rewrite(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  correction_load = asyncio.get_running_loop().create_future()
+  correction_store = FakeCorrectionStore(load_release=correction_load)
+  rewrite_client = FakeRewriteClient(rewritten_text="rewritten alpha")
+  client = FakeClient(
+    flush_results=[
+      _message(
+        _segment(1, "alfa", completed=True),
+        _segment(2, "tail", completed=False),
+      )
+    ]
+  )
+  harness = _service(
+    client=client,
+    correction_store=correction_store,
+    rewrite_client=rewrite_client,
+    config=_config(rewrite_enabled=True),
+  )
+  monkeypatch.setattr(
+    "active_listener.infra.rewrite.load_active_listener_rewrite_prompt",
+    _prompt_loader(_loaded_prompt_file(_prompt())),
+  )
+
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  await asyncio.sleep(0)
+
+  assert rewrite_client.calls == []
+
+  correction_load.set_result({"alfa": "alpha"})
+  await harness.service.wait_for_background_tasks()
+
+  assert rewrite_client.calls == [
+    {"instructions": "Rewrite this transcript.", "transcript": "alpha"}
+  ]
+
+
+@pytest.mark.asyncio
+async def test_finalize_recording_continues_when_correction_load_fails(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  correction_store = FakeCorrectionStore(load_error=RuntimeError("bad jsonc"))
+  rewrite_client = FakeRewriteClient(rewritten_text="rewritten alpha")
+  client = FakeClient(
+    flush_results=[
+      _message(
+        _segment(1, "alpha", completed=True),
+        _segment(2, "tail", completed=False),
+      )
+    ]
+  )
+  harness = _service(
+    client=client,
+    correction_store=correction_store,
+    rewrite_client=rewrite_client,
+    config=_config(rewrite_enabled=True),
+  )
+  monkeypatch.setattr(
+    "active_listener.infra.rewrite.load_active_listener_rewrite_prompt",
+    _prompt_loader(_loaded_prompt_file(_prompt())),
+  )
+
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  await harness.service.wait_for_background_tasks()
+
+  assert harness.emitter.emitted == ["rewritten alpha "]
+  assert "stored correction load failed" in harness.logger.exception_messages
+
+
+@pytest.mark.asyncio
+async def test_finalize_recording_persists_rewrite_corrections(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  correction_store = FakeCorrectionStore()
+  rewrite_client = FakeRewriteClient(
+    rewritten_text="I use PyTorch",
+    corrections={"pie torch": "PyTorch"},
+  )
+  client = FakeClient(
+    flush_results=[
+      _message(
+        _segment(1, "I use pie torch", completed=True),
+        _segment(2, "tail", completed=False),
+      )
+    ]
+  )
+  harness = _service(
+    client=client,
+    correction_store=correction_store,
+    rewrite_client=rewrite_client,
+    config=_config(rewrite_enabled=True),
+  )
+  monkeypatch.setattr(
+    "active_listener.infra.rewrite.load_active_listener_rewrite_prompt",
+    _prompt_loader(_loaded_prompt_file(_prompt())),
+  )
+
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  await harness.service.wait_for_background_tasks()
+
+  assert correction_store.merged_corrections == [{"pie torch": "PyTorch"}]
+  assert harness.emitter.emitted == ["I use PyTorch "]
+
+
+@pytest.mark.asyncio
+async def test_finalize_recording_continues_when_correction_persistence_fails(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  correction_store = FakeCorrectionStore(merge_error=RuntimeError("disk full"))
+  rewrite_client = FakeRewriteClient(
+    rewritten_text="I use PyTorch",
+    corrections={"pie torch": "PyTorch"},
+  )
+  client = FakeClient(
+    flush_results=[
+      _message(
+        _segment(1, "I use pie torch", completed=True),
+        _segment(2, "tail", completed=False),
+      )
+    ]
+  )
+  harness = _service(
+    client=client,
+    correction_store=correction_store,
+    rewrite_client=rewrite_client,
+    config=_config(rewrite_enabled=True),
+  )
+  monkeypatch.setattr(
+    "active_listener.infra.rewrite.load_active_listener_rewrite_prompt",
+    _prompt_loader(_loaded_prompt_file(_prompt())),
+  )
+
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  await harness.service.wait_for_background_tasks()
+
+  assert harness.emitter.emitted == ["I use PyTorch "]
+  assert "rewrite correction persistence failed" in harness.logger.exception_messages
 
 
 @pytest.mark.asyncio

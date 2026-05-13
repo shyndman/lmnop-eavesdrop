@@ -1,24 +1,24 @@
 from __future__ import annotations
 
-import os
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from importlib import import_module
 from pathlib import Path
 from types import TracebackType
-from typing import Literal, NotRequired, Protocol, TypedDict, cast, final
+from typing import ClassVar, Literal, NotRequired, Protocol, Self, TypedDict, cast, final
 
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from pydantic_ai import Agent
 from pydantic_ai.run import AgentRunResult
 
 from active_listener.app.ports import RewriteResult
+from active_listener.infra.corrections import validate_corrections
+from active_listener.infra.user_config import EAVESDROP_CONFIG_DIRNAME, resolve_user_config_dir
 
 from .langfuse import initialize_langfuse
 
-USER_CONFIG_ENV_VAR = "XDG_CONFIG_HOME"
-DEFAULT_USER_CONFIG_DIRNAME = ".config"
-EAVESDROP_CONFIG_DIRNAME = "eavesdrop"
 ACTIVE_LISTENER_PROMPT_FILENAME = "active-listener.rewrite.system.md"
 
 
@@ -119,6 +119,21 @@ class RewriteClientTimeoutError(RewriteClientError):
   pass
 
 
+class StructuredRewriteOutput(BaseModel):
+  model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
+
+  text: str
+  corrections: dict[str, str] = Field(default_factory=dict)
+
+  @model_validator(mode="after")
+  def validate_output(self) -> Self:
+    self.text = self.text.strip()
+    if self.text == "":
+      raise ValueError("rewrite model returned empty output")
+    self.corrections = validate_corrections(self.corrections)
+    return self
+
+
 @final
 class LiteRtRewriteClient:
   def __init__(self, *, model_path: str) -> None:
@@ -144,13 +159,14 @@ class LiteRtRewriteClient:
     except Exception as exc:
       raise RewriteClientError("rewrite request failed") from exc
 
-    rewritten_text = extract_rewrite_output(response)
+    rewrite_output = parse_structured_rewrite_output(extract_rewrite_output(response))
     return RewriteResult(
-      text=rewritten_text,
+      text=rewrite_output.text,
       model=self.model_path,
       input_tokens=None,
       output_tokens=None,
       cost=None,
+      corrections=rewrite_output.corrections,
     )
 
   async def close(self) -> None:
@@ -176,8 +192,8 @@ class PydanticAiRewriteClient:
   def __init__(self, *, model: str) -> None:
     self.model: str = model
     _ = initialize_langfuse()
-    self._agent: Agent[None, str] = Agent(
-      output_type=str,
+    self._agent: Agent[None, StructuredRewriteOutput] = Agent(
+      output_type=StructuredRewriteOutput,
       instrument=True,
       name="active-listener-rewrite",
     )
@@ -189,7 +205,7 @@ class PydanticAiRewriteClient:
     transcript: str,
   ) -> RewriteResult:
     try:
-      response: AgentRunResult[str] = await self._agent.run(
+      response: AgentRunResult[StructuredRewriteOutput] = await self._agent.run(
         transcript,
         instructions=instructions,
         model=self.model,
@@ -197,17 +213,18 @@ class PydanticAiRewriteClient:
     except Exception as exc:
       raise RewriteClientError("rewrite request failed") from exc
 
-    rewritten_text = response.output.strip()
-    if rewritten_text == "":
+    rewrite_output = response.output
+    if rewrite_output.text == "":
       raise RewriteClientError("rewrite model returned empty output")
 
     usage = response.usage()
     return RewriteResult(
-      text=rewritten_text,
+      text=rewrite_output.text,
       model=self.model,
       input_tokens=usage.input_tokens,
       output_tokens=usage.output_tokens,
       cost=_extract_total_cost(response),
+      corrections=rewrite_output.corrections,
     )
 
   async def close(self) -> None:
@@ -246,14 +263,6 @@ def resolve_active_listener_prompt_path(configured_prompt_path: str) -> Path:
 
 def resolve_active_listener_override_prompt_path() -> Path:
   return resolve_user_config_dir() / EAVESDROP_CONFIG_DIRNAME / ACTIVE_LISTENER_PROMPT_FILENAME
-
-
-def resolve_user_config_dir() -> Path:
-  configured_path = os.environ.get(USER_CONFIG_ENV_VAR)
-  if configured_path is not None and configured_path != "":
-    return Path(configured_path)
-
-  return Path.home() / DEFAULT_USER_CONFIG_DIRNAME
 
 
 def load_rewrite_prompt(prompt_path: str | Path) -> LoadedRewritePrompt:
@@ -300,7 +309,15 @@ def extract_rewrite_output(response: LiteRtResponse) -> str:
   return rewritten_text
 
 
-def _extract_total_cost(response: AgentRunResult[str]) -> Decimal | None:
+def parse_structured_rewrite_output(raw_output: str) -> StructuredRewriteOutput:
+  try:
+    decoded = cast(object, json.loads(raw_output))
+    return StructuredRewriteOutput.model_validate(decoded)
+  except (json.JSONDecodeError, ValidationError, ValueError) as exc:
+    raise RewriteClientError("rewrite model returned invalid structured output") from exc
+
+
+def _extract_total_cost(response: AgentRunResult[StructuredRewriteOutput]) -> Decimal | None:
   try:
     return response.response.cost().total_price
   except Exception:

@@ -23,6 +23,7 @@ from active_listener.app.state import (
   decide_client_event,
 )
 from active_listener.config.models import ActiveListenerConfig
+from active_listener.infra.corrections import ActiveListenerCorrectionStore, CorrectionStore
 from active_listener.infra.dbus import AppStateService
 from active_listener.infra.emitter import TextEmitter
 from active_listener.infra.keyboard import KeyboardControlEvent, KeyboardEventKind, KeyboardInput
@@ -69,6 +70,7 @@ class ActiveListenerService:
   dbus_service: AppStateService
   media_playback_controller: MediaPlaybackController
   recording_audio_buffer: RecordingAudioBuffer
+  correction_store: ActiveListenerCorrectionStore = field(default_factory=CorrectionStore.default)
   spectrum_analyzer: SpectrumRuntime = field(default_factory=_build_noop_spectrum_analyzer)
   ffmpeg_path: str | None = None
   phase: ForegroundPhase = ForegroundPhase.IDLE
@@ -104,6 +106,7 @@ class ActiveListenerService:
       current_llm_available=self.current_llm_available,
       current_llm_active=self.current_llm_active,
       current_disconnect_generation=self._current_disconnect_generation,
+      correction_store=self.correction_store,
     )
 
   async def run(self) -> None:
@@ -214,10 +217,15 @@ class ActiveListenerService:
       await self._recording_finalizer.wait_for_pending_flushes()
 
       recording_id = secrets.token_hex(8)
+      correction_load_task = asyncio.create_task(self.correction_store.load_async())
+      await asyncio.sleep(0)
       self._was_playing_before_recording = await self._pause_media_if_playing()
       self._start_spectrum_analysis()
       try:
-        await self._recording_session.start_recording(recording_id)
+        await self._recording_session.start_recording(
+          recording_id,
+          correction_load_task=correction_load_task,
+        )
         await self.client.start_streaming(recording_id)
         self.phase = ForegroundPhase.RECORDING
         await self.dbus_service.set_state(self.phase)
@@ -231,6 +239,10 @@ class ActiveListenerService:
         try:
           if self._recording_session.is_recording:
             await self._recording_session.stop_recording()
+          else:
+            if not correction_load_task.done():
+              _ = correction_load_task.cancel()
+            _ = await asyncio.gather(correction_load_task, return_exceptions=True)
           await self._stop_spectrum_analysis()
         finally:
           await self._resume_media_if_needed()

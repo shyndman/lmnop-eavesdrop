@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+import asyncio
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Protocol
@@ -16,6 +17,8 @@ from eavesdrop.client import (
   TranscriptionEvent,
 )
 from eavesdrop.wire import TranscriptionMessage
+
+CorrectionLoadTask = asyncio.Task[dict[str, str]]
 
 
 @dataclass(frozen=True)
@@ -32,6 +35,8 @@ class RewriteResult:
   :type output_tokens: int | None
   :param cost: Provider-reported request cost.
   :type cost: Decimal | None
+  :param corrections: User-directed spelling corrections learned during the rewrite.
+  :type corrections: Mapping[str, str]
   :param word_count: Word count of the emitted transcript text.
   :type word_count: int
   :param duration_seconds: Duration of the committed audio backing the transcript.
@@ -43,6 +48,7 @@ class RewriteResult:
   input_tokens: int | None
   output_tokens: int | None
   cost: Decimal | None
+  corrections: Mapping[str, str]
 
 
 @dataclass(frozen=True)
@@ -100,11 +106,14 @@ class FinishedRecording:
   :type reducer_state: RecordingReducerState
   :param captured_audio: Immutable microphone capture snapshot for the recording.
   :type captured_audio: CapturedRecordingAudio
+  :param correction_load_task: Per-recording stored correction load task.
+  :type correction_load_task: CorrectionLoadTask | None
   """
 
   recording_id: str
   reducer_state: RecordingReducerState
   captured_audio: CapturedRecordingAudio
+  correction_load_task: CorrectionLoadTask | None
 
 
 class ActiveListenerClient(Protocol):

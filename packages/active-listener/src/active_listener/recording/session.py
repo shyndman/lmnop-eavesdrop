@@ -13,6 +13,7 @@ from active_listener.app.ports import (
   ActiveListenerClient,
   ActiveListenerRuntimeError,
   CapturedRecordingAudio,
+  CorrectionLoadTask,
   FinishedRecording,
 )
 from active_listener.infra.keyboard import KeyboardInput, RecordingGrabRelease
@@ -79,6 +80,7 @@ class RecordingSession:
   _recording_grab_stack: AsyncExitStack | None = None
   _release_recording_grab: RecordingGrabRelease | None = None
   _recording_started_monotonic_s: float | None = None
+  _correction_load_task: CorrectionLoadTask | None = None
   _pending_caps_gesture: PendingCapsGesture | None = None
   _last_transcription_runs: list[TextRun] = field(default_factory=list)
 
@@ -97,7 +99,12 @@ class RecordingSession:
     )
     self._connection_last_id = None
 
-  async def start_recording(self, recording_id: str) -> None:
+  async def start_recording(
+    self,
+    recording_id: str,
+    *,
+    correction_load_task: CorrectionLoadTask | None = None,
+  ) -> None:
     if self._recording_grab_stack is not None or self._release_recording_grab is not None:
       raise ActiveListenerRuntimeError("recording grab entered twice")
 
@@ -112,6 +119,7 @@ class RecordingSession:
     self._release_recording_grab = release_recording_grab
     self._recording_id = recording_id
     self._recording_started_monotonic_s = time.monotonic()
+    self._correction_load_task = correction_load_task
     self._recording_reducer_state = RecordingReducerState()
     self.audio_buffer.start()
     self._last_transcription_runs = []
@@ -127,12 +135,13 @@ class RecordingSession:
   async def finish_recording(self) -> FinishedRecording:
     recording_id = self._require_recording_id()
     reducer_state = self._require_recording_reducer_state()
+    correction_load_task = self._correction_load_task
     captured_audio = CapturedRecordingAudio(
       pcm_f32le=self.audio_buffer.finish(),
       sample_rate_hz=SAMPLE_RATE_HZ,
       channels=RECORDING_CHANNEL_COUNT,
     )
-    await self._exit_recording(close_open_command_span=True)
+    await self._exit_recording(close_open_command_span=True, cancel_correction_load=False)
     self.logger.debug(
       "recording session finished",
       last_id=reducer_state.last_id,
@@ -144,6 +153,7 @@ class RecordingSession:
       recording_id=recording_id,
       reducer_state=reducer_state,
       captured_audio=captured_audio,
+      correction_load_task=correction_load_task,
     )
 
   async def handle_capslock_down(self, received_monotonic_s: float) -> None:
@@ -270,7 +280,12 @@ class RecordingSession:
     )
     return transcription_update
 
-  async def _exit_recording(self, *, close_open_command_span: bool) -> None:
+  async def _exit_recording(
+    self,
+    *,
+    close_open_command_span: bool,
+    cancel_correction_load: bool = True,
+  ) -> None:
     release_recording_grab = self._release_recording_grab
     grab_stack = self._recording_grab_stack
     reducer_state = self._recording_reducer_state
@@ -297,7 +312,14 @@ class RecordingSession:
     self._recording_id = None
     self._recording_reducer_state = None
     self._recording_started_monotonic_s = None
+    correction_load_task = self._correction_load_task
+    self._correction_load_task = None
     self._last_transcription_runs = []
+
+    if cancel_correction_load and correction_load_task is not None:
+      if not correction_load_task.done():
+        _ = correction_load_task.cancel()
+      _ = await asyncio.gather(correction_load_task, return_exceptions=True)
 
     try:
       if release_recording_grab is not None:

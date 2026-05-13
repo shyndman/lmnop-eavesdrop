@@ -6,6 +6,7 @@ import asyncio
 import re
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
+from typing import cast
 
 from structlog.stdlib import BoundLogger
 
@@ -14,6 +15,7 @@ from active_listener.app.ports import (
   ActiveListenerClient,
   ActiveListenerRewriteClient,
   ActiveListenerTranscriptHistoryStore,
+  CorrectionLoadTask,
   FinalizedTranscriptRecord,
   FinishedRecording,
   RewriteResult,
@@ -22,6 +24,11 @@ from active_listener.config.models import (
   ActiveListenerConfig,
   LiteRtRewriteProvider,
   LlmRewriteConfig,
+)
+from active_listener.infra.corrections import (
+  ActiveListenerCorrectionStore,
+  CorrectionStore,
+  apply_corrections,
 )
 from active_listener.infra.dbus import AppStateService
 from active_listener.infra.emitter import TextEmitter
@@ -92,6 +99,7 @@ _REMOVE_PRECEDING_THANK_YOU_INSTRUCTION = (
   "<instruction>remove the preceding thank you</instruction>"
 )
 _REWRITE_RESULT_METADATA_KEY = "rewrite_result"
+_CORRECTION_LOAD_TASK_METADATA_KEY = "correction_load_task"
 
 RecordingMessageIngestor = Callable[
   [RecordingReducerState, TranscriptionMessage],
@@ -118,6 +126,7 @@ class RecordingFinalizer:
   current_llm_available: LlmAvailabilityReader
   current_llm_active: LlmActiveReader
   current_disconnect_generation: DisconnectGenerationReader
+  correction_store: ActiveListenerCorrectionStore = field(default_factory=CorrectionStore.default)
   _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
   _flush_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
   _pending_flushes: int = 0
@@ -197,6 +206,7 @@ class RecordingFinalizer:
           context=PipelineContext(
             transcript=rewrite_input,
             llm_enabled=self.current_llm_active(),
+            metadata={_CORRECTION_LOAD_TASK_METADATA_KEY: finished_recording.correction_load_task},
           ),
           steps=pipeline_steps,
           stream=message.stream,
@@ -272,6 +282,9 @@ class RecordingFinalizer:
     async def rewrite_with_llm(context: PipelineContext) -> PipelineContext:
       return await self._rewrite_with_llm(context=context, stream=stream)
 
+    async def apply_stored_corrections(context: PipelineContext) -> PipelineContext:
+      return await self._apply_stored_corrections(context=context, stream=stream)
+
     async def append_trailing_space(context: PipelineContext) -> PipelineContext:
       return _update_pipeline_context(
         context,
@@ -283,6 +296,7 @@ class RecordingFinalizer:
       self._apply_replacements,
       self._apply_thank_you_escape,
       self._replace_symbols,
+      apply_stored_corrections,
       rewrite_with_llm,
       append_trailing_space,
     ]
@@ -337,6 +351,31 @@ class RecordingFinalizer:
         llm_enabled=context.llm_enabled,
       ),
     )
+
+  async def _apply_stored_corrections(
+    self,
+    *,
+    context: PipelineContext,
+    stream: str,
+  ) -> PipelineContext:
+    correction_load_task = _correction_load_task_from_metadata(context.metadata)
+    if correction_load_task is None:
+      return context
+
+    try:
+      corrections = await correction_load_task
+    except Exception:
+      self.logger.exception("stored correction load failed", stream=stream)
+      return context
+
+    corrected_transcript = apply_corrections(context.transcript, corrections)
+    if corrected_transcript != context.transcript:
+      self.logger.info(
+        "stored corrections applied",
+        stream=stream,
+        correction_count=len(corrections),
+      )
+    return _update_pipeline_context(context, transcript=corrected_transcript)
 
   async def _run_pipeline(
     self,
@@ -427,6 +466,22 @@ class RecordingFinalizer:
       rewrite_input=rewrite_input,
       rewritten_text=rewrite_result.text,
     )
+    if rewrite_result.corrections:
+      try:
+        await self.correction_store.merge_async(rewrite_result.corrections)
+        self.logger.info(
+          "rewrite corrections persisted",
+          stream=stream,
+          correction_count=len(rewrite_result.corrections),
+          path=str(self.correction_store.path),
+        )
+      except Exception:
+        self.logger.exception(
+          "rewrite correction persistence failed",
+          stream=stream,
+          correction_count=len(rewrite_result.corrections),
+          path=str(self.correction_store.path),
+        )
     return _update_pipeline_context(
       context,
       transcript=rewrite_result.text,
@@ -463,6 +518,19 @@ def _rewrite_result_from_metadata(metadata: Mapping[str, object]) -> RewriteResu
     raise TypeError("rewrite_result metadata must be a RewriteResult")
 
   return rewrite_result
+
+
+def _correction_load_task_from_metadata(
+  metadata: Mapping[str, object],
+) -> CorrectionLoadTask | None:
+  correction_load_task = metadata.get(_CORRECTION_LOAD_TASK_METADATA_KEY)
+  if correction_load_task is None:
+    return None
+
+  if not isinstance(correction_load_task, asyncio.Task):
+    raise TypeError("correction_load_task metadata must be an asyncio.Task")
+
+  return cast(CorrectionLoadTask, correction_load_task)
 
 
 def _strip_instruction_tags(text: str) -> str:

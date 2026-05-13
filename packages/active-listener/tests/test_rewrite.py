@@ -19,6 +19,7 @@ from active_listener.infra.rewrite import (
   PydanticAiRewriteClient,
   RewriteClientError,
   RewritePromptError,
+  StructuredRewriteOutput,
   load_active_listener_rewrite_prompt,
   load_rewrite_prompt,
   resolve_active_listener_override_prompt_path,
@@ -121,7 +122,7 @@ class StubPydanticAiModelResponse:
 
 @dataclass(frozen=True)
 class StubPydanticAiRunResult:
-  output: str
+  output: StructuredRewriteOutput
   run_usage: RunUsage = field(default_factory=RunUsage)
   cost_result: StubPriceCalculation | None = None
 
@@ -338,8 +339,8 @@ async def test_rewrite_client_uses_fresh_conversation_per_request(
   )
   StubEngine.responses.extend(
     [
-      {"content": [{"type": "text", "text": " rewritten alpha "}]},
-      {"content": [{"type": "text", "text": "rewritten beta"}]},
+      {"content": [{"type": "text", "text": '{"text":"rewritten alpha","corrections":{}}'}]},
+      {"content": [{"type": "text", "text": '{"text":"rewritten beta","corrections":{}}'}]},
     ]
   )
 
@@ -354,6 +355,7 @@ async def test_rewrite_client_uses_fresh_conversation_per_request(
     input_tokens=None,
     output_tokens=None,
     cost=None,
+    corrections={},
   )
   assert second == RewriteResult(
     text="rewritten beta",
@@ -361,6 +363,7 @@ async def test_rewrite_client_uses_fresh_conversation_per_request(
     input_tokens=None,
     output_tokens=None,
     cost=None,
+    corrections={},
   )
   assert len(StubEngine.created) == 1
   assert StubEngine.created[0].model_path == "/tmp/rewrite/model.litertlm"
@@ -388,9 +391,9 @@ async def test_rewrite_client_extracts_documented_response_shape(
   StubEngine.responses.append(
     {
       "content": [
-        {"type": "text", "text": "Hello"},
+        {"type": "text", "text": '{"text":"Hello'},
         {"type": "image"},
-        {"type": "text", "text": ", world"},
+        {"type": "text", "text": ', world","corrections":{"helo":"hello"}}'},
       ]
     }
   )
@@ -404,6 +407,7 @@ async def test_rewrite_client_extracts_documented_response_shape(
     input_tokens=None,
     output_tokens=None,
     cost=None,
+    corrections={"helo": "hello"},
   )
 
 
@@ -459,7 +463,11 @@ async def test_pydantic_ai_rewrite_client_uses_model_and_instructions(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
   monkeypatch.setattr(rewrite_module, "Agent", StubAgent)
-  StubAgent.responses.append(StubPydanticAiRunResult(output=" rewritten alpha "))
+  StubAgent.responses.append(
+    StubPydanticAiRunResult(
+      output=StructuredRewriteOutput(text=" rewritten alpha ", corrections={"alfa": "alpha"})
+    )
+  )
 
   client = PydanticAiRewriteClient(model="openai:gpt-4.1-mini")
   rewritten = await client.rewrite_text(instructions="Prompt A", transcript="alpha")
@@ -470,10 +478,11 @@ async def test_pydantic_ai_rewrite_client_uses_model_and_instructions(
     input_tokens=0,
     output_tokens=0,
     cost=None,
+    corrections={"alfa": "alpha"},
   )
   assert StubAgent.init_calls == [
     {
-      "output_type": str,
+      "output_type": StructuredRewriteOutput,
       "instrument": True,
       "name": "active-listener-rewrite",
     }
@@ -501,7 +510,7 @@ async def test_pydantic_ai_rewrite_client_returns_usage_and_cost_metadata(
   cost_result = StubPriceCalculation(total_price=Decimal("0.00012"))
   StubAgent.responses.append(
     StubPydanticAiRunResult(
-      output=" rewritten alpha ",
+      output=StructuredRewriteOutput(text=" rewritten alpha "),
       run_usage=usage,
       cost_result=cost_result,
     )
@@ -517,6 +526,7 @@ async def test_pydantic_ai_rewrite_client_returns_usage_and_cost_metadata(
     input_tokens=12,
     output_tokens=4,
     cost=Decimal("0.00012"),
+    corrections={},
   )
 
 
@@ -525,7 +535,11 @@ async def test_pydantic_ai_rewrite_client_rejects_empty_output(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
   monkeypatch.setattr(rewrite_module, "Agent", StubAgent)
-  StubAgent.responses.append(StubPydanticAiRunResult(output="   "))
+  StubAgent.responses.append(
+    StubPydanticAiRunResult(
+      output=StructuredRewriteOutput.model_construct(text="", corrections={})
+    )
+  )
 
   client = PydanticAiRewriteClient(model="openai:gpt-4.1-mini")
 
