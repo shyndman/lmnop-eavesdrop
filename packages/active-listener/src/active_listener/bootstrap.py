@@ -119,7 +119,6 @@ async def create_service(
   rewrite_client: ActiveListenerRewriteClient | None = None
   history_store: ActiveListenerTranscriptHistoryStore | None = None
   langfuse_ffmpeg_path: str | None = None
-  connect_started = False
 
   try:
     keyboard = keyboard_resolver(config.keyboard_name)
@@ -135,23 +134,36 @@ async def create_service(
     client = resolved_client_factory(config, on_capture)
     media_playback_controller = resolved_media_playback_controller_factory(logger)
     rewrite_client = resolved_rewrite_client_factory(config.llm_rewrite)
-    connect_started = True
+  except Exception as exc:
+    await cleanup_startup_prerequisites(
+      keyboard=keyboard,
+      client=client,
+      rewrite_client=rewrite_client,
+      disconnect_client=False,
+      logger=logger,
+    )
+    logger.error("startup dependency construction failed", exc_info=exc)
+    raise ActiveListenerRuntimeError(f"failed to build startup dependencies: {exc}") from exc
+
+  try:
     await client.connect()
   except Exception as exc:
     await cleanup_startup_prerequisites(
       keyboard=keyboard,
       client=client,
       rewrite_client=rewrite_client,
-      disconnect_client=connect_started,
+      disconnect_client=True,
       logger=logger,
     )
-    logger.exception(
-      "startup prerequisite failed",
-      keyboard_name=config.keyboard_name,
-      host=config.host,
-      port=config.port,
+    server_url = f"ws://{config.host}:{config.port}"
+    logger.error(
+      "server connection failed",
+      server_url=server_url,
+      exc_info=exc,
     )
-    raise ActiveListenerRuntimeError(str(exc)) from exc
+    raise ActiveListenerRuntimeError(
+      f"could not connect to eavesdrop server at {server_url}: {exc}"
+    ) from exc
 
   logger.info(
     "startup prerequisites satisfied",

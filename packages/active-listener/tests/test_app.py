@@ -66,10 +66,12 @@ class RecordingLogger:
     self.debug_messages: list[str] = []
     self.info_messages: list[str] = []
     self.warning_messages: list[str] = []
+    self.error_messages: list[str] = []
     self.exception_messages: list[str] = []
     self.debug_records: list[LogRecord] = []
     self.info_records: list[LogRecord] = []
     self.warning_records: list[LogRecord] = []
+    self.error_records: list[LogRecord] = []
     self.exception_records: list[LogRecord] = []
 
   def debug(self, event: str, **kwargs: object) -> None:
@@ -83,6 +85,10 @@ class RecordingLogger:
   def warning(self, event: str, **kwargs: object) -> None:
     self.warning_messages.append(event)
     self.warning_records.append(LogRecord(event=event, fields=kwargs))
+
+  def error(self, event: str, **kwargs: object) -> None:
+    self.error_messages.append(event)
+    self.error_records.append(LogRecord(event=event, fields=kwargs))
 
   def exception(self, event: str, **kwargs: object) -> None:
     self.exception_messages.append(event)
@@ -783,12 +789,20 @@ async def test_create_service_fails_fast_on_keyboard_resolution_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_service_fails_fast_on_connect_error() -> None:
+async def test_create_service_fails_fast_on_connect_error(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  logger = RecordingLogger()
   keyboard = FakeKeyboard()
   client = FailingConnectClient()
   rewrite_client = FakeRewriteClient()
 
-  with pytest.raises(ActiveListenerRuntimeError, match="server unavailable"):
+  monkeypatch.setattr("active_listener.bootstrap.get_logger", lambda _name: logger)
+
+  with pytest.raises(
+    ActiveListenerRuntimeError,
+    match="could not connect to eavesdrop server at ws://localhost:9090: server unavailable",
+  ):
     _ = await create_service(
       _config(),
       keyboard_resolver=lambda _name: keyboard,
@@ -800,23 +814,29 @@ async def test_create_service_fails_fast_on_connect_error() -> None:
 
   assert keyboard.close_calls == 1
   assert rewrite_client.close_calls == 1
+  assert client.disconnect_calls == 1
+  assert logger.error_records[-1].event == "server connection failed"
+  assert logger.error_records[-1].fields["server_url"] == "ws://localhost:9090"
+  assert str(logger.error_records[-1].fields["exc_info"]) == "server unavailable"
 
 
 @pytest.mark.asyncio
 async def test_create_service_fails_fast_when_rewrite_client_cannot_initialize() -> None:
   keyboard = FakeKeyboard()
+  client = FakeClient()
 
   with pytest.raises(ActiveListenerRuntimeError, match="bad model"):
     _ = await create_service(
       _config(rewrite_enabled=True),
       keyboard_resolver=lambda _name: keyboard,
-      client_factory=lambda _config, _on_capture: FakeClient(),
+      client_factory=lambda _config, _on_capture: client,
       emitter_factory=lambda: FakeEmitter(),
       rewrite_client_factory=lambda _config: (_ for _ in ()).throw(RewriteClientError("bad model")),
       history_store_factory=lambda _config, _logger, _dbus_service: FakeHistoryStore(),
     )
 
   assert keyboard.close_calls == 1
+  assert client.disconnect_calls == 0
 
 
 @pytest.mark.asyncio
@@ -1574,13 +1594,9 @@ async def test_create_service_fails_fast_when_ffmpeg_cannot_be_resolved(
     )
 
   assert keyboard.close_calls == 1
-  assert logger.exception_records[-1] == LogRecord(
-    event="startup prerequisite failed",
-    fields={
-      "keyboard_name": "Exact Keyboard",
-      "host": "localhost",
-      "port": 9090,
-    },
+  assert logger.error_records[-1].event == "startup dependency construction failed"
+  assert str(logger.error_records[-1].fields["exc_info"]) == (
+    "ffmpeg executable not found; set ffmpeg_path or add ffmpeg to PATH"
   )
 
 
