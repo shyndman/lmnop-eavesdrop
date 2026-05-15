@@ -5,6 +5,9 @@ from __future__ import annotations
 import logging
 import os
 
+from sanitary import Sanitizer
+from structlog.stdlib import BoundLogger
+
 from clypi import Command, arg
 from typing_extensions import override
 
@@ -19,6 +22,15 @@ from active_listener.infra.dbus import (
   SdbusDbusService,
 )
 from eavesdrop.common import get_logger, setup_logging_from_env
+
+_SENSITIVE_KEY_SUFFIXES = ("_KEY", "_TOKEN")
+
+
+def _log_environment(logger: BoundLogger) -> None:
+  env = dict(os.environ)
+  sensitive_keys = {k for k in env if k.endswith(_SENSITIVE_KEY_SUFFIXES)}
+  sanitizer = Sanitizer(keys=sensitive_keys)
+  logger.info("startup environment", env=sanitizer.sanitize(env))
 
 
 def require_env(name: str) -> str:
@@ -148,6 +160,7 @@ def main() -> int:
   setup_logging_from_env()
   logging.getLogger("httpx").setLevel(logging.WARNING)
   logger = get_logger("al/main")
+  _log_environment(logger)
 
   try:
     command = ActiveListenerCommand.parse()

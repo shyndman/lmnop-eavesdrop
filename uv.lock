@@ -34,6 +34,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pydantic-ai-slim", extra = ["google"] },
     { name = "pyyaml" },
+    { name = "sanitary" },
     { name = "sdbus" },
     { name = "structlog" },
 ]
@@ -58,6 +59,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2" },
     { name = "pydantic-ai-slim", extras = ["google"], specifier = ">=1.87.0" },
     { name = "pyyaml", specifier = ">=6" },
+    { name = "sanitary", specifier = ">=0.1.0" },
     { name = "sdbus", specifier = ">=0.12.0" },
     { name = "structlog", specifier = ">=25.4.0" },
 ]
@@ -1576,6 +1578,15 @@ source = { git = "https://github.com/shyndman/rich#388b0e10c7af608c620cca6640882
 dependencies = [
     { name = "markdown-it-py" },
     { name = "pygments" },
+]
+
+[[package]]
+name = "sanitary"
+version = "0.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b0/10/90aae1a55fea31a21ac0466f9ff4a351604977a3aa8438f68d67fc01f719/sanitary-0.1.0.tar.gz", hash = "sha256:b3cb8a9e368509a4c01addc5dd7f3f97c67735aa2ad14c90054ac6f63a1d23df", size = 14524, upload_time = "2025-05-18T11:01:27.934Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/59/42/ebd115d683281b2650f32a936a108fd8f018655665df115b9252523b8e2c/sanitary-0.1.0-py3-none-any.whl", hash = "sha256:bf892d679c6a79ee2c25c03597cda2046bb9edff9b692ee2e0670819cbe5836b", size = 6708, upload_time = "2025-05-18T11:01:26.589Z" },
 ]
 
 [[package]]
