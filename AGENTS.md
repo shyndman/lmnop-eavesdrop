@@ -4,17 +4,18 @@ The rules in @CODE_STYLE.md are an imperative. Failure to follow them will repre
 
 ## Project Overview
 
-Eavesdrop is a real-time audio transcription system using Whisper models. Monorepo with five packages:
+Eavesdrop is a real-time audio transcription system using Whisper models. Monorepo with six packages:
 
 | Package | Description |
 |---------|-------------|
 | `server` | Core transcription server (WebSocket, RTSP, Whisper integration) |
 | `client` | Python client library for streaming transcription |
 | `wire` | Shared Pydantic message types and protocol definitions |
-| `active-listener` | Python orchestrator spawning Electron UI for voice transcription |
-| `active-listener-ui-electron` | Transparent floating overlay displaying transcription |
+| `common` | Shared Python utilities and data structures |
+| `active-listener` | Keyboard-driven workstation dictation service |
+| `active-listener-ui-gnome` | GNOME Shell extension for status, controls, transcript display, and preferences |
 
-See package-level CLAUDE.md files for detailed architecture.
+Use package-level README files and package configuration for detailed architecture and commands.
 
 ## Type Safety
 
@@ -47,6 +48,18 @@ def process_audio(self, audio: np.ndarray, sample_rate: int = 16000) -> AudioRes
 - **Error handling** — Use `.exception()` for stack traces, fail fast on critical errors
 - **Thread safety** — asyncio.Lock for async contexts
 
+## GNOME Extension
+
+When `packages/active-listener-ui-gnome` is modified, install the extension through the repo task:
+
+```bash
+task install-active-listener-ui-gnome
+```
+
+Scott wants his local GNOME Shell extension to reflect the repository's local state whenever that state is believed to work. Do not install mid-change or from a known-broken state, but once the extension change is coherent and verified, install it before yielding.
+
+Do not rely on the package-local `install:extension` script for repository-level verification.
+
 ## Transcription Algorithm
 
 Silence-based segment completion:
@@ -55,14 +68,21 @@ Silence-based segment completion:
 - All segments except last marked complete; last completes on silence detection
 - Always maintains incomplete segment at tail (client state machine invariant)
 
+## Dependency Management
+
+- **MUST use `uv add` to add dependencies to Python projects** — do not edit dependency lists by hand.
+
 ## Testing
 
 ```bash
 # Type checking
-uv run basedpyright
+task typecheck
 
 # packages/server on a host machine needs its opt-in transcription deps
-cd packages/server && uv run --group type_checkable basedpyright
+task typecheck-server
+
+# GNOME extension build and install
+task install-active-listener-ui-gnome
 
 # Linting
 uv run ruff check
