@@ -188,6 +188,7 @@ def start_recording_observation(
 def start_rewrite_observation(
   *,
   session_id: str,
+  recording_id: str,
   provider: str,
   model: str,
   prompt_path: str,
@@ -209,6 +210,7 @@ def start_rewrite_observation(
   ):
     with get_client().start_as_current_observation(
       name="active-listener-rewrite",
+      trace_context={"trace_id": recording_trace_id(recording_id)},
       input=transcript,
       metadata={
         "component": "active-listener",

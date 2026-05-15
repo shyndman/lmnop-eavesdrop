@@ -2930,6 +2930,7 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
   assert rewrite_observed_calls == [
     {
       "session_id": "stream-1",
+      "recording_id": harness.client.flush_recording_ids[0],
       "provider": "litert",
       "model": "/tmp/rewrite/model.litertlm",
       "prompt_path": "/tmp/rewrite/system.md",

@@ -100,6 +100,7 @@ _REMOVE_PRECEDING_THANK_YOU_INSTRUCTION = (
 )
 _REWRITE_RESULT_METADATA_KEY = "rewrite_result"
 _CORRECTION_LOAD_TASK_METADATA_KEY = "correction_load_task"
+_RECORDING_ID_METADATA_KEY = "recording_id"
 
 RecordingMessageIngestor = Callable[
   [RecordingReducerState, TranscriptionMessage],
@@ -206,7 +207,10 @@ class RecordingFinalizer:
           context=PipelineContext(
             transcript=rewrite_input,
             llm_enabled=self.current_llm_active(),
-            metadata={_CORRECTION_LOAD_TASK_METADATA_KEY: finished_recording.correction_load_task},
+            metadata={
+              _CORRECTION_LOAD_TASK_METADATA_KEY: finished_recording.correction_load_task,
+              _RECORDING_ID_METADATA_KEY: finished_recording.recording_id,
+            },
           ),
           steps=pipeline_steps,
           stream=message.stream,
@@ -436,6 +440,7 @@ class RecordingFinalizer:
 
     with start_rewrite_observation(
       session_id=stream,
+      recording_id=_recording_id_from_metadata(context.metadata),
       provider=provider,
       model=model,
       prompt_path=prompt_path,
@@ -531,6 +536,10 @@ def _correction_load_task_from_metadata(
     raise TypeError("correction_load_task metadata must be an asyncio.Task")
 
   return cast(CorrectionLoadTask, correction_load_task)
+
+
+def _recording_id_from_metadata(metadata: Mapping[str, object]) -> str:
+  return cast(str, metadata[_RECORDING_ID_METADATA_KEY])
 
 
 def _strip_instruction_tags(text: str) -> str:
