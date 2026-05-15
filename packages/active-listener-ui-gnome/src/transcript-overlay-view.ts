@@ -24,6 +24,7 @@ type OverlayActor = St.Widget & {
 type OverlayMonitor = NonNullable<typeof Main.layoutManager.primaryMonitor>;
 
 const OVERLAY_DISPLAY_DURATION_MS = 2000;
+const OVERLAY_OFFSCREEN_POSITION_PX = -10000;
 const OVERLAY_BOTTOM_MARGIN_PX = 96;
 const OVERLAY_ANIMATION_DURATION_MS = 180;
 const OVERLAY_WIDTH_PX = 720;
@@ -114,7 +115,7 @@ export class TranscriptOverlayView {
     this.overlay.add_child(overlayContent);
 
     Main.layoutManager.addChrome(this.overlay, { trackFullscreen: true });
-    this.overlay.set_position(-10000, -10000);
+    this.overlay.set_position(OVERLAY_OFFSCREEN_POSITION_PX, OVERLAY_OFFSCREEN_POSITION_PX);
 
     this.clearSpectrum();
   }
@@ -189,6 +190,15 @@ export class TranscriptOverlayView {
     });
   }
 
+  resetImmediately(): void {
+    this.clearOverlayTimeout();
+    const overlayActor = this.overlayActor(this.overlay);
+    overlayActor.remove_all_transitions();
+    this.overlay.opacity = 0;
+    this.overlay.hide();
+    this.overlay.set_position(OVERLAY_OFFSCREEN_POSITION_PX, OVERLAY_OFFSCREEN_POSITION_PX);
+  }
+
   private overlayActor(actor: St.Widget): OverlayActor {
     return actor as OverlayActor;
   }
@@ -236,7 +246,7 @@ export class TranscriptOverlayView {
 
   private getAnchoredOverlayY(height: number, monitor: OverlayMonitor | null = this.getOverlayMonitor()): number {
     if (monitor === null) {
-      return -10000;
+      return OVERLAY_OFFSCREEN_POSITION_PX;
     }
 
     return Math.floor(monitor.y + monitor.height - height - OVERLAY_BOTTOM_MARGIN_PX);

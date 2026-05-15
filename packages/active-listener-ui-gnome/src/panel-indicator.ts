@@ -20,6 +20,8 @@ export type PanelIndicatorActions = {
   setLlmActive(active: boolean): void;
   openPreferences(): void;
   restartService(): void;
+  resetUi(): void;
+  showLogs(): void;
   stopService(): void;
 };
 
@@ -72,6 +74,7 @@ export class PanelIndicator {
     });
 
     const serviceControlsSeparator = new PopupMenu.PopupSeparatorMenuItem();
+    const extensionActionsSeparator = new PopupMenu.PopupSeparatorMenuItem();
     const preferencesSeparator = new PopupMenu.PopupSeparatorMenuItem();
 
     this.restartServiceItem = new PopupMenu.PopupMenuItem('Restart service');
@@ -84,6 +87,16 @@ export class PanelIndicator {
       this.actions.stopService();
     });
 
+    const resetUiItem = new PopupMenu.PopupMenuItem('Reset UI');
+    resetUiItem.connect('activate', () => {
+      this.actions.resetUi();
+    });
+
+    const showLogsItem = new PopupMenu.PopupMenuItem('Show logs');
+    showLogsItem.connect('activate', () => {
+      this.actions.showLogs();
+    });
+
     if (!(this.button.menu instanceof PopupMenu.PopupMenu)) {
       throw new Error('Active Listener indicator button menu is unavailable');
     }
@@ -93,6 +106,9 @@ export class PanelIndicator {
     this.button.menu.addMenuItem(serviceControlsSeparator);
     this.button.menu.addMenuItem(this.stopServiceItem);
     this.button.menu.addMenuItem(this.restartServiceItem);
+    this.button.menu.addMenuItem(extensionActionsSeparator);
+    this.button.menu.addMenuItem(resetUiItem);
+    this.button.menu.addMenuItem(showLogsItem);
     this.button.menu.addMenuItem(preferencesSeparator);
     this.button.menu.addMenuItem(preferencesItem);
     this.updateMenuSensitivity();

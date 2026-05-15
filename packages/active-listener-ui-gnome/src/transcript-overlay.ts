@@ -27,6 +27,7 @@ export class TranscriptOverlayController {
     runs: [],
   };
   private transcriptEventCounter = 0;
+  private suppressUpdatesUntilRecording = false;
 
   constructor() {
     this.view = new TranscriptOverlayView();
@@ -35,6 +36,19 @@ export class TranscriptOverlayController {
   destroy(): void {
     this.resetTranscriptState();
     this.view.destroy();
+  }
+
+  resetUi(): void {
+    this.logTranscriptOverlayEvent('manual reset requested', () => ({
+      indicatorState: this.serviceState.indicatorState,
+      transcriptRunsBefore: this.describeTranscriptRunsForLogging(this.transcriptRuns),
+    }));
+
+    this.resetTranscriptState();
+    this.view.clearSpectrum();
+    this.view.setTranscriptDisplay(this.transcriptDisplay);
+    this.view.resetImmediately();
+    this.suppressUpdatesUntilRecording = this.serviceState.indicatorState !== 'recording';
   }
 
   setServiceState(serviceState: ActiveListenerServiceState): void {
@@ -53,12 +67,21 @@ export class TranscriptOverlayController {
     }
 
     if (previousState !== 'recording' && serviceState.indicatorState === 'recording') {
+      this.suppressUpdatesUntilRecording = false;
       this.view.clearSpectrum();
       this.resetTranscriptOverlay();
     }
   }
 
   applyTranscriptionUpdate(update: TranscriptionUpdate): void {
+    if (this.suppressUpdatesUntilRecording && this.serviceState.indicatorState !== 'recording') {
+      this.logTranscriptOverlayEvent('ignored transcription update after manual reset', () => ({
+        indicatorState: this.serviceState.indicatorState,
+        runs: update.runs,
+      }));
+      return;
+    }
+
     this.logTranscriptOverlayEvent('received transcription update', () => ({
       runs: update.runs,
       transcriptRunsBefore: this.describeTranscriptRunsForLogging(this.transcriptRuns),
@@ -74,6 +97,13 @@ export class TranscriptOverlayController {
   }
 
   applySpectrum(levels: Uint8Array): void {
+    if (this.suppressUpdatesUntilRecording && this.serviceState.indicatorState !== 'recording') {
+      this.logTranscriptOverlayEvent('ignored spectrum update after manual reset', {
+        indicatorState: this.serviceState.indicatorState,
+      });
+      return;
+    }
+
     if (this.serviceState.indicatorState !== 'recording') {
       this.logTranscriptOverlayEvent('ignored spectrum update because indicator is not recording', {
         indicatorState: this.serviceState.indicatorState,
