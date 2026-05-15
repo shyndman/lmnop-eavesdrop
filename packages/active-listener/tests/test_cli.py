@@ -514,7 +514,11 @@ async def test_command_run_builds_dbus_before_service_startup(
 @pytest.mark.asyncio
 async def test_build_app_state_service_maps_duplicate_instance_error() -> None:
   async def fake_connect() -> FakeDbusService:
-    raise DbusDuplicateInstanceError("another active-listener instance is already running")
+    raise DbusDuplicateInstanceError(
+      "another active-listener instance is already running",
+      bus_name="ca.lmnop.Eavesdrop.ActiveListener",
+      object_path="/ca/lmnop/Eavesdrop/ActiveListener",
+    )
 
   monkeypatch = pytest.MonkeyPatch()
   monkeypatch.setattr("active_listener.cli.SdbusDbusService.connect", fake_connect)
@@ -528,7 +532,11 @@ async def test_build_app_state_service_maps_duplicate_instance_error() -> None:
 @pytest.mark.asyncio
 async def test_build_app_state_service_suggests_no_dbus_for_session_bus_failure() -> None:
   async def fake_connect() -> FakeDbusService:
-    raise DbusServiceError("session bus unavailable")
+    raise DbusServiceError(
+      "session bus unavailable",
+      bus_name="ca.lmnop.Eavesdrop.ActiveListener",
+      object_path="/ca/lmnop/Eavesdrop/ActiveListener",
+    )
 
   monkeypatch = pytest.MonkeyPatch()
   monkeypatch.setattr("active_listener.cli.SdbusDbusService.connect", fake_connect)

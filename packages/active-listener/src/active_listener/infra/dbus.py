@@ -81,6 +81,11 @@ class AppStateService(Protocol):
 class DbusServiceError(RuntimeError):
   """Raised when DBus setup fails."""
 
+  def __init__(self, message: str, *, bus_name: str, object_path: str) -> None:
+    self.bus_name: str = bus_name
+    self.object_path: str = object_path
+    super().__init__(f"{message} [bus_name={bus_name}, object_path={object_path}]")
+
 
 class DbusDuplicateInstanceError(DbusServiceError):
   """Raised when another process already owns the DBus name."""
@@ -398,24 +403,38 @@ class SdbusDbusService:
   @classmethod
   async def connect(cls) -> SdbusDbusService:
     try:
+      _logger.debug("opening user session bus", bus_name=DBUS_BUS_NAME)
       bus = sd_bus_open_user()
       set_default_bus(bus)
+      _logger.debug("requesting bus name", bus_name=DBUS_BUS_NAME)
       await request_default_bus_name_async(DBUS_BUS_NAME)
     except SdBusRequestNameExistsError as exc:
       raise DbusDuplicateInstanceError(
-        "another active-listener instance is already running"
+        "another active-listener instance is already running",
+        bus_name=DBUS_BUS_NAME,
+        object_path=DBUS_OBJECT_PATH,
       ) from exc
     except Exception as exc:
-      raise DbusServiceError(str(exc)) from exc
+      raise DbusServiceError(
+        str(exc),
+        bus_name=DBUS_BUS_NAME,
+        object_path=DBUS_OBJECT_PATH,
+      ) from exc
 
     interface = ActiveListenerDbusInterface(initial_state=ForegroundPhase.STARTING)
 
     try:
+      _logger.debug("exporting interface", object_path=DBUS_OBJECT_PATH)
       export_handle = interface.export_to_dbus(DBUS_OBJECT_PATH, bus)
     except Exception:
       bus.close()
       raise
 
+    _logger.info(
+      "dbus service connected",
+      bus_name=DBUS_BUS_NAME,
+      object_path=DBUS_OBJECT_PATH,
+    )
     return cls(bus=bus, interface=interface, export_handle=export_handle)
 
   async def set_state(self, state: ForegroundPhase) -> None:
