@@ -6,8 +6,7 @@ After=graphical-session.target
 [Service]
 Type=simple
 WorkingDirectory=@REPO_ROOT@
-EnvironmentFile=-@REPO_ROOT@/.env
-ExecStart=@ACTIVE_LISTENER_BIN@
+ExecStart=/bin/bash -c 'set -a; [ -f @REPO_ROOT@/.env ] && source @REPO_ROOT@/.env; exec @ACTIVE_LISTENER_BIN@'
 Restart=on-failure
 RestartSec=5
 
