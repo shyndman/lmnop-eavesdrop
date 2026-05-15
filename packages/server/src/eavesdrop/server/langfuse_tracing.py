@@ -153,10 +153,20 @@ def start_stage_observation(
   if metadata is not None:
     observation_metadata.update(metadata)
 
-  with langfuse_client().start_as_current_observation(
-    as_type="span",
-    name=name,
-    input=input,
-    metadata=observation_metadata,
-  ) as observation:
-    yield cast(ServerObservation, observation)
+  with langfuse_module().propagate_attributes(
+    session_id=stream,
+    metadata={
+      "component": "server",
+      "stream": stream,
+      "recording_id": recording_id,
+    },
+    tags=["server", "transcription", "stage"],
+    trace_name="eavesdrop-recording",
+  ):
+    with langfuse_client().start_as_current_observation(
+      as_type="span",
+      name=name,
+      input=input,
+      metadata=observation_metadata,
+    ) as observation:
+      yield cast(ServerObservation, observation)
