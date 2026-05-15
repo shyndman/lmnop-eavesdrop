@@ -27,7 +27,12 @@ from active_listener.infra.corrections import ActiveListenerCorrectionStore, Cor
 from active_listener.infra.dbus import AppStateService
 from active_listener.infra.emitter import TextEmitter
 from active_listener.infra.keyboard import KeyboardControlEvent, KeyboardEventKind, KeyboardInput
-from active_listener.infra.langfuse import record_session_event
+from active_listener.infra.langfuse import (
+  RecordingObservation,
+  end_recording_observation,
+  record_session_event,
+  start_recording_observation,
+)
 from active_listener.recording.finalizer import RecordingFinalizer
 from active_listener.recording.session import RecordingAudioBuffer, RecordingSession
 from active_listener.recording.spectrum import SpectrumAnalyzer
@@ -79,6 +84,7 @@ class ActiveListenerService:
   _current_stream: str | None = field(default=None, init=False)
   _llm_available: bool = field(default=False, init=False)
   _llm_active: bool = field(default=False, init=False)
+  _recording_observation: RecordingObservation | None = field(default=None, init=False)
   _recording_session: RecordingSession = field(init=False)
   _recording_finalizer: RecordingFinalizer = field(init=False)
   _background_tasks: set[asyncio.Task[None]] = field(default_factory=set)
@@ -156,9 +162,15 @@ class ActiveListenerService:
       if self.phase is ForegroundPhase.RECORDING:
         try:
           self.phase = ForegroundPhase.IDLE
+          recording_observation = self._take_recording_observation()
           try:
             await self._recording_session.stop_recording()
           finally:
+            end_recording_observation(
+              recording_observation,
+              logger=self.logger,
+              status_message="recording stopped during shutdown",
+            )
             await self._resume_media_if_needed()
         except Exception as exc:
           cleanup_errors.append(exc)
@@ -218,6 +230,7 @@ class ActiveListenerService:
 
       recording_id = secrets.token_hex(8)
       correction_load_task = asyncio.create_task(self.correction_store.load_async())
+      self._recording_observation = self._start_recording_observation(recording_id=recording_id)
       await asyncio.sleep(0)
       self._was_playing_before_recording = await self._pause_media_if_playing()
       self._start_spectrum_analysis()
@@ -236,6 +249,7 @@ class ActiveListenerService:
         )
         return decision
       except Exception:
+        recording_observation = self._take_recording_observation()
         try:
           if self._recording_session.is_recording:
             await self._recording_session.stop_recording()
@@ -245,6 +259,12 @@ class ActiveListenerService:
             _ = await asyncio.gather(correction_load_task, return_exceptions=True)
           await self._stop_spectrum_analysis()
         finally:
+          end_recording_observation(
+            recording_observation,
+            logger=self.logger,
+            level="ERROR",
+            status_message="recording start failed",
+          )
           await self._resume_media_if_needed()
         raise
 
@@ -254,6 +274,9 @@ class ActiveListenerService:
         raise RuntimeError("cancel requested without active recording id")
 
       self.phase = ForegroundPhase.IDLE
+      recording_observation = self._take_recording_observation()
+      observation_level: str | None = None
+      observation_status_message = "recording cancelled"
       try:
         await self._stop_spectrum_analysis()
         await self._recording_session.stop_recording()
@@ -266,10 +289,21 @@ class ActiveListenerService:
           metadata={"stream": self._current_stream, "recording_id": recording_id},
         )
         return decision
+      except Exception:
+        observation_level = "ERROR"
+        observation_status_message = "recording cancel failed"
+        raise
       finally:
+        end_recording_observation(
+          recording_observation,
+          logger=self.logger,
+          level=observation_level,
+          status_message=observation_status_message,
+        )
         await self._resume_media_if_needed()
 
     self.phase = ForegroundPhase.IDLE
+    recording_observation = self._take_recording_observation()
     try:
       finished_recording = await self._recording_session.finish_recording()
       await self._stop_spectrum_analysis()
@@ -280,8 +314,10 @@ class ActiveListenerService:
           self._recording_finalizer.finalize_recording(
             disconnect_generation=self.disconnect_generation,
             finished_recording=finished_recording,
+            recording_observation=recording_observation,
           )
         )
+        recording_observation = None
       except Exception:
         self._recording_finalizer.cancel_reserved_flush()
         raise
@@ -289,6 +325,14 @@ class ActiveListenerService:
       finalization_task.add_done_callback(self._background_tasks.discard)
       self.logger.info("recording finished", background_finalization=True)
       return decision
+    except Exception:
+      end_recording_observation(
+        recording_observation,
+        logger=self.logger,
+        level="ERROR",
+        status_message="recording finish failed",
+      )
+      raise
     finally:
       await self._resume_media_if_needed()
 
@@ -526,6 +570,29 @@ class ActiveListenerService:
       )
     except Exception:
       self.logger.exception("langfuse session event failed", name=name)
+
+  def _start_recording_observation(self, *, recording_id: str) -> RecordingObservation | None:
+    stream = self._current_stream
+    if stream is None:
+      return None
+
+    try:
+      return start_recording_observation(
+        stream=stream,
+        recording_id=recording_id,
+      )
+    except Exception:
+      self.logger.exception(
+        "langfuse recording observation start failed",
+        stream=stream,
+        recording_id=recording_id,
+      )
+      return None
+
+  def _take_recording_observation(self) -> RecordingObservation | None:
+    recording_observation = self._recording_observation
+    self._recording_observation = None
+    return recording_observation
 
   def _start_spectrum_analysis(self) -> None:
     spectrum_task = self.spectrum_analyzer.start()

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator
-from contextlib import contextmanager
-from typing import Protocol, Self, cast
+from contextlib import AbstractContextManager, contextmanager
+from typing import Protocol, cast
 
 from langfuse import get_client, propagate_attributes
 from langfuse.api.media.types.media_content_type import MediaContentType
@@ -30,7 +30,7 @@ class RewriteObservation(Protocol):
     status_message: str | None = None,
     usage_details: dict[str, int] | None = None,
     cost_details: dict[str, float] | None = None,
-  ) -> Self: ...
+  ) -> object: ...
 
 
 class RecordingObservation(Protocol):
@@ -44,7 +44,30 @@ class RecordingObservation(Protocol):
     status_message: str | None = None,
     usage_details: dict[str, int] | None = None,
     cost_details: dict[str, float] | None = None,
-  ) -> Self: ...
+  ) -> object: ...
+
+  def end(self, *, end_time: int | None = None) -> object: ...
+
+  def start_as_current_observation(
+    self,
+    *,
+    name: str,
+    input: object | None = None,
+    output: object | None = None,
+    metadata: object | None = None,
+    level: str | None = None,
+    status_message: str | None = None,
+    usage_details: dict[str, int] | None = None,
+    cost_details: dict[str, float] | None = None,
+  ) -> AbstractContextManager[object]: ...
+
+
+def _recording_observation(observation: object) -> RecordingObservation:
+  return cast(RecordingObservation, observation)
+
+
+def _rewrite_observation(observation: object) -> RewriteObservation:
+  return cast(RewriteObservation, observation)
 
 
 def has_langfuse_credentials() -> bool:
@@ -132,36 +155,13 @@ def record_session_event(
       return
 
 
-@contextmanager
 def start_recording_observation(
   *,
   stream: str,
   recording_id: str,
-  raw_text: str,
-  rewrite_input: str | None,
-  audio_attachment: LangfuseMedia | None,
-  duration_seconds: float | None,
-  word_count: int,
-) -> Iterator[RecordingObservation | None]:
+) -> RecordingObservation | None:
   if not initialize_langfuse():
-    yield None
-    return
-
-  observation_input: dict[str, object] = {
-    "raw_transcript": raw_text,
-  }
-  if rewrite_input is not None:
-    observation_input["rewrite_input"] = rewrite_input
-  if audio_attachment is not None:
-    observation_input["captured_audio_mp3"] = audio_attachment
-
-  observation_metadata: dict[str, object] = {
-    "component": "active-listener",
-    "stream": stream,
-    "recording_id": recording_id,
-    "duration_seconds": duration_seconds,
-    "word_count": word_count,
-  }
+    return None
 
   with propagate_attributes(
     session_id=stream,
@@ -173,14 +173,65 @@ def start_recording_observation(
     tags=["active-listener", "recording"],
     trace_name="eavesdrop-recording",
   ):
-    with get_client().start_as_current_observation(
+    observation = get_client().start_observation(
       as_type="span",
       name="active-listener-recording",
       trace_context={"trace_id": recording_trace_id(recording_id)},
-      input=observation_input,
-      metadata=observation_metadata,
-    ) as observation:
-      yield cast(RecordingObservation, cast(object, observation))
+      metadata={
+        "component": "active-listener",
+        "stream": stream,
+        "recording_id": recording_id,
+      },
+    )
+
+  return _recording_observation(observation)
+
+
+def end_recording_observation(
+  observation: RecordingObservation | None,
+  *,
+  logger: BoundLogger,
+  metadata: object | None = None,
+  level: str | None = None,
+  status_message: str | None = None,
+) -> None:
+  if observation is None:
+    return
+
+  update_recording_observation(
+    observation,
+    logger=logger,
+    metadata=metadata,
+    level=level,
+    status_message=status_message,
+  )
+
+  try:
+    _ = observation.end()
+  except Exception:
+    logger.exception("langfuse recording observation close failed")
+
+
+def update_recording_observation(
+  observation: RecordingObservation | None,
+  *,
+  logger: BoundLogger,
+  metadata: object | None = None,
+  level: str | None = None,
+  status_message: str | None = None,
+) -> None:
+  if observation is None:
+    return
+
+  try:
+    if metadata is not None or level is not None or status_message is not None:
+      _ = observation.update(
+        metadata=metadata,
+        level=level,
+        status_message=status_message,
+      )
+  except Exception:
+    logger.exception("langfuse recording observation update failed")
 
 
 @contextmanager
@@ -193,6 +244,7 @@ def start_rewrite_observation(
   prompt_path: str,
   stream: str,
   transcript: str,
+  parent_observation: RecordingObservation | None = None,
 ) -> Iterator[RewriteObservation | None]:
   if not initialize_langfuse():
     yield None
@@ -207,16 +259,27 @@ def start_rewrite_observation(
     tags=["active-listener", "rewrite", provider],
     session_id=session_id,
   ):
-    with get_client().start_as_current_observation(
+    observation_metadata = {
+      "component": "active-listener",
+      "provider": provider,
+      "model": model,
+      "prompt_path": prompt_path,
+      "stream": stream,
+    }
+
+    if parent_observation is None:
+      with get_client().start_as_current_observation(
+        name="active-listener-rewrite",
+        trace_context={"trace_id": recording_trace_id(recording_id)},
+        input=transcript,
+        metadata=observation_metadata,
+      ) as observation:
+        yield _rewrite_observation(observation)
+      return
+
+    with parent_observation.start_as_current_observation(
       name="active-listener-rewrite",
-      trace_context={"trace_id": recording_trace_id(recording_id)},
       input=transcript,
-      metadata={
-        "component": "active-listener",
-        "provider": provider,
-        "model": model,
-        "prompt_path": prompt_path,
-        "stream": stream,
-      },
+      metadata=observation_metadata,
     ) as observation:
-      yield cast(RewriteObservation, cast(object, observation))
+      yield _rewrite_observation(observation)

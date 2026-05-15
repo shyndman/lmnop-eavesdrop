@@ -42,9 +42,11 @@ from active_listener.recording.reducer import (
 from eavesdrop.wire import TranscriptionMessage
 
 from ..infra.langfuse import (
+  RecordingObservation,
   build_langfuse_audio_attachment,
-  start_recording_observation,
+  end_recording_observation,
   start_rewrite_observation,
+  update_recording_observation,
 )
 
 
@@ -101,6 +103,7 @@ _REMOVE_PRECEDING_THANK_YOU_INSTRUCTION = (
 _REWRITE_RESULT_METADATA_KEY = "rewrite_result"
 _CORRECTION_LOAD_TASK_METADATA_KEY = "correction_load_task"
 _RECORDING_ID_METADATA_KEY = "recording_id"
+_RECORDING_OBSERVATION_METADATA_KEY = "recording_observation"
 
 RecordingMessageIngestor = Callable[
   [RecordingReducerState, TranscriptionMessage],
@@ -156,51 +159,78 @@ class RecordingFinalizer:
     *,
     disconnect_generation: int,
     finished_recording: FinishedRecording,
+    recording_observation: RecordingObservation | None,
   ) -> None:
-    reducer_state = finished_recording.reducer_state
     try:
-      async with self._flush_lock:
-        try:
-          message = await self.client.flush(finished_recording.recording_id, force_complete=True)
-        finally:
-          self._release_reserved_flush()
-    except Exception:
-      self.logger.exception("recording finalization failed")
-      return
+      reducer_state = finished_recording.reducer_state
+      try:
+        async with self._flush_lock:
+          try:
+            message = await self.client.flush(finished_recording.recording_id, force_complete=True)
+          finally:
+            self._release_reserved_flush()
+      except Exception:
+        update_recording_observation(
+          recording_observation,
+          logger=self.logger,
+          level="ERROR",
+          status_message="recording finalization failed",
+        )
+        self.logger.exception("recording finalization failed")
+        return
 
-    if self.current_disconnect_generation() != disconnect_generation:
-      self.logger.warning("skipping emission after disconnect", stream=message.stream)
-      return
-
-    async with self._lock:
       if self.current_disconnect_generation() != disconnect_generation:
+        update_recording_observation(
+          recording_observation,
+          logger=self.logger,
+          status_message="recording emission skipped after disconnect",
+        )
         self.logger.warning("skipping emission after disconnect", stream=message.stream)
         return
 
-      _ = self.ingest_transcription_message(reducer_state, message)
-      completed_runs = build_completed_text_runs(reducer_state)
-      raw_text = render_text(reducer_state.completed_words)
-      if not raw_text:
-        self.logger.info("recording finalized without committed text", stream=message.stream)
-        return
+      async with self._lock:
+        if self.current_disconnect_generation() != disconnect_generation:
+          update_recording_observation(
+            recording_observation,
+            logger=self.logger,
+            status_message="recording emission skipped after disconnect",
+          )
+          self.logger.warning("skipping emission after disconnect", stream=message.stream)
+          return
 
-      self.logger.info("finalized raw transcript", stream=message.stream, raw_text=raw_text)
-      rewrite_input = serialize_text_runs(completed_runs)
-      audio_attachment = build_langfuse_audio_attachment(
-        captured_audio=finished_recording.captured_audio,
-        ffmpeg_path=self.ffmpeg_path,
-        logger=self.logger,
-      )
+        _ = self.ingest_transcription_message(reducer_state, message)
+        completed_runs = build_completed_text_runs(reducer_state)
+        raw_text = render_text(reducer_state.completed_words)
+        if not raw_text:
+          self.logger.info("recording finalized without committed text", stream=message.stream)
+          return
 
-      with start_recording_observation(
-        stream=message.stream,
-        recording_id=finished_recording.recording_id,
-        raw_text=raw_text,
-        rewrite_input=rewrite_input,
-        audio_attachment=audio_attachment,
-        duration_seconds=reducer_state.duration_seconds,
-        word_count=len(reducer_state.completed_words),
-      ) as recording_observation:
+        self.logger.info("finalized raw transcript", stream=message.stream, raw_text=raw_text)
+        rewrite_input = serialize_text_runs(completed_runs)
+        audio_attachment = build_langfuse_audio_attachment(
+          captured_audio=finished_recording.captured_audio,
+          ffmpeg_path=self.ffmpeg_path,
+          logger=self.logger,
+        )
+        if recording_observation is not None:
+          observation_input: dict[str, object] = {
+            "raw_transcript": raw_text,
+            "rewrite_input": rewrite_input,
+          }
+          if audio_attachment is not None:
+            observation_input["captured_audio_mp3"] = audio_attachment
+
+          _ = recording_observation.update(
+            input=observation_input,
+            metadata={
+              "component": "active-listener",
+              "stream": message.stream,
+              "recording_id": finished_recording.recording_id,
+              "duration_seconds": reducer_state.duration_seconds,
+              "word_count": len(reducer_state.completed_words),
+            },
+          )
+
         pipeline_steps = self._pipeline_steps(stream=message.stream)
         pipeline_context = await self._run_pipeline(
           context=PipelineContext(
@@ -209,17 +239,19 @@ class RecordingFinalizer:
             metadata={
               _CORRECTION_LOAD_TASK_METADATA_KEY: finished_recording.correction_load_task,
               _RECORDING_ID_METADATA_KEY: finished_recording.recording_id,
+              _RECORDING_OBSERVATION_METADATA_KEY: recording_observation,
             },
           ),
           steps=pipeline_steps,
           stream=message.stream,
         )
         if pipeline_context is None:
-          if recording_observation is not None:
-            _ = recording_observation.update(
-              level="ERROR",
-              status_message="finalization pipeline failed",
-            )
+          update_recording_observation(
+            recording_observation,
+            logger=self.logger,
+            level="ERROR",
+            status_message="finalization pipeline failed",
+          )
           return
 
         final_text = pipeline_context.transcript
@@ -234,8 +266,12 @@ class RecordingFinalizer:
         try:
           self.emitter.emit_text(final_text)
         except Exception:
-          if recording_observation is not None:
-            _ = recording_observation.update(level="ERROR", status_message="text emission failed")
+          update_recording_observation(
+            recording_observation,
+            logger=self.logger,
+            level="ERROR",
+            status_message="text emission failed",
+          )
           self.logger.exception("text emission failed", stream=message.stream)
           return
 
@@ -280,6 +316,8 @@ class RecordingFinalizer:
               ),
             },
           )
+    finally:
+      end_recording_observation(recording_observation, logger=self.logger)
 
   def _pipeline_steps(self, *, stream: str) -> list[PipelineStep]:
     async def rewrite_with_llm(context: PipelineContext) -> PipelineContext:
@@ -445,6 +483,7 @@ class RecordingFinalizer:
       prompt_path=prompt_path,
       stream=stream,
       transcript=rewrite_input,
+      parent_observation=_recording_observation_from_metadata(context.metadata),
     ) as observation:
       try:
         rewrite_result = await self.rewrite_client.rewrite_text(
@@ -535,6 +574,16 @@ def _correction_load_task_from_metadata(
     raise TypeError("correction_load_task metadata must be an asyncio.Task")
 
   return cast(CorrectionLoadTask, correction_load_task)
+
+
+def _recording_observation_from_metadata(
+  metadata: Mapping[str, object],
+) -> RecordingObservation | None:
+  recording_observation = metadata.get(_RECORDING_OBSERVATION_METADATA_KEY)
+  if recording_observation is None:
+    return None
+
+  return cast(RecordingObservation, recording_observation)
 
 
 def _recording_id_from_metadata(metadata: Mapping[str, object]) -> str:

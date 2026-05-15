@@ -900,6 +900,72 @@ async def test_langfuse_session_events_track_connection_and_recording_lifecycle(
 
 
 @pytest.mark.asyncio
+async def test_cancel_recording_ends_recording_observation(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  start_calls: list[dict[str, object]] = []
+  update_calls: list[dict[str, object | None]] = []
+  end_calls: list[int | None] = []
+
+  @dataclass
+  class FakeLangfuseObservation:
+    def update(
+      self,
+      *,
+      input: object | None = None,
+      output: object | None = None,
+      metadata: object | None = None,
+      level: str | None = None,
+      status_message: str | None = None,
+      usage_details: dict[str, int] | None = None,
+      cost_details: dict[str, float] | None = None,
+    ) -> FakeLangfuseObservation:
+      update_calls.append(
+        {
+          "input": input,
+          "output": output,
+          "metadata": metadata,
+          "level": level,
+          "status_message": status_message,
+          "usage_details": usage_details,
+          "cost_details": cost_details,
+        }
+      )
+      return self
+
+    def end(self, *, end_time: int | None = None) -> object:
+      end_calls.append(end_time)
+      return end_time
+
+  harness = _service()
+  service = harness.service
+
+  monkeypatch.setattr(
+    "active_listener.app.service.start_recording_observation",
+    lambda **kwargs: start_calls.append(kwargs) or FakeLangfuseObservation(),
+  )
+  monkeypatch.setattr("active_listener.app.service.secrets.token_hex", lambda _n: "recording-1")
+
+  await service.handle_client_event(ConnectedEvent(stream="stream-1"))
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
+  _ = await service.handle_action(AppAction.CANCEL)
+
+  assert start_calls == [{"stream": "stream-1", "recording_id": "recording-1"}]
+  assert update_calls == [
+    {
+      "input": None,
+      "output": None,
+      "metadata": None,
+      "level": None,
+      "status_message": "recording cancelled",
+      "usage_details": None,
+      "cost_details": None,
+    }
+  ]
+  assert end_calls == [None]
+
+
+@pytest.mark.asyncio
 async def test_start_and_finish_resume_prior_media() -> None:
   media_playback_controller = FakeMediaPlaybackController(pause_results=[True])
   client = FakeClient(
@@ -1128,6 +1194,69 @@ async def test_close_resumes_prior_media() -> None:
 
   assert media_playback_controller.pause_calls == 1
   assert media_playback_controller.resume_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_close_ends_open_recording_observation(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  update_calls: list[dict[str, object | None]] = []
+  end_calls: list[int | None] = []
+
+  @dataclass
+  class FakeLangfuseObservation:
+    def update(
+      self,
+      *,
+      input: object | None = None,
+      output: object | None = None,
+      metadata: object | None = None,
+      level: str | None = None,
+      status_message: str | None = None,
+      usage_details: dict[str, int] | None = None,
+      cost_details: dict[str, float] | None = None,
+    ) -> FakeLangfuseObservation:
+      update_calls.append(
+        {
+          "input": input,
+          "output": output,
+          "metadata": metadata,
+          "level": level,
+          "status_message": status_message,
+          "usage_details": usage_details,
+          "cost_details": cost_details,
+        }
+      )
+      return self
+
+    def end(self, *, end_time: int | None = None) -> object:
+      end_calls.append(end_time)
+      return end_time
+
+  harness = _service()
+  service = harness.service
+
+  monkeypatch.setattr(
+    "active_listener.app.service.start_recording_observation",
+    lambda **_kwargs: FakeLangfuseObservation(),
+  )
+
+  await service.handle_client_event(ConnectedEvent(stream="stream-1"))
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
+  await service.close()
+
+  assert update_calls == [
+    {
+      "input": None,
+      "output": None,
+      "metadata": None,
+      "level": None,
+      "status_message": "recording stopped during shutdown",
+      "usage_details": None,
+      "cost_details": None,
+    }
+  ]
+  assert end_calls == [None]
 
 
 @pytest.mark.asyncio
@@ -2788,6 +2917,7 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
   recording_observed_calls: list[dict[str, object]] = []
   rewrite_observed_calls: list[dict[str, object]] = []
   observed_updates: list[dict[str, object | None]] = []
+  ended_sources: list[str] = []
 
   @dataclass
   class FakeLangfuseObservation:
@@ -2818,10 +2948,13 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
       )
       return self
 
-  @contextmanager
-  def fake_start_recording_observation(**kwargs: object) -> Iterator[FakeLangfuseObservation]:
+    def end(self, *, end_time: int | None = None) -> object:
+      ended_sources.append(self.source)
+      return end_time
+
+  def fake_start_recording_observation(**kwargs: object) -> FakeLangfuseObservation:
     recording_observed_calls.append(kwargs)
-    yield FakeLangfuseObservation(source="recording")
+    return FakeLangfuseObservation(source="recording")
 
   @contextmanager
   def fake_start_rewrite_observation(**kwargs: object) -> Iterator[FakeLangfuseObservation]:
@@ -2876,7 +3009,7 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
     lambda **_kwargs: audio_attachment,
   )
   monkeypatch.setattr(
-    "active_listener.recording.finalizer.start_recording_observation",
+    "active_listener.app.service.start_recording_observation",
     fake_start_recording_observation,
   )
   monkeypatch.setattr(
@@ -2884,6 +3017,7 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
     fake_start_rewrite_observation,
   )
 
+  await harness.service.handle_client_event(ConnectedEvent(stream="stream-1"))
   _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
   harness.recording_audio_buffer.append(captured_audio)
   _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
@@ -2917,13 +3051,8 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
   ]
   assert recording_observed_calls == [
     {
-      "stream": "stream-1",
       "recording_id": harness.client.flush_recording_ids[0],
-      "raw_text": "alpha",
-      "rewrite_input": "alpha",
-      "audio_attachment": audio_attachment,
-      "duration_seconds": 0.1,
-      "word_count": 1,
+      "stream": "stream-1",
     }
   ]
   assert rewrite_observed_calls == [
@@ -2935,9 +3064,30 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
       "prompt_path": "/tmp/rewrite/system.md",
       "stream": "stream-1",
       "transcript": "alpha",
+      "parent_observation": FakeLangfuseObservation(source="recording"),
     }
   ]
   assert observed_updates == [
+    {
+      "source": "recording",
+      "input": {
+        "raw_transcript": "alpha",
+        "rewrite_input": "alpha",
+        "captured_audio_mp3": audio_attachment,
+      },
+      "output": None,
+      "metadata": {
+        "component": "active-listener",
+        "stream": "stream-1",
+        "recording_id": harness.client.flush_recording_ids[0],
+        "duration_seconds": 0.1,
+        "word_count": 1,
+      },
+      "level": None,
+      "status_message": None,
+      "usage_details": None,
+      "cost_details": None,
+    },
     {
       "source": "rewrite",
       "input": None,
@@ -2971,6 +3121,7 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
       "cost_details": None,
     },
   ]
+  assert ended_sources == ["recording"]
   assert (
     LogRecord(
       event="recording finalization mode",
