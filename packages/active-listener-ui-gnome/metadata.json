@@ -3,6 +3,7 @@
     "description": "Shows Active Listener state in GNOME top bar.",
     "uuid": "eavesdrop@shyndman.ca",
     "shell-version": [
-        "49"
+        "49",
+        "50"
     ]
 }
