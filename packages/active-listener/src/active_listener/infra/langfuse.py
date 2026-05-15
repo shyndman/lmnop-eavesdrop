@@ -135,7 +135,6 @@ def record_session_event(
 @contextmanager
 def start_recording_observation(
   *,
-  session_id: str,
   stream: str,
   recording_id: str,
   raw_text: str,
@@ -165,7 +164,7 @@ def start_recording_observation(
   }
 
   with propagate_attributes(
-    session_id=session_id,
+    session_id=stream,
     metadata={
       "component": "active-listener",
       "stream": stream,

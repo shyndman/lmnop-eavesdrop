@@ -2917,7 +2917,6 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
   ]
   assert recording_observed_calls == [
     {
-      "session_id": "stream-1",
       "stream": "stream-1",
       "recording_id": harness.client.flush_recording_ids[0],
       "raw_text": "alpha",

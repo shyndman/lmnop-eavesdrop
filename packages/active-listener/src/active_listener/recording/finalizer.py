@@ -193,7 +193,6 @@ class RecordingFinalizer:
       )
 
       with start_recording_observation(
-        session_id=message.stream,
         stream=message.stream,
         recording_id=finished_recording.recording_id,
         raw_text=raw_text,
