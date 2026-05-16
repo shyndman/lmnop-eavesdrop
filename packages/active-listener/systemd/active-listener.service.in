@@ -2,13 +2,15 @@
 Description=Eavesdrop active-listener desktop dictation service
 PartOf=graphical-session.target
 After=graphical-session.target
+StartLimitIntervalSec=1800
+StartLimitBurst=60
 
 [Service]
 Type=simple
 WorkingDirectory=@REPO_ROOT@
-ExecStart=/bin/bash -c 'set -a; [ -f @REPO_ROOT@/.env ] && source @REPO_ROOT@/.env; exec @ACTIVE_LISTENER_BIN@'
+ExecStart=/bin/bash -c 'set -e; ENV=$(timeout 2 cat @REPO_ROOT@/.env); set -a; eval "$ENV"; exec @ACTIVE_LISTENER_BIN@'
 Restart=on-failure
-RestartSec=5
+RestartSec=30
 
 [Install]
 WantedBy=graphical-session.target
