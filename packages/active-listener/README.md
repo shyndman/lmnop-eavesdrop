@@ -14,8 +14,10 @@ That task:
 
 - installs `active-listener.service` into `~/.config/systemd/user/active-listener.service`
 - enables it for `graphical-session.target`
+- restarts the service so config and unit changes take effect immediately
 - keeps restart behavior best-effort with `Restart=on-failure`
 - seeds `~/.config/eavesdrop/active-listener.yaml` from `packages/active-listener/config.yaml` when the XDG config file does not exist yet
+- rewrites relative paths in `~/.config/eavesdrop/active-listener.yaml` on install, including replacing a symlinked config with a normalized real file
 
 ## Vicinae GNOME extension dependency
 

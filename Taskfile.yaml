@@ -19,9 +19,11 @@ tasks:
     cmds:
       - uv sync --all-extras --all-groups --project packages/active-listener
       - |
-        python3 - <<'PY'
+        .venv/bin/python - <<'PY'
+        import sys
         from pathlib import Path
-        import shutil
+
+        import yaml
 
         repo_root = Path.cwd()
         unit_template = repo_root / "packages/active-listener/systemd/active-listener.service.in"
@@ -31,8 +33,26 @@ tasks:
 
         package_dir = repo_root / "packages/active-listener"
         active_listener_bin = repo_root / ".venv/bin/active-listener"
+        sys.path.insert(0, str(package_dir / "src"))
+
+        from active_listener.config.loader import (
+          load_active_listener_config_file,
+          normalize_active_listener_config_paths,
+        )
+
         if not active_listener_bin.exists():
           raise SystemExit(f"active-listener entrypoint not found at {active_listener_bin}")
+
+        def write_normalized_config(*, source_config: Path, destination_config: Path) -> None:
+          source_config_data = load_active_listener_config_file(source_config)
+          normalized_config = normalize_active_listener_config_paths(
+            source_config_data,
+            config_dir=source_config.parent,
+          )
+          destination_config.write_text(
+            yaml.safe_dump(normalized_config, sort_keys=False),
+            encoding="utf-8",
+          )
 
         unit_text = unit_template.read_text()
         unit_text = unit_text.replace("@REPO_ROOT@", str(repo_root))
@@ -41,16 +61,34 @@ tasks:
         unit_destination.write_text(unit_text)
 
         config_destination.parent.mkdir(parents=True, exist_ok=True)
-        if not config_destination.exists():
+        if config_destination.is_symlink():
+          source_config = config_destination.resolve()
+          config_destination.unlink()
+          write_normalized_config(
+            source_config=source_config,
+            destination_config=config_destination,
+          )
+        elif config_destination.exists():
+          write_normalized_config(
+            source_config=config_destination,
+            destination_config=config_destination,
+          )
+        else:
+          source_config = None
           for source in (
             package_dir / "config.yaml",
             package_dir / "config.sample.yaml",
           ):
             if source.exists():
-              shutil.copy2(source, config_destination)
+              source_config = source
               break
-          else:
+          if source_config is None:
             raise SystemExit("No active-listener config source found to seed the XDG config path")
+
+          write_normalized_config(
+            source_config=source_config,
+            destination_config=config_destination,
+          )
 
         print(f"Installed {unit_destination}")
         print(f"Using config path {config_destination}")
@@ -58,7 +96,13 @@ tasks:
           print(f"Prompt override path {prompt_destination}")
         PY
       - systemctl --user daemon-reload
-      - systemctl --user enable --now active-listener.service
+      - systemctl --user enable active-listener.service
+      - |
+        if systemctl --user is-active --quiet active-listener.service; then
+          systemctl --user restart active-listener.service
+        else
+          systemctl --user start active-listener.service
+        fi
       - |
         deadline=$((SECONDS + 60))
         while [ "$SECONDS" -lt "$deadline" ]; do
