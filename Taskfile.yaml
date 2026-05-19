@@ -226,6 +226,7 @@ tasks:
       ROCM_BASE_IMAGE: '{{default "eavesdrop-rocm-base" .ROCM_BASE_IMAGE}}'
       GFX_ARCH: '{{.DEFAULT_GFX_ARCH}}'
       HSA_OVERRIDE_GFX_VERSION: '{{.DEFAULT_HSA_OVERRIDE_GFX_VERSION}}'
+      SKIP_CACHE: '{{default "false" .SKIP_CACHE}}'
       BASE_IMAGE_ID_LABEL: 'io.eavesdrop.rocm_base_image_id'
       GFX_ARCH_LABEL: 'io.eavesdrop.gfx_arch'
       HSA_OVERRIDE_GFX_VERSION_LABEL: 'io.eavesdrop.hsa_override_gfx_version'
@@ -242,7 +243,7 @@ tasks:
       - echo "HSA_OVERRIDE_GFX_VERSION = {{.HSA_OVERRIDE_GFX_VERSION}}"
       - |
         BASE_IMAGE_ID="$(docker image inspect {{.ROCM_BASE_IMAGE}} --format '{{"{{"}}.Id{{"}}"}}')"
-        docker build --progress=plain -f server/docker/Dockerfile --build-arg BASE_IMAGE={{.ROCM_BASE_IMAGE}} --label {{.BASE_IMAGE_ID_LABEL}}="$BASE_IMAGE_ID" --label {{.GFX_ARCH_LABEL}}='{{.GFX_ARCH}}' --label {{.HSA_OVERRIDE_GFX_VERSION_LABEL}}='{{.HSA_OVERRIDE_GFX_VERSION}}' -t {{.SERVER_IMAGE}} .
+        docker build {{if eq .SKIP_CACHE "true"}}--no-cache {{end}}--progress=plain -f server/docker/Dockerfile --build-arg BASE_IMAGE={{.ROCM_BASE_IMAGE}} --label {{.BASE_IMAGE_ID_LABEL}}="$BASE_IMAGE_ID" --label {{.GFX_ARCH_LABEL}}='{{.GFX_ARCH}}' --label {{.HSA_OVERRIDE_GFX_VERSION_LABEL}}='{{.HSA_OVERRIDE_GFX_VERSION}}' -t {{.SERVER_IMAGE}} .
 
   run-server-image:
     # Verified ROCm runtime flags on AMD Framework 13 (Ryzen 7840U / Radeon 780M).
