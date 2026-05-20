@@ -8,7 +8,7 @@ import { PanelIndicator } from './panel-indicator.js';
 import { callActiveListenerServiceManager, type SystemdMethodName } from './systemd-manager.js';
 import { TranscriptOverlayController } from './transcript-overlay.js';
 
-const KITTY_EXECUTABLE_NAME = 'kitty';
+const KITTY_EXECUTABLE_PATH = `${GLib.get_home_dir()}/.local/bin/kitty`;
 
 export default class ActiveListenerIndicatorExtension extends Extension {
   private indicator: PanelIndicator | null = null;
@@ -83,12 +83,15 @@ export default class ActiveListenerIndicatorExtension extends Extension {
 
   private showLogs(): void {
     try {
-      const kittyExecutable = this.resolveKittyExecutable();
+      if (!GLib.file_test(KITTY_EXECUTABLE_PATH, GLib.FileTest.IS_EXECUTABLE)) {
+        throw new Error(`Kitty executable not found at ${KITTY_EXECUTABLE_PATH}`);
+      }
+
       const [launched] = GLib.spawn_async(
         null,
-        buildActiveListenerLogCommand(kittyExecutable),
+        buildActiveListenerLogCommand(KITTY_EXECUTABLE_PATH),
         null,
-        GLib.SpawnFlags.SEARCH_PATH,
+        GLib.SpawnFlags.DEFAULT,
         null,
       );
       if (!launched) {
@@ -103,28 +106,5 @@ export default class ActiveListenerIndicatorExtension extends Extension {
       console.error('Active Listener indicator failed to launch logs terminal', error);
       Main.notifyError('Active Listener logs failed', detail);
     }
-  }
-
-  private resolveKittyExecutable(): string {
-    const pathExecutable = GLib.find_program_in_path(KITTY_EXECUTABLE_NAME);
-    if (pathExecutable !== null) {
-      return pathExecutable;
-    }
-
-    const homeDirectory = GLib.get_home_dir();
-    const candidatePaths = [
-      `${homeDirectory}/.local/bin/kitty`,
-      `${homeDirectory}/.local/kitty.app/bin/kitty`,
-      '/usr/local/bin/kitty',
-      '/usr/bin/kitty',
-    ];
-
-    for (const candidatePath of candidatePaths) {
-      if (GLib.file_test(candidatePath, GLib.FileTest.IS_EXECUTABLE)) {
-        return candidatePath;
-      }
-    }
-
-    return KITTY_EXECUTABLE_NAME;
   }
 }
