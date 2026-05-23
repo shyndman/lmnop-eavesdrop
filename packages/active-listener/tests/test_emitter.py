@@ -10,7 +10,7 @@ import pytest
 from pydantic import ValidationError
 from sdbus import SdBusUnmappedMessageError
 
-from active_listener.infra.emitter import GnomeShellExtensionTextEmitter
+from active_listener.infra.emitter import MAX_EMIT_CHUNK_LENGTH, GnomeShellExtensionTextEmitter
 
 
 def _focused_window_payload(*, window_id: int = 42, wm_class: str = "org.gnome.dspy") -> str:
@@ -232,11 +232,11 @@ def test_emitter_snapshots_focused_window_once_per_emission(
 
   emitter = GnomeShellExtensionTextEmitter()
   emitter.initialize()
-  emitter.emit_text("a" * 801)
+  emitter.emit_text("a" * (MAX_EMIT_CHUNK_LENGTH + 1))
 
   assert windows.focused_window_calls == 1
   assert clipboard.get_current_content_calls == 1
-  assert [len(chunk) for chunk in clipboard.set_contents[:-1]] == [800, 1]
+  assert [len(chunk) for chunk in clipboard.set_contents[:-1]] == [MAX_EMIT_CHUNK_LENGTH, 1]
   assert clipboard.set_contents[-1] == "seed"
   assert windows.shortcut_calls == [
     (99, "v", "CONTROL|SHIFT"),
@@ -244,7 +244,7 @@ def test_emitter_snapshots_focused_window_once_per_emission(
   ]
 
 
-def test_emitter_chunks_text_at_800_characters(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_emitter_chunks_text_at_max_length(monkeypatch: pytest.MonkeyPatch) -> None:
   bus = RecordingBus()
   windows = RecordingWindowsProxy([_focused_window_payload(), _focused_window_payload()])
   clipboard = RecordingClipboardProxy(current_content="seed")
@@ -259,9 +259,13 @@ def test_emitter_chunks_text_at_800_characters(monkeypatch: pytest.MonkeyPatch) 
 
   emitter = GnomeShellExtensionTextEmitter()
   emitter.initialize()
-  emitter.emit_text("a" * 1601)
+  emitter.emit_text("a" * ((MAX_EMIT_CHUNK_LENGTH * 2) + 1))
 
-  assert [len(chunk) for chunk in clipboard.set_contents[:-1]] == [800, 800, 1]
+  assert [len(chunk) for chunk in clipboard.set_contents[:-1]] == [
+    MAX_EMIT_CHUNK_LENGTH,
+    MAX_EMIT_CHUNK_LENGTH,
+    1,
+  ]
   assert clipboard.set_contents[-1] == "seed"
   assert sleep_calls == [0.15, 0.15, 0.75]
 
@@ -295,9 +299,12 @@ def test_emitter_stops_after_send_shortcut_returns_false(
   emitter.initialize()
 
   with pytest.raises(RuntimeError, match="failed to send paste shortcut"):
-    emitter.emit_text("a" * 1601)
+    emitter.emit_text("a" * ((MAX_EMIT_CHUNK_LENGTH * 2) + 1))
 
-  assert [len(chunk) for chunk in clipboard.set_contents[:-1]] == [800, 800]
+  assert [len(chunk) for chunk in clipboard.set_contents[:-1]] == [
+    MAX_EMIT_CHUNK_LENGTH,
+    MAX_EMIT_CHUNK_LENGTH,
+  ]
   assert clipboard.set_contents[-1] == "seed"
   assert windows.shortcut_calls == [
     (42, "v", "CONTROL"),
@@ -388,10 +395,10 @@ def test_emitter_restores_clipboard_after_chunk_write_failure(
   emitter.initialize()
 
   with pytest.raises(RuntimeError, match="clipboard unavailable"):
-    emitter.emit_text("a" * 1601)
+    emitter.emit_text("a" * ((MAX_EMIT_CHUNK_LENGTH * 2) + 1))
 
   assert clipboard.get_current_content_calls == 1
-  assert clipboard.set_contents == ["a" * 800, "seed"]
+  assert clipboard.set_contents == ["a" * MAX_EMIT_CHUNK_LENGTH, "seed"]
   assert windows.shortcut_calls == [(42, "v", "CONTROL")]
 
 

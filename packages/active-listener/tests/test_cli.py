@@ -146,7 +146,7 @@ def test_main_starts_command_and_configures_logging(monkeypatch: pytest.MonkeyPa
     assert command.started is True
     assert setup_calls == ["called"]
     assert httpx_logger.level == logging.WARNING
-    assert logger.info_messages == ["starting active-listener"]
+    assert logger.info_messages == ["startup environment", "starting active-listener"]
   finally:
     httpx_logger.setLevel(original_httpx_level)
 
