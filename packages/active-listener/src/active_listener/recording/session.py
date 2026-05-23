@@ -28,7 +28,7 @@ from active_listener.recording.reducer import (
   reduce_new_segments,
 )
 from active_listener.recording.spectrum import SAMPLE_RATE_HZ
-from eavesdrop.wire import TranscriptionMessage
+from eavesdrop.wire import Segment, TranscriptionMessage
 
 HOLD_THRESHOLD_S = 0.250
 RECORDING_CHANNEL_COUNT = 1
@@ -251,6 +251,18 @@ class RecordingSession:
         "transcription word timings",
         words=word_timings,
       )
+    segment_probs = [
+      _format_segment_prob(seg)
+      for seg in [
+        *reduction.segments,
+        *([reduction.incomplete_segment] if reduction.incomplete_segment else []),
+      ]
+    ]
+    if segment_probs:
+      self.logger.info(
+        "transcription segment probabilities",
+        segments=segment_probs,
+      )
     state.last_id = reduction.last_id
     self._connection_last_id = reduction.last_id
     transcription_update = build_transcription_update(state)
@@ -384,3 +396,12 @@ class RecordingSession:
 def _format_word_timing(_index: int, word: TimedWord) -> str:
   duration_s = word.end_s - word.start_s
   return f"{word.text}   {word.start_s:.3f}-{word.end_s:.3f} ({duration_s:.3f})"
+
+
+def _format_segment_prob(segment: Segment) -> str:
+  text = segment.text.strip()
+  return (
+    f"{text}   avg_logprob={segment.avg_logprob:.3f}"
+    f" p={segment.avg_probability:.3f}"
+    f" {'complete' if segment.completed else 'incomplete'}"
+  )

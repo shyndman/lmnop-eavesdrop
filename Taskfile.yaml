@@ -137,6 +137,11 @@ tasks:
           exit 1
         fi
 
+  follow-active-listener-service-logs:
+    desc: follow the active listener logs, formatted without journal cruft
+    cmds: 
+      - journalctl --user -u active-listener.service -o cat --follow
+
   prepare-active-listener-ui-gnome:
     desc: Install active-listener-ui-gnome dependencies
     dir: packages/active-listener-ui-gnome

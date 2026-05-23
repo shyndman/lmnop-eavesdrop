@@ -2113,6 +2113,18 @@ async def test_transcription_events_are_consumed_only_while_recording() -> None:
     )
     in harness.logger.debug_records
   )
+  assert (
+    LogRecord(
+      event="transcription segment probabilities",
+      fields={
+        "segments": [
+          "alpha   avg_logprob=0.000 p=1.000 complete",
+          "draft   avg_logprob=0.000 p=1.000 incomplete",
+        ],
+      },
+    )
+    in harness.logger.info_records
+  )
   assert "recording finished" in harness.logger.info_messages
   assert harness.logger.info_messages[-1] == "text emitted"
 
