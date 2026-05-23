@@ -2522,6 +2522,25 @@ async def test_finalize_recording_normalizes_hillary_before_emitting_text() -> N
 
 
 @pytest.mark.asyncio
+async def test_finalize_recording_normalizes_hashtag_before_emitting_text() -> None:
+  client = FakeClient(
+    flush_results=[
+      _message(
+        _segment(1, "release hashtag 42", completed=True),
+        _segment(2, "tail", completed=False),
+      )
+    ]
+  )
+  harness = _service(client=client)
+
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  await harness.service.wait_for_background_tasks()
+
+  assert harness.emitter.emitted == ["release#42 "]
+
+
+@pytest.mark.asyncio
 async def test_finalize_recording_removes_unescaped_thank_you_mentions() -> None:
   client = FakeClient(
     flush_results=[

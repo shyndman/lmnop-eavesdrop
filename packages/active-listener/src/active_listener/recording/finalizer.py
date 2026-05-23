@@ -68,6 +68,7 @@ PipelineStep = Callable[[PipelineContext], Awaitable[PipelineContext]]
 _SYMBOL_WORDS = {
   "backslash": "\\",
   "dot": ".",
+  "hashtag": "#",
   "slash": "/",
   "tild": "~",
   "tilde": "~",
