@@ -47,12 +47,17 @@ export class PanelIndicator {
     this.actions = actions;
     this.button = new PanelMenu.Button(0.5, name, false);
 
+    const indicatorBox = new St.BoxLayout({
+      style_class: 'panel-status-indicators-box',
+    });
+
     this.icon = new St.Icon({
       gicon: this.getStateIcon('absent'),
       style_class: 'system-status-icon',
       accessible_name: 'Active Listener absent',
     });
-    this.button.add_child(this.icon);
+    indicatorBox.add_child(this.icon);
+    this.button.add_child(indicatorBox);
 
     this.recordingControlItem = new PopupMenu.PopupMenuItem('No Service');
     this.recordingControlItem.connect('activate', () => {
