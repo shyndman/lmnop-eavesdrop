@@ -62,6 +62,22 @@ class RecordingObservation(Protocol):
   ) -> AbstractContextManager[object]: ...
 
 
+def record_recording_event(
+  *,
+  parent_observation: RecordingObservation | None,
+  name: str,
+  metadata: dict[str, object] | None = None,
+) -> None:
+  if parent_observation is None:
+    return
+
+  with parent_observation.start_as_current_observation(
+    name=name,
+    metadata=metadata,
+  ):
+    return
+
+
 def _recording_observation(observation: object) -> RecordingObservation:
   return cast(RecordingObservation, observation)
 

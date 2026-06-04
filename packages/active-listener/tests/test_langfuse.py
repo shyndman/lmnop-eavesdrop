@@ -152,6 +152,23 @@ def test_start_recording_observation_uses_stream_for_session_id(
   ]
 
 
+def test_record_recording_event_nests_under_parent_recording_observation() -> None:
+  parent_observation = FakeObservation()
+
+  langfuse_module.record_recording_event(
+    parent_observation=parent_observation,
+    name="active-listener-recording-started",
+    metadata={"stream": "stream-1", "recording_id": "recording-1"},
+  )
+
+  assert parent_observation.child_start_calls == [
+    {
+      "name": "active-listener-recording-started",
+      "metadata": {"stream": "stream-1", "recording_id": "recording-1"},
+    }
+  ]
+
+
 def test_start_rewrite_observation_nests_under_parent_recording_observation(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:

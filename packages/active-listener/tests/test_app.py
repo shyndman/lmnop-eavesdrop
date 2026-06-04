@@ -877,16 +877,26 @@ async def test_start_and_cancel_resume_prior_media() -> None:
 
 
 @pytest.mark.asyncio
-async def test_langfuse_session_events_track_connection_and_recording_lifecycle(
+async def test_langfuse_events_split_connection_and_recording_lifecycle(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-  observed_calls: list[dict[str, object]] = []
+  observed_session_calls: list[dict[str, object]] = []
+  observed_recording_calls: list[dict[str, object]] = []
+  recording_observation = object()
   harness = _service()
   service = harness.service
 
   monkeypatch.setattr(
     "active_listener.app.service.record_session_event",
-    lambda **kwargs: observed_calls.append(kwargs),
+    lambda **kwargs: observed_session_calls.append(kwargs),
+  )
+  monkeypatch.setattr(
+    "active_listener.app.service.record_recording_event",
+    lambda **kwargs: observed_recording_calls.append(kwargs),
+  )
+  monkeypatch.setattr(
+    "active_listener.app.service.start_recording_observation",
+    lambda **_kwargs: recording_observation,
   )
   monkeypatch.setattr("active_listener.app.service.secrets.token_hex", lambda _n: "recording-1")
 
@@ -895,7 +905,7 @@ async def test_langfuse_session_events_track_connection_and_recording_lifecycle(
   await service.handle_action(AppAction.CANCEL)
   await service.handle_client_event(DisconnectedEvent(stream="stream-1", reason="socket closed"))
 
-  assert observed_calls == [
+  assert observed_session_calls == [
     {
       "session_id": "stream-1",
       "name": "active-listener-client-connected",
@@ -903,18 +913,20 @@ async def test_langfuse_session_events_track_connection_and_recording_lifecycle(
     },
     {
       "session_id": "stream-1",
+      "name": "active-listener-client-disconnected",
+      "metadata": {"stream": "stream-1", "reason": "socket closed"},
+    },
+  ]
+  assert observed_recording_calls == [
+    {
+      "parent_observation": recording_observation,
       "name": "active-listener-recording-started",
       "metadata": {"stream": "stream-1", "recording_id": "recording-1"},
     },
     {
-      "session_id": "stream-1",
+      "parent_observation": recording_observation,
       "name": "active-listener-recording-cancelled",
       "metadata": {"stream": "stream-1", "recording_id": "recording-1"},
-    },
-    {
-      "session_id": "stream-1",
-      "name": "active-listener-client-disconnected",
-      "metadata": {"stream": "stream-1", "reason": "socket closed"},
     },
   ]
 
@@ -956,6 +968,21 @@ async def test_cancel_recording_ends_recording_observation(
     def end(self, *, end_time: int | None = None) -> object:
       end_calls.append(end_time)
       return end_time
+
+    @contextmanager
+    def start_as_current_observation(
+      self,
+      *,
+      name: str,
+      input: object | None = None,
+      output: object | None = None,
+      metadata: object | None = None,
+      level: str | None = None,
+      status_message: str | None = None,
+      usage_details: dict[str, int] | None = None,
+      cost_details: dict[str, float] | None = None,
+    ) -> Iterator[FakeLangfuseObservation]:
+      yield self
 
   harness = _service()
   service = harness.service
@@ -1130,7 +1157,12 @@ async def test_caps_lock_is_suppressed_while_reconnecting() -> None:
 
 
 @pytest.mark.asyncio
-async def test_disconnect_during_recording_forces_local_abort() -> None:
+async def test_disconnect_during_recording_forces_local_abort(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  observed_session_calls: list[dict[str, object]] = []
+  observed_recording_calls: list[dict[str, object]] = []
+  recording_observation = object()
   spectrum_analyzer = FakeSpectrumAnalyzer()
   media_playback_controller = FakeMediaPlaybackController(pause_results=[True])
   harness = _service(
@@ -1138,6 +1170,22 @@ async def test_disconnect_during_recording_forces_local_abort() -> None:
     media_playback_controller=media_playback_controller,
   )
   service = harness.service
+
+  monkeypatch.setattr(
+    "active_listener.app.service.record_session_event",
+    lambda **kwargs: observed_session_calls.append(kwargs),
+  )
+  monkeypatch.setattr(
+    "active_listener.app.service.record_recording_event",
+    lambda **kwargs: observed_recording_calls.append(kwargs),
+  )
+  monkeypatch.setattr(
+    "active_listener.app.service.start_recording_observation",
+    lambda **_kwargs: recording_observation,
+  )
+  monkeypatch.setattr("active_listener.app.service.secrets.token_hex", lambda _n: "recording-1")
+
+  await service.handle_client_event(ConnectedEvent(stream="stream-1"))
   _ = await service.handle_action(AppAction.START_OR_FINISH)
 
   await service.handle_client_event(DisconnectedEvent(stream="stream-1", reason="socket closed"))
@@ -1153,6 +1201,29 @@ async def test_disconnect_during_recording_forces_local_abort() -> None:
   assert media_playback_controller.resume_calls == 1
   assert spectrum_analyzer.stop_calls == 1
   assert harness.logger.warning_messages == ["recording aborted by disconnect"]
+  assert observed_session_calls == [
+    {
+      "session_id": "stream-1",
+      "name": "active-listener-client-connected",
+      "metadata": {"stream": "stream-1"},
+    }
+  ]
+  assert observed_recording_calls == [
+    {
+      "parent_observation": recording_observation,
+      "name": "active-listener-recording-started",
+      "metadata": {"stream": "stream-1", "recording_id": "recording-1"},
+    },
+    {
+      "parent_observation": recording_observation,
+      "name": "active-listener-recording-aborted",
+      "metadata": {
+        "stream": "stream-1",
+        "recording_id": "recording-1",
+        "reason": "socket closed",
+      },
+    },
+  ]
 
 
 @pytest.mark.asyncio
@@ -1252,6 +1323,21 @@ async def test_close_ends_open_recording_observation(
     def end(self, *, end_time: int | None = None) -> object:
       end_calls.append(end_time)
       return end_time
+
+    @contextmanager
+    def start_as_current_observation(
+      self,
+      *,
+      name: str,
+      input: object | None = None,
+      output: object | None = None,
+      metadata: object | None = None,
+      level: str | None = None,
+      status_message: str | None = None,
+      usage_details: dict[str, int] | None = None,
+      cost_details: dict[str, float] | None = None,
+    ) -> Iterator[FakeLangfuseObservation]:
+      yield self
 
   harness = _service()
   service = harness.service
@@ -2998,6 +3084,21 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
     def end(self, *, end_time: int | None = None) -> object:
       ended_sources.append(self.source)
       return end_time
+
+    @contextmanager
+    def start_as_current_observation(
+      self,
+      *,
+      name: str,
+      input: object | None = None,
+      output: object | None = None,
+      metadata: object | None = None,
+      level: str | None = None,
+      status_message: str | None = None,
+      usage_details: dict[str, int] | None = None,
+      cost_details: dict[str, float] | None = None,
+    ) -> Iterator[FakeLangfuseObservation]:
+      yield self
 
   def fake_start_recording_observation(**kwargs: object) -> FakeLangfuseObservation:
     recording_observed_calls.append(kwargs)

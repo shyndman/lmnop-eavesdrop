@@ -30,6 +30,7 @@ from active_listener.infra.keyboard import KeyboardControlEvent, KeyboardEventKi
 from active_listener.infra.langfuse import (
   RecordingObservation,
   end_recording_observation,
+  record_recording_event,
   record_session_event,
   start_recording_observation,
 )
@@ -243,7 +244,7 @@ class ActiveListenerService:
         self.phase = ForegroundPhase.RECORDING
         await self.dbus_service.set_state(self.phase)
         self.logger.info("recording started")
-        self._record_session_event(
+        self._record_recording_event(
           name="active-listener-recording-started",
           metadata={"stream": self._current_stream, "recording_id": recording_id},
         )
@@ -284,7 +285,8 @@ class ActiveListenerService:
         await self.client.cancel_utterance(recording_id)
         self._recording_session.reset_connection_cursor()
         self.logger.info("recording cancelled")
-        self._record_session_event(
+        self._record_recording_event(
+          recording_observation=recording_observation,
           name="active-listener-recording-cancelled",
           metadata={"stream": self._current_stream, "recording_id": recording_id},
         )
@@ -448,8 +450,7 @@ class ActiveListenerService:
           stream=disconnected_event.stream,
           reason=disconnect_reason,
         )
-        self._record_session_event(
-          session_id=disconnected_event.stream,
+        self._record_recording_event(
           name="active-listener-recording-aborted",
           metadata={
             "stream": disconnected_event.stream,
@@ -570,6 +571,25 @@ class ActiveListenerService:
       )
     except Exception:
       self.logger.exception("langfuse session event failed", name=name)
+
+  def _record_recording_event(
+    self,
+    *,
+    name: str,
+    metadata: dict[str, object],
+    recording_observation: RecordingObservation | None = None,
+  ) -> None:
+    resolved_observation = (
+      recording_observation if recording_observation is not None else self._recording_observation
+    )
+    try:
+      record_recording_event(
+        parent_observation=resolved_observation,
+        name=name,
+        metadata=metadata,
+      )
+    except Exception:
+      self.logger.exception("langfuse recording event failed", name=name)
 
   def _start_recording_observation(self, *, recording_id: str) -> RecordingObservation | None:
     stream = self._current_stream
