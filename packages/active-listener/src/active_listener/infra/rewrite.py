@@ -7,9 +7,9 @@ from decimal import Decimal
 from importlib import import_module
 from pathlib import Path
 from types import TracebackType
-from typing import ClassVar, Literal, NotRequired, Protocol, Self, TypedDict, cast, final
+from typing import Literal, NotRequired, Protocol, Self, TypedDict, cast, final
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator
 from pydantic_ai import Agent
 from pydantic_ai.run import AgentRunResult
 
@@ -119,11 +119,13 @@ class RewriteClientTimeoutError(RewriteClientError):
   pass
 
 
+#! DO NOT REMOVE/ALTER COMMENTS BELOW. THEY ARE CRITICAL INSTRUCTIONS FOR THE MODEL.
 class StructuredRewriteOutput(BaseModel):
-  model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
-
   text: str
+  """The transcript rewritten according to the rules and user-provided instructions"""
   corrections: dict[str, str] = Field(default_factory=dict)
+  """A mapping of corrections the user made by explicitly spelling a corrections letter by letter
+  in instruction text"""
 
   @model_validator(mode="after")
   def validate_output(self) -> Self:
