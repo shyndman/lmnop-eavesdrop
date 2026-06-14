@@ -18,12 +18,14 @@ from eavesdrop.client.core import EavesdropClient
 from eavesdrop.client.events import (
   ConnectedEvent,
   DisconnectedEvent,
+  LanguageDetectionEvent,
   ReconnectedEvent,
   ReconnectingEvent,
   TranscriptionEvent,
 )
 from eavesdrop.wire import (
   ClientType,
+  LanguageDetectionMessage,
   Segment,
   TranscriptionMessage,
   deserialize_message,
@@ -444,6 +446,47 @@ async def test_async_iterator_yields_connected_then_transcription_event(
   transcription_event = cast(TranscriptionEvent, collected_events[1])
   assert transcription_event.message.segments[0].text == "hello"
 
+
+@pytest.mark.asyncio
+async def test_async_iterator_yields_language_detection_event(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Auto-detected source language must surface as a live LanguageDetectionEvent."""
+
+  fake_ws = BlockingWebSocket()
+
+  async def fake_connect(_url: str, additional_headers: dict[str, str]) -> BlockingWebSocket:
+    assert additional_headers == {"X-Client-Type": "transcriber"}
+    return fake_ws
+
+  monkeypatch.setattr("eavesdrop.client.connection.websockets.connect", fake_connect)
+  monkeypatch.setattr("eavesdrop.client.core.secrets.token_hex", lambda _n: "beef")
+
+  client = EavesdropClient.transcriber(audio_device="default")
+  await client.connect()
+
+  collected_events: list[ConnectedEvent | LanguageDetectionEvent] = []
+
+  async def _collect_two_events() -> None:
+    async for event in client:
+      collected_events.append(cast(ConnectedEvent | LanguageDetectionEvent, event))
+      if len(collected_events) == 2:
+        break
+
+  collector = asyncio.create_task(_collect_two_events())
+  client._on_language_detection(
+    LanguageDetectionMessage(stream="tbeef", language="ja", language_prob=0.97)
+  )
+
+  try:
+    await asyncio.wait_for(collector, timeout=0.2)
+  finally:
+    await client.disconnect()
+
+  assert [event.family for event in collected_events] == ["connected", "language_detection"]
+  detection_event = cast(LanguageDetectionEvent, collected_events[1])
+  assert detection_event.language == "ja"
+  assert detection_event.probability == 0.97
 
 @pytest.mark.asyncio
 async def test_live_transcriber_reconnects_with_truthful_events(

@@ -10,6 +10,7 @@ from eavesdrop.client.core import EavesdropClient, FileTranscriptionResult
 from eavesdrop.client.events import (
   ConnectedEvent,
   DisconnectedEvent,
+  LanguageDetectionEvent,
   LiveClientEvent,
   ReconnectedEvent,
   ReconnectingEvent,
@@ -26,5 +27,6 @@ __all__ = [
   "ReconnectingEvent",
   "ReconnectedEvent",
   "TranscriptionEvent",
+  "LanguageDetectionEvent",
   "LiveClientEvent",
 ]

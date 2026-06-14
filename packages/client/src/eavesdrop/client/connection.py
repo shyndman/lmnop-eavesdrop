@@ -16,6 +16,7 @@ from eavesdrop.wire import (
   DisconnectMessage,
   ErrorMessage,
   FlushControlMessage,
+  LanguageDetectionMessage,
   RecordingStartedMessage,
   ServerReadyMessage,
   TranscriptionMessage,
@@ -46,6 +47,7 @@ class WebSocketConnection:
     stream_names: list[str] | None = None,
     on_transcription_message: Callable[[TranscriptionMessage], None] | None = None,
     on_disconnect: Callable[[str | None], None] | None = None,
+    on_language_detection: Callable[[LanguageDetectionMessage], None] | None = None,
   ):
     self.host: str = host
     self.port: int = port
@@ -59,6 +61,9 @@ class WebSocketConnection:
       on_transcription_message
     )
     self.on_disconnect: Callable[[str | None], None] | None = on_disconnect
+    self.on_language_detection: Callable[[LanguageDetectionMessage], None] | None = (
+      on_language_detection
+    )
 
     self._logger: BoundLogger = get_logger(
       "client/conn",
@@ -185,6 +190,10 @@ class WebSocketConnection:
             self.session_end_received = True
             self.connected = False
             self._notify_disconnect(disconnect.message)
+
+        case LanguageDetectionMessage() as detection:
+          if detection.stream == self.stream_name and self.on_language_detection is not None:
+            self.on_language_detection(detection)
 
         case _:
           # Handle unexpected message types

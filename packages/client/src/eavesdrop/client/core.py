@@ -19,6 +19,7 @@ from eavesdrop.client.connection import WebSocketConnection
 from eavesdrop.client.events import (
   ConnectedEvent,
   DisconnectedEvent,
+  LanguageDetectionEvent,
   LiveClientEvent,
   ReconnectedEvent,
   ReconnectingEvent,
@@ -27,6 +28,7 @@ from eavesdrop.client.events import (
 from eavesdrop.common import get_logger
 from eavesdrop.wire import (
   ClientType,
+  LanguageDetectionMessage,
   Segment,
   TranscriptionMessage,
   TranscriptionSourceMode,
@@ -246,6 +248,7 @@ class EavesdropClient:
         client_type=ClientType.TRANSCRIBER,
         on_transcription_message=self._on_transcription_message,
         on_disconnect=self._on_disconnect,
+        on_language_detection=self._on_language_detection,
       )
 
     return WebSocketConnection(
@@ -258,6 +261,7 @@ class EavesdropClient:
       client_type=ClientType.RTSP_SUBSCRIBER,
       stream_names=self._stream_names,
       on_transcription_message=self._on_transcription_message,
+      on_language_detection=self._on_language_detection,
     )
 
   def _start_message_task(self) -> None:
@@ -800,6 +804,22 @@ class EavesdropClient:
 
     self._message_queue.put_nowait(message)
     self._emit_event(TranscriptionEvent(stream=message.stream, message=message))
+
+  def _on_language_detection(self, message: LanguageDetectionMessage) -> None:
+    """Handle a LanguageDetectionMessage from the connection."""
+    self._logger.info(
+      "language detected",
+      stream=message.stream,
+      language=message.language,
+      probability=message.language_prob,
+    )
+    self._emit_event(
+      LanguageDetectionEvent(
+        stream=message.stream,
+        language=message.language,
+        probability=message.language_prob,
+      )
+    )
 
   def _should_accept_transcription_message(self, message: TranscriptionMessage) -> bool:
     """Return whether an incoming transcription belongs to the current client epoch."""
