@@ -203,6 +203,18 @@ tasks:
     cmds:
       - uv run python examples/simple_transcriber.py --server "{{.host}}:{{.port}}" --audio-device "{{.audio_device}}" --model "distil-small.en" {{.CLI_ARGS}}
 
+  run-translator-client:
+    desc: Stream audio to the server and print English translations
+    deps: [prepare-client-lib]
+    dir: packages/client
+    vars:
+      host: '{{default "localhost" .host}}'
+      port: '{{default "9090" .port}}'
+      audio_device: '{{default "default" .audio_device}}'
+      model: '{{default "large-v3" .model}}'
+    cmds:
+      - uv run python examples/simple_translator.py --server "{{.host}}:{{.port}}" --audio-device "{{.audio_device}}" --model "{{.model}}" {{.CLI_ARGS}}
+
   prepare-server:
     desc: Install server dependencies
     dir: packages/server
