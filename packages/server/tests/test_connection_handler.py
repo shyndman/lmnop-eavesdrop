@@ -9,16 +9,21 @@ from websockets.datastructures import Headers
 from websockets.exceptions import ConnectionClosed
 
 from eavesdrop.server.connection_handler import (
+  TRANSLATE_WORD_TIMESTAMPS_REJECTION,
   ClientInitializer,
   SubscriberConnection,
   TranscriberConnection,
   WebSocketConnectionHandler,
 )
+from eavesdrop.server.transcription.models import ModelCapabilityError
 from eavesdrop.wire import (
   ClientType,
+  ErrorMessage,
   TranscriptionSetupMessage,
+  TranscriptionTask,
   UserTranscriptionOptions,
   WebSocketHeaders,
+  deserialize_message,
 )
 from eavesdrop.wire.messages import HealthCheckRequest
 
@@ -75,6 +80,20 @@ class RecordingClientInitializer:
   ) -> "WebSocketStreamingClient":
     self.calls.append((websocket, message))
     return self.client
+
+
+class RaisingClientInitializer:
+  """Client initializer stand-in that raises a capability error when called."""
+
+  def __init__(self, error: ModelCapabilityError) -> None:
+    self.error = error
+    self.calls: list[tuple[ServerConnection, TranscriptionSetupMessage]] = []
+
+  async def __call__(
+    self, websocket: ServerConnection, message: TranscriptionSetupMessage
+  ) -> "WebSocketStreamingClient":
+    self.calls.append((websocket, message))
+    raise self.error
 
 
 class FakeSubscriberManager:
@@ -183,6 +202,77 @@ class TestHandleTranscriberConnection:
     result = await handler.handle_connection(as_server_connection(websocket))
 
     assert result is None
+
+  async def test_translate_with_word_timestamps_rejected(
+    self,
+    handler: WebSocketConnectionHandler,
+    websocket: FakeWebSocket,
+    client_initializer: RecordingClientInitializer,
+    monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+    mock_message = TranscriptionSetupMessage(
+      stream="test",
+      options=UserTranscriptionOptions(task=TranscriptionTask.TRANSLATE, word_timestamps=True),
+    )
+    monkeypatch.setattr(
+      "eavesdrop.server.connection_handler.deserialize_message",
+      lambda _raw: mock_message,
+    )
+
+    result = await handler.handle_connection(as_server_connection(websocket))
+
+    assert result is None
+    assert websocket.close_calls == 1
+    assert client_initializer.calls == []
+    error = deserialize_message(websocket.sent_messages[0])
+    assert isinstance(error, ErrorMessage)
+    assert error.message == TRANSLATE_WORD_TIMESTAMPS_REJECTION
+
+  async def test_translate_without_timestamps_not_rejected(
+    self,
+    handler: WebSocketConnectionHandler,
+    websocket: FakeWebSocket,
+    client_initializer: RecordingClientInitializer,
+    monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+    mock_message = TranscriptionSetupMessage(
+      stream="test",
+      options=UserTranscriptionOptions(task=TranscriptionTask.TRANSLATE),
+    )
+    monkeypatch.setattr(
+      "eavesdrop.server.connection_handler.deserialize_message",
+      lambda _raw: mock_message,
+    )
+
+    result = await handler.handle_connection(as_server_connection(websocket))
+
+    assert isinstance(result, TranscriberConnection)
+    assert result.client is client_initializer.client
+
+  async def test_capability_error_surfaced(
+    self,
+    websocket: FakeWebSocket,
+    monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+    initializer = RaisingClientInitializer(ModelCapabilityError("boom"))
+    handler = WebSocketConnectionHandler(
+      client_initializer=cast(ClientInitializer, initializer),
+      subscriber_manager=None,
+    )
+    mock_message = TranscriptionSetupMessage(stream="test", options=UserTranscriptionOptions())
+    monkeypatch.setattr(
+      "eavesdrop.server.connection_handler.deserialize_message",
+      lambda _raw: mock_message,
+    )
+
+    result = await handler.handle_connection(as_server_connection(websocket))
+
+    assert result is None
+    assert websocket.close_calls == 1
+    assert len(initializer.calls) == 1
+    error = deserialize_message(websocket.sent_messages[0])
+    assert isinstance(error, ErrorMessage)
+    assert error.message == "boom"
 
 
 class TestHandleHealthCheck:

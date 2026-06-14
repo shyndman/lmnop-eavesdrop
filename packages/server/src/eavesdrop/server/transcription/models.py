@@ -2,6 +2,8 @@ from typing import NamedTuple, NotRequired, Required, TypedDict
 
 from pydantic import BaseModel, Field
 
+from eavesdrop.wire import TranscriptionTask
+
 
 class SpeechChunk(TypedDict):
   """Represents a speech chunk from Voice Activity Detection.
@@ -228,3 +230,32 @@ class TranscriptionInfo(NamedTuple):
   duration_after_vad: float = 0.0
   all_language_probs: list[LanguageProbability] | None = None
   speech_chunks: list[SpeechChunk] = []
+
+
+TRANSLATE_REQUIRES_MULTILINGUAL_MODEL = (
+  "Translate task requires a multilingual model, but the server is running a "
+  "model without translation support ({model}). Configure a multilingual model "
+  "(large-v3, large-v2, large-v1, medium, small, base, or tiny). English-only "
+  "(.en) and distil-* models cannot translate."
+)
+
+
+class ModelCapabilityError(RuntimeError):
+  """Raised when a session's task is not supported by the loaded model."""
+
+
+def check_translate_supported(
+  task: TranscriptionTask, is_multilingual: bool, model_name: str
+) -> None:
+  """Raise :class:`ModelCapabilityError` if translate is requested on a monolingual model.
+
+  :param task: Decoder task requested for the session.
+  :type task: TranscriptionTask
+  :param is_multilingual: Whether the loaded model supports multiple languages.
+  :type is_multilingual: bool
+  :param model_name: Loaded model name or path, surfaced in the error message.
+  :type model_name: str
+  :raises ModelCapabilityError: If translate is requested on a monolingual model.
+  """
+  if task == TranscriptionTask.TRANSLATE and not is_multilingual:
+    raise ModelCapabilityError(TRANSLATE_REQUIRES_MULTILINGUAL_MODEL.format(model=model_name))

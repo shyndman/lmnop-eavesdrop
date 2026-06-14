@@ -23,6 +23,7 @@ from eavesdrop.wire import (
   FlushControlMessage,
   RecordingStartedMessage,
   TranscriptionSetupMessage,
+  TranscriptionTask,
   UtteranceCancelledMessage,
   deserialize_message,
   serialize_message,
@@ -36,6 +37,27 @@ RTSP_UTTERANCE_CANCEL_REJECTION = (
   "Utterance cancel rejected: control_utterance_cancelled is unsupported for RTSP "
   "subscriber sessions"
 )
+
+
+def resolve_session_language(
+  task: TranscriptionTask,
+  client_language: str | None,
+  merged_language: str | None,
+) -> str | None:
+  """Translate with no client-supplied language -> auto-detect; else keep merged value.
+
+  :param task: Decoder task for this session.
+  :type task: TranscriptionTask
+  :param client_language: Language explicitly supplied by the client, or None if silent.
+  :type client_language: str | None
+  :param merged_language: Language after merging client overrides onto config defaults.
+  :type merged_language: str | None
+  :return: The source language to use, or None to auto-detect.
+  :rtype: str | None
+  """
+  if task == TranscriptionTask.TRANSLATE and client_language is None:
+    return None
+  return merged_language
 
 
 class ClientManagerProtocol(Protocol):
@@ -78,6 +100,17 @@ class TranscriptionServer:
 
     # Create configuration for the streaming client with client overrides
     transcription_config = self.transcription_config.model_copy(update=client_overrides)
+
+    # Translate sessions with no client-supplied language auto-detect the source.
+    transcription_config = transcription_config.model_copy(
+      update={
+        "language": resolve_session_language(
+          transcription_config.task,
+          user_options.language,
+          transcription_config.language,
+        )
+      }
+    )
 
     # Log the effective transcription configuration
     self.logger.info(

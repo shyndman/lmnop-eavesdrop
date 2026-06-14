@@ -25,7 +25,12 @@ from eavesdrop.server.streaming.buffer import AudioStreamBuffer
 from eavesdrop.server.streaming.debug_capture import AudioDebugCapture
 from eavesdrop.server.streaming.flush_state import LiveSessionFlushState, PendingFlush
 from eavesdrop.server.streaming.interfaces import TranscriptionResult, TranscriptionSink
-from eavesdrop.server.transcription.models import SpeechChunk, TranscriptionInfo, VadParameters
+from eavesdrop.server.transcription.models import (
+  SpeechChunk,
+  TranscriptionInfo,
+  VadParameters,
+  check_translate_supported,
+)
 from eavesdrop.server.transcription.session import TranscriptionSession
 from eavesdrop.server.transcription.utils import summarize_array
 from eavesdrop.server.transcription.vendor_types import (
@@ -211,6 +216,12 @@ class StreamingTranscriptionProcessor:
       # TODO: Add try
       await self.sink.send_error(f"Failed to load model: {self.config.model}")
       raise
+
+    if self.transcriber is None:
+      raise RuntimeError("Transcriber not initialized after model creation")
+    check_translate_supported(
+      self.config.task, self.transcriber.model.is_multilingual, self.config.model_path
+    )
 
     # Send server ready message
     await self.sink.send_server_ready("faster_whisper")
@@ -698,6 +709,7 @@ class StreamingTranscriptionProcessor:
       use_vad=self.config.use_vad,
       beam_size=self.config.beam_size,
       word_timestamps=self.config.word_timestamps,
+      task=self.config.task,
       has_hotwords=bool(self.config.hotwords),
       **summarize_array("audio", chunk.data),
     )
@@ -716,6 +728,7 @@ class StreamingTranscriptionProcessor:
       start_offset=self.buffer.processed_up_to_time,
       beam_size=self.config.beam_size,
       word_timestamps=self.config.word_timestamps,
+      task=self.config.task,
     )
     self.logger.debug(
       "Returned from transcriber.transcribe",

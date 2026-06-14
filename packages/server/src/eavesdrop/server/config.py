@@ -11,6 +11,7 @@ from eavesdrop.common import get_logger
 from eavesdrop.server.constants import CACHE_PATH, SINGLE_MODEL
 from eavesdrop.server.transcription.models import VadParameters
 from eavesdrop.server.transcription.vendor_types import load_torch
+from eavesdrop.wire import TranscriptionTask
 
 logger = get_logger("cfg")
 
@@ -102,8 +103,11 @@ class TranscriptionConfig(BaseModel):
   custom_model: FilePath | None = None
   """Path to custom Whisper model file (mutually exclusive with model)."""
 
-  language: str = "en"
-  """Language for transcription."""
+  language: str | None = "en"
+  """Language for transcription (None means auto-detect)."""
+
+  task: TranscriptionTask = TranscriptionTask.TRANSCRIBE
+  """Decoder task for this session."""
 
   initial_prompt: str | None = None
   """Initial prompt for whisper inference."""

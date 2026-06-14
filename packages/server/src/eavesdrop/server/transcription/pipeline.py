@@ -35,7 +35,7 @@ from eavesdrop.server.transcription.vendor_types import (
   load_language_codes,
 )
 from eavesdrop.server.transcription.word_alignment import WordTimestampAligner
-from eavesdrop.wire import Segment
+from eavesdrop.wire import Segment, TranscriptionTask
 
 # Combined punctuation string for word alignment processing
 # Contains both prepended ('"\'"¿([{-') and appended ('"\'.。,，!！?？:：")]}、') punctuation marks
@@ -181,6 +181,7 @@ class WhisperModel:
     absolute_stream_start: float = 0.0,
     beam_size: int | None = None,
     word_timestamps: bool | None = None,
+    task: TranscriptionTask = TranscriptionTask.TRANSCRIBE,
   ) -> tuple[Iterable[Segment], TranscriptionInfo]:
     """Transcribes audio data for live transcription.
 
@@ -190,8 +191,6 @@ class WhisperModel:
         as "en" or "fr". If not set, the language will be detected in the first 30 seconds
         of audio.
     :type language: str | None
-    :param task: Task to execute (transcribe or translate).
-    :type task: str
     :param initial_prompt: Optional text string to provide as a prompt for the first window.
     :type initial_prompt: str | None
     :param vad_filter: Enable the voice activity detection (VAD) to filter out parts of the audio
@@ -213,6 +212,8 @@ class WhisperModel:
     :type beam_size: int | None
     :param word_timestamps: Whether to compute detailed word-level timestamps.
     :type word_timestamps: bool | None
+    :param task: Decoder task (transcribe or translate-to-English).
+    :type task: TranscriptionTask
     :returns: A tuple with:
 
         - a generator over transcribed segments
@@ -244,4 +245,5 @@ class WhisperModel:
         absolute_stream_start=absolute_stream_start,
         beam_size=beam_size,
         word_timestamps=word_timestamps,
+        task=task,
       )

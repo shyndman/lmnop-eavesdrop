@@ -17,6 +17,13 @@ class TranscriptionSourceMode(StrEnum):
   FILE = "file"
 
 
+class TranscriptionTask(StrEnum):
+  """Decoder task: transcribe in-language or translate to English."""
+
+  TRANSCRIBE = "transcribe"
+  TRANSLATE = "translate"
+
+
 def compute_segment_chain_id(previous_id: int, text: str) -> int:
   """Generate chain-based segment ID using CRC64.
 
@@ -174,3 +181,9 @@ class UserTranscriptionOptions(BaseModel):
 
   model: str | None = None
   """Optional whisper model alias override for this transcription session."""
+
+  task: TranscriptionTask | None = None
+  """Decoder task: transcribe (default) or translate-to-English."""
+
+  language: str | None = None
+  """Source audio language code (e.g. "ja"); None means auto-detect."""

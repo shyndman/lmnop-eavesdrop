@@ -14,6 +14,7 @@ from websockets.asyncio.server import ServerConnection
 from websockets.exceptions import ConnectionClosed
 
 from eavesdrop.common import get_logger
+from eavesdrop.server.transcription.models import ModelCapabilityError
 from eavesdrop.wire import (
   ClientType,
   ErrorMessage,
@@ -21,6 +22,7 @@ from eavesdrop.wire import (
   RecordingStartedMessage,
   TranscriptionSetupMessage,
   TranscriptionSourceMode,
+  TranscriptionTask,
   UtteranceCancelledMessage,
   WebSocketHeaders,
   deserialize_message,
@@ -66,6 +68,9 @@ PRE_SETUP_RECORDING_START_REJECTION = (
 PRE_SETUP_UTTERANCE_CANCEL_REJECTION = (
   "Utterance cancel rejected: control_utterance_cancelled is unavailable before "
   "live transcriber setup completes"
+)
+TRANSLATE_WORD_TIMESTAMPS_REJECTION = (
+  "Setup rejected: word timestamps are unavailable in translate mode"
 )
 
 
@@ -127,6 +132,10 @@ class WebSocketConnectionHandler:
 
         if client_type == ClientType.TRANSCRIBER:
           if isinstance(message, TranscriptionSetupMessage):
+            opts = message.options
+            if opts.task == TranscriptionTask.TRANSLATE and opts.word_timestamps is True:
+              await self._send_error_and_close(websocket, TRANSLATE_WORD_TIMESTAMPS_REJECTION)
+              return None
             client = await self._handle_transcriber_connection(websocket, message)
             if not client:
               return None
@@ -193,7 +202,11 @@ class WebSocketConnectionHandler:
     :returns: Initialized streaming client, or None on failure.
     :rtype: WebSocketStreamingClient | None
     """
-    return await self._client_initializer(websocket, message)
+    try:
+      return await self._client_initializer(websocket, message)
+    except ModelCapabilityError as err:
+      await self._send_error_and_close(websocket, str(err))
+      return None
 
   async def _handle_subscriber_connection(
     self, websocket: ServerConnection, headers: dict[str, str]

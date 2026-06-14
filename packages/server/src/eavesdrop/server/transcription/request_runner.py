@@ -26,12 +26,23 @@ from eavesdrop.server.transcription.vendor_types import (
   load_vad_options,
   load_whisper_tokenizer,
 )
-from eavesdrop.wire import Segment
+from eavesdrop.wire import Segment, TranscriptionTask
 
-# Whisper has a couple of modes of operation. For now, we only use transcription.
-_TRANSCRIBE_TASK = "transcribe"
 VadOptions = load_vad_options()
 Tokenizer = load_whisper_tokenizer()
+
+
+def resolve_word_timestamps(task: TranscriptionTask, requested: bool) -> bool:
+  """Translate output cannot carry meaningful word timestamps.
+
+  :param task: Decoder task for this request.
+  :type task: TranscriptionTask
+  :param requested: Whether word timestamps were requested.
+  :type requested: bool
+  :return: False for translate; the requested value otherwise.
+  :rtype: bool
+  """
+  return False if task == TranscriptionTask.TRANSLATE else requested
 
 
 class RequestRunner:
@@ -64,6 +75,7 @@ class RequestRunner:
     absolute_stream_start: float = 0.0,
     beam_size: int | None = None,
     word_timestamps: bool | None = None,
+    task: TranscriptionTask = TranscriptionTask.TRANSCRIBE,
   ) -> tuple[Iterable[Segment], TranscriptionInfo]:
     default_options = TranscriptionOptions()
     resolved_vad_parameters = vad_parameters or VadParameters()
@@ -79,6 +91,9 @@ class RequestRunner:
     resolved_word_timestamps = (
       word_timestamps if word_timestamps is not None else default_options.word_timestamps
     )
+    if task == TranscriptionTask.TRANSLATE and resolved_word_timestamps:
+      self.logger.info("Suppressing word timestamps for translate task")
+    resolved_word_timestamps = resolve_word_timestamps(task, resolved_word_timestamps)
 
     # Use our new audio processing module for validation and VAD
     with session.trace_vad_stage() as tracer:
@@ -150,7 +165,7 @@ class RequestRunner:
           tokenizer := Tokenizer(
             self.hf_tokenizer,
             self.model.is_multilingual,
-            task=_TRANSCRIBE_TASK,
+            task=task,
             language=language,
           )
         ),
