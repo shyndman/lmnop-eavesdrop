@@ -157,18 +157,26 @@ class WebSocketStreamingClient:
     self._file_ingested_seconds: float = 0.0
     self._current_recording_id: str | None = None
 
+  @property
+  def completion_task(self) -> asyncio.Task[None] | None:
+    """Completion task created by :meth:`start`, or ``None`` before start.
+
+    :return: The lifecycle completion task once started, else ``None``.
+    :rtype: asyncio.Task[None] | None
+    """
+    return self._completion_task
+
   async def start(self) -> asyncio.Task[None]:
     """Start the streaming transcription process and return completion task."""
-    source_mode = getattr(self, "source_mode", TranscriptionSourceMode.LIVE)
     self.logger.info(
       "Starting WebSocket streaming client",
       stream=self.stream_name,
-      source_mode=source_mode,
+      source_mode=self.source_mode,
     )
 
     await self.processor.initialize()
 
-    if source_mode == TranscriptionSourceMode.FILE:
+    if self.source_mode == TranscriptionSourceMode.FILE:
       completion_task = asyncio.create_task(self._run_file_mode_lifecycle())
     else:
       self._processing_task = asyncio.create_task(self.processor.start_processing())

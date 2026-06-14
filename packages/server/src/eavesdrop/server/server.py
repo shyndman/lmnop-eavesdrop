@@ -1,4 +1,3 @@
-import asyncio
 from pathlib import Path
 from typing import Protocol, cast
 
@@ -107,9 +106,8 @@ class TranscriptionServer:
       source_mode=source_mode,
     )
 
-    # Start the client and get the completion task
-    completion_task = await client.start()
-    setattr(client, "_completion_task", completion_task)
+    # Start the client; it records its own completion task internally
+    _ = await client.start()
     self.client_manager.add_client(websocket, client)
 
     return client
@@ -151,9 +149,7 @@ class TranscriptionServer:
             stream=client.stream_name,
             source_mode=source_mode,
           )
-          completion_task = cast(
-            asyncio.Task[None] | None, getattr(client, "_completion_task", None)
-          )
+          completion_task = client.completion_task
           if completion_task is None:
             raise RuntimeError("TranscriberConnection missing completion task — client not started")
           await completion_task
