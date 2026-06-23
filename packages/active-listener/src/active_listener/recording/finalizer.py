@@ -25,6 +25,7 @@ from active_listener.config.models import (
   LiteRtRewriteProvider,
   LlmRewriteConfig,
 )
+from active_listener.infra.audio import encode_recording_audio
 from active_listener.infra.corrections import (
   ActiveListenerCorrectionStore,
   CorrectionStore,
@@ -122,7 +123,6 @@ class RecordingFinalizer:
   config: ActiveListenerConfig
   client: ActiveListenerClient
   emitter: TextEmitter
-  ffmpeg_path: str | None
   logger: BoundLogger
   rewrite_client: ActiveListenerRewriteClient
   history_store: ActiveListenerTranscriptHistoryStore
@@ -208,21 +208,12 @@ class RecordingFinalizer:
 
         self.logger.info("finalized raw transcript", stream=message.stream, raw_text=raw_text)
         rewrite_input = serialize_text_runs(completed_runs)
-        audio_attachment = build_langfuse_audio_attachment(
-          captured_audio=finished_recording.captured_audio,
-          ffmpeg_path=self.ffmpeg_path,
-          logger=self.logger,
-        )
         if recording_observation is not None:
-          observation_input: dict[str, object] = {
-            "raw_transcript": raw_text,
-            "rewrite_input": rewrite_input,
-          }
-          if audio_attachment is not None:
-            observation_input["captured_audio_mp3"] = audio_attachment
-
           _ = recording_observation.update(
-            input=observation_input,
+            input={
+              "raw_transcript": raw_text,
+              "rewrite_input": rewrite_input,
+            },
             metadata={
               "component": "active-listener",
               "stream": message.stream,
@@ -294,13 +285,23 @@ class RecordingFinalizer:
           word_count=_count_words(final_text),
           duration_seconds=reducer_state.duration_seconds,
         )
-        self.history_store.record_finalized_recording(
-          finalized_record,
-          finished_recording.captured_audio,
-        )
+        archived_audio: bytes | None = None
+        try:
+          archived_audio = encode_recording_audio(
+            finished_recording.captured_audio,
+            ffmpeg_path=self.config.ffmpeg_path,
+          )
+        except Exception as exc:
+          self.logger.exception("recording audio encode failed", stream=message.stream)
+          await self.dbus_service.audio_archive_failed(str(exc))
+        self.history_store.record_finalized_recording(finalized_record, archived_audio)
+        audio_attachment = build_langfuse_audio_attachment(audio_bytes=archived_audio)
         if recording_observation is not None:
+          output_payload: dict[str, object] = {"emitted_text": final_text}
+          if audio_attachment is not None:
+            output_payload["captured_audio"] = audio_attachment
           _ = recording_observation.update(
-            output={"emitted_text": final_text},
+            output=output_payload,
             metadata={
               "component": "active-listener",
               "stream": message.stream,

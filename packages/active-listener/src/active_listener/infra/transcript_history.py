@@ -13,10 +13,8 @@ from typing_extensions import override
 
 from active_listener.app.ports import (
   ActiveListenerTranscriptHistoryStore,
-  CapturedRecordingAudio,
   FinalizedTranscriptRecord,
 )
-from active_listener.infra.audio import encode_m4a
 from active_listener.infra.dbus import AppStateService
 
 TRANSCRIPT_HISTORY_FILENAME = "active-listener.sqlite3"
@@ -37,8 +35,6 @@ class SqliteTranscriptHistoryStore(ActiveListenerTranscriptHistoryStore):
 
   :param logger: Structured logger used for best-effort failure reporting.
   :type logger: BoundLogger
-  :param ffmpeg_path: Resolved FFmpeg binary path validated at startup.
-  :type ffmpeg_path: str
   :param dbus_service: DBus publisher used for archive-failure notifications.
   :type dbus_service: AppStateService
   """
@@ -47,25 +43,23 @@ class SqliteTranscriptHistoryStore(ActiveListenerTranscriptHistoryStore):
     self,
     *,
     logger: BoundLogger,
-    ffmpeg_path: str,
     dbus_service: AppStateService,
   ) -> None:
     self.logger: BoundLogger = logger
-    self.ffmpeg_path: str = ffmpeg_path
     self.dbus_service: AppStateService = dbus_service
 
   @override
   def record_finalized_recording(
     self,
     record: FinalizedTranscriptRecord,
-    captured_audio: CapturedRecordingAudio,
+    archived_audio: bytes | None,
   ) -> None:
     """Insert one finalized transcript row and best-effort archived audio.
 
     :param record: Finalized transcript payload to persist.
     :type record: FinalizedTranscriptRecord
-    :param captured_audio: Captured recording audio snapshot.
-    :type captured_audio: CapturedRecordingAudio
+    :param archived_audio: Pre-encoded archive audio bytes, or None when absent.
+    :type archived_audio: bytes | None
     :returns: None
     :rtype: None
     """
@@ -78,12 +72,12 @@ class SqliteTranscriptHistoryStore(ActiveListenerTranscriptHistoryStore):
         configure_transcript_history_connection(connection)
         ensure_transcript_history_schema(connection)
         transcript_id = insert_transcript_history(connection, record)
-        if captured_audio.pcm_f32le == b"":
+        if archived_audio is None:
           self.logger.info(
             "transcript audio archive skipped",
             database_path=str(database_path),
             transcript_id=transcript_id,
-            reason="empty capture",
+            reason="no audio",
           )
           return
 
@@ -92,22 +86,14 @@ class SqliteTranscriptHistoryStore(ActiveListenerTranscriptHistoryStore):
             "archiving transcript audio",
             database_path=str(database_path),
             transcript_id=transcript_id,
-            pcm_bytes=len(captured_audio.pcm_f32le),
-            sample_rate_hz=captured_audio.sample_rate_hz,
-            channels=captured_audio.channels,
+            audio_bytes=len(archived_audio),
           )
-          audio_m4a = encode_m4a(
-            self.ffmpeg_path,
-            captured_audio.pcm_f32le,
-            sample_rate_hz=captured_audio.sample_rate_hz,
-            channels=captured_audio.channels,
-          )
-          insert_transcript_audio(connection, transcript_id, audio_m4a)
+          insert_transcript_audio(connection, transcript_id, archived_audio)
           self.logger.info(
             "transcript audio archived",
             database_path=str(database_path),
             transcript_id=transcript_id,
-            audio_bytes=len(audio_m4a),
+            audio_bytes=len(archived_audio),
           )
         except Exception as exc:
           self.logger.exception(

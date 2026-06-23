@@ -11,9 +11,6 @@ from langfuse.media import LangfuseMedia
 from pydantic_ai import Agent
 from structlog.stdlib import BoundLogger
 
-from active_listener.app.ports import CapturedRecordingAudio
-from active_listener.infra.audio import encode_mp3
-
 LANGFUSE_PUBLIC_KEY_ENV_VAR = "LANGFUSE_PUBLIC_KEY"
 LANGFUSE_SECRET_KEY_ENV_VAR = "LANGFUSE_SECRET_KEY"
 _langfuse_initialized = False
@@ -120,33 +117,16 @@ def recording_trace_id(recording_id: str) -> str:
 
 def build_langfuse_audio_attachment(
   *,
-  captured_audio: CapturedRecordingAudio,
-  ffmpeg_path: str | None,
-  logger: BoundLogger,
+  audio_bytes: bytes | None,
 ) -> LangfuseMedia | None:
-  if ffmpeg_path is None or captured_audio.pcm_f32le == b"":
+  if audio_bytes is None:
     return None
-
   if not initialize_langfuse():
     return None
-
-  try:
-    audio_mp3 = encode_mp3(
-      ffmpeg_path,
-      captured_audio.pcm_f32le,
-      sample_rate_hz=captured_audio.sample_rate_hz,
-      channels=captured_audio.channels,
-    )
-  except Exception:
-    logger.exception(
-      "langfuse audio attachment failed",
-      pcm_bytes=len(captured_audio.pcm_f32le),
-      sample_rate_hz=captured_audio.sample_rate_hz,
-      channels=captured_audio.channels,
-    )
-    return None
-
-  return LangfuseMedia(content_bytes=audio_mp3, content_type=MediaContentType.AUDIO_MPEG)
+  return LangfuseMedia(
+    content_bytes=audio_bytes,
+    content_type=MediaContentType.AUDIO_MP4,
+  )
 
 
 def record_session_event(

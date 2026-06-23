@@ -10,11 +10,10 @@ from typing import cast
 import pytest
 from structlog.stdlib import BoundLogger
 
-from active_listener.app.ports import CapturedRecordingAudio, FinalizedTranscriptRecord
+from active_listener.app.ports import FinalizedTranscriptRecord
 from active_listener.infra.dbus import AppStateService
 from active_listener.infra.transcript_history import (
   TRANSCRIPT_AUDIO_TABLE,
-  AudioArchiveError,
   SqliteTranscriptHistoryStore,
   resolve_transcript_history_path,
 )
@@ -80,7 +79,6 @@ class FakeDbusService:
 def _store(logger: HistoryLogger, dbus_service: FakeDbusService) -> SqliteTranscriptHistoryStore:
   return SqliteTranscriptHistoryStore(
     logger=cast(BoundLogger, cast(object, logger)),
-    ffmpeg_path="/usr/bin/ffmpeg",
     dbus_service=cast(AppStateService, cast(object, dbus_service)),
   )
 
@@ -98,14 +96,6 @@ def _record() -> FinalizedTranscriptRecord:
   )
 
 
-def _captured_audio(*, pcm_f32le: bytes = b"audio") -> CapturedRecordingAudio:
-  return CapturedRecordingAudio(
-    pcm_f32le=pcm_f32le,
-    sample_rate_hz=16000,
-    channels=1,
-  )
-
-
 def test_transcript_history_store_writes_record_and_audio_row(
   monkeypatch: pytest.MonkeyPatch,
   tmp_path: Path,
@@ -115,12 +105,8 @@ def test_transcript_history_store_writes_record_and_audio_row(
   store = _store(logger, dbus_service)
 
   monkeypatch.setattr(Path, "home", lambda: tmp_path)
-  monkeypatch.setattr(
-    "active_listener.infra.transcript_history.encode_m4a",
-    lambda *_args, **_kwargs: b"m4a-bytes",
-  )
 
-  store.record_finalized_recording(_record(), _captured_audio())
+  store.record_finalized_recording(_record(), b"m4a-bytes")
 
   database_path = resolve_transcript_history_path()
   assert database_path == tmp_path / ".local" / "share" / "eavesdrop" / "active-listener.sqlite3"
@@ -166,9 +152,7 @@ def test_transcript_history_store_writes_record_and_audio_row(
       fields={
         "database_path": str(database_path),
         "transcript_id": 1,
-        "pcm_bytes": 5,
-        "sample_rate_hz": 16000,
-        "channels": 1,
+        "audio_bytes": 9,
       },
     ),
     LogRecord(
@@ -201,7 +185,7 @@ def test_transcript_history_store_logs_insert_failures(
   monkeypatch.setattr(Path, "home", lambda: tmp_path)
   monkeypatch.setattr(sqlite3, "connect", explode_connect)
 
-  store.record_finalized_recording(_record(), _captured_audio())
+  store.record_finalized_recording(_record(), b"m4a-bytes")
 
   assert logger.exception_records == [
     LogRecord(
@@ -240,12 +224,8 @@ def test_transcript_history_store_migrates_legacy_database_and_adds_audio_table(
   logger = HistoryLogger()
   store = _store(logger, FakeDbusService())
   monkeypatch.setattr(Path, "home", lambda: tmp_path)
-  monkeypatch.setattr(
-    "active_listener.infra.transcript_history.encode_m4a",
-    lambda *_args, **_kwargs: b"m4a-bytes",
-  )
 
-  store.record_finalized_recording(_record(), _captured_audio())
+  store.record_finalized_recording(_record(), b"m4a-bytes")
 
   with sqlite3.connect(str(database_path)) as connection:
     transcript_row = cast(
@@ -274,7 +254,7 @@ def test_transcript_history_store_keeps_transcript_only_rows_when_audio_is_empty
   store = _store(logger, FakeDbusService())
   monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-  store.record_finalized_recording(_record(), _captured_audio(pcm_f32le=b""))
+  store.record_finalized_recording(_record(), None)
 
   database_path = resolve_transcript_history_path()
   with sqlite3.connect(str(database_path)) as connection:
@@ -295,51 +275,10 @@ def test_transcript_history_store_keeps_transcript_only_rows_when_audio_is_empty
       fields={
         "database_path": str(database_path),
         "transcript_id": 1,
-        "reason": "empty capture",
+        "reason": "no audio",
       },
     )
   ]
-
-
-@pytest.mark.asyncio
-async def test_transcript_history_store_preserves_transcript_row_on_encode_failure(
-  monkeypatch: pytest.MonkeyPatch,
-  tmp_path: Path,
-) -> None:
-  logger = HistoryLogger()
-  dbus_service = FakeDbusService()
-  store = _store(logger, dbus_service)
-  monkeypatch.setattr(Path, "home", lambda: tmp_path)
-
-  def explode_encode(*_args: object, **_kwargs: object) -> bytes:
-    raise AudioArchiveError("encoder exploded")
-
-  monkeypatch.setattr("active_listener.infra.transcript_history.encode_m4a", explode_encode)
-
-  store.record_finalized_recording(_record(), _captured_audio())
-  await asyncio.sleep(0)
-
-  database_path = resolve_transcript_history_path()
-  with sqlite3.connect(str(database_path)) as connection:
-    transcript_count = cast(
-      tuple[int],
-      connection.execute("SELECT COUNT(*) FROM transcript_history").fetchone(),
-    )
-    audio_count = cast(
-      tuple[int],
-      connection.execute(f"SELECT COUNT(*) FROM {TRANSCRIPT_AUDIO_TABLE}").fetchone(),
-    )
-
-  assert transcript_count == (1,)
-  assert audio_count == (0,)
-  assert dbus_service.archive_failure_reasons == ["encoder exploded"]
-  assert logger.exception_records[-1] == LogRecord(
-    event="transcript audio archive failed",
-    fields={
-      "database_path": str(database_path),
-      "transcript_id": 1,
-    },
-  )
 
 
 @pytest.mark.asyncio
@@ -351,10 +290,6 @@ async def test_transcript_history_store_preserves_transcript_row_on_audio_insert
   dbus_service = FakeDbusService()
   store = _store(logger, dbus_service)
   monkeypatch.setattr(Path, "home", lambda: tmp_path)
-  monkeypatch.setattr(
-    "active_listener.infra.transcript_history.encode_m4a",
-    lambda *_args, **_kwargs: b"m4a-bytes",
-  )
 
   def explode_insert(
     _connection: sqlite3.Connection,
@@ -368,7 +303,7 @@ async def test_transcript_history_store_preserves_transcript_row_on_audio_insert
     explode_insert,
   )
 
-  store.record_finalized_recording(_record(), _captured_audio())
+  store.record_finalized_recording(_record(), b"m4a-bytes")
   await asyncio.sleep(0)
 
   database_path = resolve_transcript_history_path()

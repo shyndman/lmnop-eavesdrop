@@ -174,7 +174,7 @@ class ActiveListenerTranscriptHistoryStore(Protocol):
   def record_finalized_recording(
     self,
     record: FinalizedTranscriptRecord,
-    captured_audio: CapturedRecordingAudio,
+    archived_audio: bytes | None,
   ) -> None: ...
 
 

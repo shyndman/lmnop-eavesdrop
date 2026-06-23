@@ -512,15 +512,15 @@ class FakeHistoryStore:
   def record_finalized_recording(
     self,
     record: FinalizedTranscriptRecord,
-    captured_audio: CapturedRecordingAudio,
+    archived_audio: bytes | None,
   ) -> None:
-    self.recordings.append(RecordedFinalization(record=record, captured_audio=captured_audio))
+    self.recordings.append(RecordedFinalization(record=record, archived_audio=archived_audio))
 
 
 @dataclass(frozen=True)
 class RecordedFinalization:
   record: FinalizedTranscriptRecord
-  captured_audio: CapturedRecordingAudio
+  archived_audio: bytes | None
 
 
 @dataclass
@@ -670,7 +670,6 @@ def _service(
   spectrum_analyzer: FakeSpectrumAnalyzer | None = None,
   recording_audio_buffer: RecordingAudioBuffer | None = None,
   correction_store: FakeCorrectionStore | None = None,
-  ffmpeg_path: str | None = None,
 ) -> ServiceHarness:
   resolved_client = client or FakeClient()
   resolved_keyboard = keyboard or FakeKeyboard()
@@ -695,7 +694,6 @@ def _service(
     recording_audio_buffer=resolved_recording_audio_buffer,
     correction_store=resolved_correction_store,
     spectrum_analyzer=spectrum_analyzer or FakeSpectrumAnalyzer(),
-    ffmpeg_path=ffmpeg_path,
   )
   return ServiceHarness(
     service,
@@ -1549,27 +1547,24 @@ async def test_create_service_resolves_configured_ffmpeg_path(
   ffmpeg_path.parent.mkdir(parents=True)
   _ = ffmpeg_path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
   ffmpeg_path.chmod(0o755)
-  captured_paths: list[str] = []
 
   class CapturingHistoryStore:
     def __init__(
       self,
       *,
       logger: BoundLogger,
-      ffmpeg_path: str,
       dbus_service: FakeDbusService,
     ) -> None:
       _ = logger
       _ = dbus_service
-      captured_paths.append(ffmpeg_path)
 
     def record_finalized_recording(
       self,
       record: FinalizedTranscriptRecord,
-      captured_audio: CapturedRecordingAudio,
+      archived_audio: bytes | None,
     ) -> None:
       _ = record
-      _ = captured_audio
+      _ = archived_audio
 
   monkeypatch.setattr("active_listener.bootstrap.get_logger", lambda _name: logger)
   monkeypatch.setattr(
@@ -1593,10 +1588,9 @@ async def test_create_service_resolves_configured_ffmpeg_path(
   )
 
   assert service.phase is ForegroundPhase.IDLE
-  assert captured_paths == [str(ffmpeg_path.resolve())]
   assert logger.info_records[0] == LogRecord(
     event="resolved ffmpeg binary",
-    fields={"ffmpeg_path": str(ffmpeg_path.resolve())},
+    fields={"ffmpeg_path": str(ffmpeg_path)},
   )
 
 
@@ -1611,30 +1605,27 @@ async def test_create_service_falls_back_to_path_for_ffmpeg_resolution(
   ffmpeg_path.parent.mkdir(parents=True)
   _ = ffmpeg_path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
   ffmpeg_path.chmod(0o755)
-  captured_paths: list[str] = []
 
   class CapturingHistoryStore:
     def __init__(
       self,
       *,
       logger: BoundLogger,
-      ffmpeg_path: str,
       dbus_service: FakeDbusService,
     ) -> None:
       _ = logger
       _ = dbus_service
-      captured_paths.append(ffmpeg_path)
 
     def record_finalized_recording(
       self,
       record: FinalizedTranscriptRecord,
-      captured_audio: CapturedRecordingAudio,
+      archived_audio: bytes | None,
     ) -> None:
       _ = record
-      _ = captured_audio
+      _ = archived_audio
 
   monkeypatch.setattr("active_listener.bootstrap.get_logger", lambda _name: logger)
-  monkeypatch.setattr("active_listener.bootstrap.shutil.which", lambda _name: str(ffmpeg_path))
+  monkeypatch.setattr("active_listener.infra.audio.shutil.which", lambda _name: str(ffmpeg_path))
   monkeypatch.setattr(
     "active_listener.bootstrap.SqliteTranscriptHistoryStore",
     CapturingHistoryStore,
@@ -1650,10 +1641,9 @@ async def test_create_service_falls_back_to_path_for_ffmpeg_resolution(
   )
 
   assert service.phase is ForegroundPhase.IDLE
-  assert captured_paths == [str(ffmpeg_path.resolve())]
   assert logger.info_records[0] == LogRecord(
     event="resolved ffmpeg binary",
-    fields={"ffmpeg_path": str(ffmpeg_path.resolve())},
+    fields={"ffmpeg_path": str(ffmpeg_path)},
   )
 
 
@@ -1665,7 +1655,7 @@ async def test_create_service_fails_fast_when_ffmpeg_cannot_be_resolved(
   keyboard = FakeKeyboard()
 
   monkeypatch.setattr("active_listener.bootstrap.get_logger", lambda _name: logger)
-  monkeypatch.setattr("active_listener.bootstrap.shutil.which", lambda _name: None)
+  monkeypatch.setattr("active_listener.infra.audio.shutil.which", lambda _name: None)
 
   with pytest.raises(
     ActiveListenerRuntimeError,
@@ -2532,7 +2522,9 @@ async def test_missing_transcription_sentinel_warns_and_falls_back_to_window() -
 
 
 @pytest.mark.asyncio
-async def test_finalize_recording_emits_raw_text_when_rewrite_is_disabled() -> None:
+async def test_finalize_recording_emits_raw_text_when_rewrite_is_disabled(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
   client = FakeClient(
     flush_results=[
       _message(
@@ -2542,6 +2534,10 @@ async def test_finalize_recording_emits_raw_text_when_rewrite_is_disabled() -> N
     ]
   )
   harness = _service(client=client)
+  monkeypatch.setattr(
+    "active_listener.recording.finalizer.encode_recording_audio",
+    lambda *_args, **_kwargs: b"m4a-bytes",
+  )
   captured_audio = _sine_wave_bytes(440.0, 32)
 
   _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
@@ -2570,11 +2566,7 @@ async def test_finalize_recording_emits_raw_text_when_rewrite_is_disabled() -> N
         word_count=1,
         duration_seconds=0.1,
       ),
-      captured_audio=CapturedRecordingAudio(
-        pcm_f32le=captured_audio,
-        sample_rate_hz=SAMPLE_RATE_HZ,
-        channels=1,
-      ),
+      archived_audio=b"m4a-bytes",
     )
   ]
   assert harness.logger.info_records[-1] == LogRecord(
@@ -2965,7 +2957,9 @@ async def test_finalize_recording_continues_when_correction_persistence_fails(
 
 
 @pytest.mark.asyncio
-async def test_finalize_recording_skips_only_rewrite_when_runtime_disabled() -> None:
+async def test_finalize_recording_skips_only_rewrite_when_runtime_disabled(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
   client = FakeClient(
     flush_results=[
       _message(
@@ -2975,6 +2969,10 @@ async def test_finalize_recording_skips_only_rewrite_when_runtime_disabled() -> 
     ]
   )
   harness = _service(client=client, config=_config(rewrite_enabled=True))
+  monkeypatch.setattr(
+    "active_listener.recording.finalizer.encode_recording_audio",
+    lambda *_args, **_kwargs: b"m4a-bytes",
+  )
 
   assert await harness.service.set_llm_active(False) is False
 
@@ -3004,11 +3002,7 @@ async def test_finalize_recording_skips_only_rewrite_when_runtime_disabled() -> 
         word_count=1,
         duration_seconds=0.1,
       ),
-      captured_audio=CapturedRecordingAudio(
-        pcm_f32le=_sine_wave_bytes(440.0, 32),
-        sample_rate_hz=SAMPLE_RATE_HZ,
-        channels=1,
-      ),
+      archived_audio=b"m4a-bytes",
     )
   ]
   assert harness.logger.info_records[-1] == LogRecord(
@@ -3135,10 +3129,10 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
     def record_finalized_recording(
       self,
       record: FinalizedTranscriptRecord,
-      captured_audio: CapturedRecordingAudio,
+      archived_audio: bytes | None,
     ) -> None:
       assert self.emitter.emitted == ["rewritten alpha "]
-      super().record_finalized_recording(record, captured_audio)
+      super().record_finalized_recording(record, archived_audio)
 
   history_store = AssertingHistoryStore(emitter=emitter)
   harness = _service(
@@ -3155,6 +3149,10 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
   monkeypatch.setattr(
     "active_listener.recording.finalizer.build_langfuse_audio_attachment",
     lambda **_kwargs: audio_attachment,
+  )
+  monkeypatch.setattr(
+    "active_listener.recording.finalizer.encode_recording_audio",
+    lambda *_args, **_kwargs: b"m4a-bytes",
   )
   monkeypatch.setattr(
     "active_listener.app.service.start_recording_observation",
@@ -3190,11 +3188,7 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
         word_count=2,
         duration_seconds=0.1,
       ),
-      captured_audio=CapturedRecordingAudio(
-        pcm_f32le=captured_audio,
-        sample_rate_hz=SAMPLE_RATE_HZ,
-        channels=1,
-      ),
+      archived_audio=b"m4a-bytes",
     )
   ]
   assert recording_observed_calls == [
@@ -3221,7 +3215,6 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
       "input": {
         "raw_transcript": "alpha",
         "rewrite_input": "alpha",
-        "captured_audio_mp3": audio_attachment,
       },
       "output": None,
       "metadata": {
@@ -3249,7 +3242,7 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
     {
       "source": "recording",
       "input": None,
-      "output": {"emitted_text": "rewritten alpha "},
+      "output": {"emitted_text": "rewritten alpha ", "captured_audio": audio_attachment},
       "metadata": {
         "component": "active-listener",
         "stream": "stream-1",

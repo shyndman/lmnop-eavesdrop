@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import os
-import shutil
 import subprocess
 from collections.abc import Callable
-from pathlib import Path
 from typing import Protocol
 
 from structlog.stdlib import BoundLogger
@@ -23,6 +20,7 @@ from active_listener.config.models import (
   LiteRtRewriteProvider,
   LlmRewriteConfig,
 )
+from active_listener.infra.audio import resolve_ffmpeg_executable
 from active_listener.infra.dbus import AppStateService, NoopDbusService, SdbusDbusService
 from active_listener.infra.emitter import GnomeShellExtensionTextEmitter, TextEmitter
 from active_listener.infra.keyboard import KeyboardInput, resolve_keyboard
@@ -118,7 +116,6 @@ async def create_service(
   media_playback_controller: MediaPlaybackController | None = None
   rewrite_client: ActiveListenerRewriteClient | None = None
   history_store: ActiveListenerTranscriptHistoryStore | None = None
-  langfuse_ffmpeg_path: str | None = None
 
   try:
     keyboard = keyboard_resolver(config.keyboard_name)
@@ -128,7 +125,8 @@ async def create_service(
 
   try:
     if history_store_factory is None:
-      langfuse_ffmpeg_path = resolve_ffmpeg_path(config.ffmpeg_path, logger=logger)
+      resolved_ffmpeg = resolve_ffmpeg_path(config.ffmpeg_path, logger=logger)
+      logger.info("resolved ffmpeg binary", ffmpeg_path=resolved_ffmpeg)
     history_store = resolved_history_store_factory(config, logger, resolved_dbus_service)
     emitter = resolved_emitter_factory()
     client = resolved_client_factory(config, on_capture)
@@ -185,7 +183,6 @@ async def create_service(
     media_playback_controller=media_playback_controller,
     recording_audio_buffer=recording_audio_buffer,
     spectrum_analyzer=spectrum_analyzer,
-    ffmpeg_path=langfuse_ffmpeg_path,
   )
   if isinstance(resolved_dbus_service, SdbusDbusService):
     resolved_dbus_service.attach_recording_control(service)
@@ -392,56 +389,43 @@ def build_history_store(
   :returns: SQLite-backed transcript history store.
   :rtype: ActiveListenerTranscriptHistoryStore
   """
+  _ = config
 
-  ffmpeg_path = resolve_ffmpeg_path(config.ffmpeg_path, logger=logger)
-  logger.info("resolved ffmpeg binary", ffmpeg_path=ffmpeg_path)
   return SqliteTranscriptHistoryStore(
     logger=logger,
-    ffmpeg_path=ffmpeg_path,
     dbus_service=dbus_service,
   )
 
 
 def resolve_ffmpeg_path(configured_path: str | None, *, logger: BoundLogger) -> str:
-  resolved_configured_path = _resolve_usable_executable_path(configured_path)
-  if resolved_configured_path is not None:
-    return resolved_configured_path
+  """Resolve and validate the ffmpeg binary at startup (fail-fast).
 
-  if configured_path is not None:
-    logger.warning("configured ffmpeg path unusable", ffmpeg_path=configured_path)
+  Shares the use-time lookup with
+  :func:`active_listener.infra.audio.resolve_ffmpeg_executable`, so the
+  validated and logged path is exactly the one encoding uses later, then probes
+  it with ``-version`` to fail fast on a present-but-broken binary.
 
-  resolved_path = shutil.which("ffmpeg")
-  resolved_path_from_path = _resolve_usable_executable_path(resolved_path)
-  if resolved_path_from_path is not None:
-    return resolved_path_from_path
+  :param configured_path: Optional explicit ffmpeg path override.
+  :type configured_path: str | None
+  :param logger: Structured logger for reporting an unusable binary.
+  :type logger: BoundLogger
+  :returns: Path to a runnable ffmpeg binary.
+  :rtype: str
+  :raises ActiveListenerRuntimeError: If no runnable ffmpeg can be resolved.
+  """
+  resolved = resolve_ffmpeg_executable(configured_path)
+  if not _ffmpeg_runs(resolved):
+    logger.warning("resolved ffmpeg binary is not runnable", ffmpeg_path=resolved)
+    raise ActiveListenerRuntimeError(f"ffmpeg executable is not runnable: {resolved}")
+  return resolved
 
-  raise ActiveListenerRuntimeError(
-    "ffmpeg executable not found; set ffmpeg_path or add ffmpeg to PATH"
-  )
 
-
-def _resolve_usable_executable_path(raw_path: str | None) -> str | None:
-  if raw_path is None:
-    return None
-
-  candidate_path = Path(raw_path).expanduser().resolve()
-  if not candidate_path.is_file():
-    return None
-  if not os.access(candidate_path, os.X_OK):
-    return None
-
+def _ffmpeg_runs(path: str) -> bool:
   try:
-    result = subprocess.run(
-      [str(candidate_path), "-version"],
-      capture_output=True,
-      check=False,
-    )
-  except FileNotFoundError:
-    return None
-  if result.returncode != 0:
-    return None
-
-  return str(candidate_path)
+    result = subprocess.run([path, "-version"], capture_output=True, check=False)
+  except OSError:
+    return False
+  return result.returncode == 0
 
 
 async def cleanup_startup_prerequisites(

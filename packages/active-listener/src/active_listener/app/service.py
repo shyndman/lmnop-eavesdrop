@@ -78,7 +78,6 @@ class ActiveListenerService:
   recording_audio_buffer: RecordingAudioBuffer
   correction_store: ActiveListenerCorrectionStore = field(default_factory=CorrectionStore.default)
   spectrum_analyzer: SpectrumRuntime = field(default_factory=_build_noop_spectrum_analyzer)
-  ffmpeg_path: str | None = None
   phase: ForegroundPhase = ForegroundPhase.IDLE
   disconnect_generation: int = 0
   _was_playing_before_recording: bool = field(default=False, init=False)
@@ -104,7 +103,6 @@ class ActiveListenerService:
       config=self.config,
       client=self.client,
       emitter=self.emitter,
-      ffmpeg_path=self.ffmpeg_path,
       logger=self.logger,
       rewrite_client=self.rewrite_client,
       history_store=self.history_store,
