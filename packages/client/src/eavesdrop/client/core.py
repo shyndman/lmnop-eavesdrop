@@ -251,6 +251,11 @@ class EavesdropClient:
         on_language_detection=self._on_language_detection,
       )
 
+    # NOTE: on_language_detection is deliberately NOT passed for RTSP_SUBSCRIBER.
+    # Server language-detection messages are keyed by the subscribed stream and
+    # would need to match against self._stream_names, but subscriber-mode
+    # language detection is intentionally unsupported for now. See the
+    # client_type branch in WebSocketConnection._process_message.
     return WebSocketConnection(
       host=self._host,
       port=self._port,
@@ -261,7 +266,6 @@ class EavesdropClient:
       client_type=ClientType.RTSP_SUBSCRIBER,
       stream_names=self._stream_names,
       on_transcription_message=self._on_transcription_message,
-      on_language_detection=self._on_language_detection,
     )
 
   def _start_message_task(self) -> None:

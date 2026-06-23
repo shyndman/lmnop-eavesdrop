@@ -192,8 +192,18 @@ class WebSocketConnection:
             self._notify_disconnect(disconnect.message)
 
         case LanguageDetectionMessage() as detection:
-          if detection.stream == self.stream_name and self.on_language_detection is not None:
-            self.on_language_detection(detection)
+          # Language detection is intentionally TRANSCRIBER-only for now. We
+          # deliberately do NOT surface it for RTSP_SUBSCRIBER yet — unlike the
+          # transcription handler above, there is no `detection.stream in
+          # self.stream_names` branch. The wiring side enforces this too:
+          # WhisperLiveClient._build_connection omits on_language_detection for
+          # RTSP_SUBSCRIBER, so self.on_language_detection is None here anyway.
+          # Branch on client_type (mirroring the transcription case) so the
+          # absence of subscriber support reads as a choice, not an oversight.
+          if self.client_type == ClientType.TRANSCRIBER:
+            if detection.stream == self.stream_name and self.on_language_detection is not None:
+              self.on_language_detection(detection)
+          # RTSP_SUBSCRIBER: language detection deliberately unsupported — drop.
 
         case _:
           # Handle unexpected message types
