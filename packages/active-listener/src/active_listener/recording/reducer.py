@@ -175,22 +175,6 @@ def reduce_new_segments(
   )
 
 
-def build_transcription_update(state: RecordingReducerState) -> TranscriptionUpdate | None:
-  """Build a normalized transcript snapshot for live UI consumers.
-
-  :param state: Recording reducer state after the latest reduction was applied.
-  :type state: RecordingReducerState
-  :returns: Ordered normalized transcript snapshot, or ``None`` when no text is present.
-  :rtype: TranscriptionUpdate | None
-  """
-
-  runs = build_text_runs(state)
-  if not runs:
-    return None
-
-  return TranscriptionUpdate(runs=runs)
-
-
 def apply_segment_reduction(state: RecordingReducerState, reduction: SegmentReduction) -> None:
   """Apply a reduced transcription window to the recording state.
 
@@ -396,6 +380,18 @@ def build_completed_text_runs(state: RecordingReducerState) -> list[TextRun]:
   return normalize_runs(group_words(classify_words(state.completed_words, state)))
 
 
+def build_incomplete_text_runs(state: RecordingReducerState) -> list[TextRun]:
+  """Build normalized transcript runs for the incomplete (unstable) tail only.
+
+  :param state: Recording reducer state to render.
+  :type state: RecordingReducerState
+  :returns: Ordered normalized transcript runs for the in-progress tail.
+  :rtype: list[TextRun]
+  """
+
+  return normalize_runs(group_words(classify_words(state.incomplete_words, state)))
+
+
 def segment_words(segment: Segment, *, is_complete: bool) -> list[TimedWord]:
   """Convert one segment into ordered transcript words.
 
@@ -445,8 +441,8 @@ def render_text(words: Sequence[TimedWord]) -> str:
   return " ".join(word.text for word in words)
 
 
-def serialize_text_runs(runs: Sequence[TextRun]) -> str:
-  """Serialize normalized transcript runs for rewrite input.
+def serialize_runs_for_rewrite(runs: Sequence[TextRun]) -> str:
+  """Serialize runs as LLM rewrite input; command runs are wrapped in instruction markers.
 
   :param runs: Ordered normalized transcript runs.
   :type runs: Sequence[TextRun]
@@ -462,6 +458,21 @@ def serialize_text_runs(runs: Sequence[TextRun]) -> str:
     serialized_parts.append(run.text)
 
   return " ".join(serialized_parts)
+
+
+def serialize_runs_without_commands(runs: Sequence[TextRun]) -> str:
+  """Serialize runs for the LLM-off path; command runs are dropped entirely.
+
+  A command run is an instruction with no consumer when the LLM is disabled, so its
+  content is removed rather than pasted literally.
+
+  :param runs: Ordered normalized transcript runs.
+  :type runs: Sequence[TextRun]
+  :returns: Flat output string with command runs removed.
+  :rtype: str
+  """
+
+  return " ".join(run.text for run in normalize_runs(runs) if not run.is_command)
 
 
 def _require_word_timestamps(segments: Sequence[Segment]) -> None:

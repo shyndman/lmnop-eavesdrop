@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import re
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import cast
 
 from structlog.stdlib import BoundLogger
 
@@ -15,7 +13,6 @@ from active_listener.app.ports import (
   ActiveListenerClient,
   ActiveListenerRewriteClient,
   ActiveListenerTranscriptHistoryStore,
-  CorrectionLoadTask,
   FinalizedTranscriptRecord,
   FinishedRecording,
   RewriteResult,
@@ -28,19 +25,20 @@ from active_listener.config.models import (
 from active_listener.infra.audio import encode_recording_audio
 from active_listener.infra.corrections import (
   ActiveListenerCorrectionStore,
+  CorrectionMap,
   CorrectionStore,
-  apply_corrections,
 )
 from active_listener.infra.dbus import AppStateService
 from active_listener.infra.emitter import TextEmitter
 from active_listener.recording.reducer import (
-  RecordingReducerState,
-  TranscriptionUpdate,
+  apply_segment_reduction,
   build_completed_text_runs,
+  reduce_new_segments,
   render_text,
-  serialize_text_runs,
+  serialize_runs_for_rewrite,
+  serialize_runs_without_commands,
 )
-from eavesdrop.wire import TranscriptionMessage
+from active_listener.recording.text_shaping import shape_runs
 
 from ..infra.langfuse import (
   RecordingObservation,
@@ -50,67 +48,6 @@ from ..infra.langfuse import (
   update_recording_observation,
 )
 
-
-def _empty_metadata() -> dict[str, object]:
-  return {}
-
-
-@dataclass(frozen=True)
-class PipelineContext:
-  transcript: str
-  llm_enabled: bool
-  metadata: Mapping[str, object] = field(default_factory=_empty_metadata)
-
-
-PipelineStep = Callable[[PipelineContext], Awaitable[PipelineContext]]
-
-# Spoken symbol words recognized by `_replace_symbols`. DO NOT expand this list
-# casually — it is deliberately tiny so that normal prose words never collide.
-_SYMBOL_WORDS = {
-  "backslash": "\\",
-  "dot": ".",
-  "hashtag": "#",
-  "slash": "/",
-  "tild": "~",
-  "tilde": "~",
-}
-_SYMBOL_PATTERN = re.compile(
-  r"\s*\b(" + "|".join(_SYMBOL_WORDS) + r")\b\s*",
-  re.IGNORECASE,
-)
-
-# Case-insensitive whole-phrase replacements applied BEFORE symbol fusion.
-# Keys are matched case-insensitively; values are substituted verbatim with
-# their canonical casing. Add freely — keep keys lowercase for readability.
-_REPLACEMENTS: dict[str, str] = {
-  "debass": "D-Bus",
-  "hillary": "hilary",
-  "tild": "tilde",
-  "yamel": "yaml",
-}
-_REPLACEMENT_PATTERN = (
-  re.compile(
-    r"\b(" + "|".join(re.escape(k) for k in _REPLACEMENTS) + r")\b",
-    re.IGNORECASE,
-  )
-  if _REPLACEMENTS
-  else None
-)
-_INSTRUCTION_TAG_PATTERN = re.compile(r"</?\s*instruction\s*>", re.IGNORECASE)
-_THANK_YOU_PATTERN = re.compile(r"\b(?:(escape)\s+)?(thank you)\b([,.!?;:]*)", re.IGNORECASE)
-_HORIZONTAL_WHITESPACE_PATTERN = re.compile(r"[ \t]{2,}")
-_REMOVE_PRECEDING_THANK_YOU_INSTRUCTION = (
-  "<instruction>remove the preceding thank you</instruction>"
-)
-_REWRITE_RESULT_METADATA_KEY = "rewrite_result"
-_CORRECTION_LOAD_TASK_METADATA_KEY = "correction_load_task"
-_RECORDING_ID_METADATA_KEY = "recording_id"
-_RECORDING_OBSERVATION_METADATA_KEY = "recording_observation"
-
-RecordingMessageIngestor = Callable[
-  [RecordingReducerState, TranscriptionMessage],
-  TranscriptionUpdate | None,
-]
 LlmAvailabilityReader = Callable[[], bool]
 LlmActiveReader = Callable[[], bool]
 DisconnectGenerationReader = Callable[[], int]
@@ -127,7 +64,6 @@ class RecordingFinalizer:
   rewrite_client: ActiveListenerRewriteClient
   history_store: ActiveListenerTranscriptHistoryStore
   dbus_service: AppStateService
-  ingest_transcription_message: RecordingMessageIngestor
   current_llm_available: LlmAvailabilityReader
   current_llm_active: LlmActiveReader
   current_disconnect_generation: DisconnectGenerationReader
@@ -198,16 +134,31 @@ class RecordingFinalizer:
           )
           self.logger.warning("skipping emission after disconnect", stream=message.stream)
           return
-
-        _ = self.ingest_transcription_message(reducer_state, message)
-        completed_runs = build_completed_text_runs(reducer_state)
+        # Resolve stored corrections locally. The session clears its own load task during
+        # teardown and a new recording may already own the live session, so the finalizer
+        # never reads or writes live-session state: it shapes this recording's committed text
+        # from the reducer state and correction task carried on the finished recording.
+        corrections = await self._resolve_corrections(finished_recording, stream=message.stream)
+        # Reduce the final flushed window into this recording's private reducer state.
+        reduction = reduce_new_segments(message.segments, reducer_state.last_id)
+        apply_segment_reduction(reducer_state, reduction)
+        reducer_state.last_id = reduction.last_id
+        # raw_text is the unshaped "before" snapshot, retained only for history/observation.
         raw_text = render_text(reducer_state.completed_words)
         if not raw_text:
           self.logger.info("recording finalized without committed text", stream=message.stream)
           return
 
         self.logger.info("finalized raw transcript", stream=message.stream, raw_text=raw_text)
-        rewrite_input = serialize_text_runs(completed_runs)
+        completed_runs = shape_runs(build_completed_text_runs(reducer_state), corrections)
+        # LLM-input view: command runs are wrapped in instruction markers. Marker-wrapping is
+        # an LLM-boundary concern, so the shaping pipeline never needs to know the LLM exists.
+        rewrite_input = serialize_runs_for_rewrite(completed_runs)
+        # Shaping can empty the committed text (e.g. a dictation that was only a hallucinated
+        # "thank you"); skip the rewrite rather than calling the LLM on empty input.
+        if not rewrite_input.strip():
+          self.logger.info("recording finalized without committed text", stream=message.stream)
+          return
         if recording_observation is not None:
           _ = recording_observation.update(
             input={
@@ -223,31 +174,35 @@ class RecordingFinalizer:
             },
           )
 
-        pipeline_steps = self._pipeline_steps(stream=message.stream)
-        pipeline_context = await self._run_pipeline(
-          context=PipelineContext(
-            transcript=rewrite_input,
-            llm_enabled=self.current_llm_active(),
-            metadata={
-              _CORRECTION_LOAD_TASK_METADATA_KEY: finished_recording.correction_load_task,
-              _RECORDING_ID_METADATA_KEY: finished_recording.recording_id,
-              _RECORDING_OBSERVATION_METADATA_KEY: recording_observation,
-            },
-          ),
-          steps=pipeline_steps,
-          stream=message.stream,
-        )
-        if pipeline_context is None:
-          update_recording_observation(
-            recording_observation,
-            logger=self.logger,
-            level="ERROR",
-            status_message="finalization pipeline failed",
-          )
+        rewrite_result: RewriteResult | None = None
+        if self.current_llm_active():
+          try:
+            rewrite_result = await self._rewrite_with_llm(
+              transcript=rewrite_input,
+              stream=message.stream,
+              recording_id=finished_recording.recording_id,
+              recording_observation=recording_observation,
+            )
+          except Exception as exc:
+            self.logger.exception(
+              "dictation pipeline step failed",
+              stream=message.stream,
+              step="rewrite_with_llm",
+              reason=str(exc),
+            )
+            await self.dbus_service.pipeline_failed("rewrite_with_llm", str(exc))
+            return
+          final_text = rewrite_result.text
+        else:
+          # No LLM to consume the dictated command instructions, so each command run is
+          # dropped entirely rather than pasted literally into the editor. This path is pure
+          # and cannot fail, so it carries no failure signal.
+          final_text = serialize_runs_without_commands(completed_runs)
+        if not final_text.strip():
+          self.logger.info("recording finalized without committed text", stream=message.stream)
           return
-
-        final_text = pipeline_context.transcript
-        rewrite_result = _rewrite_result_from_metadata(pipeline_context.metadata)
+        # Trailing space (formerly the append_trailing_space pipeline step).
+        final_text = f"{final_text} "
 
         llm_mode = _llm_mode(
           llm_available=self.current_llm_available(),
@@ -321,148 +276,49 @@ class RecordingFinalizer:
     finally:
       end_recording_observation(recording_observation, logger=self.logger)
 
-  def _pipeline_steps(self, *, stream: str) -> list[PipelineStep]:
-    async def rewrite_with_llm(context: PipelineContext) -> PipelineContext:
-      return await self._rewrite_with_llm(context=context, stream=stream)
+  async def _resolve_corrections(
+    self, finished_recording: FinishedRecording, *, stream: str
+  ) -> CorrectionMap:
+    """Await this recording's stored-correction load and return the map.
 
-    async def apply_stored_corrections(context: PipelineContext) -> PipelineContext:
-      return await self._apply_stored_corrections(context=context, stream=stream)
+    The session drops its own correction load task during teardown, so the surviving task
+    travels on the finished recording. Resolving it here keeps the finalizer independent of
+    live-session state, which a subsequent recording may already own.
 
-    async def append_trailing_space(context: PipelineContext) -> PipelineContext:
-      return _update_pipeline_context(
-        context,
-        transcript=f"{context.transcript} ",
-      )
-
-    steps: list[PipelineStep] = [
-      self._strip_instruction_tags_when_llm_disabled,
-      self._apply_replacements,
-      self._apply_thank_you_escape,
-      self._replace_symbols,
-      apply_stored_corrections,
-      rewrite_with_llm,
-      append_trailing_space,
-    ]
-
-    return steps
-
-  async def _strip_instruction_tags_when_llm_disabled(
-    self,
-    context: PipelineContext,
-  ) -> PipelineContext:
-    if context.llm_enabled:
-      return context
-
-    return _update_pipeline_context(
-      context,
-      transcript=_strip_instruction_tags(context.transcript),
-    )
-
-  async def _apply_replacements(self, context: PipelineContext) -> PipelineContext:
-    # Case-insensitive whole-word/phrase substitution driven by `_REPLACEMENTS`.
-    # Extend the map at module level; this function should stay dumb.
-    if _REPLACEMENT_PATTERN is None:
-      return context
-    replacement_pattern = _REPLACEMENT_PATTERN
-    return _update_pipeline_context(
-      context,
-      transcript=replacement_pattern.sub(
-        lambda m: _REPLACEMENTS[m.group(1).lower()],
-        context.transcript,
-      ),
-    )
-
-  async def _replace_symbols(self, context: PipelineContext) -> PipelineContext:
-    #! This satisfies the design intent. Do not touch.
-    #
-    # Fuse spoken symbol words into their glyphs, swallowing adjacent whitespace:
-    # e.g. "tild slash dot omp slash agent slash skills" -> "~/.omp/agent/skills".
-    symbol_pattern = _SYMBOL_PATTERN
-    return _update_pipeline_context(
-      context,
-      transcript=symbol_pattern.sub(
-        lambda m: _SYMBOL_WORDS[m.group(1).lower()],
-        context.transcript,
-      ),
-    )
-
-  async def _apply_thank_you_escape(self, context: PipelineContext) -> PipelineContext:
-    return _update_pipeline_context(
-      context,
-      transcript=_apply_thank_you_policy(
-        context.transcript,
-        llm_enabled=context.llm_enabled,
-      ),
-    )
-
-  async def _apply_stored_corrections(
-    self,
-    *,
-    context: PipelineContext,
-    stream: str,
-  ) -> PipelineContext:
-    correction_load_task = _correction_load_task_from_metadata(context.metadata)
-    if correction_load_task is None:
-      return context
-
+    :param finished_recording: The recording being finalized.
+    :type finished_recording: FinishedRecording
+    :param stream: Stream identifier for logging.
+    :type stream: str
+    :returns: Loaded spelling corrections, or an empty map on failure or absence.
+    :rtype: CorrectionMap
+    """
+    task = finished_recording.correction_load_task
+    if task is None:
+      return {}
     try:
-      corrections = await correction_load_task
+      return await task
     except Exception:
       self.logger.exception("stored correction load failed", stream=stream)
-      return context
-
-    corrected_transcript = apply_corrections(context.transcript, corrections)
-    if corrected_transcript != context.transcript:
-      self.logger.info(
-        "stored corrections applied",
-        stream=stream,
-        correction_count=len(corrections),
-      )
-    return _update_pipeline_context(context, transcript=corrected_transcript)
-
-  async def _run_pipeline(
-    self,
-    *,
-    context: PipelineContext,
-    steps: Iterable[PipelineStep],
-    stream: str,
-  ) -> PipelineContext | None:
-    for step in steps:
-      try:
-        context = await step(context)
-      except Exception as exc:
-        self.logger.exception(
-          "dictation pipeline step failed",
-          stream=stream,
-          step=step.__name__,
-          reason=str(exc),
-        )
-        await self.dbus_service.pipeline_failed(step.__name__, str(exc))
-        return None
-
-    return context
+      return {}
 
   async def _rewrite_with_llm(
     self,
     *,
-    context: PipelineContext,
+    transcript: str,
     stream: str,
-  ) -> PipelineContext:
-    if not context.llm_enabled:
-      return context
-
+    recording_id: str,
+    recording_observation: RecordingObservation | None,
+  ) -> RewriteResult:
     rewrite_config = self.config.llm_rewrite
+    # Defensive: unreachable while current_llm_active() gates the call site.
     if rewrite_config is None:
       raise rewrite_module.RewriteClientError("rewrite is disabled")
-
-    prompt_path: str | None = None
 
     #! This very deliberately happens on each recording run. DO NOT ALTER THIS. Do not ask
     # about loading up front. Just leave it.
     loaded_prompt = rewrite_module.load_active_listener_rewrite_prompt(rewrite_config.prompt_path)
     prompt = loaded_prompt.prompt
     prompt_path = str(loaded_prompt.prompt_path)
-    rewrite_input = context.transcript
     self.logger.info(
       "rewrite prompt loaded",
       stream=stream,
@@ -472,25 +328,25 @@ class RecordingFinalizer:
       "rewrite started",
       stream=stream,
       prompt_path=prompt_path,
-      rewrite_input=rewrite_input,
+      rewrite_input=transcript,
     )
     provider = _rewrite_provider_type(rewrite_config)
     model = _rewrite_model(rewrite_config)
 
     with start_rewrite_observation(
       session_id=stream,
-      recording_id=_recording_id_from_metadata(context.metadata),
+      recording_id=recording_id,
       provider=provider,
       model=model,
       prompt_path=prompt_path,
       stream=stream,
-      transcript=rewrite_input,
-      parent_observation=_recording_observation_from_metadata(context.metadata),
+      transcript=transcript,
+      parent_observation=recording_observation,
     ) as observation:
       try:
         rewrite_result = await self.rewrite_client.rewrite_text(
           instructions=prompt.instructions,
-          transcript=rewrite_input,
+          transcript=transcript,
         )
       except Exception as exc:
         if observation is not None:
@@ -508,7 +364,7 @@ class RecordingFinalizer:
       "rewrite succeeded",
       stream=stream,
       prompt_path=prompt_path,
-      rewrite_input=rewrite_input,
+      rewrite_input=transcript,
       rewritten_text=rewrite_result.text,
     )
     if rewrite_result.corrections:
@@ -527,90 +383,11 @@ class RecordingFinalizer:
           correction_count=len(rewrite_result.corrections),
           path=str(self.correction_store.path),
         )
-    return _update_pipeline_context(
-      context,
-      transcript=rewrite_result.text,
-      metadata_updates={_REWRITE_RESULT_METADATA_KEY: rewrite_result},
-    )
+    return rewrite_result
 
 
 def _count_words(text: str) -> int:
   return len(text.split())
-
-
-def _update_pipeline_context(
-  context: PipelineContext,
-  *,
-  transcript: str,
-  metadata_updates: Mapping[str, object] | None = None,
-) -> PipelineContext:
-  metadata = (
-    context.metadata if metadata_updates is None else {**context.metadata, **metadata_updates}
-  )
-  return PipelineContext(
-    transcript=transcript,
-    llm_enabled=context.llm_enabled,
-    metadata=metadata,
-  )
-
-
-def _rewrite_result_from_metadata(metadata: Mapping[str, object]) -> RewriteResult | None:
-  rewrite_result = metadata.get(_REWRITE_RESULT_METADATA_KEY)
-  if rewrite_result is None:
-    return None
-
-  if not isinstance(rewrite_result, RewriteResult):
-    raise TypeError("rewrite_result metadata must be a RewriteResult")
-
-  return rewrite_result
-
-
-def _correction_load_task_from_metadata(
-  metadata: Mapping[str, object],
-) -> CorrectionLoadTask | None:
-  correction_load_task = metadata.get(_CORRECTION_LOAD_TASK_METADATA_KEY)
-  if correction_load_task is None:
-    return None
-
-  if not isinstance(correction_load_task, asyncio.Task):
-    raise TypeError("correction_load_task metadata must be an asyncio.Task")
-
-  return cast(CorrectionLoadTask, correction_load_task)
-
-
-def _recording_observation_from_metadata(
-  metadata: Mapping[str, object],
-) -> RecordingObservation | None:
-  recording_observation = metadata.get(_RECORDING_OBSERVATION_METADATA_KEY)
-  if recording_observation is None:
-    return None
-
-  return cast(RecordingObservation, recording_observation)
-
-
-def _recording_id_from_metadata(metadata: Mapping[str, object]) -> str:
-  return cast(str, metadata[_RECORDING_ID_METADATA_KEY])
-
-
-def _strip_instruction_tags(text: str) -> str:
-  return _INSTRUCTION_TAG_PATTERN.sub("", text)
-
-
-def _apply_thank_you_policy(text: str, *, llm_enabled: bool) -> str:
-  def replace_match(match: re.Match[str]) -> str:
-    thank_you_text = f"{match.group(2)}{match.group(3)}"
-    if match.group(1) is not None:
-      return thank_you_text
-
-    if not llm_enabled:
-      return ""
-
-    return f"{thank_you_text} {_REMOVE_PRECEDING_THANK_YOU_INSTRUCTION}"
-
-  return _HORIZONTAL_WHITESPACE_PATTERN.sub(
-    " ",
-    _THANK_YOU_PATTERN.sub(replace_match, text),
-  ).strip()
 
 
 def _llm_mode(*, llm_available: bool, rewrite_ran: bool) -> str:

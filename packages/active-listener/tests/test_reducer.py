@@ -11,12 +11,14 @@ from active_listener.recording.reducer import (
   TimedWord,
   TimeSpan,
   apply_segment_reduction,
-  build_transcription_update,
+  build_completed_text_runs,
+  build_incomplete_text_runs,
   classify_recording_words,
   normalize_runs,
   reduce_new_segments,
   render_text,
-  serialize_text_runs,
+  serialize_runs_for_rewrite,
+  serialize_runs_without_commands,
 )
 from eavesdrop.wire import Segment, Word
 
@@ -135,7 +137,12 @@ def test_apply_segment_reduction_skips_duplicate_segments_after_missing_sentinel
   assert [word.text for word in state.incomplete_words] == ["tail"]
 
 
-def test_build_transcription_update_returns_normalized_runs() -> None:
+def _overlay_runs(state: RecordingReducerState) -> list[TextRun]:
+  """Combine shaped-source completed and incomplete runs the way the overlay does."""
+  return [*build_completed_text_runs(state), *build_incomplete_text_runs(state)]
+
+
+def test_overlay_runs_returns_normalized_runs() -> None:
   reduction = reduce_new_segments(
     [_segment(11, "alpha"), _segment(12, "tail")],
     last_id=None,
@@ -145,10 +152,7 @@ def test_build_transcription_update_returns_normalized_runs() -> None:
   )
   apply_segment_reduction(state, reduction)
 
-  transcription_update = build_transcription_update(state)
-
-  assert transcription_update is not None
-  assert transcription_update.runs == [
+  assert _overlay_runs(state) == [
     TextRun(text="earlier alpha", is_command=False, is_complete=True),
     TextRun(text="tail", is_command=False, is_complete=False),
   ]
@@ -249,7 +253,7 @@ def test_normalize_runs_drops_empty_runs_and_merges_identical_flags() -> None:
   ]
 
 
-def test_build_transcription_update_accumulates_completed_prefix_once_and_replaces_tail() -> None:
+def test_overlay_runs_accumulates_completed_prefix_once_and_replaces_tail() -> None:
   state = RecordingReducerState(last_id=None)
 
   first_reduction = reduce_new_segments(
@@ -269,7 +273,7 @@ def test_build_transcription_update_accumulates_completed_prefix_once_and_replac
   )
   apply_segment_reduction(state, first_reduction)
   state.last_id = first_reduction.last_id
-  first_update = build_transcription_update(state)
+  first_runs = _overlay_runs(state)
 
   second_reduction = reduce_new_segments(
     [
@@ -288,7 +292,7 @@ def test_build_transcription_update_accumulates_completed_prefix_once_and_replac
   )
   apply_segment_reduction(state, second_reduction)
   state.last_id = second_reduction.last_id
-  second_update = build_transcription_update(state)
+  second_runs = _overlay_runs(state)
 
   third_reduction = reduce_new_segments(
     [
@@ -312,26 +316,23 @@ def test_build_transcription_update_accumulates_completed_prefix_once_and_replac
   )
   apply_segment_reduction(state, third_reduction)
   state.last_id = third_reduction.last_id
-  third_update = build_transcription_update(state)
+  third_runs = _overlay_runs(state)
 
-  assert first_update is not None
-  assert first_update.runs == [
+  assert first_runs == [
     TextRun(text="hello", is_command=False, is_complete=True),
     TextRun(text="worl", is_command=False, is_complete=False),
   ]
-  assert second_update is not None
-  assert second_update.runs == [
+  assert second_runs == [
     TextRun(text="hello", is_command=False, is_complete=True),
     TextRun(text="world", is_command=False, is_complete=False),
   ]
-  assert third_update is not None
-  assert third_update.runs == [
+  assert third_runs == [
     TextRun(text="hello world", is_command=False, is_complete=True),
     TextRun(text="again", is_command=False, is_complete=False),
   ]
 
 
-def test_build_transcription_update_recolors_tail_without_reemitting_completed_text() -> None:
+def test_overlay_runs_recolors_tail_without_reemitting_completed_text() -> None:
   state = RecordingReducerState(
     completed_words=[TimedWord(text="hello", start_s=0.0, end_s=0.2, is_complete=True)],
     last_id=1,
@@ -356,7 +357,7 @@ def test_build_transcription_update_recolors_tail_without_reemitting_completed_t
     last_id=state.last_id,
   )
   apply_segment_reduction(state, first_reduction)
-  first_update = build_transcription_update(state)
+  first_runs = _overlay_runs(state)
 
   state.open_command_start_s = 0.5
   second_reduction = reduce_new_segments(
@@ -378,21 +379,19 @@ def test_build_transcription_update_recolors_tail_without_reemitting_completed_t
     last_id=state.last_id,
   )
   apply_segment_reduction(state, second_reduction)
-  second_update = build_transcription_update(state)
+  second_runs = _overlay_runs(state)
 
-  assert first_update is not None
-  assert first_update.runs == [
+  assert first_runs == [
     TextRun(text="hello", is_command=False, is_complete=True),
     TextRun(text="draft command", is_command=False, is_complete=False),
   ]
-  assert second_update is not None
-  assert second_update.runs == [
+  assert second_runs == [
     TextRun(text="hello", is_command=False, is_complete=True),
     TextRun(text="draft command", is_command=True, is_complete=False),
   ]
 
 
-def test_build_transcription_update_reclassifies_completed_words_after_hold_commit() -> None:
+def test_overlay_runs_reclassifies_completed_words_after_hold_commit() -> None:
   state = RecordingReducerState(
     completed_words=[
       TimedWord(text="alpha", start_s=0.6, end_s=0.8, is_complete=True),
@@ -402,26 +401,24 @@ def test_build_transcription_update_reclassifies_completed_words_after_hold_comm
     ],
   )
 
-  first_update = build_transcription_update(state)
+  first_runs = _overlay_runs(state)
 
   state.open_command_start_s = 0.5
-  second_update = build_transcription_update(state)
+  second_runs = _overlay_runs(state)
 
-  assert first_update is not None
-  assert first_update.runs == [
+  assert first_runs == [
     TextRun(text="alpha", is_command=False, is_complete=True),
     TextRun(text="draft", is_command=False, is_complete=False),
   ]
-  assert second_update is not None
-  assert second_update.runs == [
+  assert second_runs == [
     TextRun(text="alpha", is_command=True, is_complete=True),
     TextRun(text="draft", is_command=True, is_complete=False),
   ]
 
 
-def test_serialize_text_runs_wraps_command_text_and_preserves_punctuation() -> None:
+def test_serialize_runs_for_rewrite_wraps_command_text_and_preserves_punctuation() -> None:
   assert (
-    serialize_text_runs(
+    serialize_runs_for_rewrite(
       [
         TextRun(text="Hello,", is_command=False, is_complete=True),
         TextRun(text="scratch", is_command=True, is_complete=True),
@@ -430,4 +427,17 @@ def test_serialize_text_runs_wraps_command_text_and_preserves_punctuation() -> N
       ]
     )
     == "Hello, <instruction>scratch that.</instruction> Bye."
+  )
+
+
+def test_serialize_runs_without_commands_drops_command_runs() -> None:
+  assert (
+    serialize_runs_without_commands(
+      [
+        TextRun(text="Hello,", is_command=False, is_complete=True),
+        TextRun(text="scratch that.", is_command=True, is_complete=True),
+        TextRun(text="Bye.", is_command=False, is_complete=True),
+      ]
+    )
+    == "Hello, Bye."
   )
