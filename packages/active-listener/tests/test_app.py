@@ -2665,7 +2665,7 @@ async def test_finalize_recording_keeps_escaped_thank_you_mentions() -> None:
 
 
 @pytest.mark.asyncio
-async def test_finalize_recording_strips_instruction_tags_when_llm_is_disabled() -> None:
+async def test_finalize_recording_drops_command_runs_when_llm_is_disabled() -> None:
   client = FakeClient(
     flush_results=[
       _message(
@@ -2716,12 +2716,12 @@ async def test_finalize_recording_strips_instruction_tags_when_llm_is_disabled()
   _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
   await harness.service.wait_for_background_tasks()
 
-  assert harness.emitter.emitted == ["Hello, scratch that. Bye. "]
+  assert harness.emitter.emitted == ["Hello, Bye. "]
   assert harness.rewrite_client.calls == []
 
 
 @pytest.mark.asyncio
-async def test_finalize_recording_injects_thank_you_instruction_when_llm_enabled(
+async def test_finalize_recording_removes_thank_you_before_rewrite_when_llm_enabled(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
   client = FakeClient(
@@ -2755,12 +2755,117 @@ async def test_finalize_recording_injects_thank_you_instruction_when_llm_enabled
   assert rewrite_client.calls == [
     {
       "instructions": "Rewrite this transcript.",
-      "transcript": (
-        "Thank you? <instruction>remove the preceding thank you</instruction> "
-        "thank you, <instruction>remove the preceding thank you</instruction> "
-        "I want to keep going thank you."
-      ),
+      "transcript": "I want to keep going thank you.",
     }
+  ]
+
+
+@pytest.mark.asyncio
+async def test_live_transcription_publishes_shaped_runs() -> None:
+  harness = _service()
+  service = harness.service
+
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
+  reducer_state = _recording_reducer_state(_recording_session(service))
+  assert reducer_state is not None
+  reducer_state.closed_command_spans = [TimeSpan(start_s=0.6, end_s=0.9)]
+
+  await service.handle_client_event(
+    _transcription_event(
+      _live_message(
+        service,
+        _segment(
+          1,
+          "hillary release hashtag 42 thank you",
+          completed=True,
+          start=0.0,
+          end=0.5,
+          words=[
+            _word("hillary", start=0.0, end=0.1),
+            _word("release", start=0.1, end=0.2),
+            _word("hashtag", start=0.2, end=0.3),
+            _word("42", start=0.3, end=0.4),
+            _word("thank", start=0.4, end=0.45),
+            _word("you", start=0.45, end=0.5),
+          ],
+        ),
+        _segment(
+          2,
+          "scratch that.",
+          completed=True,
+          start=0.6,
+          end=0.9,
+          words=[
+            _word("scratch", start=0.6, end=0.75),
+            _word("that.", start=0.75, end=0.9),
+          ],
+        ),
+        flush_complete=False,
+      )
+    )
+  )
+  _ = await service.handle_action(AppAction.CANCEL)
+  await service.wait_for_background_tasks()
+
+  published = [
+    runs for name, runs in harness.dbus_service.signals if name == "TranscriptionUpdated"
+  ]
+  assert published == [
+    [
+      TextRun(text="hilary release#42", is_command=False, is_complete=True),
+      TextRun(text="scratch that.", is_command=True, is_complete=False),
+    ]
+  ]
+
+
+@pytest.mark.asyncio
+async def test_live_overlay_leaves_incomplete_tail_unshaped() -> None:
+  # Flicker guard: the incomplete tail is unstable (Whisper keeps revising it), so it is shown
+  # raw. Shaping it would make the preview flicker — here a transient "thank you" would vanish
+  # then reappear as the segment is revised. Only the committed prefix is shaped.
+  harness = _service()
+  service = harness.service
+
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
+
+  await service.handle_client_event(
+    _transcription_event(
+      _live_message(
+        service,
+        _segment(
+          1,
+          "hillary",
+          completed=True,
+          start=0.0,
+          end=0.2,
+          words=[_word("hillary", start=0.0, end=0.2)],
+        ),
+        _segment(
+          2,
+          "thank you",
+          completed=True,
+          start=0.3,
+          end=0.5,
+          words=[
+            _word("thank", start=0.3, end=0.4),
+            _word("you", start=0.4, end=0.5),
+          ],
+        ),
+        flush_complete=False,
+      )
+    )
+  )
+  _ = await service.handle_action(AppAction.CANCEL)
+  await service.wait_for_background_tasks()
+
+  published = [
+    runs for name, runs in harness.dbus_service.signals if name == "TranscriptionUpdated"
+  ]
+  assert published == [
+    [
+      TextRun(text="hilary", is_command=False, is_complete=True),
+      TextRun(text="thank you", is_command=False, is_complete=False),
+    ]
   ]
 
 

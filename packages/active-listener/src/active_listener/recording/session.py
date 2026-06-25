@@ -16,6 +16,7 @@ from active_listener.app.ports import (
   CorrectionLoadTask,
   FinishedRecording,
 )
+from active_listener.infra.corrections import CorrectionMap
 from active_listener.infra.keyboard import KeyboardInput, RecordingGrabRelease
 from active_listener.recording.reducer import (
   RecordingReducerState,
@@ -24,14 +25,20 @@ from active_listener.recording.reducer import (
   TimeSpan,
   TranscriptionUpdate,
   apply_segment_reduction,
-  build_transcription_update,
+  build_completed_text_runs,
+  build_incomplete_text_runs,
   reduce_new_segments,
 )
 from active_listener.recording.spectrum import SAMPLE_RATE_HZ
+from active_listener.recording.text_shaping import shape_runs
 from eavesdrop.wire import Segment, TranscriptionMessage
 
 HOLD_THRESHOLD_S = 0.250
 RECORDING_CHANNEL_COUNT = 1
+
+
+def _empty_corrections() -> dict[str, str]:
+  return {}
 
 
 @dataclass
@@ -83,6 +90,13 @@ class RecordingSession:
   _correction_load_task: CorrectionLoadTask | None = None
   _pending_caps_gesture: PendingCapsGesture | None = None
   _last_transcription_runs: list[TextRun] = field(default_factory=list)
+  _loaded_corrections: CorrectionMap = field(default_factory=_empty_corrections)
+  _corrections_harvested: bool = False
+  # Overlay cache: shaped completed runs plus the raw runs they were shaped from. Completed
+  # text is byte-stable once committed, so we reshape only when the raw committed runs change
+  # (or corrections load), not on every window that merely revises the incomplete tail.
+  _shaped_completed_runs: list[TextRun] = field(default_factory=list)
+  _shaped_completed_source: list[TextRun] = field(default_factory=list)
 
   @property
   def is_recording(self) -> bool:
@@ -123,6 +137,10 @@ class RecordingSession:
     self._recording_reducer_state = RecordingReducerState()
     self.audio_buffer.start()
     self._last_transcription_runs = []
+    self._loaded_corrections = {}
+    self._corrections_harvested = False
+    self._shaped_completed_runs = []
+    self._shaped_completed_source = []
     self._connection_last_id = None
     self.logger.debug(
       "recording session started",
@@ -265,7 +283,19 @@ class RecordingSession:
       )
     state.last_id = reduction.last_id
     self._connection_last_id = reduction.last_id
-    transcription_update = build_transcription_update(state)
+    # Shaping runs live (not just at finalize) so the overlay preview equals the LLM input
+    # for committed text. Only completed runs are shaped: the incomplete tail is unstable
+    # (Whisper keeps revising it), so shaping it would flicker the preview — a transient
+    # "thank you" vanishing then reappearing, "dot"/"slash" fusing prematurely. The LLM only
+    # ever consumes completed runs, so the tail never needs shaping. Reshape only when the
+    # committed runs actually change; most windows just churn the tail and reuse the cache.
+    self._harvest_corrections()
+    completed_source = build_completed_text_runs(state)
+    if completed_source != self._shaped_completed_source:
+      self._shaped_completed_source = completed_source
+      self._shaped_completed_runs = shape_runs(completed_source, self._loaded_corrections)
+    overlay_runs = [*self._shaped_completed_runs, *build_incomplete_text_runs(state)]
+    transcription_update = TranscriptionUpdate(runs=overlay_runs) if overlay_runs else None
     if (
       transcription_update is not None
       and transcription_update.runs == self._last_transcription_runs
@@ -291,6 +321,22 @@ class RecordingSession:
       overlay_update=transcription_update is not None,
     )
     return transcription_update
+
+  def _harvest_corrections(self) -> None:
+    # Non-blocking live path: adopt stored corrections as soon as the load task settles,
+    # so live windows shape with corrections without ever stalling on the load.
+    task = self._correction_load_task
+    if task is None or self._corrections_harvested or not task.done():
+      return
+    self._corrections_harvested = True
+    try:
+      self._loaded_corrections = task.result()
+    except Exception:
+      self.logger.exception("stored correction load failed")
+      self._loaded_corrections = {}
+    # Corrections changed: invalidate the shaped cache so the next window reshapes committed
+    # runs with them. The reshape happens later in this same ingest, so no window goes stale.
+    self._shaped_completed_source = []
 
   async def _exit_recording(
     self,
@@ -327,6 +373,10 @@ class RecordingSession:
     correction_load_task = self._correction_load_task
     self._correction_load_task = None
     self._last_transcription_runs = []
+    self._loaded_corrections = {}
+    self._corrections_harvested = False
+    self._shaped_completed_runs = []
+    self._shaped_completed_source = []
 
     if cancel_correction_load and correction_load_task is not None:
       if not correction_load_task.done():

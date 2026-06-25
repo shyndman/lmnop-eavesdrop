@@ -107,7 +107,6 @@ class ActiveListenerService:
       rewrite_client=self.rewrite_client,
       history_store=self.history_store,
       dbus_service=self.dbus_service,
-      ingest_transcription_message=self._recording_session.ingest_transcription_message,
       current_llm_available=self.current_llm_available,
       current_llm_active=self.current_llm_active,
       current_disconnect_generation=self._current_disconnect_generation,
