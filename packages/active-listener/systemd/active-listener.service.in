@@ -8,7 +8,7 @@ StartLimitBurst=60
 [Service]
 Type=simple
 WorkingDirectory=@REPO_ROOT@
-ExecStart=/bin/bash -c 'set -e; ENV=$(timeout 2 cat @REPO_ROOT@/.env); set -a; eval "$ENV"; exec @ACTIVE_LISTENER_BIN@'
+ExecStart=/bin/bash -c 'set -e; ENV=$(timeout 2 cat @REPO_ROOT@/.env); set -a; eval "$ENV"; exec @UV_BIN@ run --project @REPO_ROOT@/packages/active-listener active-listener'
 Restart=on-failure
 RestartSec=30
 

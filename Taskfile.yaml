@@ -20,6 +20,7 @@ tasks:
       - uv sync --all-extras --all-groups --project packages/active-listener
       - |
         .venv/bin/python - <<'PY'
+        import shutil
         import sys
         from pathlib import Path
 
@@ -32,7 +33,7 @@ tasks:
         prompt_destination = Path.home() / ".config/eavesdrop/active-listener.rewrite.system.md"
 
         package_dir = repo_root / "packages/active-listener"
-        active_listener_bin = repo_root / ".venv/bin/active-listener"
+        uv_bin = shutil.which("uv")
         sys.path.insert(0, str(package_dir / "src"))
 
         from active_listener.config.loader import (
@@ -40,8 +41,8 @@ tasks:
           normalize_active_listener_config_paths,
         )
 
-        if not active_listener_bin.exists():
-          raise SystemExit(f"active-listener entrypoint not found at {active_listener_bin}")
+        if uv_bin is None:
+          raise SystemExit("uv not found on PATH; cannot build service unit")
 
         def write_normalized_config(*, source_config: Path, destination_config: Path) -> None:
           source_config_data = load_active_listener_config_file(source_config)
@@ -56,7 +57,7 @@ tasks:
 
         unit_text = unit_template.read_text()
         unit_text = unit_text.replace("@REPO_ROOT@", str(repo_root))
-        unit_text = unit_text.replace("@ACTIVE_LISTENER_BIN@", str(active_listener_bin))
+        unit_text = unit_text.replace("@UV_BIN@", uv_bin)
         unit_destination.parent.mkdir(parents=True, exist_ok=True)
         unit_destination.write_text(unit_text)
 
