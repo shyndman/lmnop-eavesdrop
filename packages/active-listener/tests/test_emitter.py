@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass, field
 from typing import override
 
+import pydotool
 import pytest
 from pydantic import ValidationError
 from sdbus import SdBusUnmappedMessageError
@@ -56,9 +57,7 @@ class RecordingBus:
 @dataclass
 class RecordingWindowsProxy:
   focused_window_payloads: list[str]
-  shortcut_results: list[bool] = field(default_factory=list)
   focused_window_calls: int = 0
-  shortcut_calls: list[tuple[int, str, str]] = field(default_factory=list)
 
   def get_focused_window_sync(self) -> str:
     self.focused_window_calls += 1
@@ -66,11 +65,23 @@ class RecordingWindowsProxy:
       return self.focused_window_payloads[0]
     return self.focused_window_payloads.pop(0)
 
-  def send_shortcut(self, winid: int, key: str, modifiers: str) -> bool:
-    self.shortcut_calls.append((winid, key, modifiers))
-    if self.shortcut_results:
-      return self.shortcut_results.pop(0)
-    return True
+
+@dataclass
+class RecordingYdotool:
+  init_calls: list[str] = field(default_factory=list)
+  key_combination_calls: list[list[int]] = field(default_factory=list)
+  fail_on_init: bool = False
+  fail_at_key_combination_call: int | None = None
+
+  def init(self, socket_path: str) -> None:
+    self.init_calls.append(socket_path)
+    if self.fail_on_init:
+      raise RuntimeError("ydotool unavailable")
+
+  def key_combination(self, keys: list[int]) -> None:
+    self.key_combination_calls.append(list(keys))
+    if self.fail_at_key_combination_call == len(self.key_combination_calls):
+      raise RuntimeError("key injection failed")
 
 
 @dataclass
@@ -136,10 +147,11 @@ def _install_proxies(
   bus: RecordingBus,
   windows: RecordingWindowsProxy,
   clipboard: RecordingClipboardProxy,
+  ydotool: RecordingYdotool | None = None,
   sleep_calls: list[float] | None = None,
-) -> None:
+) -> RecordingYdotool:
   def build_windows_proxy(
-    *, service_name: str, object_path: str, bus: object
+    *, service_name: str, object_path: str, bus: RecordingBus
   ) -> RecordingWindowsProxy:
     _ = service_name
     _ = object_path
@@ -147,7 +159,7 @@ def _install_proxies(
     return windows
 
   def build_clipboard_proxy(
-    *, service_name: str, object_path: str, bus: object
+    *, service_name: str, object_path: str, bus: RecordingBus
   ) -> RecordingClipboardProxy:
     _ = service_name
     _ = object_path
@@ -158,8 +170,15 @@ def _install_proxies(
     if sleep_calls is not None:
       sleep_calls.append(seconds)
 
+  recording_ydotool = ydotool or RecordingYdotool()
+  monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/test-id")
   monkeypatch.setattr("active_listener.infra.emitter.sd_bus_open_user", lambda: bus)
   monkeypatch.setattr("active_listener.infra.emitter.time.sleep", record_sleep)
+  monkeypatch.setattr("active_listener.infra.emitter.pydotool.init", recording_ydotool.init)
+  monkeypatch.setattr(
+    "active_listener.infra.emitter.pydotool.key_combination",
+    recording_ydotool.key_combination,
+  )
   monkeypatch.setattr(
     "active_listener.infra.emitter.WindowsExtensionInterface",
     build_windows_proxy,
@@ -168,6 +187,7 @@ def _install_proxies(
     "active_listener.infra.emitter.ClipboardExtensionInterface",
     build_clipboard_proxy,
   )
+  return recording_ydotool
 
 
 def test_emitter_initializes_once_without_validating_proxies(
@@ -176,7 +196,12 @@ def test_emitter_initializes_once_without_validating_proxies(
   bus = RecordingBus()
   windows = RecordingWindowsProxy([_focused_window_payload()])
   clipboard = RecordingClipboardProxy(current_content="seed")
-  _install_proxies(monkeypatch, bus=bus, windows=windows, clipboard=clipboard)
+  ydotool = _install_proxies(
+    monkeypatch,
+    bus=bus,
+    windows=windows,
+    clipboard=clipboard,
+  )
 
   emitter = GnomeShellExtensionTextEmitter()
   emitter.initialize()
@@ -185,13 +210,43 @@ def test_emitter_initializes_once_without_validating_proxies(
   assert windows.focused_window_calls == 0
   assert clipboard.get_current_content_calls == 0
   assert bus.close_calls == 0
+  assert ydotool.init_calls == ["/run/user/test-id/.ydotool_socket"]
+
+
+def test_emitter_closes_proxies_when_ydotool_initialization_fails(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  bus = RecordingBus()
+  windows = RecordingWindowsProxy([_focused_window_payload()])
+  clipboard = RecordingClipboardProxy()
+  ydotool = RecordingYdotool(fail_on_init=True)
+  _install_proxies(
+    monkeypatch,
+    bus=bus,
+    windows=windows,
+    clipboard=clipboard,
+    ydotool=ydotool,
+  )
+  emitter = GnomeShellExtensionTextEmitter()
+
+  with pytest.raises(RuntimeError, match="ydotool unavailable"):
+    emitter.initialize()
+
+  assert bus.close_calls == 1
+  with pytest.raises(RuntimeError, match="initialize"):
+    emitter.emit_text("hello")
 
 
 def test_emitter_uses_ctrl_shift_v_for_kitty(monkeypatch: pytest.MonkeyPatch) -> None:
   bus = RecordingBus()
   windows = RecordingWindowsProxy([_focused_window_payload(wm_class="kitty")])
   clipboard = RecordingClipboardProxy(current_content="seed")
-  _install_proxies(monkeypatch, bus=bus, windows=windows, clipboard=clipboard)
+  ydotool = _install_proxies(
+    monkeypatch,
+    bus=bus,
+    windows=windows,
+    clipboard=clipboard,
+  )
 
   emitter = GnomeShellExtensionTextEmitter()
   emitter.initialize()
@@ -199,14 +254,21 @@ def test_emitter_uses_ctrl_shift_v_for_kitty(monkeypatch: pytest.MonkeyPatch) ->
 
   assert clipboard.get_current_content_calls == 1
   assert clipboard.set_contents == ["hello", "seed"]
-  assert windows.shortcut_calls == [(42, "v", "CONTROL|SHIFT")]
+  assert ydotool.key_combination_calls == [
+    [pydotool.KEY_LEFTCTRL, pydotool.KEY_LEFTSHIFT, pydotool.KEY_V]
+  ]
 
 
 def test_emitter_uses_ctrl_v_for_non_kitty(monkeypatch: pytest.MonkeyPatch) -> None:
   bus = RecordingBus()
   windows = RecordingWindowsProxy([_focused_window_payload(window_id=77)])
   clipboard = RecordingClipboardProxy(current_content="seed")
-  _install_proxies(monkeypatch, bus=bus, windows=windows, clipboard=clipboard)
+  ydotool = _install_proxies(
+    monkeypatch,
+    bus=bus,
+    windows=windows,
+    clipboard=clipboard,
+  )
 
   emitter = GnomeShellExtensionTextEmitter()
   emitter.initialize()
@@ -214,7 +276,7 @@ def test_emitter_uses_ctrl_v_for_non_kitty(monkeypatch: pytest.MonkeyPatch) -> N
 
   assert clipboard.get_current_content_calls == 1
   assert clipboard.set_contents == ["hello", "seed"]
-  assert windows.shortcut_calls == [(77, "v", "CONTROL")]
+  assert ydotool.key_combination_calls == [[pydotool.KEY_LEFTCTRL, pydotool.KEY_V]]
 
 
 def test_emitter_snapshots_focused_window_once_per_emission(
@@ -228,7 +290,12 @@ def test_emitter_snapshots_focused_window_once_per_emission(
     ]
   )
   clipboard = RecordingClipboardProxy(current_content="seed")
-  _install_proxies(monkeypatch, bus=bus, windows=windows, clipboard=clipboard)
+  ydotool = _install_proxies(
+    monkeypatch,
+    bus=bus,
+    windows=windows,
+    clipboard=clipboard,
+  )
 
   emitter = GnomeShellExtensionTextEmitter()
   emitter.initialize()
@@ -238,9 +305,9 @@ def test_emitter_snapshots_focused_window_once_per_emission(
   assert clipboard.get_current_content_calls == 1
   assert [len(chunk) for chunk in clipboard.set_contents[:-1]] == [MAX_EMIT_CHUNK_LENGTH, 1]
   assert clipboard.set_contents[-1] == "seed"
-  assert windows.shortcut_calls == [
-    (99, "v", "CONTROL|SHIFT"),
-    (99, "v", "CONTROL|SHIFT"),
+  assert ydotool.key_combination_calls == [
+    [pydotool.KEY_LEFTCTRL, pydotool.KEY_LEFTSHIFT, pydotool.KEY_V],
+    [pydotool.KEY_LEFTCTRL, pydotool.KEY_LEFTSHIFT, pydotool.KEY_V],
   ]
 
 
@@ -249,7 +316,7 @@ def test_emitter_chunks_text_at_max_length(monkeypatch: pytest.MonkeyPatch) -> N
   windows = RecordingWindowsProxy([_focused_window_payload(), _focused_window_payload()])
   clipboard = RecordingClipboardProxy(current_content="seed")
   sleep_calls: list[float] = []
-  _install_proxies(
+  ydotool = _install_proxies(
     monkeypatch,
     bus=bus,
     windows=windows,
@@ -268,37 +335,47 @@ def test_emitter_chunks_text_at_max_length(monkeypatch: pytest.MonkeyPatch) -> N
   ]
   assert clipboard.set_contents[-1] == "seed"
   assert sleep_calls == [0.15, 0.15, 0.75]
+  assert len(ydotool.key_combination_calls) == 3
 
 
 def test_emitter_preserves_newlines_inside_chunk(monkeypatch: pytest.MonkeyPatch) -> None:
   bus = RecordingBus()
   windows = RecordingWindowsProxy([_focused_window_payload(), _focused_window_payload()])
   clipboard = RecordingClipboardProxy(current_content="seed")
-  _install_proxies(monkeypatch, bus=bus, windows=windows, clipboard=clipboard)
+  ydotool = _install_proxies(
+    monkeypatch,
+    bus=bus,
+    windows=windows,
+    clipboard=clipboard,
+  )
 
   emitter = GnomeShellExtensionTextEmitter()
   emitter.initialize()
   emitter.emit_text("hello\nworld")
 
   assert clipboard.set_contents == ["hello\nworld", "seed"]
-  assert windows.shortcut_calls == [(42, "v", "CONTROL")]
+  assert ydotool.key_combination_calls == [[pydotool.KEY_LEFTCTRL, pydotool.KEY_V]]
 
 
-def test_emitter_stops_after_send_shortcut_returns_false(
+def test_emitter_restores_clipboard_after_key_injection_failure(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
   bus = RecordingBus()
-  windows = RecordingWindowsProxy(
-    [_focused_window_payload(), _focused_window_payload()],
-    shortcut_results=[True, False],
-  )
+  windows = RecordingWindowsProxy([_focused_window_payload(), _focused_window_payload()])
   clipboard = RecordingClipboardProxy(current_content="seed")
-  _install_proxies(monkeypatch, bus=bus, windows=windows, clipboard=clipboard)
+  ydotool = RecordingYdotool(fail_at_key_combination_call=2)
+  _install_proxies(
+    monkeypatch,
+    bus=bus,
+    windows=windows,
+    clipboard=clipboard,
+    ydotool=ydotool,
+  )
 
   emitter = GnomeShellExtensionTextEmitter()
   emitter.initialize()
 
-  with pytest.raises(RuntimeError, match="failed to send paste shortcut"):
+  with pytest.raises(RuntimeError, match="key injection failed"):
     emitter.emit_text("a" * ((MAX_EMIT_CHUNK_LENGTH * 2) + 1))
 
   assert [len(chunk) for chunk in clipboard.set_contents[:-1]] == [
@@ -306,10 +383,7 @@ def test_emitter_stops_after_send_shortcut_returns_false(
     MAX_EMIT_CHUNK_LENGTH,
   ]
   assert clipboard.set_contents[-1] == "seed"
-  assert windows.shortcut_calls == [
-    (42, "v", "CONTROL"),
-    (42, "v", "CONTROL"),
-  ]
+  assert len(ydotool.key_combination_calls) == 2
 
 
 def test_emitter_rebinds_after_disconnected_bus_during_emit(
@@ -347,7 +421,7 @@ def test_emitter_rebinds_after_disconnected_bus_during_emit(
     return buses.pop(0)
 
   def build_windows_proxy(
-    *, service_name: str, object_path: str, bus: object
+    *, service_name: str, object_path: str, bus: RecordingBus
   ) -> RecordingWindowsProxy:
     _ = service_name
     _ = object_path
@@ -355,13 +429,20 @@ def test_emitter_rebinds_after_disconnected_bus_during_emit(
     return windows_proxies.pop(0)
 
   def build_clipboard_proxy(
-    *, service_name: str, object_path: str, bus: object
+    *, service_name: str, object_path: str, bus: RecordingBus
   ) -> RecordingClipboardProxy:
     _ = service_name
     _ = object_path
     _ = bus
     return clipboard_proxies.pop(0)
 
+  ydotool = RecordingYdotool()
+  monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/test-id")
+  monkeypatch.setattr("active_listener.infra.emitter.pydotool.init", ydotool.init)
+  monkeypatch.setattr(
+    "active_listener.infra.emitter.pydotool.key_combination",
+    ydotool.key_combination,
+  )
   monkeypatch.setattr("active_listener.infra.emitter.sd_bus_open_user", open_bus)
   monkeypatch.setattr(
     "active_listener.infra.emitter.WindowsExtensionInterface",
@@ -380,7 +461,7 @@ def test_emitter_rebinds_after_disconnected_bus_during_emit(
   assert second_bus.close_calls == 0
   assert second_clipboard.get_current_content_calls == 1
   assert second_clipboard.set_contents == ["hello", ""]
-  assert second_windows.shortcut_calls == [(77, "v", "CONTROL")]
+  assert ydotool.key_combination_calls == [[pydotool.KEY_LEFTCTRL, pydotool.KEY_V]]
 
 
 def test_emitter_restores_clipboard_after_chunk_write_failure(
@@ -389,7 +470,12 @@ def test_emitter_restores_clipboard_after_chunk_write_failure(
   bus = RecordingBus()
   windows = RecordingWindowsProxy([_focused_window_payload(), _focused_window_payload()])
   clipboard = RecordingClipboardProxy(current_content="seed", fail_at_set_content_call=2)
-  _install_proxies(monkeypatch, bus=bus, windows=windows, clipboard=clipboard)
+  ydotool = _install_proxies(
+    monkeypatch,
+    bus=bus,
+    windows=windows,
+    clipboard=clipboard,
+  )
 
   emitter = GnomeShellExtensionTextEmitter()
   emitter.initialize()
@@ -399,7 +485,7 @@ def test_emitter_restores_clipboard_after_chunk_write_failure(
 
   assert clipboard.get_current_content_calls == 1
   assert clipboard.set_contents == ["a" * MAX_EMIT_CHUNK_LENGTH, "seed"]
-  assert windows.shortcut_calls == [(42, "v", "CONTROL")]
+  assert ydotool.key_combination_calls == [[pydotool.KEY_LEFTCTRL, pydotool.KEY_V]]
 
 
 def test_emitter_logs_restore_failure_without_failing_successful_emit(
@@ -427,7 +513,12 @@ def test_emitter_aborts_when_clipboard_snapshot_fails(
   bus = RecordingBus()
   windows = RecordingWindowsProxy([_focused_window_payload()])
   clipboard = RecordingClipboardProxy(fail_on_get_current_content=True)
-  _install_proxies(monkeypatch, bus=bus, windows=windows, clipboard=clipboard)
+  ydotool = _install_proxies(
+    monkeypatch,
+    bus=bus,
+    windows=windows,
+    clipboard=clipboard,
+  )
 
   emitter = GnomeShellExtensionTextEmitter()
   emitter.initialize()
@@ -437,7 +528,7 @@ def test_emitter_aborts_when_clipboard_snapshot_fails(
 
   assert clipboard.get_current_content_calls == 1
   assert clipboard.set_contents == []
-  assert windows.shortcut_calls == []
+  assert ydotool.key_combination_calls == []
 
 
 def test_emitter_raises_for_invalid_focused_window_payload(

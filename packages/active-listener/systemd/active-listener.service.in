@@ -1,7 +1,8 @@
 [Unit]
 Description=Eavesdrop active-listener desktop dictation service
 PartOf=graphical-session.target
-After=graphical-session.target
+Wants=ydotoold.service
+After=graphical-session.target ydotoold.service
 StartLimitIntervalSec=1800
 StartLimitBurst=60
 

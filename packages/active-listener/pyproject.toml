@@ -18,6 +18,7 @@ dependencies = [
     "numpy<2",
     "pydantic>=2",
     "pydantic-ai-slim[google]>=1.87.0",
+    "python-ydotool>=1.1.1",
     "pyyaml>=6",
     "sanitary>=0.1.0",
     "sdbus>=0.12.0",

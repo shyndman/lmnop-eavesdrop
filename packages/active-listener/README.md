@@ -19,16 +19,22 @@ That task:
 - seeds `~/.config/eavesdrop/active-listener.yaml` from `packages/active-listener/config.yaml` when the XDG config file does not exist yet
 - rewrites relative paths in `~/.config/eavesdrop/active-listener.yaml` on install, including replacing a symlinked config with a normalized real file
 
-## Vicinae GNOME extension dependency
+## Desktop integration dependencies
 
-`active-listener` now pastes committed text through Vicinae's GNOME Shell extension D-Bus services. `ydotoold` is no longer part of the runtime path.
+`active-listener` stages committed text and reads focused-window metadata through
+Vicinae's GNOME Shell extension. The extension must export these session-bus
+methods under `org.gnome.Shell`:
 
-The extension must be installed and exporting these session-bus objects under `org.gnome.Shell`:
+- `/org/gnome/Shell/Extensions/Windows`: `GetFocusedWindowSync`
+- `/org/gnome/Shell/Extensions/Clipboard`: `GetCurrentContent` and `SetContent`
 
-- `/org/gnome/Shell/Extensions/Windows` (`org.gnome.Shell.Extensions.Windows`)
-- `/org/gnome/Shell/Extensions/Clipboard` (`org.gnome.Shell.Extensions.Clipboard`)
+Paste-key injection uses the existing `ydotoold.service`. Startup requires its
+socket at `${XDG_RUNTIME_DIR}/.ydotool_socket`, and the daemon requires usable
+`/dev/uinput` access. The active-listener user unit starts and orders itself
+after `ydotoold.service`.
 
-Reference implementation: <https://github.com/dagimg-dot/vicinae-gnome-extension>
+Vicinae reference implementation:
+<https://github.com/dagimg-dot/vicinae-gnome-extension>
 
 The canonical runtime paths are:
 

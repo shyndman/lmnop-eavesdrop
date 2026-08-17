@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import ClassVar, Protocol, TypeVar
+from typing import ClassVar, Protocol, TypeVar, cast
 
+import pydotool
 from pydantic import BaseModel, ConfigDict
 from sdbus import (
   DbusInterfaceCommon,
@@ -23,12 +25,16 @@ WINDOWS_OBJECT_PATH = "/org/gnome/Shell/Extensions/Windows"
 CLIPBOARD_OBJECT_PATH = "/org/gnome/Shell/Extensions/Clipboard"
 WINDOWS_DBUS_INTERFACE_NAME = "org.gnome.Shell.Extensions.Windows"
 CLIPBOARD_DBUS_INTERFACE_NAME = "org.gnome.Shell.Extensions.Clipboard"
-PASTE_KEY = "v"
-DEFAULT_PASTE_MODIFIERS = "CONTROL"
-KITTY_PASTE_MODIFIERS = "CONTROL|SHIFT"
+YDOTOOL_SOCKET_NAME = ".ydotool_socket"
 KITTY_WM_CLASS = "kitty"
+DEFAULT_PASTE_KEYS = [pydotool.KEY_LEFTCTRL, pydotool.KEY_V]
+KITTY_PASTE_KEYS = [
+  pydotool.KEY_LEFTCTRL,
+  pydotool.KEY_LEFTSHIFT,
+  pydotool.KEY_V,
+]
 MAX_EMIT_CHUNK_LENGTH = 500
-# Vicinae schedules the actual paste asynchronously after a 100 ms timeout.
+# Applications consume staged clipboard content asynchronously after key injection.
 INTER_CHUNK_DELAY_MS = 150
 CLIPBOARD_RESTORE_DELAY_MS = 750
 DISCONNECTED_BUS_ERROR_NAME = "System.Error.ENOTCONN"
@@ -77,13 +83,6 @@ class WindowsExtensionInterface(DbusInterfaceCommon, interface_name=WINDOWS_DBUS
   def get_focused_window_sync(self) -> str:
     raise NotImplementedError
 
-  @dbus_method("uss", method_name="SendShortcut")
-  def send_shortcut(self, winid: int, key: str, modifiers: str) -> bool:
-    _ = winid
-    _ = key
-    _ = modifiers
-    raise NotImplementedError
-
 
 class ClipboardExtensionInterface(
   DbusInterfaceCommon,
@@ -123,10 +122,10 @@ def _parse_focused_window(payload: str) -> FocusedWindow:
   return FocusedWindow.model_validate_json(payload, strict=True)
 
 
-def _select_paste_modifiers(wm_class: str) -> str:
+def _select_paste_keys(wm_class: str) -> list[int]:
   if wm_class == KITTY_WM_CLASS:
-    return KITTY_PASTE_MODIFIERS
-  return DEFAULT_PASTE_MODIFIERS
+    return KITTY_PASTE_KEYS
+  return DEFAULT_PASTE_KEYS
 
 
 def _is_disconnected_bus_error(exc: Exception) -> bool:
@@ -137,7 +136,7 @@ def _is_disconnected_bus_error(exc: Exception) -> bool:
 
 @dataclass
 class GnomeShellExtensionTextEmitter:
-  """Text emitter backed by Vicinae's GNOME Shell D-Bus extension."""
+  """Stage text through Vicinae's clipboard API and paste it through ydotool."""
 
   _initialized: bool = False
   _bus: SdBus | None = None
@@ -227,7 +226,7 @@ class GnomeShellExtensionTextEmitter:
     self,
     *,
     focused_window: FocusedWindow,
-    paste_modifiers: str,
+    paste_keys: list[int],
     chunks: tuple[str, ...],
   ) -> None:
     for chunk_index, chunk in enumerate(chunks, start=1):
@@ -258,37 +257,18 @@ class GnomeShellExtensionTextEmitter:
         "sending paste shortcut",
         chunk_index=chunk_index,
         window_id=focused_window.id,
-        key=PASTE_KEY,
-        modifiers=paste_modifiers,
+        key_codes=paste_keys,
       )
       try:
-        did_send = self._call_with_rebind(
-          operation="send_shortcut",
-          call=lambda: self._require_windows().send_shortcut(
-            focused_window.id,
-            PASTE_KEY,
-            paste_modifiers,
-          ),
-        )
+        pydotool.key_combination(paste_keys)
       except Exception:
         _logger.exception(
           "paste shortcut send failed",
           chunk_index=chunk_index,
           window_id=focused_window.id,
-          key=PASTE_KEY,
-          modifiers=paste_modifiers,
+          key_codes=paste_keys,
         )
         raise
-      _logger.debug(
-        "paste shortcut result",
-        chunk_index=chunk_index,
-        window_id=focused_window.id,
-        key=PASTE_KEY,
-        modifiers=paste_modifiers,
-        success=did_send,
-      )
-      if not did_send:
-        raise RuntimeError(f"failed to send paste shortcut to window {focused_window.id}")
       if chunk_index < len(chunks):
         _logger.debug(
           "waiting for pasted chunk to settle",
@@ -314,17 +294,31 @@ class GnomeShellExtensionTextEmitter:
     return call()
 
   def initialize(self) -> None:
-    """Initialize the GNOME Shell extension backend exactly once.
+    """Initialize the GNOME Shell and ydotool backends exactly once.
 
     :returns: None
     :rtype: None
+    :raises KeyError: If ``XDG_RUNTIME_DIR`` is absent.
     """
 
     if self._initialized:
       _logger.debug("emitter already initialized")
       return
 
+    socket_path = os.path.join(os.environ["XDG_RUNTIME_DIR"], YDOTOOL_SOCKET_NAME)
     self._bind_proxies()
+    try:
+      _logger.debug("initializing ydotool client", socket_path=socket_path)
+      # HACK: python-ydotool 1.1.1 documents and implements the socket-path
+      # argument, but its bundled py.typed declaration incorrectly exposes
+      # init as Callable[[], None]. Keep the cast at this package boundary
+      # until upstream's declaration matches the runtime API.
+      initialize_ydotool = cast(Callable[[str], None], pydotool.init)
+      initialize_ydotool(socket_path)
+    except Exception:
+      self._close_proxies()
+      _logger.exception("ydotool initialization failed", socket_path=socket_path)
+      raise
 
   def emit_text(self, text: str) -> None:
     """Emit finalized text through the GNOME Shell extension backend.
@@ -349,7 +343,7 @@ class GnomeShellExtensionTextEmitter:
       _logger.exception("focused window snapshot invalid")
       raise
 
-    paste_modifiers = _select_paste_modifiers(focused_window.wm_class)
+    paste_keys = _select_paste_keys(focused_window.wm_class)
     chunks = _chunk_text(text)
     _logger.debug(
       "focused window snapshot captured",
@@ -359,8 +353,7 @@ class GnomeShellExtensionTextEmitter:
     _logger.debug(
       "paste shortcut selected",
       window_id=focused_window.id,
-      key=PASTE_KEY,
-      modifiers=paste_modifiers,
+      key_codes=paste_keys,
     )
     _logger.debug(
       "text chunked for emission",
@@ -381,7 +374,7 @@ class GnomeShellExtensionTextEmitter:
     try:
       self._emit_chunks(
         focused_window=focused_window,
-        paste_modifiers=paste_modifiers,
+        paste_keys=paste_keys,
         chunks=chunks,
       )
       emission_succeeded = True
