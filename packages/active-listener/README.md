@@ -90,6 +90,9 @@ Prompt files are markdown content only. No hidden routing metadata or template r
 
 GNOME prefs still edits `~/.config/eavesdrop/active-listener.rewrite.system.md`. Active Listener reloads that override on every rewrite request, so prompt edits take effect on the next recording without restarting the service.
 
+The client protocol and event queue use the shared `LiveClientEvent` type.
+Active Listener ignores language detection events without changing the recording state.
+
 ## Uninstall the user service
 
 Run from the repo root:

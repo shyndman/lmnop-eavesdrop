@@ -1718,6 +1718,35 @@ async def test_language_detection_events_leave_idle_and_recording_state_unchange
 
 
 @pytest.mark.asyncio
+async def test_language_detection_keeps_recording_active_until_finish() -> None:
+  client = FakeClient(
+    flush_results=[
+      _message(
+        _segment(1, "alpha", completed=True),
+        _segment(2, "tail", completed=False),
+      )
+    ]
+  )
+  harness = _service(client=client)
+  service = harness.service
+
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
+  await service.handle_client_event(
+    LanguageDetectionEvent(stream="stream-1", language="en", probability=0.99)
+  )
+
+  assert service.phase is ForegroundPhase.RECORDING
+  assert client.stop_calls == 0
+  assert harness.dbus_service.signals == []
+
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
+  await service.wait_for_background_tasks()
+
+  assert service.phase is ForegroundPhase.IDLE
+  assert harness.emitter.emitted == ["alpha "]
+
+
+@pytest.mark.asyncio
 async def test_start_and_finish_publish_recording_and_idle_states() -> None:
   client = FakeClient(
     flush_results=[

@@ -143,7 +143,7 @@ class ActiveListenerClient(Protocol):
     ...
 
   def __aiter__(self) -> AsyncIterator[LiveClientEvent]:
-    """Iterate ordered client lifecycle events."""
+    """Iterate ordered live client events."""
     ...
 
 
