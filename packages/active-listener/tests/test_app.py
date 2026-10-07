@@ -3414,7 +3414,7 @@ async def test_finalize_recording_serializes_command_text_runs_for_rewrite(
 
 
 @pytest.mark.asyncio
-async def test_finalize_recording_drops_text_and_signals_pipeline_failure_when_rewrite_fails(
+async def test_finalize_recording_emits_shaped_text_and_signals_failure_when_rewrite_fails(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
   observed_updates: list[dict[str, object | None]] = []
@@ -3452,8 +3452,31 @@ async def test_finalize_recording_drops_text_and_signals_pipeline_failure_when_r
   client = FakeClient(
     flush_results=[
       _message(
-        _segment(1, "alpha", completed=True),
-        _segment(2, "tail", completed=False),
+        _segment(
+          1,
+          "release hashtag 42 thank you",
+          completed=True,
+          end=0.3,
+          words=[
+            _word("release", start=0.0, end=0.05),
+            _word("hashtag", start=0.05, end=0.1),
+            _word("42", start=0.1, end=0.15),
+            _word("thank", start=0.15, end=0.2),
+            _word("you", start=0.2, end=0.3),
+          ],
+        ),
+        _segment(
+          2,
+          "scratch that.",
+          completed=True,
+          start=0.3,
+          end=0.6,
+          words=[
+            _word("scratch", start=0.3, end=0.45),
+            _word("that.", start=0.45, end=0.6),
+          ],
+        ),
+        _segment(3, "", completed=False),
       )
     ]
   )
@@ -3473,10 +3496,19 @@ async def test_finalize_recording_drops_text_and_signals_pipeline_failure_when_r
   )
 
   _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  reducer_state = _recording_reducer_state(_recording_session(harness.service))
+  assert reducer_state is not None
+  reducer_state.closed_command_spans = [TimeSpan(start_s=0.3, end_s=0.6)]
   _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
   await harness.service.wait_for_background_tasks()
 
-  assert harness.emitter.emitted == []
+  assert harness.emitter.emitted == ["release#42 "]
+  record = harness.history_store.recordings[0].record
+  assert record.post_finalization_text == "release#42 "
+  assert record.llm_model is None
+  assert record.tokens_in is None
+  assert record.tokens_out is None
+  assert record.cost is None
   assert observed_updates == [
     {
       "input": None,
@@ -3596,7 +3628,7 @@ async def test_rewrite_logging_captures_prompt_failure(monkeypatch: pytest.Monke
   _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
   await harness.service.wait_for_background_tasks()
 
-  assert harness.emitter.emitted == []
+  assert harness.emitter.emitted == ["alpha "]
   assert harness.dbus_service.signals[-1] == (
     "PipelineFailed",
     ("rewrite_with_llm", "bad prompt"),
@@ -3668,7 +3700,7 @@ async def test_rewrite_logging_captures_timeout(monkeypatch: pytest.MonkeyPatch)
   _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
   await harness.service.wait_for_background_tasks()
 
-  assert harness.emitter.emitted == []
+  assert harness.emitter.emitted == ["alpha "]
   assert harness.dbus_service.signals[-1] == (
     "PipelineFailed",
     ("rewrite_with_llm", "timed out"),

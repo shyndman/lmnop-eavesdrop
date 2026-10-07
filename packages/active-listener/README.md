@@ -90,6 +90,10 @@ Prompt files are markdown content only. No hidden routing metadata or template r
 
 GNOME prefs still edits `~/.config/eavesdrop/active-listener.rewrite.system.md`. Active Listener reloads that override on every rewrite request, so prompt edits take effect on the next recording without restarting the service.
 
+If the rewrite fails, Active Listener emits the shaped transcript without command runs.
+It logs the error and sends `PipelineFailed`, which the GNOME extension uses to show a failure notification.
+The transcript history stores the emitted text without rewrite model, token, or cost metadata.
+
 The client protocol and event queue use the shared `LiveClientEvent` type.
 Active Listener ignores language detection events without changing the recording state.
 

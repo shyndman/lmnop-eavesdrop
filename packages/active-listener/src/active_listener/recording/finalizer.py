@@ -190,12 +190,10 @@ class RecordingFinalizer:
               reason=str(exc),
             )
             await self.dbus_service.pipeline_failed("rewrite_with_llm", str(exc))
-            return
+        if rewrite_result is not None:
           final_text = rewrite_result.text
         else:
-          # No LLM to consume the dictated command instructions, so each command run is
-          # dropped entirely rather than pasted literally into the editor. This path is pure
-          # and cannot fail, so it carries no failure signal.
+          # No successful rewrite can consume command instructions, so omit command runs.
           final_text = serialize_runs_without_commands(completed_runs)
         if not final_text.strip():
           self.logger.info("recording finalized without committed text", stream=message.stream)
