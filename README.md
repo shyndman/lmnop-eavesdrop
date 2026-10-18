@@ -1,6 +1,6 @@
 # Eavesdrop
 
-A real-time audio transcription system with WebSocket-based speech-to-text services using Whisper models. Designed for AMD ROCm GPU environments with support for both containerized and native deployments.
+A real-time English audio transcription system using NVIDIA Parakeet TDT 0.6B v2 through NeMo. Supports native CPU and containerized CPU/CUDA deployments, with an experimental AMD ROCm path.
 
 ## Architecture
 
@@ -30,12 +30,15 @@ For detailed architecture information, see [ARCHITECTURE.md](./ARCHITECTURE.md).
 ### Server
 
 ```bash
-cd packages/server
-uv sync
-cp config.sample.yaml config.yaml
-# Edit config.yaml for your needs (model, language, RTSP streams, etc.)
-uv run eavesdrop-server --config config.yaml
+# From the repository root; Python 3.12, FFmpeg, libsndfile, and SoX required.
+uv sync --package eavesdrop-server --extra transcription
+cp packages/server/config.sample.yaml packages/server/config.yaml
+# Set transcription.device to cpu to force CPU; auto also permits GPU use.
+uv run --package eavesdrop-server --extra transcription eavesdrop-server \
+  --config packages/server/config.yaml
 ```
+
+The checkpoint downloads on first use. See the [server guide](./packages/server/README.md) for system dependencies, device selection, model caching, and migration from the previous backend.
 
 ### Active Listener (Desktop Voice Input)
 
@@ -80,12 +83,10 @@ uv sync
 
 ### Core Transcription
 - **Real-time transcription** - Stream audio and get transcription results in real-time with configurable latency
-- **Multiple Whisper models** - Support for all standard Whisper models (tiny to large-v3, distil variants, turbo)
-- **Custom model support** - Load fine-tuned or custom Whisper models for specialized domains
-- **GPU acceleration** - CUDA/ROCm and CPU inference with automatic precision selection
-- **Voice Activity Detection** - Intelligent audio filtering with configurable VAD parameters
-- **Hotwords support** - Improve recognition accuracy for specific terms and domains
-- **Language support** - Configurable language settings for optimal transcription accuracy
+- **Parakeet TDT** - Fixed `nvidia/parakeet-tdt-0.6b-v2` checkpoint for English transcription
+- **Native word timestamps** - Word start/end boundaries remain on the original recording timeline
+- **Device selection** - CPU or NVIDIA CUDA; AMD ROCm is experimental and needs hardware validation
+- **Voice Activity Detection** - Standalone Silero VAD with configurable speech/silence thresholds
 
 ### Connectivity & Streaming
 - **WebSocket protocol** - Simple WebSocket-based API for easy integration
@@ -96,31 +97,24 @@ uv sync
 
 ### Applications
 - **Active Listener** - Desktop application for voice-to-text input using system audio capture and automatic typing
-- **Parallel processing** - Configurable worker count for improved throughput
 - **Automatic reconnection** - Robust connection handling for RTSP streams
 
 ## Development
 
-This is a monorepo using `uv` for dependency management. Each package has its own development environment:
+This is a `uv` workspace. Run development commands from the repository root:
 
 ```bash
-# Install all dependencies across packages
-cd packages/server && uv sync
-cd packages/client && uv sync
-cd packages/wire && uv sync
-cd packages/common && uv sync
-cd packages/active-listener && uv sync
+# Lightweight development and unit tests, without downloading the ASR runtime.
+uv sync --package eavesdrop-server
+uv run --package eavesdrop-server pytest packages/server/tests
+uvx ruff check
+uv run --package eavesdrop-server basedpyright
 
-# Code quality (run from each package directory)
-ruff check && ruff format
-basedpyright
-
-# Server host type checking needs the opt-in transcription dependency group.
-cd packages/server && uv run --group type_checkable basedpyright
-
-# Testing (where applicable)
-pytest
+# Opt into NeMo/Silero only when running the transcription runtime.
+uv sync --package eavesdrop-server --extra transcription
 ```
+
+Unit tests inject recognizer/VAD fakes; they do not download a checkpoint or establish real-model accuracy or GPU performance. Use the server guide's audio smoke check for runtime validation.
 
 ### Development Tools
 
@@ -133,12 +127,16 @@ pytest
 ## Docker
 
 ```bash
-# Build with GPU support
-docker build --build-arg GFX_ARCH=gfx1030 -f docker/Dockerfile .
+# CPU is the default. Run from the repository root.
+task build-server-image
+task run-server-image
 
-# Run with GPU access
-docker run --device /dev/kfd --device /dev/dri --publish 9090:9090 eavesdrop
+# Select the accelerator explicitly for GPU builds/runs.
+task run-server-image ACCELERATOR=cuda
+task run-server-image ACCELERATOR=rocm  # experimental
 ```
+
+See [server Docker instructions](./packages/server/README.md#docker-builds) for prerequisites, cache volumes, and verification limits.
 
 ## License
 

@@ -1,52 +1,36 @@
-ARG BASE_IMAGE=eavesdrop-rocm-base
+# syntax=docker/dockerfile:1
+ARG BASE_IMAGE=eavesdrop-cpu-base
 FROM $BASE_IMAGE
 
-SHELL ["/bin/bash", "-lc"]
+SHELL ["/bin/bash", "-c"]
+ENV ORT_DISABLE_TELEMETRY=1 \
+    HF_HUB_DISABLE_TELEMETRY=1 \
+    UV_COMPILE_BYTECODE=1 \
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
+    VIRTUAL_ENV=/opt/venv \
+    HF_HOME=/root/.cache/eavesdrop/huggingface \
+    NEMO_CACHE_DIR=/root/.cache/eavesdrop/nemo
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
-ENV UV_COMPILE_BYTECODE=1
+WORKDIR /app
+# Keep the workspace layout and authoritative root lockfile intact. The other
+# manifests are needed to validate the lock; their packages are not installed.
+COPY pyproject.toml uv.lock ./
+COPY packages/active-listener/pyproject.toml ./packages/active-listener/pyproject.toml
+COPY packages/client/pyproject.toml ./packages/client/pyproject.toml
+COPY packages/common/pyproject.toml ./packages/common/pyproject.toml
+COPY packages/server/pyproject.toml ./packages/server/pyproject.toml
+COPY packages/wire/pyproject.toml ./packages/wire/pyproject.toml
+COPY packages/common/src/ ./packages/common/src/
+COPY packages/wire/src/ ./packages/wire/src/
+COPY packages/server/src/ ./packages/server/src/
+COPY packages/server/docker/install-runtime.sh /app/install-runtime.sh
 
-# Install uv
-COPY --from=ghcr.io/astral-sh/uv:0.8.13 /uv /uvx /bin/
-
-RUN mkdir -p /app/{wire,server}
-
-# Copy the wire and common projects
-WORKDIR /app/wire
-COPY ./wire/pyproject.toml ./pyproject.toml
-COPY ./wire/src/ ./src
-WORKDIR /app/common
-COPY ./common/pyproject.toml ./pyproject.toml
-COPY ./common/src/ ./src
-
-# Copy and build the eavesdrop-server project
-WORKDIR /app/server
-COPY server/pyproject.toml ./pyproject.toml
-COPY server/uv.lock ./uv.lock
-COPY server/src/ ./src
-RUN python - <<'PY'
-from pathlib import Path
-
-path = Path("pyproject.toml")
-content = path.read_text()
-replacements = {
-  'eavesdrop-wire = { workspace = true }': 'eavesdrop-wire = { path = "../wire", editable = true }',
-  'eavesdrop-common = { workspace = true }': 'eavesdrop-common = { path = "../common", editable = true }',
-}
-
-for old, new in replacements.items():
-  if old not in content:
-    raise SystemExit(f"Missing expected source entry: {old}")
-  content = content.replace(old, new)
-
-path.write_text(content)
-PY
-# The ROCm base image already provides the runtime Python environment in /opt/venv.
-# Sync into that active environment so the app sees the preinstalled GPU stack.
-# Keep the base image packages in place: torch/ctranslate2 are installed there, not in pyproject.toml.
+# --inexact alone does not protect a GPU wheel from replacement by a locked CPU
+# wheel. Explicitly exclude the base's vendor packages from the synchronization.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    /bin/uv sync --locked --active --inexact
+    bash /app/install-runtime.sh
 
-COPY server/docker/entrypoint.sh ./entrypoint.sh
-
-ENTRYPOINT ["./entrypoint.sh"]
+COPY --chmod=755 packages/server/docker/entrypoint.sh /app/entrypoint.sh
+ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["-m", "eavesdrop.server"]

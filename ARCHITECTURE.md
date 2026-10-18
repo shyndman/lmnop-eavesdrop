@@ -24,10 +24,10 @@ graph TD
         subgraph "Core Transcription Pipeline"
             StreamingProcessor[StreamingTranscriptionProcessor]
             AudioBuffer[AudioStreamBuffer]
-            WhisperModel[WhisperModel]
+            ParakeetTranscriber[ParakeetTranscriber]
 
             StreamingProcessor -- Manages --> AudioBuffer
-            StreamingProcessor -- Uses --> WhisperModel
+            StreamingProcessor -- Uses --> ParakeetTranscriber
         end
 
         subgraph "Protocol Adapters"
@@ -68,7 +68,7 @@ graph TD
 
     style StreamingProcessor fill:#9ccfd8,stroke:#e0def4,stroke-width:2px,color:#191724
     style AudioBuffer fill:#9ccfd8,stroke:#e0def4,stroke-width:2px,color:#191724
-    style WhisperModel fill:#9ccfd8,stroke:#e0def4,stroke-width:2px,color:#191724
+    style ParakeetTranscriber fill:#9ccfd8,stroke:#e0def4,stroke-width:2px,color:#191724
 
     style AudioSource fill:#c4a7e7,stroke:#e0def4,stroke-width:2px,color:#191724
     style TranscriptionSink fill:#c4a7e7,stroke:#e0def4,stroke-width:2px,color:#191724
@@ -81,10 +81,20 @@ graph TD
 
 -   **TranscriptionServer (`server.py`):** The main application class. It initializes and manages all other components, including the WebSocket server and the RTSP client manager. It acts as the entry point for handling new client connections.
 -   **WebSocketServer (`websocket.py`):** A robust wrapper around the `websockets` library that handles incoming WebSocket connections and passes them to the `TranscriptionServer` for processing.
--   **StreamingTranscriptionProcessor (`streaming/processor.py`):** The heart of the transcription engine. It orchestrates the process of taking audio from an `AudioStreamBuffer`, running it through the `WhisperModel`, and sending the results to a `TranscriptionSink`. It is designed to be completely independent of the audio source or result destination.
+-   **StreamingTranscriptionProcessor (`streaming/processor.py`):** The heart of the transcription engine. It orchestrates the process of taking audio from an `AudioStreamBuffer`, running it through the `ParakeetTranscriber`, and sending the results to a `TranscriptionSink`. It is designed to be completely independent of the audio source or result destination.
 -   **AudioStreamBuffer (`streaming/buffer.py`):** A thread-safe buffer that manages incoming audio frames. It handles memory management, cleanup of old audio, and provides chunks of audio to the `StreamingTranscriptionProcessor`.
--   **WhisperModel (`transcription/pipeline.py`):** A wrapper around the `faster-whisper` library. It loads the ML model and exposes the `transcribe` method. It is used by the `StreamingTranscriptionProcessor`.
+-   **ParakeetTranscriber (`transcription/parakeet.py`):** Loads the fixed `nvidia/parakeet-tdt-0.6b-v2` checkpoint through NeMo and exposes `transcribe`. It serializes access to the shared model, runs optional standalone Silero VAD, and converts native word/segment timings into the recording timeline. Model dependencies are loaded lazily so ordinary unit tests remain lightweight.
 -   **Configuration (`config.py`):** A set of Pydantic models (`EavesdropConfig`, `TranscriptionConfig`, `RTSPConfig`) that load and validate the server's configuration from a YAML file. This provides strongly-typed and validated access to all settings.
+
+### Recognition Runtime and Timing Contract
+
+The recognizer is NVIDIA's English-only Parakeet TDT 0.6B v2, loaded by NeMo. The optional `transcription` extra supplies NeMo, PyTorch/torchaudio, and standalone Silero VAD. Translation, alternate checkpoints, prompts, hotwords, and the previous backend's decoding controls are not part of the server or client contract.
+
+`transcription.device` is `auto`, `cpu`, or `cuda`, with a zero-based `device_index`. PyTorch's CUDA-compatible API also addresses ROCm GPUs. The adapter disables NeMo's optional CUDA graph decoder before constructing the model so that it does not probe the NVIDIA driver on CPU/ROCm paths. The ROCm container keeps AMD's vendor PyTorch stack, but remains experimental until actual inference is validated on the target hardware.
+
+Silero VAD supplies speech intervals as sample offsets into the unfiltered input chunk. Each speech span is transcribed independently. NeMo supplies native word start/end times, and the adapter adds the span's original offset and the stream chunk's absolute offset once. Silent gaps are therefore preserved rather than compressing the recording timeline. Recognized text without valid native word timings fails rather than inventing proportional word durations. Segment completion and buffer advancement continue to use these recording-relative boundaries. Setting `word_timestamps: false` suppresses client word details without changing internal timing behavior.
+
+The final Docker image uses the repository-root workspace lockfile and `/opt/venv` for all accelerator variants. Runtime installation explicitly preserves each base image's matching Torch/audio/vision and vendor libraries. CPU is the default build target, CUDA is selectable, and ROCm is an experimental selectable target. See the [server guide](./packages/server/README.md) for setup and verification.
 
 ## The Core Abstraction: A Pluggable Pipeline
 
@@ -288,7 +298,7 @@ graph TD
 
 ### Similarities
 
--   **Core Engine**: Both pathways use the exact same `StreamingTranscriptionProcessor` and `WhisperModel` for transcription.
+-   **Core Engine**: Both pathways use the exact same `StreamingTranscriptionProcessor` and `ParakeetTranscriber` for transcription.
 -   **Audio Buffering**: Both use `AudioStreamBuffer` to manage the audio being fed to the processor.
 -   **Configuration**: Both start from the same `TranscriptionConfig`, although WebSocket clients can provide per-session overrides.
 
@@ -318,7 +328,7 @@ graph TD
     subgraph "Audio Processing"
         AudioChunk[Audio Chunk 2s intervals]
         VADAnalysis[VAD Analysis]
-        WhisperTranscribe[Whisper Transcription]
+        ParakeetTranscribe[Parakeet Transcription]
     end
     
     subgraph "Segment Completion Logic"  
@@ -339,8 +349,8 @@ graph TD
     end
     
     AudioChunk --> VADAnalysis
-    VADAnalysis --> WhisperTranscribe
-    WhisperTranscribe --> ExplicitRule
+    VADAnalysis --> ParakeetTranscribe
+    ParakeetTranscribe --> ExplicitRule
     ExplicitRule --> SilenceAnalysis
     SilenceAnalysis --> CompletionDecision
     CompletionDecision --> BufferAdvancement
@@ -352,7 +362,7 @@ graph TD
     %% Rose Pine color scheme
     style AudioChunk fill:#f6c177,stroke:#e0def4,stroke-width:2px,color:#191724
     style VADAnalysis fill:#ebbcba,stroke:#e0def4,stroke-width:2px,color:#191724
-    style WhisperTranscribe fill:#ebbcba,stroke:#e0def4,stroke-width:2px,color:#191724
+    style ParakeetTranscribe fill:#ebbcba,stroke:#e0def4,stroke-width:2px,color:#191724
     style ExplicitRule fill:#9ccfd8,stroke:#e0def4,stroke-width:2px,color:#191724
     style SilenceAnalysis fill:#9ccfd8,stroke:#e0def4,stroke-width:2px,color:#191724
     style CompletionDecision fill:#9ccfd8,stroke:#e0def4,stroke-width:2px,color:#191724
@@ -405,7 +415,7 @@ The algorithm includes comprehensive tracing at six key points:
 
 1. **Audio Chunk Processing**: Buffer status, timestamp ranges
 2. **VAD Analysis**: Speech/silence timeline with visual representation (`S` = speech, `~` = silence)
-3. **Whisper Output**: Raw segments with IDs, text, timing, probabilities
+3. **Parakeet Output**: Native word/segment boundaries, text, and recording-relative times
 4. **Completion Decisions**: Why segments were marked complete (positional vs silence analysis)
 5. **Buffer Advancement**: How far the processed boundary moved and why
 6. **Client Output**: Final segment list with completed/incomplete/synthetic flags

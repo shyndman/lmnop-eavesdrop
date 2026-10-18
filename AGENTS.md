@@ -4,11 +4,11 @@ The rules in @CODE_STYLE.md are an imperative. Failure to follow them will repre
 
 ## Project Overview
 
-Eavesdrop is a real-time audio transcription system using Whisper models. Monorepo with six packages:
+Eavesdrop is a real-time audio transcription system using NVIDIA Parakeet TDT 0.6B v2 through NeMo. Monorepo with six packages:
 
 | Package | Description |
 |---------|-------------|
-| `server` | Core transcription server (WebSocket, RTSP, Whisper integration) |
+| `server` | Core transcription server (WebSocket, RTSP, Parakeet integration) |
 | `client` | Python client library for streaming transcription |
 | `wire` | Shared Pydantic message types and protocol definitions |
 | `common` | Shared Python utilities and data structures |
@@ -21,7 +21,7 @@ Use package-level README files and package configuration for detailed architectu
 
 - **NEVER use `Any` type** — all code must be fully typed
 - Use `str | None` not `Optional[str]`
-- Handle `Iterable` to `list` conversions explicitly (critical for Whisper results)
+- Keep native word start/end times on the original audio timeline, including across VAD gaps
 
 ## Documentation
 
@@ -78,7 +78,7 @@ Silence-based segment completion:
 # Type checking
 task typecheck
 
-# packages/server on a host machine needs its opt-in transcription deps
+# Optional runtime type check with NeMo/Silero dependencies
 task typecheck-server
 
 # GNOME extension build and install
@@ -89,3 +89,13 @@ uv run ruff check
 ```
 
 Check package configuration for test commands — don't assume.
+
+## Transcription Runtime
+
+- Fixed English-only model: `nvidia/parakeet-tdt-0.6b-v2`; no translation, prompts, hotwords, or alternate checkpoints
+- Heavy dependencies are opt-in: `uv sync --package eavesdrop-server --extra transcription`
+- Keep normal unit tests independent of NeMo, model downloads, and GPU availability
+- Docker build context is the repository root; use its `uv.lock`, not package-local historical locks
+- All image variants use `/opt/venv`; protect vendor Torch/audio/vision and GPU libraries during dependency synchronization
+- `task build-server-image` defaults to CPU; set `ACCELERATOR=cuda` or `ACCELERATOR=rocm` explicitly
+- ROCm is experimental; never treat import/unit checks as real GPU inference validation

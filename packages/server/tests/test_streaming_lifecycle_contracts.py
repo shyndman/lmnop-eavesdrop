@@ -54,6 +54,7 @@ from eavesdrop.wire import (
   RecordingStartedMessage,
   Segment,
   TranscriptionSetupMessage,
+  TranscriptionSourceMode,
   UserTranscriptionOptions,
   UtteranceCancelledMessage,
   deserialize_message,
@@ -237,6 +238,7 @@ def _build_client(*, processor: object, audio_source: object) -> WebSocketStream
   client = WebSocketStreamingClient.__new__(WebSocketStreamingClient)
   client.websocket = MagicMock()
   client.stream_name = "stream-1"
+  client.source_mode = TranscriptionSourceMode.LIVE
   client.logger = MagicMock()
   client.session = MagicMock()
   client.buffer = MagicMock()

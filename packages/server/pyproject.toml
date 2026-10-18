@@ -29,6 +29,15 @@ repository = "https://github.com/shyndman/eavesdrop"
 eavesdrop-server = "eavesdrop.server.__main__:main"
 eavesdrop-debug-vad = "eavesdrop.server.debug_vad:main"
 
+[project.optional-dependencies]
+transcription = [
+    "nemo-toolkit[asr]==2.7.3",
+    "pyarrow<26",
+    "silero-vad[onnx-cpu]>=6.2,<7",
+    "torch==2.9.1",
+    "torchaudio==2.9.1",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -90,6 +99,8 @@ indent-style = "space"
 line-ending = "auto"
 
 [tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+torchaudio = { index = "pytorch-cpu" }
 eavesdrop-wire = { workspace = true }
 eavesdrop-common = { workspace = true }
 
@@ -97,3 +108,8 @@ eavesdrop-common = { workspace = true }
 name = "pypi"
 url = "https://pypi.org/simple"
 default = true
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
