@@ -78,6 +78,7 @@ class TranscriptionServer:
 
     # Create configuration for the streaming client with client overrides
     transcription_config = TranscriptionConfig.model_validate(
+      self.transcription_config.model_dump() | client_overrides
     )
 
     # Log the effective transcription configuration

@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import TypedDict
+from typing import ClassVar, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -20,7 +20,7 @@ class SpeechChunk(TypedDict):
 class VadParameters(BaseModel):
   """Repo-owned VAD configuration kept import-light for config and tests."""
 
-  model_config = ConfigDict(extra="forbid")
+  model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
 
   threshold: float = Field(default=0.5, ge=0.0, le=1.0)
   neg_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
@@ -35,7 +35,6 @@ class TranscriptionInfo:
   """Chunk metadata; speech boundaries are original chunk sample offsets."""
 
   language: str = "en"
-  language_probability: float = 1.0
   duration: float = 0.0
   duration_after_vad: float = 0.0
   speech_chunks: list[SpeechChunk] = field(default_factory=list)

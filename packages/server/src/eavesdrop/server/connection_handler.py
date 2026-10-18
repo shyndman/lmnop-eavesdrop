@@ -68,6 +68,7 @@ PRE_SETUP_UTTERANCE_CANCEL_REJECTION = (
   "live transcriber setup completes"
 )
 
+
 class WebSocketConnectionHandler:
   """
   Routes WebSocket connections based on client type header.
@@ -150,6 +151,10 @@ class WebSocketConnectionHandler:
           return None
 
         return None
+
+    except ValueError as error:
+      await self._send_error_and_close(websocket, f"Setup rejected: {error}")
+      return None
 
     except ConnectionClosed:
       self._logger.info("handle_connection: Connection closed by client")

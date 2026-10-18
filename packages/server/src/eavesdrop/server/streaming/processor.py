@@ -9,7 +9,8 @@ import time
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import TypedDict, cast
+from threading import Lock
+from typing import TypedDict
 
 import numpy as np
 from numpy.typing import NDArray
@@ -17,6 +18,7 @@ from structlog.stdlib import BoundLogger
 
 from eavesdrop.common import Pretty, Range, Seconds, get_logger
 from eavesdrop.server.config import TranscriptionConfig
+from eavesdrop.server.constants import SINGLE_MODEL
 from eavesdrop.server.streaming.buffer import AudioStreamBuffer
 from eavesdrop.server.streaming.debug_capture import AudioDebugCapture
 from eavesdrop.server.streaming.flush_state import LiveSessionFlushState, PendingFlush
@@ -26,12 +28,15 @@ from eavesdrop.server.transcription.models import (
   TranscriptionInfo,
   VadParameters,
 )
+from eavesdrop.server.transcription.parakeet import ParakeetTranscriber
 from eavesdrop.server.transcription.session import TranscriptionSession
 from eavesdrop.wire import Segment
 
 tracing_logger = get_logger("tracing")
 
 Float32Audio = NDArray[np.float32]
+
+
 class ClientSegmentDict(TypedDict):
   id: str
   start: str
@@ -104,7 +109,8 @@ class StreamingTranscriptionProcessor:
   """
 
   # Class variable for single model mode
-  SINGLE_MODEL: object | None = None
+  _models: dict[tuple[str, str, int, bool], ParakeetTranscriber] = {}
+  _model_lock: Lock = Lock()
 
   def __init__(
     self,
@@ -131,10 +137,8 @@ class StreamingTranscriptionProcessor:
     self.text: list[str] = []
     self.recording_id: str | None = None
 
-    # Segment processing state - repetition logic removed
-
     # Model attributes
-    self.transcriber: object | None = None
+    self.transcriber: ParakeetTranscriber | None = None
     self.vad_parameters: VadParameters = config.vad_parameters
 
     # Initialize debug capture if configured
@@ -147,8 +151,23 @@ class StreamingTranscriptionProcessor:
       )
 
   async def initialize(self) -> None:
-    """Initialize the replacement transcription backend."""
-    raise NotImplementedError("Transcription backend removed; replacement follows separately")
+    """Initialize the Parakeet model off the event loop and announce readiness."""
+    try:
+      self.transcriber = await asyncio.to_thread(self._load_model)
+    except Exception:
+      self.logger.exception("Failed to load Parakeet")
+      await self.sink.send_error("Failed to load Parakeet TDT v2")
+      raise
+    await self.sink.send_server_ready("parakeet_tdt")
+
+  def _load_model(self) -> ParakeetTranscriber:
+    if not SINGLE_MODEL:
+      return ParakeetTranscriber.load(self.config)
+    key = (self.config.model, self.config.device, self.config.device_index, self.config.use_vad)
+    with self._model_lock:
+      if key not in self._models:
+        self._models[key] = ParakeetTranscriber.load(self.config)
+      return self._models[key]
 
   async def start_processing(self) -> None:
     """Start the transcription processing loop."""
@@ -349,9 +368,10 @@ class StreamingTranscriptionProcessor:
     flush_boundary_reached = pending_flush is not None and self._covers_flush_boundary(
       result, pending_flush
     )
-
-    if self.language is None and result.info is not None:
-      await self._set_language(result.info)
+    result_end_sample = result.chunk_start_sample + result.chunk_sample_count
+    source_end_reached = (
+      self._source_exhausted and result_end_sample >= self.buffer.get_buffer_end_sample()
+    )
 
     await self._handle_transcription_output(
       result.segments or [],
@@ -359,10 +379,15 @@ class StreamingTranscriptionProcessor:
       result.speech_chunks,
       emit_result=pending_flush is None or flush_boundary_reached,
       flush_complete=flush_boundary_reached,
-      force_complete=bool(
-        flush_boundary_reached and pending_flush and pending_flush.force_complete
-      ),
+      force_complete=source_end_reached
+      or bool(flush_boundary_reached and pending_flush and pending_flush.force_complete),
     )
+
+    if source_end_reached:
+      # A finite file need not end with enough silence to complete its final
+      # sentence. Once this snapshot covers EOF, finalize it and drain the tail
+      # instead of repeatedly decoding the same unfinished sentence forever.
+      _ = self.buffer.discard_through_sample(result_end_sample)
 
     if flush_boundary_reached:
       self._discard_flushed_audio(pending_flush)
@@ -531,21 +556,76 @@ class StreamingTranscriptionProcessor:
 
     self.session.update_recording_context(self.recording_id)
 
-    raise NotImplementedError("Transcription backend removed; replacement follows separately")
-  async def _set_language(self, info: TranscriptionInfo) -> None:
-    """Update language based on detection info."""
+    result, info = self.transcriber.transcribe(
+      chunk.data, config=self.config, absolute_stream_start=chunk.start_time, session=self.session
+    )
     self.logger.debug(
-      "Language detection info",
-      language=info.language,
+      "Returned from transcriber.transcribe",
+      info_present=True,
+      speech_chunk_count=len(info.speech_chunks) if info.speech_chunks else 0,
+    )
+    result_list = list(result) if result else None
+    self.logger.debug(
+      "Materialized transcriber result",
+      segment_count=len(result_list) if result_list else 0,
     )
 
-    if info.language_probability > 0.5:
-      self.language = info.language
-      self.logger.info(
-        "Detected language",
-        language=self.language,
+    # Store VAD speech chunks for silence analysis
+    speech_chunks = info.speech_chunks
+
+    # TRACING: Audio characteristics analysis
+    sample_rate = 16000  # Required sample rate
+    rms = np.sqrt(np.mean(chunk.data**2)) if len(chunk.data) > 0 else 0.0
+    peak = np.max(np.abs(chunk.data)) if len(chunk.data) > 0 else 0.0
+    zero_crossings = np.sum(np.diff(np.signbit(chunk.data))) if len(chunk.data) > 1 else 0
+    zcr = zero_crossings / len(chunk.data) * sample_rate if len(chunk.data) > 0 else 0
+
+    # TRACING: VAD speech detection results
+    if speech_chunks:
+      speech_ranges = [
+        f"{chunk['start'] / sample_rate:.2f}-{chunk['end'] / sample_rate:.2f}s"
+        for chunk in speech_chunks
+      ]
+      total_speech_duration = sum(
+        (chunk["end"] - chunk["start"]) / sample_rate for chunk in speech_chunks
       )
-      await self.sink.send_language_detection(info.language, info.language_probability)
+
+      # Build timeline showing speech vs silence (S=speech, ~=silence)
+      timeline = ["~"] * int(chunk.duration * 10)  # 100ms resolution
+      for speech_chunk in speech_chunks:
+        start_idx = int((speech_chunk["start"] / sample_rate) * 10)
+        end_idx = int((speech_chunk["end"] / sample_rate) * 10)
+        for i in range(start_idx, min(end_idx, len(timeline))):
+          timeline[i] = "S"
+      timeline_str = "".join(timeline)
+
+      tracing_logger.info(
+        "VAD analysis",
+        speech_ranges=speech_ranges,
+        speech_duration=f"{total_speech_duration:.2f}s",
+        silence_duration=f"{chunk.duration - total_speech_duration:.2f}s",
+        audio_duration=f"{chunk.duration:.2f}s",
+        speech_ratio=f"{total_speech_duration / chunk.duration:.1%}",
+        timeline=timeline_str,
+        audio_rms=f"{rms:.6f}",
+        audio_peak=f"{peak:.6f}",
+        audio_zcr=f"{zcr:.1f}",
+      )
+    else:
+      tracing_logger.info(
+        "VAD analysis",
+        speech_ranges=[],
+        speech_duration="0.00s",
+        silence_duration=f"{chunk.duration:.2f}s",
+        audio_duration=f"{chunk.duration:.2f}s",
+        speech_ratio="0.0%",
+        timeline="~" * int(chunk.duration * 10),
+        audio_rms=f"{rms:.6f}",
+        audio_peak=f"{peak:.6f}",
+        audio_zcr=f"{zcr:.1f}",
+      )
+
+    return result_list, info, speech_chunks
 
   async def _handle_transcription_output(
     self,
@@ -589,7 +669,7 @@ class StreamingTranscriptionProcessor:
       )
 
     self.logger.debug("Processing transcription segments")
-    # Update internal transcript (for translation queue, etc.)
+    # Update the internal transcript.
     self._update_segments(result, duration)
 
     # Apply explicit completion rule: all but last segment are completed
@@ -647,7 +727,7 @@ class StreamingTranscriptionProcessor:
       current_incomplete_segment = None
 
       tracing_logger.info(
-        "Forced completion of tentative tail for flush",
+        "Forced completion of tentative tail at explicit boundary",
         flush_complete=flush_complete,
       )
 
@@ -717,7 +797,7 @@ class StreamingTranscriptionProcessor:
 
   def _update_segments(self, segments: list[Segment], _duration: float) -> None:
     """Process segments and update transcript."""
-    # Update internal transcript for translation queue
+    # Update the internal transcript.
     for segment in segments:
       if segment.completed and segment.text.strip():
         self.text.append(segment.text)

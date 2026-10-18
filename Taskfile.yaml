@@ -1,8 +1,7 @@
 version: '3'
 
 vars:
-  DEFAULT_GFX_ARCH: '{{default "gfx1030;gfx1100;gfx1103" .GFX_ARCH}}'
-  DEFAULT_HSA_OVERRIDE_GFX_VERSION: '{{default "11.0.0" .HSA_OVERRIDE_GFX_VERSION}}'
+  DEFAULT_ACCELERATOR: '{{default "cpu" .ACCELERATOR}}'
 
 tasks:
   run-active-listener:
@@ -202,25 +201,13 @@ tasks:
       port: '{{default "9090" .port}}'
       audio_device: '{{default "default" .audio_device}}'
     cmds:
-      - uv run python examples/simple_transcriber.py --server "{{.host}}:{{.port}}" --audio-device "{{.audio_device}}" --model "distil-small.en" {{.CLI_ARGS}}
-
-  run-translator-client:
-    desc: Stream audio to the server and print English translations
-    deps: [prepare-client-lib]
-    dir: packages/client
-    vars:
-      host: '{{default "localhost" .host}}'
-      port: '{{default "9090" .port}}'
-      audio_device: '{{default "default" .audio_device}}'
-      model: '{{default "large-v3" .model}}'
-    cmds:
-      - uv run python examples/simple_translator.py --server "{{.host}}:{{.port}}" --audio-device "{{.audio_device}}" --model "{{.model}}" {{.CLI_ARGS}}
+      - uv run python examples/simple_transcriber.py --server "{{.host}}:{{.port}}" --audio-device "{{.audio_device}}" {{.CLI_ARGS}}
 
   prepare-server:
-    desc: Install server dependencies
-    dir: packages/server
+    desc: Install the server and opt-in Parakeet transcription dependencies
+    dir: .
     cmds:
-      - uv sync --all-extras --all-groups
+      - uv sync --package eavesdrop-server --extra transcription
 
   typecheck:
     desc: Run the workspace type checker
@@ -229,10 +216,10 @@ tasks:
       - uv run basedpyright
 
   typecheck-server:
-    desc: Run the server type checker with host-only transcription deps
+    desc: Run the server type checker with optional transcription dependencies
     dir: packages/server
     cmds:
-      - uv run --group type_checkable basedpyright
+      - uv run --extra transcription basedpyright
 
   list-gpus:
     desc: Print GPU names as reported by PyTorch on the current machine
@@ -245,105 +232,88 @@ tasks:
     dotenv: ['.env']
     dir: packages/server
     cmds:
-      - uv run eavesdrop-server --config config.yaml
+      - uv run --extra transcription eavesdrop-server --config config.yaml
+
+  build-cpu-base-image:
+    desc: Build the CPU PyTorch base image
+    dir: .
+    vars:
+      CPU_BASE_IMAGE: '{{default "eavesdrop-cpu-base" .CPU_BASE_IMAGE}}'
+    cmds:
+      - docker build --progress=plain -f packages/server/docker/Dockerfile.cpu-base -t {{.CPU_BASE_IMAGE}} .
+
+  build-cuda-base-image:
+    desc: Build the NVIDIA CUDA PyTorch base image
+    dir: .
+    vars:
+      CUDA_BASE_IMAGE: '{{default "eavesdrop-cuda-base" .CUDA_BASE_IMAGE}}'
+    cmds:
+      - docker build --progress=plain -f packages/server/docker/Dockerfile.cuda-base -t {{.CUDA_BASE_IMAGE}} .
 
   build-rocm-base-image:
-    # Verified ROCm build settings on AMD Framework 13 (Ryzen 7840U / Radeon 780M).
-    desc: Build the ROCm base image used by the server image
-    dir: packages
-    sources:
-      - server/docker/Dockerfile.rocm-base
+    desc: Build the experimental AMD ROCm PyTorch base image
+    dir: .
     vars:
       ROCM_BASE_IMAGE: '{{default "eavesdrop-rocm-base" .ROCM_BASE_IMAGE}}'
-      GFX_ARCH: '{{.DEFAULT_GFX_ARCH}}'
-      HSA_OVERRIDE_GFX_VERSION: '{{.DEFAULT_HSA_OVERRIDE_GFX_VERSION}}'
-      GFX_ARCH_LABEL: 'io.eavesdrop.gfx_arch'
-      HSA_OVERRIDE_GFX_VERSION_LABEL: 'io.eavesdrop.hsa_override_gfx_version'
-    status:
-      - docker image inspect {{.ROCM_BASE_IMAGE}} >/dev/null 2>&1
-      - python3 -c 'import json, subprocess, sys; image = json.loads(subprocess.check_output(["docker", "image", "inspect", "{{.ROCM_BASE_IMAGE}}"], text=True))[0]; labels = image["Config"].get("Labels") or {}; sys.exit(0 if labels.get("{{.GFX_ARCH_LABEL}}") == "{{.GFX_ARCH}}" else 1)'
-      - python3 -c 'import json, subprocess, sys; image = json.loads(subprocess.check_output(["docker", "image", "inspect", "{{.ROCM_BASE_IMAGE}}"], text=True))[0]; labels = image["Config"].get("Labels") or {}; sys.exit(0 if labels.get("{{.HSA_OVERRIDE_GFX_VERSION_LABEL}}") == "{{.HSA_OVERRIDE_GFX_VERSION}}" else 1)'
     cmds:
-      - echo "GFX_ARCH = {{.GFX_ARCH}}"
-      - echo "HSA_OVERRIDE_GFX_VERSION = {{.HSA_OVERRIDE_GFX_VERSION}}"
-      - docker build --pull --no-cache --progress=plain -f server/docker/Dockerfile.rocm-base --build-arg GFX_ARCH='{{.GFX_ARCH}}' --build-arg HSA_OVERRIDE_GFX_VERSION='{{.HSA_OVERRIDE_GFX_VERSION}}' --label {{.GFX_ARCH_LABEL}}='{{.GFX_ARCH}}' --label {{.HSA_OVERRIDE_GFX_VERSION_LABEL}}='{{.HSA_OVERRIDE_GFX_VERSION}}' -t {{.ROCM_BASE_IMAGE}} .
+      - docker build --progress=plain -f packages/server/docker/Dockerfile.rocm-base -t {{.ROCM_BASE_IMAGE}} .
 
   build-server-image:
-    desc: Build the final server image
-    deps: [build-rocm-base-image]
-    dir: packages
-    sources:
-      - common/pyproject.toml
-      - common/src/**/*
-      - wire/pyproject.toml
-      - wire/src/**/*
-      - server/docker/Dockerfile
-      - server/docker/entrypoint.sh
-      - server/pyproject.toml
-      - server/src/**/*
-      - server/.dockerignore
-      - server/uv.lock
+    desc: Build the Parakeet server (ACCELERATOR=cpu, cuda, or rocm; default cpu)
+    dir: .
     vars:
+      ACCELERATOR: '{{.DEFAULT_ACCELERATOR}}'
       SERVER_IMAGE: '{{default "ghcr.io/shyndman/lmnop-eavesdrop:latest" .SERVER_IMAGE}}'
+      CPU_BASE_IMAGE: '{{default "eavesdrop-cpu-base" .CPU_BASE_IMAGE}}'
+      CUDA_BASE_IMAGE: '{{default "eavesdrop-cuda-base" .CUDA_BASE_IMAGE}}'
       ROCM_BASE_IMAGE: '{{default "eavesdrop-rocm-base" .ROCM_BASE_IMAGE}}'
-      GFX_ARCH: '{{.DEFAULT_GFX_ARCH}}'
-      HSA_OVERRIDE_GFX_VERSION: '{{.DEFAULT_HSA_OVERRIDE_GFX_VERSION}}'
+      BASE_IMAGE: '{{if eq .ACCELERATOR "cuda"}}{{.CUDA_BASE_IMAGE}}{{else if eq .ACCELERATOR "rocm"}}{{.ROCM_BASE_IMAGE}}{{else}}{{.CPU_BASE_IMAGE}}{{end}}'
       SKIP_CACHE: '{{default "false" .SKIP_CACHE}}'
-      BASE_IMAGE_ID_LABEL: 'io.eavesdrop.rocm_base_image_id'
-      GFX_ARCH_LABEL: 'io.eavesdrop.gfx_arch'
-      HSA_OVERRIDE_GFX_VERSION_LABEL: 'io.eavesdrop.hsa_override_gfx_version'
-    status:
-      - docker image inspect {{.ROCM_BASE_IMAGE}} >/dev/null 2>&1
-      - python3 -c 'import json, subprocess, sys; image = json.loads(subprocess.check_output(["docker", "image", "inspect", "{{.ROCM_BASE_IMAGE}}"], text=True))[0]; labels = image["Config"].get("Labels") or {}; sys.exit(0 if labels.get("{{.GFX_ARCH_LABEL}}") == "{{.GFX_ARCH}}" else 1)'
-      - python3 -c 'import json, subprocess, sys; image = json.loads(subprocess.check_output(["docker", "image", "inspect", "{{.ROCM_BASE_IMAGE}}"], text=True))[0]; labels = image["Config"].get("Labels") or {}; sys.exit(0 if labels.get("{{.HSA_OVERRIDE_GFX_VERSION_LABEL}}") == "{{.HSA_OVERRIDE_GFX_VERSION}}" else 1)'
-      - docker image inspect {{.SERVER_IMAGE}} >/dev/null 2>&1
-      - python3 -c 'import json, subprocess, sys; base = json.loads(subprocess.check_output(["docker", "image", "inspect", "{{.ROCM_BASE_IMAGE}}"], text=True))[0]["Id"]; server = json.loads(subprocess.check_output(["docker", "image", "inspect", "{{.SERVER_IMAGE}}"], text=True))[0]; labels = server["Config"].get("Labels") or {}; sys.exit(0 if labels.get("{{.BASE_IMAGE_ID_LABEL}}") == base else 1)'
-      - python3 -c 'import json, subprocess, sys; image = json.loads(subprocess.check_output(["docker", "image", "inspect", "{{.SERVER_IMAGE}}"], text=True))[0]; labels = image["Config"].get("Labels") or {}; sys.exit(0 if labels.get("{{.GFX_ARCH_LABEL}}") == "{{.GFX_ARCH}}" else 1)'
-      - python3 -c 'import json, subprocess, sys; image = json.loads(subprocess.check_output(["docker", "image", "inspect", "{{.SERVER_IMAGE}}"], text=True))[0]; labels = image["Config"].get("Labels") or {}; sys.exit(0 if labels.get("{{.HSA_OVERRIDE_GFX_VERSION_LABEL}}") == "{{.HSA_OVERRIDE_GFX_VERSION}}" else 1)'
+    preconditions:
+      - sh: 'test "{{.ACCELERATOR}}" = cpu || test "{{.ACCELERATOR}}" = cuda || test "{{.ACCELERATOR}}" = rocm'
+        msg: 'ACCELERATOR must be cpu, cuda, or rocm'
     cmds:
-      - echo "GFX_ARCH = {{.GFX_ARCH}}"
-      - echo "HSA_OVERRIDE_GFX_VERSION = {{.HSA_OVERRIDE_GFX_VERSION}}"
-      - |
-        BASE_IMAGE_ID="$(docker image inspect {{.ROCM_BASE_IMAGE}} --format '{{"{{"}}.Id{{"}}"}}')"
-        docker build {{if eq .SKIP_CACHE "true"}}--no-cache {{end}}--progress=plain -f server/docker/Dockerfile --build-arg BASE_IMAGE={{.ROCM_BASE_IMAGE}} --label {{.BASE_IMAGE_ID_LABEL}}="$BASE_IMAGE_ID" --label {{.GFX_ARCH_LABEL}}='{{.GFX_ARCH}}' --label {{.HSA_OVERRIDE_GFX_VERSION_LABEL}}='{{.HSA_OVERRIDE_GFX_VERSION}}' -t {{.SERVER_IMAGE}} .
+      - task: build-{{.ACCELERATOR}}-base-image
+      - docker build {{if eq .SKIP_CACHE "true"}}--no-cache {{end}}--progress=plain
+          -f packages/server/docker/Dockerfile
+          --build-arg BASE_IMAGE={{.BASE_IMAGE}}
+          --label io.eavesdrop.accelerator={{.ACCELERATOR}}
+          -t {{.SERVER_IMAGE}} .
 
   run-server-image:
-    # Verified ROCm runtime flags on AMD Framework 13 (Ryzen 7840U / Radeon 780M).
-    desc: Run the server Docker image with ROCm runtime flags
+    desc: Run the server container (ACCELERATOR=cpu, cuda, or rocm; default cpu)
     deps: [build-server-image]
     dotenv: ['.env']
     dir: .
     vars:
+      ACCELERATOR: '{{.DEFAULT_ACCELERATOR}}'
       SERVER_IMAGE: '{{default "ghcr.io/shyndman/lmnop-eavesdrop:latest" .SERVER_IMAGE}}'
-      HSA_OVERRIDE_GFX_VERSION: '{{.DEFAULT_HSA_OVERRIDE_GFX_VERSION}}'
       LOG_LEVEL: '{{default "INFO" .LOG_LEVEL}}'
     cmds:
       - docker run --interactive --tty
-        --device /dev/kfd
-        --device /dev/dri
-        --security-opt seccomp=unconfined
+        {{if eq .ACCELERATOR "cuda"}}--gpus all{{end}}
+        {{if eq .ACCELERATOR "rocm"}}--device /dev/kfd --device /dev/dri --security-opt seccomp=unconfined{{end}}
         --rm
         --publish '9090:9090'
         --name eavesdrop
-        --env HSA_OVERRIDE_GFX_VERSION='{{.HSA_OVERRIDE_GFX_VERSION}}'
+        {{if and (eq .ACCELERATOR "rocm") .HSA_OVERRIDE_GFX_VERSION}}--env HSA_OVERRIDE_GFX_VERSION='{{.HSA_OVERRIDE_GFX_VERSION}}'{{end}}
         --env LOG_LEVEL='{{.LOG_LEVEL}}'
         --env LANGFUSE_PUBLIC_KEY
         --env LANGFUSE_SECRET_KEY
         --env LANGFUSE_BASE_URL
         --volume "$HOME/.cache/lmnop/eavesdrop-models:/root/.cache/eavesdrop"
-        --volume "$PWD/packages/server/config.yaml:/app/server/config.yaml:ro"
-        --env EAVESDROP_CONFIG=/app/server/config.yaml
-        {{.SERVER_IMAGE}} -m eavesdrop.server
+        --volume "$PWD/packages/server/config.yaml:/app/config.yaml:ro"
+        --env EAVESDROP_CONFIG=/app/config.yaml
+        {{.SERVER_IMAGE}}
 
   run-server-image-persistent:
-    # Verified ROCm runtime flags on AMD Framework 13 (Ryzen 7840U / Radeon 780M).
-    desc: Run the server Docker image as a restart-always background container
+    desc: Run the server as a background container (ACCELERATOR=cpu, cuda, or rocm)
     deps: [build-server-image]
     dotenv: ['.env']
     dir: .
     vars:
+      ACCELERATOR: '{{.DEFAULT_ACCELERATOR}}'
       SERVER_IMAGE: '{{default "ghcr.io/shyndman/lmnop-eavesdrop:latest" .SERVER_IMAGE}}'
-      HSA_OVERRIDE_GFX_VERSION: '{{.DEFAULT_HSA_OVERRIDE_GFX_VERSION}}'
       LOG_LEVEL: '{{default "INFO" .LOG_LEVEL}}'
     cmds:
       - |
@@ -352,21 +322,20 @@ tasks:
         fi
       - docker rm eavesdrop || true
       - docker run --detach
-        --device /dev/kfd
-        --device /dev/dri
-        --security-opt seccomp=unconfined
+        {{if eq .ACCELERATOR "cuda"}}--gpus all{{end}}
+        {{if eq .ACCELERATOR "rocm"}}--device /dev/kfd --device /dev/dri --security-opt seccomp=unconfined{{end}}
         --restart always
         --publish '9090:9090'
         --name eavesdrop
-        --env HSA_OVERRIDE_GFX_VERSION='{{.HSA_OVERRIDE_GFX_VERSION}}'
+        {{if and (eq .ACCELERATOR "rocm") .HSA_OVERRIDE_GFX_VERSION}}--env HSA_OVERRIDE_GFX_VERSION='{{.HSA_OVERRIDE_GFX_VERSION}}'{{end}}
         --env LOG_LEVEL='{{.LOG_LEVEL}}'
         --env LANGFUSE_PUBLIC_KEY
         --env LANGFUSE_SECRET_KEY
         --env LANGFUSE_BASE_URL
         --volume "$HOME/.cache/lmnop/eavesdrop-models:/root/.cache/eavesdrop"
-        --volume "$PWD/packages/server/config.yaml:/app/server/config.yaml:ro"
-        --env EAVESDROP_CONFIG=/app/server/config.yaml
-        {{.SERVER_IMAGE}} -m eavesdrop.server
+        --volume "$PWD/packages/server/config.yaml:/app/config.yaml:ro"
+        --env EAVESDROP_CONFIG=/app/config.yaml
+        {{.SERVER_IMAGE}}
 
   stop-server-image:
     desc: Stop the running server container if needed, then remove it

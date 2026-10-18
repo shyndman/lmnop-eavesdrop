@@ -82,7 +82,7 @@ class RecordingClientInitializer:
 class RaisingClientInitializer:
   """Client initializer stand-in that raises a capability error when called."""
 
-  def __init__(self, error: ModelCapabilityError) -> None:
+  def __init__(self, error: ValueError) -> None:
     self.error = error
     self.calls: list[tuple[ServerConnection, TranscriptionSetupMessage]] = []
 
@@ -188,6 +188,24 @@ class TestHandleTranscriberConnection:
     assert isinstance(result, TranscriberConnection)
     assert result.client is client_initializer.client
     assert client_initializer.calls == [(as_server_connection(websocket), mock_message)]
+
+  async def test_removed_setup_option_returns_error_before_initialization(
+    self,
+    handler: WebSocketConnectionHandler,
+    websocket: FakeWebSocket,
+    client_initializer: RecordingClientInitializer,
+  ) -> None:
+    websocket.recv_messages = [
+      '{"type":"transcription_setup","stream":"test","options":{"beam_size":5}}'
+    ]
+    result = await handler.handle_connection(as_server_connection(websocket))
+    assert result is None
+    assert client_initializer.calls == []
+    assert websocket.close_calls == 1
+    error = deserialize_message(websocket.sent_messages[0])
+    assert isinstance(error, ErrorMessage)
+    assert "Setup rejected" in error.message
+    assert "beam_size" in error.message
 
   async def test_handle_connection_closed_during_handshake(
     self,

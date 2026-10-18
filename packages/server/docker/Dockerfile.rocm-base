@@ -1,69 +1,19 @@
-ARG BASE_IMAGE="rocm/pytorch:rocm7.2.3_ubuntu24.04_py3.12_pytorch_release_2.9.1"
+# syntax=docker/dockerfile:1
+ARG BASE_IMAGE=rocm/pytorch:rocm7.2.3_ubuntu24.04_py3.12_pytorch_release_2.9.1
 FROM $BASE_IMAGE
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV VIRTUAL_ENV=/opt/venv
-ENV PATH=$VIRTUAL_ENV/bin:/opt/rocm/llvm/bin:$PATH
+# Experimental: keeping AMD's matching Torch/audio/vision stack does not imply
+# that NeMo Parakeet has been validated on the host GPU.
+ENV DEBIAN_FRONTEND=noninteractive \
+    VIRTUAL_ENV=/opt/venv \
+    EAVESDROP_ACCELERATOR=rocm
+ENV PATH="$VIRTUAL_ENV/bin:/opt/rocm/llvm/bin:$PATH"
 
-SHELL ["/bin/bash", "-lc"]
-
-RUN --mount=type=cache,target=/var/cache/apt \
-    --mount=type=cache,target=/var/lib/apt \
-    apt-get update \
+RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-      # ffmpeg is required for RTSP ingest and file-source transcription decode.
-      git cmake cmake-curses-gui ffmpeg libopenblas-dev vim libavdevice-dev \
-      wget portaudio19-dev \
-    && apt-get clean
+      build-essential ca-certificates ffmpeg git libsndfile1 sox \
+    && rm -rf /var/lib/apt/lists/*
 
-# Clean up apt lists in final image layer - separate RUN to preserve cache mounts
-# (cache mounts only exist during the specific RUN that declares them)
-RUN rm -rf /var/lib/apt/lists/*
-
-ARG GFX_ARCH=gfx1100
-ARG HSA_OVERRIDE_GFX_VERSION
-RUN if [ -z "$GFX_ARCH" ]; then echo "GFX_ARCH build arg is required" && exit 1; fi
-
-ENV PYTORCH_ROCM_ARCH=$GFX_ARCH
-RUN if [ "$GFX_ARCH" = "gfx1100" ] && [ -z "$HSA_OVERRIDE_GFX_VERSION" ]; then \
-      export HSA_OVERRIDE_GFX_VERSION=11.0.3; \
-    fi && \
-    if [ -n "$HSA_OVERRIDE_GFX_VERSION" ]; then \
-      printf 'export HSA_OVERRIDE_GFX_VERSION=%s\n' "$HSA_OVERRIDE_GFX_VERSION" > /etc/profile.d/eavesdrop-rocm.sh; \
-    fi
-ENV GFX_ARCH=$GFX_ARCH
-ENV CTRANSLATE2_ROOT=$VIRTUAL_ENV
-ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/opt/rocm/lib/llvm/lib:$CTRANSLATE2_ROOT/lib
-ENV CT2_CUDA_ALLOCATOR=cub_caching
-ENV CT2_CUDA_CACHING_ALLOCATOR_CONFIG=4,3,12,419430400
-
-# PyPI wheels are CUDA-only. Build CTranslate2 from source with HIP support for ROCm.
-RUN git clone --depth 1 --branch v4.7.1 --recurse-submodules \
-      https://github.com/OpenNMT/CTranslate2.git /tmp/CTranslate2 \
-    && cd /tmp/CTranslate2 \
-    && CLANG_CMAKE_CXX_COMPILER=clang++ CXX=clang++ HIPCXX="$(hipconfig -l)/clang" \
-      HIP_PATH="$(hipconfig -R)" \
-      cmake -S . -B build \
-      -DWITH_MKL=OFF \
-      -DWITH_OPENBLAS=ON \
-      -DOPENMP_RUNTIME=COMP \
-      -DWITH_HIP=ON \
-      -DCMAKE_HIP_ARCHITECTURES=$PYTORCH_ROCM_ARCH \
-      -DGPU_TARGETS="$PYTORCH_ROCM_ARCH" \
-      -DAMDGPU_TARGETS="$PYTORCH_ROCM_ARCH" \
-      -DCMAKE_INSTALL_PREFIX="$CTRANSLATE2_ROOT" \
-    && cmake --build build --parallel "$(nproc)" \
-    && cmake --install build \
-    && ldconfig \
-    && cd python \
-    && pip install -r install_requirements.txt \
-    && CTRANSLATE2_ROOT="$CTRANSLATE2_ROOT" python setup.py bdist_wheel \
-    && pip install dist/*.whl \
-    && rm -rf /tmp/CTranslate2
-
-# Faster-Whisper
-WORKDIR /home
-RUN git clone --depth 1 --branch v1.2.1 https://github.com/SYSTRAN/faster-whisper.git \
-    && cd faster-whisper \
-    && pip install . \
-    && pip install pytest scipy
+COPY --from=ghcr.io/astral-sh/uv:0.12.23 /uv /uvx /bin/
+# Fail early if an overridden base no longer provides the expected vendor venv.
+RUN /opt/venv/bin/python -c 'import sys, torch, torchaudio, torchvision; assert sys.version_info[:2] == (3, 12); assert torch.version.hip is not None'

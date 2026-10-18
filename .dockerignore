@@ -1,0 +1,17 @@
+# Docker builds use the repository root, but need only manifests and server code.
+**
+!pyproject.toml
+!uv.lock
+!packages/
+!packages/*/
+!packages/*/pyproject.toml
+!packages/common/src/
+!packages/common/src/**
+!packages/wire/src/
+!packages/wire/src/**
+!packages/server/src/
+!packages/server/src/**
+!packages/server/docker/
+!packages/server/docker/**
+**/__pycache__/
+**/*.pyc

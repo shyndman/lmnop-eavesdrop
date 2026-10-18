@@ -1,32 +1,22 @@
-FROM pytorch/pytorch:2.6.0-cuda12.4-cudnn9-devel
+# syntax=docker/dockerfile:1
+FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
 
-ENV DEBIAN_FRONTEND=noninteractive
+ENV DEBIAN_FRONTEND=noninteractive \
+    VIRTUAL_ENV=/opt/venv \
+    EAVESDROP_ACCELERATOR=cuda
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
-RUN --mount=type=cache,target=/var/cache/apt \
-    --mount=type=cache,target=/var/lib/apt \
-    apt-get update \
+RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-      # ffmpeg is required for RTSP ingest and file-source transcription decode.
-      ffmpeg portaudio19-dev \
-    && apt-get clean
+      build-essential ca-certificates ffmpeg git libsndfile1 \
+      python3.12 python3.12-dev python3.12-venv sox \
+    && rm -rf /var/lib/apt/lists/*
 
-# Clean up apt lists in final image layer - separate RUN to preserve cache mounts
-# (cache mounts only exist during the specific RUN that declares them)
-RUN rm -rf /var/lib/apt/lists/*
-
-# Create py_3.12 environment to match ROCm setup (conda already installed in base image)
-RUN conda create -n py_3.12 python=3.12 -y
-
-SHELL ["conda", "run", "-n", "py_3.12", "/bin/bash", "-c"]
-
-# CTranslate2 with CUDA 12.4 support
-RUN pip install 'ctranslate2>=4.5.0'
-
-# Faster-Whisper
-RUN pip install 'faster-whisper>=1.1.0' pytest scipy
-
-ENV CT2_CUDA_ALLOCATOR=cub_caching
-ENV CT2_CUDA_CACHING_ALLOCATOR_CONFIG=4,3,12,419430400
-
-# Install uv
-COPY --from=ghcr.io/astral-sh/uv:0.8.13 /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.12.23 /uv /uvx /bin/
+# Use the same environment for Torch, NeMo, and the server. Do not create a
+# separate conda environment that the final image's entrypoint cannot see.
+RUN uv venv --python /usr/bin/python3.12 "$VIRTUAL_ENV"
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --python "$VIRTUAL_ENV/bin/python" \
+      torch==2.9.1 torchaudio==2.9.1 torchvision==0.24.1 \
+      --index-url https://download.pytorch.org/whl/cu128

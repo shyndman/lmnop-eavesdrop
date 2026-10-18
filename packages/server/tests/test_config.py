@@ -112,10 +112,31 @@ class TestTranscriptionConfig:
         }
       )
 
-  @pytest.mark.parametrize("option", ["initial_prompt", "hotwords", "beam_size", "same_output_threshold", "custom_model", "gpu_name", "task"])
+  @pytest.mark.parametrize(
+    "option",
+    [
+      "initial_prompt",
+      "hotwords",
+      "beam_size",
+      "same_output_threshold",
+      "custom_model",
+      "gpu_name",
+      "task",
+    ],
+  )
   def test_removed_options_fail_visibly(self, option: str) -> None:
     with pytest.raises(ValueError, match="Extra inputs are not permitted"):
       TranscriptionConfig.model_validate({option: "obsolete"})
+
+  def test_client_override_round_trip_preserves_derived_vad_settings(self) -> None:
+    config = TranscriptionConfig(silence_completion_threshold=1.2)
+    merged = TranscriptionConfig.model_validate(config.model_dump() | {"word_timestamps": False})
+    assert merged.word_timestamps is False
+    assert merged.vad_parameters.min_silence_duration_ms == 1200
+
+  def test_non_native_sample_rate_is_rejected(self) -> None:
+    with pytest.raises(ValueError, match="sample_rate=16000"):
+      TranscriptionConfig(buffer=BufferConfig(sample_rate=22050))
 
   def test_non_english_language_is_rejected(self) -> None:
     with pytest.raises(ValueError, match="Input should be 'en'"):
@@ -144,7 +165,7 @@ transcription:
   language: "en"
   use_vad: false
   buffer:
-    sample_rate: 22050
+    sample_rate: 16000
     clip_audio: true
 
 rtsp:
@@ -157,7 +178,7 @@ rtsp:
 
     assert config.transcription.language == "en"
     assert config.transcription.use_vad is False
-    assert config.transcription.buffer.sample_rate == 22050
+    assert config.transcription.buffer.sample_rate == 16000
     assert config.transcription.buffer.clip_audio is True
     assert len(config.rtsp.streams) == 2
     assert "office" in config.rtsp.streams

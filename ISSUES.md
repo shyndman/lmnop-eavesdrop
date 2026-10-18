@@ -68,7 +68,7 @@ The manual `asyncio.wait()` + cancellation pattern is correct but verbose. Pytho
 
 **Location:** `packages/server/src/eavesdrop/server/constants.py:10`
 
-This critical architectural decision (`SINGLE_MODEL = True`) controls whether all clients share a single Whisper model. It's buried in a constants file with no documentation.
+This critical architectural decision (`SINGLE_MODEL = True`) controls whether all clients share a single Parakeet model. It's buried in a constants file with no documentation.
 
 Future improvement: make configurable via `EavesdropConfig` and inject the model instance into `StreamingTranscriptionProcessor` rather than having it reach up to a class variable.
 

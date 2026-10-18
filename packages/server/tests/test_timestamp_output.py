@@ -1,13 +1,8 @@
 """Regression tests for recording-relative timestamp behavior in transcription output."""
 
 import json
-import sys
-from types import ModuleType
 from typing import cast
 
-import pytest
-
-from eavesdrop.server.transcription.models import SpeechChunk
 from eavesdrop.server.transcription.session import create_session
 from eavesdrop.server.transcription.utils import (
   finalize_recording_timestamps,

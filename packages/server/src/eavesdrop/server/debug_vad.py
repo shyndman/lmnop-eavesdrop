@@ -22,6 +22,7 @@ from numpy.typing import NDArray
 
 from eavesdrop.common import get_logger
 from eavesdrop.server.transcription.models import VadParameters
+from eavesdrop.server.transcription.parakeet import SileroSpeechDetector
 
 logger = get_logger("vad-debug")
 
@@ -60,11 +61,6 @@ class DebugVadArgs(Protocol):
 
 
 sf = cast(SoundFileModule, cast(object, import_module("soundfile")))
-
-
-def get_speech_timestamps(audio: Float32Audio, options: VadParameters) -> list[SpeechTimestamp]:
-  """Standalone VAD adapter is introduced with the replacement backend."""
-  raise NotImplementedError("VAD backend removed; replacement follows separately")
 
 
 def load_and_prepare_audio(wav_path: Path) -> tuple[Float32Audio, int]:
@@ -115,7 +111,9 @@ def analyze_with_vad(
   logger.info(f"  speech_pad_ms: {vad_options.speech_pad_ms}")
 
   # Run VAD
-  speech_timestamps = get_speech_timestamps(audio, vad_options)
+  if sample_rate != 16000:
+    raise ValueError("Resample input to 16000 Hz before running VAD")
+  speech_timestamps = SileroSpeechDetector().detect(audio, vad_options)
 
   logger.info("VAD Results:")
   logger.info(f"  Speech chunks detected: {len(speech_timestamps)}")
@@ -199,11 +197,11 @@ def test_different_vad_settings(audio: Float32Audio, sample_rate: int) -> None:
 
   test_configs = [
     ("Default", VadParameters()),
-    ("More Sensitive", VadOptions(threshold=0.3, neg_threshold=0.25)),
-    ("Less Sensitive", VadOptions(threshold=0.7, neg_threshold=0.45)),
-    ("Very Sensitive", VadOptions(threshold=0.2, neg_threshold=0.15)),
-    ("Short Silence", VadOptions(min_silence_duration_ms=100)),
-    ("No Min Speech", VadOptions(min_speech_duration_ms=0)),
+    ("More Sensitive", VadParameters(threshold=0.3, neg_threshold=0.25)),
+    ("Less Sensitive", VadParameters(threshold=0.7, neg_threshold=0.45)),
+    ("Very Sensitive", VadParameters(threshold=0.2, neg_threshold=0.15)),
+    ("Short Silence", VadParameters(min_silence_duration_ms=100)),
+    ("No Min Speech", VadParameters(min_speech_duration_ms=0)),
   ]
 
   for name, vad_options in test_configs:
@@ -213,7 +211,7 @@ def test_different_vad_settings(audio: Float32Audio, sample_rate: int) -> None:
     logger.info(f"min_silence_duration_ms={vad_options.min_silence_duration_ms}")
 
     try:
-      speech_chunks = get_speech_timestamps(audio, vad_options)
+      speech_chunks = SileroSpeechDetector().detect(audio, vad_options)
       if speech_chunks:
         logger.info(f"✅ Detected {len(speech_chunks)} speech chunk(s)")
         total_speech = sum((chunk["end"] - chunk["start"]) / sample_rate for chunk in speech_chunks)
