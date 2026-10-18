@@ -1,17 +1,15 @@
 import os
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 import yaml
-from pydantic import BaseModel, Field, model_validator, validate_call
+from pydantic import BaseModel, ConfigDict, Field, model_validator, validate_call
 from pydantic.dataclasses import dataclass
 from pydantic.types import FilePath
 
 from eavesdrop.common import get_logger
 from eavesdrop.server.constants import CACHE_PATH, SINGLE_MODEL
 from eavesdrop.server.transcription.models import VadParameters
-from eavesdrop.server.transcription.vendor_types import load_torch
-from eavesdrop.wire import TranscriptionTask
 
 logger = get_logger("cfg")
 
@@ -96,36 +94,13 @@ class TranscriptionConfig(BaseModel):
   send_last_n_segments: int = Field(default=10, gt=0)
   """Number of most recent segments to send to the client."""
 
-  # Model configuration - these fields will be validated by model validators
-  model: str | None = "distil-medium.en"
-  """Whisper model size or path (mutually exclusive with custom_model)."""
+  model_config = ConfigDict(extra="forbid")
 
-  custom_model: FilePath | None = None
-  """Path to custom Whisper model file (mutually exclusive with model)."""
+  language: Literal["en"] = "en"
+  """Only English transcription is supported."""
 
-  language: str | None = "en"
-  """Language for transcription (None means auto-detect)."""
-
-  task: TranscriptionTask = TranscriptionTask.TRANSCRIBE
-  """Decoder task for this session."""
-
-  initial_prompt: str | None = None
-  """Initial prompt for whisper inference."""
-
-  hotwords: list[str] = Field(default_factory=list)
-  """Hotwords for whisper inference to improve recognition of specific terms."""
-
-  word_timestamps: bool = False
-  """Whether to emit detailed word-level timestamps in transcription output."""
-
-  gpu_name: str | None = None
-  """GPU device name to use (device_index computed from this)."""
-
-  device_index: int = Field(default=0, ge=0, exclude=True)
-  """GPU device index to use (computed from gpu_name)."""
-
-  num_workers: int = Field(default=1, gt=0)
-  """Number of workers for parallel transcription processing."""
+  word_timestamps: bool = True
+  """Whether to include native word boundaries in output."""
 
   buffer: BufferConfig = Field(default_factory=BufferConfig)
   """Audio buffer configuration for streaming transcription."""
@@ -136,12 +111,6 @@ class TranscriptionConfig(BaseModel):
   vad_parameters: VadParameters = Field(default_factory=VadParameters)
   """Voice Activity Detection parameters."""
 
-  same_output_threshold: int = Field(default=10, gt=0)
-  """Number of repeated outputs before considering it as a valid segment."""
-
-  beam_size: int = Field(default=5, gt=0)
-  """Beam search width to use during deterministic decoding (temperature 0)."""
-
   silence_completion_threshold: float = Field(default=0.8, gt=0.0)
   """Seconds of silence after speech to mark segment as completed."""
 
@@ -150,65 +119,14 @@ class TranscriptionConfig(BaseModel):
 
   @model_validator(mode="before")
   @classmethod
-  def validate_model_configuration(cls, values: object) -> object:
-    """Validate model/custom_model mutual exclusion and reject device_index input."""
-    if not isinstance(values, dict):
-      return values
-
-    config_values = cast(dict[str, object], values)
-
-    model = config_values.get("model")
-    custom_model = config_values.get("custom_model")
-
-    # Check mutual exclusion
-    if model and custom_model:
-      raise ValueError(
-        "Cannot specify both 'model' and 'custom_model' in the same configuration. "
-        + "Use 'model' for standard Whisper models (e.g. 'distil-medium.en') or "
-        + "'custom_model' for a path to a local model file."
-      )
-
-    # If neither specified, use default model
-    if not model and not custom_model:
-      config_values["model"] = "distil-medium.en"
-
-    # Reject device_index in input - it should be computed from gpu_name
-    if "device_index" in config_values:
-      raise ValueError(
-        "device_index cannot be specified in config file. "
-        + "Use 'gpu_name' instead to specify the GPU device, and device_index will be "
-        + "computed automatically."
-      )
-
-    # Reject obsolete or computed VAD fields before VadOptions silently ignores them.
-    vad_params = config_values.get("vad_parameters")
-    if vad_params and isinstance(vad_params, dict):
-      obsolete_keys = [key for key in ("onset", "offset") if key in vad_params]
-      if obsolete_keys:
-        replacements = {"onset": "threshold", "offset": "neg_threshold"}
-        obsolete_keys_text = ", ".join(f"'{key}'" for key in obsolete_keys)
-        replacement_text = ", ".join(f"'{key}' -> '{replacements[key]}'" for key in obsolete_keys)
-        raise ValueError(
-          "Obsolete VAD parameter(s) in vad_parameters: "
-          + f"{obsolete_keys_text}. "
-          + f"Use upstream faster-whisper names instead: {replacement_text}."
-        )
-
-      if "min_silence_duration_ms" in vad_params:
-        raise ValueError(
-          "min_silence_duration_ms cannot be specified in vad_parameters. "
-          + "It is automatically set from 'silence_completion_threshold' to keep "
-          + "VAD segmentation and segment completion behavior aligned."
-        )
-
-    return config_values
-
-  @model_validator(mode="after")
-  def resolve_gpu_device_index(self) -> "TranscriptionConfig":
-    """Compute device_index from gpu_name if provided."""
-    if self.gpu_name:
-      self.device_index = self._resolve_gpu_device_index(self.gpu_name)
-    return self
+  def reject_derived_vad_fields(cls, values: object) -> object:
+    """Reject an explicit silence duration; completion threshold owns it."""
+    if isinstance(values, dict):
+      settings = cast(dict[str, object], values)
+      vad = settings.get("vad_parameters")
+      if isinstance(vad, dict) and "min_silence_duration_ms" in vad:
+        raise ValueError("min_silence_duration_ms cannot be specified; use silence_completion_threshold")
+    return values
 
   @model_validator(mode="after")
   def align_vad_parameters(self) -> "TranscriptionConfig":
@@ -216,31 +134,6 @@ class TranscriptionConfig(BaseModel):
     self.vad_parameters.min_silence_duration_ms = int(self.silence_completion_threshold * 1000)
     return self
 
-  def _resolve_gpu_device_index(self, gpu_name: str) -> int:
-    """Resolve GPU device index from GPU name."""
-    torch = load_torch()
-
-    if not torch.cuda.is_available():
-      return 0
-
-    device_count = torch.cuda.device_count()
-    for i in range(device_count):
-      device_name = torch.cuda.get_device_name(i)
-      if gpu_name in device_name:
-        return i
-
-    available_gpus = [torch.cuda.get_device_name(i) for i in range(device_count)]
-    raise ValueError(f"GPU '{gpu_name}' not found. Available GPUs: {available_gpus}")
-
-  @property
-  def model_path(self) -> str:
-    """Get the final model path to use (custom_model takes precedence over model)."""
-    if self.custom_model is not None:
-      return str(self.custom_model)
-    if self.model is not None:
-      return self.model
-    # This should never happen due to validators, but provide a fallback
-    return "distil-medium.en"
 
 
 class EavesdropConfig(BaseModel):
@@ -266,19 +159,11 @@ class EavesdropConfig(BaseModel):
 
     # Transcription settings - all properties
     logger.info("TRANSCRIPTION SETTINGS:")
-    logger.info(f"  Model: {self.transcription.model}")
-    logger.info(f"  Custom Model: {self.transcription.custom_model}")
-    logger.info(f"  GPU Name: {self.transcription.gpu_name}")
     logger.info(f"  Language: {self.transcription.language}")
-    logger.info(f"  Initial Prompt: {self.transcription.initial_prompt}")
-    logger.info(f"  Hotwords: {self.transcription.hotwords}")
     logger.info(f"  Word Timestamps: {self.transcription.word_timestamps}")
     logger.info(f"  Send Last N Segments: {self.transcription.send_last_n_segments}")
-    logger.info(f"  Same Output Threshold: {self.transcription.same_output_threshold}")
-    logger.info(f"  Beam Size: {self.transcription.beam_size}")
     silence_threshold = self.transcription.silence_completion_threshold
     logger.info(f"  Silence Completion Threshold: {silence_threshold}s")
-    logger.info(f"  Num Workers: {self.transcription.num_workers}")
     logger.info(f"  Use VAD: {self.transcription.use_vad}")
 
     # VAD parameters - all properties

@@ -3,7 +3,7 @@
 Test script for EavesdropClient transcriber mode.
 
 Usage:
-    python test_transcriber.py --host localhost --port 8080 [--audio-device default]
+    python simple_transcriber.py --server localhost:8080 [--audio-device default]
 """
 
 import argparse
@@ -25,14 +25,12 @@ async def test_transcriber(
   host: str,
   port: int,
   audio_device: str = "default",
-  model: str = "distil-small.en",
 ) -> int:
   """Test the transcriber client with a real server."""
   print("Creating transcriber client...")
   print(f"  Host: {host}")
   print(f"  Port: {port}")
   print(f"  Audio device: {audio_device}")
-  print(f"  Model: {model}")
 
   client: EavesdropClient | None = None
 
@@ -42,10 +40,7 @@ async def test_transcriber(
       host=host,
       port=port,
       audio_device=audio_device,
-      model=model,
-      beam_size=5,
       word_timestamps=True,
-      initial_prompt="Test transcription session",
     )
     print("✅ Client created successfully")
 
@@ -86,7 +81,7 @@ async def test_transcriber(
           )
           print(
             f"    Segment {i}: '{segment.text}' ",
-            f"{time_range} [{segment.avg_logprob:.2f}]",
+            time_range,
             sep="",
           )
 
@@ -138,11 +133,6 @@ def main() -> int:
     "--audio-device", default="default", help="Audio device to use (default: default)"
   )
   _ = parser.add_argument(
-    "--model",
-    default="distil-small.en",
-    help="Whisper model alias to use (default: distil-small.en)",
-  )
-  _ = parser.add_argument(
     "--json_logs",
     action="store_true",
     default=os.getenv("JSON_LOGS", "false").lower() in ("true", "1", "yes", "on"),
@@ -168,7 +158,6 @@ def main() -> int:
   args = parser.parse_args()
   server = cast(str, args.server)
   audio_device = cast(str, args.audio_device)
-  model = cast(str, args.model)
   json_logs = cast(bool, args.json_logs)
   correlation_id = cast(str | None, args.correlation_id)
   log_namespace = cast(str | None, args.log_namespace)
@@ -196,9 +185,8 @@ def main() -> int:
       "starting microphone transcription client",
       server=server,
       audio_device=audio_device,
-      model=model,
     )
-    return asyncio.run(test_transcriber(host, port, audio_device, model))
+    return asyncio.run(test_transcriber(host, port, audio_device))
   except KeyboardInterrupt:
     print("\nExiting...")
     return 0

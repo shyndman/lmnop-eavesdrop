@@ -145,16 +145,6 @@ class TranscriptionSessionProtocol(Protocol):
     """
     ...
 
-  def record_generation_result(self, attempts: int, final_temp: float) -> None:
-    """Record the results of temperature fallback generation.
-
-    :param attempts: Number of temperature attempts made during generation.
-    :type attempts: int
-    :param final_temp: Final temperature that succeeded.
-    :type final_temp: float
-    """
-    ...
-
   def format_pipeline_summary(self) -> str:
     """Format a comprehensive pipeline timing summary.
 
@@ -191,7 +181,7 @@ class TranscriptionSessionProtocol(Protocol):
   def trace_inference_stage(self) -> TracerProtocol:
     """Create a tracer for model inference stage.
 
-    :returns: Inference tracer that records generation attempts and temperature.
+    :returns: Inference tracer that records execution timing.
     :rtype: TracerProtocol
     """
     ...
@@ -226,8 +216,6 @@ class TranscriptionSession:
 
   # Timing tracking
   stage_timings: StageTimings = field(default_factory=dict)
-  generation_attempts: int = 0
-  final_temperature: float = 0.0
 
   # Segment chain tracking
   completed_segments: list["Segment"] = field(default_factory=list)
@@ -409,17 +397,6 @@ class TranscriptionSession:
       metadata=metadata,
     )
 
-  def record_generation_result(self, attempts: int, final_temp: float) -> None:
-    """Record the results of temperature fallback generation.
-
-    :param attempts: Number of temperature attempts made.
-    :type attempts: int
-    :param final_temp: Final temperature that succeeded.
-    :type final_temp: float
-    """
-    self.generation_attempts = attempts
-    self.final_temperature = final_temp
-
   def format_pipeline_summary(self) -> str:
     """Format a comprehensive pipeline timing summary.
 
@@ -430,10 +407,6 @@ class TranscriptionSession:
     timing_str = " ".join(timing_parts)
 
     result_parts: list[str] = []
-    if self.generation_attempts > 0:
-      result_parts.append(f"attempts={self.generation_attempts}")
-    if self.final_temperature > 0:
-      result_parts.append(f"temp={self.final_temperature:.1f}")
 
     result_str = " ".join(result_parts)
     parts = ["Pipeline:", timing_str]
@@ -456,10 +429,6 @@ class TranscriptionSession:
     timing_str = " ".join(timing_parts)
 
     result_parts: list[str] = []
-    if self.generation_attempts > 0:
-      result_parts.append(f"attempts={self.generation_attempts}")
-    if self.final_temperature > 0:
-      result_parts.append(f"temp={self.final_temperature:.1f}")
 
     result_str = " ".join(result_parts)
     parts = ["Pipeline:", timing_str]
@@ -541,10 +510,6 @@ class BaseTracer:
           if timing >= 0
         }
         metadata["time_range"] = self.session.format_time_range()
-        if self.session.generation_attempts > 0:
-          metadata["generation_attempts"] = self.session.generation_attempts
-        if self.session.final_temperature > 0:
-          metadata["final_temperature"] = self.session.final_temperature
       if exc_val is not None:
         metadata["error"] = str(exc_val)
       _ = self.langfuse_observation.update(
@@ -654,22 +619,10 @@ class FeatureStageTracer(BaseTracer):
 class InferenceStageTracer(BaseTracer):
   """Tracer for model inference stage."""
 
-  def __call__(self, attempts: int, final_temperature: float) -> None:
-    """Record generation results for pipeline summary.
-
-    :param attempts: Number of temperature attempts made during generation.
-    :type attempts: int
-    :param final_temperature: Final temperature that succeeded.
-    :type final_temperature: float
-    """
-    self.session.record_generation_result(attempts, final_temperature)
+  def __call__(self) -> None:
+    """Record completion of model inference."""
     if self.langfuse_observation is not None:
-      _ = self.langfuse_observation.update(
-        output={
-          "generation_attempts": attempts,
-          "final_temperature": final_temperature,
-        }
-      )
+      _ = self.langfuse_observation.update(output={"inference_completed": True})
 
 
 class PipelineTracer(BaseTracer):
@@ -696,10 +649,6 @@ class PipelineTracer(BaseTracer):
 
     # Add generation metadata if available
     extra_fields: dict[str, int | str] = {}
-    if self.session.generation_attempts > 0:
-      extra_fields["generation_attempts"] = self.session.generation_attempts
-    if self.session.final_temperature > 0:
-      extra_fields["final_temperature"] = f"{self.session.final_temperature:.1f}"
 
     time_range = self.session.format_time_range()
 
@@ -758,8 +707,6 @@ class SegmentStageTracer(BaseTracer):
     self.session.logger.info(
       "Pipeline completed",
       **self.session.stage_timings,
-      generation_attempts=self.session.generation_attempts,
-      final_temperature=self.session.final_temperature,
     )
 
 
@@ -804,10 +751,6 @@ class NoopSession:
 
   def update_recording_context(self, recording_id: str | None) -> None:
     del recording_id
-
-  def record_generation_result(self, attempts: int, final_temp: float) -> None:
-    del attempts, final_temp
-    pass
 
   def format_pipeline_summary(self) -> str:
     return ""

@@ -61,7 +61,7 @@ class RTSPClient:
     Create and start the FFmpeg subprocess for RTSP stream ingestion.
 
     Uses the exact command specified in the design document to capture audio
-    at 16kHz sample rate in PCM format suitable for Whisper transcription.
+    at 16kHz sample rate in PCM format suitable for speech recognition transcription.
 
     :returns: The created subprocess.Process object
     :raises Exception: If the process fails to start

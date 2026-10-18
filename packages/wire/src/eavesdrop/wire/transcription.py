@@ -4,10 +4,10 @@ Transcription data types for wire protocol communication.
 Contains the core data structures used for transcription results and user configuration.
 """
 
-import math
 from enum import StrEnum
+from typing import ClassVar, Literal
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 
 class TranscriptionSourceMode(StrEnum):
@@ -15,13 +15,6 @@ class TranscriptionSourceMode(StrEnum):
 
   LIVE = "live"
   FILE = "file"
-
-
-class TranscriptionTask(StrEnum):
-  """Decoder task: transcribe in-language or translate to English."""
-
-  TRANSCRIBE = "transcribe"
-  TRANSLATE = "translate"
 
 
 def compute_segment_chain_id(previous_id: int, text: str) -> int:
@@ -41,7 +34,7 @@ def compute_segment_chain_id(previous_id: int, text: str) -> int:
 
 
 class Word(BaseModel):
-  """Lists of these objects are sent with segments when word-level timestamps are requested."""
+  """Native word text and recording-relative timestamps emitted with segments."""
 
   start: float
   """Start timestamp of the word in seconds on the recording timeline."""
@@ -52,16 +45,12 @@ class Word(BaseModel):
   word: str
   """The transcribed text content of the word."""
 
-  probability: float
-  """Confidence score from forced alignment, ranging from 0.0 to 1.0."""
-
 
 class Segment(BaseModel):
+  """Transcript text, native timings, and stable completion identity for one segment."""
+
   id: int
   """Unique segment identifier computed using chain-based CRC64 hash."""
-
-  seek: int
-  """Frame position in audio features where segment processing started."""
 
   start: float
   """Segment start time in seconds on the recording timeline."""
@@ -72,20 +61,8 @@ class Segment(BaseModel):
   text: str
   """Transcribed text content of the audio segment."""
 
-  tokens: list[int]
-  """List of token IDs from the model's vocabulary used to generate this segment."""
-
-  avg_logprob: float
-  """Average log probability across all tokens, indicating generation confidence."""
-
-  compression_ratio: float
-  """Ratio of text length to token count, used for hallucination detection."""
-
   words: list[Word] | None = None
   """Word-level timing breakdown when word timestamps are enabled, None otherwise."""
-
-  temperature: float | None
-  """Generation temperature used when creating this segment, None if not tracked."""
 
   time_offset: float = Field(default=0.0, exclude=True)
   """Internal segment-local offset retained only for Python-side compatibility helpers."""
@@ -97,12 +74,6 @@ class Segment(BaseModel):
   def in_progress(self) -> bool:
     """Whether the segment is still being processed and not yet finalized."""
     return not self.completed
-
-  @computed_field
-  @property
-  def avg_probability(self) -> float:
-    """Return the segment probability by exponentiating the average log probability."""
-    return math.exp(self.avg_logprob)
 
   @property
   def absolute_start_time(self) -> float:
@@ -158,32 +129,18 @@ class Segment(BaseModel):
 
 
 class UserTranscriptionOptions(BaseModel):
-  """Transcription options that clients can specify."""
+  """Supported session options for English-only Parakeet TDT v2 transcription."""
+
+  model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", strict=True)
 
   source_mode: TranscriptionSourceMode = TranscriptionSourceMode.LIVE
   """Declares live-stream versus finite-file source intent for this session."""
 
-  # Transcription behavior
   send_last_n_segments: int | None = Field(default=None, gt=0)
   """Number of most recent segments to send to the client."""
 
-  initial_prompt: str | None = None
-  """Initial prompt for whisper inference."""
+  word_timestamps: bool = True
+  """Include native word timestamps by default; False omits words from results."""
 
-  hotwords: list[str] | None = None
-  """List of hotwords for whisper inference to improve recognition of specific terms."""
-
-  word_timestamps: bool | None = None
-  """Whether to include word timestamps in the transcription output."""
-
-  beam_size: int | None = Field(default=None, gt=0)
-  """Optional override for beam search width when temperature is zero."""
-
-  model: str | None = None
-  """Optional whisper model alias override for this transcription session."""
-
-  task: TranscriptionTask | None = None
-  """Decoder task: transcribe (default) or translate-to-English."""
-
-  language: str | None = None
-  """Source audio language code (e.g. "ja"); None means auto-detect."""
+  language: Literal["en"] | None = None
+  """English-only compatibility hint; None also selects English, without detection."""

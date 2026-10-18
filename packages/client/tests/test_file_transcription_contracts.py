@@ -34,15 +34,10 @@ def _segment(*, segment_id: int, text: str, completed: bool) -> Segment:
   """Create deterministic segment fixtures used by reducer contract tests."""
   return Segment(
     id=segment_id,
-    seek=0,
     start=0.0,
     end=0.5,
     text=text,
-    tokens=[1, 2],
-    avg_logprob=-0.1,
-    compression_ratio=1.0,
     words=None,
-    temperature=0.0,
     completed=completed,
   )
 

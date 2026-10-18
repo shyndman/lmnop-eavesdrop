@@ -205,21 +205,18 @@ def _segment(text: str) -> Segment:
 
   return Segment(
     id=1,
-    seek=0,
     start=0.0,
     end=0.5,
     text=text,
-    tokens=[1, 2],
-    avg_logprob=-0.1,
-    compression_ratio=1.0,
     words=None,
-    temperature=None,
   )
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("word_timestamps", [True, False])
 async def test_transcriber_factory_options_reach_setup_payload(
   monkeypatch: pytest.MonkeyPatch,
+  word_timestamps: bool,
 ) -> None:
   """Factory options must survive all layers and appear in setup wire payload."""
 
@@ -235,12 +232,9 @@ async def test_transcriber_factory_options_reach_setup_payload(
 
   client = EavesdropClient.transcriber(
     audio_device="default",
-    word_timestamps=True,
-    initial_prompt="callsign",
-    hotwords=["orion", "apollo"],
+    word_timestamps=word_timestamps,
     send_last_n_segments=3,
-    beam_size=5,
-    model="distil-small.en",
+    language="en",
   )
 
   await client.connect()
@@ -254,12 +248,9 @@ async def test_transcriber_factory_options_reach_setup_payload(
   setup_message = deserialize_message(serialized_setup)
   assert setup_message.type == "setup"
   assert setup_message.stream == "tbeef"
-  assert setup_message.options.word_timestamps is True
-  assert setup_message.options.initial_prompt == "callsign"
-  assert setup_message.options.hotwords == ["orion", "apollo"]
+  assert setup_message.options.word_timestamps is word_timestamps
+  assert setup_message.options.language == "en"
   assert setup_message.options.send_last_n_segments == 3
-  assert setup_message.options.beam_size == 5
-  assert setup_message.options.model == "distil-small.en"
 
   await client.disconnect()
   assert fake_ws.closed is True
@@ -487,6 +478,7 @@ async def test_async_iterator_yields_language_detection_event(
   detection_event = cast(LanguageDetectionEvent, collected_events[1])
   assert detection_event.language == "ja"
   assert detection_event.probability == 0.97
+
 
 @pytest.mark.asyncio
 async def test_live_transcriber_reconnects_with_truthful_events(

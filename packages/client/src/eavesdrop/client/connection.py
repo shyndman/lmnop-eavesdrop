@@ -196,7 +196,7 @@ class WebSocketConnection:
           # deliberately do NOT surface it for RTSP_SUBSCRIBER yet — unlike the
           # transcription handler above, there is no `detection.stream in
           # self.stream_names` branch. The wiring side enforces this too:
-          # WhisperLiveClient._build_connection omits on_language_detection for
+          # EavesdropClient._build_connection omits on_language_detection for
           # RTSP_SUBSCRIBER, so self.on_language_detection is None here anyway.
           # Branch on client_type (mirroring the transcription case) so the
           # absence of subscriber support reads as a choice, not an oversight.

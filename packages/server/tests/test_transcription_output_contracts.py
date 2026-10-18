@@ -58,15 +58,10 @@ def _segment(
   """Build a lightweight segment fixture with explicit timing and completion flags."""
   return Segment(
     id=1,
-    seek=0,
     start=start,
     end=end,
     text=text,
-    tokens=[1, 2, 3],
-    avg_logprob=-0.25,
-    compression_ratio=1.0,
     words=None,
-    temperature=0.0,
     time_offset=time_offset,
     completed=completed,
   )

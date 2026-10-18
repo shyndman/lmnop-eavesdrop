@@ -5,13 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from active_listener.infra.keyboard import KeyboardControlEvent
-from eavesdrop.client import (
-  ConnectedEvent,
-  DisconnectedEvent,
-  ReconnectedEvent,
-  ReconnectingEvent,
-  TranscriptionEvent,
-)
+from eavesdrop.client import LiveClientEvent
 
 
 @dataclass(frozen=True)
@@ -25,9 +19,7 @@ class KeyboardEventSignal:
 class ClientSignal:
   """Signal carrying a live client event into app policy."""
 
-  event: (
-    ConnectedEvent | DisconnectedEvent | ReconnectingEvent | ReconnectedEvent | TranscriptionEvent
-  )
+  event: LiveClientEvent
 
 
 RuntimeSignal = KeyboardEventSignal | ClientSignal

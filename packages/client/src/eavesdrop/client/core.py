@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import TracebackType
+from typing import Literal
 
 from structlog.stdlib import BoundLogger
 
@@ -136,33 +137,34 @@ class EavesdropClient:
     port: int = 9090,
     audio_device: str = "default",
     on_capture: Callable[[bytes], None] | None = None,
-    word_timestamps: bool | None = None,
-    initial_prompt: str | None = None,
-    hotwords: list[str] | None = None,
+    word_timestamps: bool = True,
     send_last_n_segments: int | None = None,
-    beam_size: int | None = None,
-    model: str | None = None,
+    language: Literal["en"] | None = None,
   ) -> "EavesdropClient":
-    """Create a transcriber client for sending audio for transcription.
+    """Create a client for English-only Parakeet TDT v2 transcription.
 
-    :param host: Server hostname
-    :param port: Server port
-    :param audio_device: Audio device to capture from
-    :param word_timestamps: Enable word-level timestamps
-    :param initial_prompt: Initial prompt for transcription context
-    :param hotwords: Hotwords for improved recognition
-    :param send_last_n_segments: Number of recent segments to include
-    :param beam_size: Override beam search width for deterministic decoding
-    :param model: Whisper model alias override for this client session
-    :returns: Configured EavesdropClient in transcriber mode
+    :param host: Server hostname.
+    :type host: str
+    :param port: Server port.
+    :type port: int
+    :param audio_device: Audio device to capture from.
+    :type audio_device: str
+    :param on_capture: Optional callback receiving each captured audio chunk.
+    :type on_capture: Callable[[bytes], None] | None
+    :param word_timestamps: Include native word timestamps, enabled by default.
+    :type word_timestamps: bool
+    :param send_last_n_segments: Number of recent segments to include.
+    :type send_last_n_segments: int | None
+    :param language: English-only compatibility hint; None also selects English.
+    :type language: Literal["en"] | None
+    :returns: Configured EavesdropClient in transcriber mode.
+    :rtype: EavesdropClient
+    :raises pydantic.ValidationError: If transcription options are invalid.
     """
     transcription_options = UserTranscriptionOptions(
       word_timestamps=word_timestamps,
-      initial_prompt=initial_prompt,
-      hotwords=hotwords,
       send_last_n_segments=send_last_n_segments,
-      beam_size=beam_size,
-      model=model,
+      language=language,
     )
 
     return cls(

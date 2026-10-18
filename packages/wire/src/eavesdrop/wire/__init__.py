@@ -5,8 +5,8 @@ Contains shared message types and data structures used for communication
 between eavesdrop clients and servers.
 """
 
-from .codec import deserialize_message, serialize_message
-from .messages import (
+from eavesdrop.wire.codec import deserialize_message, serialize_message
+from eavesdrop.wire.messages import (
   BaseMessage,
   ClientType,
   DisconnectMessage,
@@ -21,10 +21,9 @@ from .messages import (
   UtteranceCancelledMessage,
   WebSocketHeaders,
 )
-from .transcription import (
+from eavesdrop.wire.transcription import (
   Segment,
   TranscriptionSourceMode,
-  TranscriptionTask,
   UserTranscriptionOptions,
   Word,
 )
@@ -42,7 +41,6 @@ __all__ = [
   "StreamStatusMessage",
   "TranscriptionMessage",
   "TranscriptionSourceMode",
-  "TranscriptionTask",
   "TranscriptionSetupMessage",
   "UtteranceCancelledMessage",
   "UserTranscriptionOptions",

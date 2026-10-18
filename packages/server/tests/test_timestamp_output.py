@@ -11,94 +11,24 @@ from eavesdrop.server.transcription.models import SpeechChunk
 from eavesdrop.server.transcription.session import create_session
 from eavesdrop.server.transcription.utils import (
   finalize_recording_timestamps,
-  restore_speech_timestamps,
 )
 from eavesdrop.wire import Segment, TranscriptionMessage, Word, serialize_message
-
-
-class MockSpeechTimestampsMap:
-  """Fake faster-whisper timestamp map that returns chunk-local times."""
-
-  def __init__(self, chunks: list[SpeechChunk], rate: int) -> None:
-    _ = chunks
-    _ = rate
-
-  def get_chunk_index(self, t: float) -> int:
-    _ = t
-    return 0
-
-  def get_original_time(self, t: float, chunk_index: int = 0) -> float:
-    _ = chunk_index
-    return t % 100.0
-
-
-class MockVadModule(ModuleType):
-  SpeechTimestampsMap: type[MockSpeechTimestampsMap] = MockSpeechTimestampsMap
-
-
-def _install_mock_vad(monkeypatch: pytest.MonkeyPatch) -> None:
-  monkeypatch.setitem(sys.modules, "faster_whisper", ModuleType("faster_whisper"))
-  monkeypatch.setitem(sys.modules, "faster_whisper.vad", MockVadModule("faster_whisper.vad"))
 
 
 def _segment(*, start: float, end: float, time_offset: float) -> Segment:
   return Segment(
     id=1,
-    seek=0,
     start=start,
     end=end,
     text="hello",
-    tokens=[1, 2, 3],
-    avg_logprob=-0.25,
-    compression_ratio=1.0,
     words=None,
-    temperature=0.0,
     time_offset=time_offset,
     completed=False,
   )
 
 
-def test_vad_restoration_with_late_flattening_preserves_offset(
-  monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  _install_mock_vad(monkeypatch)
-  recording_offset = 100.0
-  local_start = 0.5
-  local_end = 1.5
-  word = Word(
-    start=local_start + 0.1,
-    end=local_start + 0.5,
-    word="hello",
-    probability=0.99,
-  )
-  segment = Segment(
-    id=1,
-    seek=0,
-    start=local_start,
-    end=local_end,
-    text="hello",
-    tokens=[1, 2, 3],
-    avg_logprob=-0.25,
-    compression_ratio=1.0,
-    words=[word],
-    temperature=0.0,
-    time_offset=0.0,
-    completed=False,
-  )
-
-  speech_chunks: list[SpeechChunk] = [SpeechChunk(start=0, end=160000)]
-  sampling_rate = 16000
-
-  _ = restore_speech_timestamps([segment], speech_chunks, sampling_rate)
-  _ = finalize_recording_timestamps([segment], recording_offset)
-
-  assert abs(segment.start - (recording_offset + local_start + 0.1)) < 1e-9
-  assert abs(word.start - (recording_offset + local_start + 0.1)) < 1e-9
-  assert segment.time_offset == recording_offset
-
-
 def test_finalize_recording_timestamps_direct() -> None:
-  word = Word(start=0.1, end=0.5, word="a", probability=1.0)
+  word = Word(start=0.1, end=0.5, word="a")
   segment = _segment(start=0.0, end=1.0, time_offset=0.0)
   segment.words = [word]
 
@@ -132,15 +62,10 @@ def test_recording_relative_times_remain_monotonic_across_window_boundaries() ->
 def test_transcription_message_serializes_flattened_timestamps() -> None:
   segment = Segment(
     id=1,
-    seek=0,
     start=43.0,
     end=45.0,
     text="hello",
-    tokens=[1, 2, 3],
-    avg_logprob=-0.25,
-    compression_ratio=1.0,
     words=None,
-    temperature=0.0,
     time_offset=40.0,
     completed=False,
   )
@@ -160,22 +85,16 @@ def test_transcription_message_serializes_flattened_timestamps() -> None:
 def test_transcription_message_word_timestamps_share_recording_timeline() -> None:
   segment = Segment(
     id=1,
-    seek=0,
     start=40.0,
     end=42.5,
     text="worded hello",
-    tokens=[1, 2, 3],
-    avg_logprob=-0.25,
-    compression_ratio=1.0,
     words=[
       Word(
         start=40.25,
         end=40.6,
         word="word",
-        probability=0.99,
       )
     ],
-    temperature=0.0,
     time_offset=40.0,
     completed=False,
   )

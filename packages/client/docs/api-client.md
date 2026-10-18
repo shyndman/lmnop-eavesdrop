@@ -1,205 +1,153 @@
-# Eavesdrop Client API Refactor
+# Eavesdrop Client API
 
-Refactor the client project, transforming the existing CLI-based eavesdrop client into a clean, importable library while preserving all existing functionality. Rearrange the current WebSocket connection, audio capture, and message handling components into a unified programmatic API that supports both transcriber mode (sending audio for transcription) and subscriber mode (receiving transcriptions from RTSP streams). Keep the core technical implementation the same—simply remove the terminal interface and CLI aspects while exposing the underlying capabilities through a streaming async iterator API.
+`EavesdropClient` connects to an Eavesdrop transcription server using the
+English-only NVIDIA Parakeet TDT v2 backend. It provides live transcription,
+finite-file transcription, and RTSP subscriptions.
 
-## API Design
-
-### Unified Client Interface
-
-```python
-from eavesdrop.client import EavesdropClient
-from eavesdrop.wire import TranscriptionMessage
-
-class EavesdropClient:
-    def __init__(
-        self,
-        host: str = "localhost",
-        port: int = 9090,
-        mode: Literal["transcriber", "subscriber"] = "transcriber",
-
-        # Common callbacks (optional)
-        on_ready: Callable[[str], None] | None = None,              # backend_name
-        on_transcription: Callable[[TranscriptionMessage], None] | None = None,  # rich message data
-        on_error: Callable[[str], None] | None = None,              # error_message
-
-        # Transcriber mode specific
-        audio_device: int | str | None = None,                      # sounddevice selection
-        on_streaming_started: Callable[[], None] | None = None,     # optional
-        on_streaming_stopped: Callable[[], None] | None = None,     # optional
-
-        # Subscriber mode specific
-        stream_names: list[str] | None = None,                      # RTSP stream names
-        on_stream_status: Callable[[str, str, str | None], None] | None = None,  # stream, status, message
-    ):
-        ...
-
-    # Async iterator interface
-    def __aiter__(self) -> AsyncIterator[TranscriptionMessage]: ...
-    async def __anext__(self) -> TranscriptionMessage: ...
-
-    # Context manager (auto connect/disconnect)
-    async def __aenter__(self) -> 'EavesdropClient': ...
-    async def __aexit__(self, *args) -> None: ...
-
-    # Connection management
-    async def connect(self) -> None: ...
-    async def disconnect(self) -> None: ...
-
-    # Transcriber mode control (raises error on subscriber mode)
-    async def start_streaming(self, recording_id: str) -> None: ...
-    async def stop_streaming(self) -> None: ...
-
-    # Status checks
-    def is_connected(self) -> bool: ...
-    def is_streaming(self) -> bool: ...  # transcriber mode only
-```
-
-## Usage Examples
-
-### Transcriber Mode (Audio → Transcription)
+## Live transcription
 
 ```python
 import uuid
 
-# Basic usage with context manager
-async with EavesdropClient(mode="transcriber", audio_device="USB Audio") as client:
-    recording_id = uuid.uuid4().hex
-    await client.start_streaming(recording_id)
+from eavesdrop.client import EavesdropClient
 
-    async for transcription in client:
-        print(f"Stream: {transcription.stream}")
-        print(f"Language: {transcription.language}")
-        for segment in transcription.segments:
-            print(f"  {segment.start:.2f}s: {segment.text}")
 
-        # Control streaming based on content
-        if "stop recording" in segment.text.lower():
-            await client.stop_streaming()
-
-# Manual connection management
-client = EavesdropClient(
-    mode="transcriber",
-    on_ready=lambda backend: print(f"Ready with {backend}"),
-    on_error=lambda msg: print(f"Error: {msg}"),
-    on_streaming_started=lambda: print("Started streaming audio"),
-    on_streaming_stopped=lambda: print("Stopped streaming audio")
-)
-
-await client.connect()
-await client.start_streaming(uuid.uuid4().hex)
-
-async for transcription in client:
-    # Process rich transcription data
-    pass
-
-await client.disconnect()
+async def transcribe_microphone() -> None:
+  async with EavesdropClient.transcriber(
+    host="localhost",
+    port=9090,
+    audio_device="default",
+    word_timestamps=True,
+    language="en",
+  ) as client:
+    await client.start_streaming(uuid.uuid4().hex)
+    async for event in client:
+      if event.family != "transcription":
+        continue
+      for segment in event.message.segments:
+        print(f"{segment.start:.2f}-{segment.end:.2f}: {segment.text}")
+        if segment.words is not None:
+          for word in segment.words:
+            print(f"  {word.start:.2f}-{word.end:.2f}: {word.word}")
 ```
 
-### Subscriber Mode (RTSP Stream Transcriptions)
+The transcriber factory accepts:
+
+- `host: str = "localhost"` and `port: int = 9090`
+- `audio_device: str = "default"`
+- `on_capture: Callable[[bytes], None] | None = None`, for captured PCM chunks
+- `word_timestamps: bool = True`, to include native word timings
+- `send_last_n_segments: int | None = None`, a positive segment-window limit
+- `language: Literal["en"] | None = None`, an English-only compatibility hint
+
+`None` for language also means English; there is no language auto-detection.
+Word timestamps require an actual boolean. They are enabled by default, and
+`False` omits words from the result.
+
+Model selection is controlled by the server. The client no longer accepts
+`initial_prompt`, `hotwords`, `beam_size`, `model`, or `task`. Translation is
+unsupported. Old fields in `UserTranscriptionOptions` or a setup JSON message
+raise validation errors rather than being silently ignored.
+
+## File transcription
+
+Call `transcribe_file()` on an idle transcriber client. It manages its own
+connection and uses the finite-file source mode automatically.
 
 ```python
-# Subscribe to multiple RTSP streams
-async with EavesdropClient(
-    mode="subscriber",
+from eavesdrop.client import EavesdropClient
+
+
+async def transcribe_recording() -> None:
+  client = EavesdropClient.transcriber(word_timestamps=True)
+  result = await client.transcribe_file("recording.wav", timeout_s=120.0)
+  print(result.text)
+  for segment in result.segments:
+    print(segment.start, segment.end, segment.text)
+  for warning in result.warnings:
+    print(f"Warning: {warning}")
+```
+
+`FileTranscriptionResult` contains `segments`, `text`, `language`, and `warnings`.
+A file operation cannot run alongside live streaming or another file operation
+on the same client.
+
+## RTSP subscriptions
+
+```python
+from eavesdrop.client import EavesdropClient
+
+
+async def subscribe() -> None:
+  async with EavesdropClient.subscriber(
     stream_names=["office_audio", "meeting_room_1"],
-    on_stream_status=lambda stream, status, msg: print(f"[{stream}] {status}: {msg}")
-) as client:
-
-    async for transcription in client:
-        print(f"[{transcription.stream}] {transcription.language}")
-        for segment in transcription.segments:
-            print(f"  {segment.text}")
+    host="localhost",
+    port=9090,
+  ) as client:
+    async for event in client:
+      if event.family == "transcription":
+        for segment in event.message.segments:
+          print(f"[{event.stream}] {segment.text}")
 ```
 
-### Audio Device Selection
+Subscribers receive transcription messages from server-managed streams and do
+not send microphone audio or transcription setup options.
+
+## Session options
+
+For direct construction or a connection-specific override, use the strict wire
+model:
 
 ```python
-import sounddevice as sd
+from eavesdrop.wire import TranscriptionSourceMode, UserTranscriptionOptions
 
-# List available devices
-print(sd.query_devices())
-# Output:
-#   0 Built-in Microphone, Core Audio (2 in, 0 out)
-# > 1 USB Audio Device, Core Audio (1 in, 0 out)
-#   2 BlackHole 2ch, Core Audio (2 in, 2 out)
-
-# Use device by index, name, or substring
-client1 = EavesdropClient(audio_device=1)              # By index
-client2 = EavesdropClient(audio_device="USB Audio")    # By name
-client3 = EavesdropClient(audio_device="BlackHole")    # Partial match
-client4 = EavesdropClient(audio_device=None)           # Default device
+options = UserTranscriptionOptions(
+  source_mode=TranscriptionSourceMode.LIVE,
+  send_last_n_segments=3,
+  word_timestamps=True,
+  language="en",
+)
 ```
 
-## Lifecycle & Behavior
+Pass it as `transcription_options` to the constructor or `setup_options` to
+`connect()`. `source_mode` preserves live versus finite-file routing intent.
+Use `transcribe_file()` for normal file uploads.
 
-### Transcriber Mode Lifecycle
-1. `connect()` → WebSocket connection + session setup + microphone starts (no audio transmission)
-2. `start_streaming(recording_id)` → Declare a new live recording epoch, then begin sending audio
-3. `stop_streaming()` → Stop sending audio (microphone stays "warm"/capturing)
-4. `disconnect()` → Close WebSocket + stop microphone capture
+## Lifecycle and events
 
-### Subscriber Mode Lifecycle
-1. `connect()` → WebSocket connection + immediately begins receiving transcriptions
-2. `disconnect()` → Close WebSocket connection
+1. `connect()` establishes the connection and initializes capture resources.
+2. `start_streaming(recording_id)` declares a recording epoch and starts capture.
+3. `stop_streaming()` stops capture and waits for the audio loop to finish.
+4. `flush(recording_id)` requests a final response for the active recording.
+5. `disconnect()` closes the connection and releases resources.
 
-### Error Handling
-- All `ErrorMessage` objects from server → Call `on_error()` callback for logging
-- WebSocket disconnection → Automatically stops async iteration (`StopAsyncIteration`)
-- Server determines error fatality by closing connection or not
-- Setup errors (invalid streams, missing headers) → Server closes connection immediately
-- Runtime errors → Logged via callback, iteration continues unless server closes connection
+The async context manager connects and disconnects automatically. Live clients
+iterate over events, including `connected`, `transcription`, `disconnected`,
+`reconnecting`, and `reconnected`. Live transcribers automatically retry
+unexpected disconnects. File operations do not reconnect automatically.
 
-### Rich Transcription Data
-The client passes through complete `TranscriptionMessage` objects containing:
-- `stream: str` - Stream identifier
-- `language: str | None` - Detected/specified language
-- `segments: list[Segment]` - Rich segment data with timestamps, confidence scores
-- `timestamp: float` - Message timestamp
+Legacy `language_detection` events remain decodable for compatibility, but the
+English-only backend does not perform language detection.
 
-No data simplification or text extraction—users receive the full wire protocol data.
+## Transcription data
 
-## Implementation Notes
+A `TranscriptionMessage` contains its stream, message timestamp, language, and
+segments. Live messages may include a `recording_id`; a flush response sets
+`flush_complete=True`.
 
-### Components to Keep
-- `WebSocketConnection` - Refactor to support both client types via headers
-- `AudioCapture` - Keep for transcriber mode with device selection support
-- Message protocol handling from `eavesdrop.wire`
+Each `Segment` contains:
 
-### Components to Remove
-- `TerminalInterface` - All terminal/keyboard interaction
-- `MicrophoneClient` - CLI orchestration class
-- `__main__.py` - CLI entry point
-- `app.py` - CLI application logic
+- `id`: the existing chained CRC64 identifier assigned on completion
+- `start` and `end`: seconds on the recording timeline
+- `text`: recognized text
+- `words`: native word timings, or `None` when omitted
+- `completed`: whether this segment is finalized
+- `duration`: `end - start`
 
-### Components to Add
-- Stream subscription logic for subscriber mode
-- Unified `EavesdropClient` class with mode parameter
-- AsyncIterator implementation for streaming results
-- Context manager support for automatic connection management
+Each `Word` contains `start`, `end`, and `word`. Segment and word timestamps share
+the same recording timeline. Completed chain IDs and the trailing incomplete
+segment convention are unchanged.
 
-### Dependencies
-- Keep existing: `sounddevice`, `websockets`, `pydantic`, `numpy`, `structlog`, `eavesdrop-wire`
-- Remove CLI script entry point from `pyproject.toml`
-
-## Future Enhancements
-
-A higher-level robust client could wrap this core client to provide:
-- Automatic reconnection with exponential backoff
-- Connection pooling
-- Retry logic and error recovery
-- Health monitoring
-
-```python
-# Future robust wrapper example
-class RobustEavesdropClient:
-    async def __aiter__(self):
-        while self.should_retry:
-            try:
-                async with EavesdropClient(...) as client:
-                    async for transcription in client:
-                        yield transcription
-            except StopAsyncIteration:
-                await self._handle_reconnection()
-```
-
-This keeps the core client simple and predictable while enabling advanced reliability features as opt-in higher-level abstractions.
+Segments no longer contain `seek`, `tokens`, `compression_ratio`, `temperature`,
+`avg_logprob`, or `avg_probability`. Words no longer contain `probability`. No
+replacement confidence values are fabricated.

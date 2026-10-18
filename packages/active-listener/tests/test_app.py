@@ -52,6 +52,7 @@ from active_listener.recording.spectrum import (
 from eavesdrop.client import (
   ConnectedEvent,
   DisconnectedEvent,
+  LanguageDetectionEvent,
   ReconnectedEvent,
   ReconnectingEvent,
   TranscriptionEvent,
@@ -558,21 +559,16 @@ def _segment(
 ) -> Segment:
   return Segment(
     id=segment_id,
-    seek=0,
     start=start,
     end=end,
     text=text,
-    tokens=[],
-    temperature=0.0,
-    avg_logprob=0.0,
-    compression_ratio=1.0,
     words=words,
     completed=completed,
   )
 
 
 def _word(text: str, *, start: float, end: float) -> Word:
-  return Word(start=start, end=end, word=text, probability=1.0)
+  return Word(start=start, end=end, word=text)
 
 
 def _recording_session(service: ActiveListenerService) -> RecordingSession:
@@ -1697,6 +1693,31 @@ async def test_reconnecting_and_reconnected_events_update_phase() -> None:
 
 
 @pytest.mark.asyncio
+async def test_language_detection_events_leave_idle_and_recording_state_unchanged() -> None:
+  harness = _service()
+  service = harness.service
+  event = LanguageDetectionEvent(stream="stream-1", language="en", probability=1.0)
+
+  await service.handle_client_event(event)
+
+  assert service.phase is ForegroundPhase.IDLE
+  assert harness.dbus_service.states == []
+  assert harness.dbus_service.signals == []
+
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
+  await service.handle_client_event(event)
+
+  assert service.phase is ForegroundPhase.RECORDING
+  assert service.disconnect_generation == 0
+  assert harness.client.stop_calls == 0
+  assert harness.dbus_service.states == [ForegroundPhase.RECORDING]
+  assert harness.dbus_service.signals == []
+
+  _ = await service.handle_action(AppAction.CANCEL)
+  await service.wait_for_background_tasks()
+
+
+@pytest.mark.asyncio
 async def test_start_and_finish_publish_recording_and_idle_states() -> None:
   client = FakeClient(
     flush_results=[
@@ -2189,18 +2210,6 @@ async def test_transcription_events_are_consumed_only_while_recording() -> None:
     )
     in harness.logger.debug_records
   )
-  assert (
-    LogRecord(
-      event="transcription segment probabilities",
-      fields={
-        "segments": [
-          "alpha   avg_logprob=0.000 p=1.000 complete",
-          "draft   avg_logprob=0.000 p=1.000 incomplete",
-        ],
-      },
-    )
-    in harness.logger.info_records
-  )
   assert "recording finished" in harness.logger.info_messages
   assert harness.logger.info_messages[-1] == "text emitted"
 
@@ -2619,15 +2628,15 @@ async def test_finalize_recording_normalizes_hashtag_before_emitting_text() -> N
 
 
 @pytest.mark.asyncio
-async def test_finalize_recording_removes_unescaped_thank_you_mentions() -> None:
+@pytest.mark.parametrize(
+  "text",
+  ["Thank you.", "alpha thank you beta THANK YOU, gamma Thank you. delta thank you! echo"],
+)
+async def test_finalize_recording_preserves_thank_you_mentions(text: str) -> None:
   client = FakeClient(
     flush_results=[
       _message(
-        _segment(
-          1,
-          "alpha thank you beta THANK YOU, gamma Thank you. delta thank you! echo",
-          completed=True,
-        ),
+        _segment(1, text, completed=True),
         _segment(2, "tail", completed=False),
       )
     ]
@@ -2638,11 +2647,11 @@ async def test_finalize_recording_removes_unescaped_thank_you_mentions() -> None
   _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
   await harness.service.wait_for_background_tasks()
 
-  assert harness.emitter.emitted == ["alpha beta gamma delta echo "]
+  assert harness.emitter.emitted == [f"{text} "]
 
 
 @pytest.mark.asyncio
-async def test_finalize_recording_keeps_escaped_thank_you_mentions() -> None:
+async def test_finalize_recording_preserves_escape_thank_you_literally() -> None:
   client = FakeClient(
     flush_results=[
       _message(
@@ -2661,7 +2670,9 @@ async def test_finalize_recording_keeps_escaped_thank_you_mentions() -> None:
   _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
   await harness.service.wait_for_background_tasks()
 
-  assert harness.emitter.emitted == ["alpha thank you beta THANK YOU, gamma Thank you. "]
+  assert harness.emitter.emitted == [
+    "alpha escape thank you beta escape THANK YOU, gamma escape Thank you. "
+  ]
 
 
 @pytest.mark.asyncio
@@ -2716,12 +2727,12 @@ async def test_finalize_recording_drops_command_runs_when_llm_is_disabled() -> N
   _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
   await harness.service.wait_for_background_tasks()
 
-  assert harness.emitter.emitted == ["Hello, Bye. "]
+  assert harness.emitter.emitted == ["Hello, thank you, Bye. "]
   assert harness.rewrite_client.calls == []
 
 
 @pytest.mark.asyncio
-async def test_finalize_recording_removes_thank_you_before_rewrite_when_llm_enabled(
+async def test_finalize_recording_preserves_thank_you_before_rewrite_when_llm_enabled(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
   client = FakeClient(
@@ -2755,7 +2766,7 @@ async def test_finalize_recording_removes_thank_you_before_rewrite_when_llm_enab
   assert rewrite_client.calls == [
     {
       "instructions": "Rewrite this transcript.",
-      "transcript": "I want to keep going thank you.",
+      "transcript": "Thank you? thank you, I want to keep going escape thank you.",
     }
   ]
 
@@ -2812,7 +2823,7 @@ async def test_live_transcription_publishes_shaped_runs() -> None:
   ]
   assert published == [
     [
-      TextRun(text="hilary release#42", is_command=False, is_complete=True),
+      TextRun(text="hilary release#42 thank you", is_command=False, is_complete=True),
       TextRun(text="scratch that.", is_command=True, is_complete=False),
     ]
   ]
@@ -2820,9 +2831,8 @@ async def test_live_transcription_publishes_shaped_runs() -> None:
 
 @pytest.mark.asyncio
 async def test_live_overlay_leaves_incomplete_tail_unshaped() -> None:
-  # Flicker guard: the incomplete tail is unstable (Whisper keeps revising it), so it is shown
-  # raw. Shaping it would make the preview flicker — here a transient "thank you" would vanish
-  # then reappear as the segment is revised. Only the committed prefix is shaped.
+  # Flicker guard: the incomplete tail is unstable as the transcriber revises it, so it is
+  # shown raw. Spoken symbols should not fuse before the segment is committed.
   harness = _service()
   service = harness.service
 
@@ -2842,13 +2852,13 @@ async def test_live_overlay_leaves_incomplete_tail_unshaped() -> None:
         ),
         _segment(
           2,
-          "thank you",
+          "dot slash",
           completed=True,
           start=0.3,
           end=0.5,
           words=[
-            _word("thank", start=0.3, end=0.4),
-            _word("you", start=0.4, end=0.5),
+            _word("dot", start=0.3, end=0.4),
+            _word("slash", start=0.4, end=0.5),
           ],
         ),
         flush_complete=False,
@@ -2864,7 +2874,7 @@ async def test_live_overlay_leaves_incomplete_tail_unshaped() -> None:
   assert published == [
     [
       TextRun(text="hilary", is_command=False, is_complete=True),
-      TextRun(text="thank you", is_command=False, is_complete=False),
+      TextRun(text="dot slash", is_command=False, is_complete=False),
     ]
   ]
 

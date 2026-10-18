@@ -68,12 +68,9 @@ class TestTranscriptionConfig:
     """Test that TranscriptionConfig creates with expected defaults."""
     config = TranscriptionConfig()
 
-    assert config.model == "distil-medium.en"
-    assert config.custom_model is None
     assert config.language == "en"
     assert config.use_vad is True
     assert config.send_last_n_segments == 10
-    assert config.device_index == 0
     assert config.vad_parameters.threshold == 0.5
     assert config.vad_parameters.neg_threshold is None
     assert config.vad_parameters.min_speech_duration_ms == 0
@@ -115,43 +112,14 @@ class TestTranscriptionConfig:
         }
       )
 
-  def test_model_custom_model_mutual_exclusion(self, fake_filesystem):
-    """Test that model and custom_model cannot both be specified."""
-    # Valid cases
-    config1 = TranscriptionConfig(model="base")
-    assert config1.model == "base"
-    assert config1.custom_model is None
+  @pytest.mark.parametrize("option", ["initial_prompt", "hotwords", "beam_size", "same_output_threshold", "custom_model", "gpu_name", "task"])
+  def test_removed_options_fail_visibly(self, option: str) -> None:
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+      TranscriptionConfig.model_validate({option: "obsolete"})
 
-    # Create fake files for custom_model testing
-    fake_filesystem.create_file("/path/to/model")
-    config2 = TranscriptionConfig(model=None, custom_model=Path("/path/to/model"))
-    assert config2.model is None
-    assert str(config2.custom_model) == "/path/to/model"
-
-    # Invalid case - both specified
-    fake_filesystem.create_file("/another/model")
-    with pytest.raises(ValueError, match="Cannot specify both 'model' and 'custom_model'"):
-      TranscriptionConfig.model_validate({"model": "base", "custom_model": "/another/model"})
-
-  def test_device_index_rejection(self):
-    """Test that device_index cannot be specified in input."""
-    with pytest.raises(ValueError, match="device_index cannot be specified"):
-      TranscriptionConfig.model_validate({"device_index": 1})
-
-  def test_model_path_property(self, fake_filesystem):
-    """Test that model_path property returns the correct path."""
-    # Standard model
-    config1 = TranscriptionConfig(model="base")
-    assert config1.model_path == "base"
-
-    # Custom model takes precedence
-    fake_filesystem.create_file("/custom/path")
-    config2 = TranscriptionConfig(model=None, custom_model=Path("/custom/path"))
-    assert config2.model_path == "/custom/path"
-
-    # Neither specified gets default
-    config3 = TranscriptionConfig(model=None)
-    assert config3.model_path == "distil-medium.en"
+  def test_non_english_language_is_rejected(self) -> None:
+    with pytest.raises(ValueError, match="Input should be 'en'"):
+      TranscriptionConfig.model_validate({"language": "fr"})
 
 
 class TestEavesdropConfig:
@@ -173,8 +141,7 @@ class TestConfigFileLoading:
     """Test loading a valid YAML configuration file."""
     config_data = """
 transcription:
-  model: "base"
-  language: "fr"
+  language: "en"
   use_vad: false
   buffer:
     sample_rate: 22050
@@ -188,30 +155,13 @@ rtsp:
     fake_filesystem.create_file("/test/config.yaml", contents=config_data)
     config = load_config_from_file(Path("/test/config.yaml"))
 
-    assert config.transcription.model == "base"
-    assert config.transcription.language == "fr"
+    assert config.transcription.language == "en"
     assert config.transcription.use_vad is False
     assert config.transcription.buffer.sample_rate == 22050
     assert config.transcription.buffer.clip_audio is True
     assert len(config.rtsp.streams) == 2
     assert "office" in config.rtsp.streams
     assert "lobby" in config.rtsp.streams
-
-  def test_hotwords_configuration(self, fake_filesystem):
-    """Test that hotwords can be configured from YAML."""
-    config_data = """
-transcription:
-  hotwords: ["hello", "world", "test"]
-"""
-    fake_filesystem.create_file("/test/config.yaml", contents=config_data)
-    config = load_config_from_file(Path("/test/config.yaml"))
-
-    assert config.transcription.hotwords == ["hello", "world", "test"]
-
-  def test_hotwords_empty_default(self):
-    """Test that hotwords defaults to empty list."""
-    config = TranscriptionConfig()
-    assert config.hotwords == []
 
   def test_load_empty_config_file(self, fake_filesystem):
     """Test error handling for empty config file."""
@@ -239,10 +189,9 @@ transcription:
 
     config_data = """
 transcription:
-  model: "base"
   custom_model: "/path/to/model"  # This should cause mutual exclusion error
 """
     fake_filesystem.create_file("/test/config.yaml", contents=config_data)
 
-    with pytest.raises(ValueError, match="Cannot specify both 'model' and 'custom_model'"):
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
       load_config_from_file(Path("/test/config.yaml"))

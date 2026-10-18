@@ -564,15 +564,10 @@ async def test_recording_boundary_resets_live_buffer_session_and_flush_state() -
   client.session.add_completed_segment(
     Segment(
       id=1,
-      seek=0,
       start=0.0,
       end=0.2,
       text="alpha",
-      tokens=[1, 2, 3],
-      avg_logprob=-0.25,
-      compression_ratio=1.0,
       words=None,
-      temperature=0.0,
       completed=True,
     )
   )
@@ -673,15 +668,10 @@ async def test_live_utterance_cancel_discards_tail_without_merging_future_audio(
   client.session.add_completed_segment(
     Segment(
       id=1,
-      seek=0,
       start=0.0,
       end=0.2,
       text="alpha",
-      tokens=[1, 2, 3],
-      avg_logprob=-0.25,
-      compression_ratio=1.0,
       words=None,
-      temperature=0.0,
       completed=True,
     )
   )

@@ -24,7 +24,7 @@ def test_transcription_tracers_remain_operational_without_langfuse_credentials(
     with session.trace_feature_stage() as tracer:
       tracer()
     with session.trace_inference_stage() as tracer:
-      tracer(attempts=2, final_temperature=0.0)
+      tracer()
     with session.trace_segment_stage() as tracer:
       tracer([])
 
@@ -36,5 +36,4 @@ def test_transcription_tracers_remain_operational_without_langfuse_credentials(
     "segment_processing",
     "total_pipeline",
   }
-  assert session.generation_attempts == 2
   assert session.get_recording_time_range() == (2.0, 3.5)

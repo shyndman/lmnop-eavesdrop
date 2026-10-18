@@ -31,7 +31,7 @@ from active_listener.recording.reducer import (
 )
 from active_listener.recording.spectrum import SAMPLE_RATE_HZ
 from active_listener.recording.text_shaping import shape_runs
-from eavesdrop.wire import Segment, TranscriptionMessage
+from eavesdrop.wire import TranscriptionMessage
 
 HOLD_THRESHOLD_S = 0.250
 RECORDING_CHANNEL_COUNT = 1
@@ -269,26 +269,14 @@ class RecordingSession:
         "transcription word timings",
         words=word_timings,
       )
-    segment_probs = [
-      _format_segment_prob(seg)
-      for seg in [
-        *reduction.segments,
-        *([reduction.incomplete_segment] if reduction.incomplete_segment else []),
-      ]
-    ]
-    if segment_probs:
-      self.logger.info(
-        "transcription segment probabilities",
-        segments=segment_probs,
-      )
     state.last_id = reduction.last_id
     self._connection_last_id = reduction.last_id
     # Shaping runs live (not just at finalize) so the overlay preview equals the LLM input
     # for committed text. Only completed runs are shaped: the incomplete tail is unstable
-    # (Whisper keeps revising it), so shaping it would flicker the preview — a transient
-    # "thank you" vanishing then reappearing, "dot"/"slash" fusing prematurely. The LLM only
-    # ever consumes completed runs, so the tail never needs shaping. Reshape only when the
-    # committed runs actually change; most windows just churn the tail and reuse the cache.
+    # as the transcriber revises it, so shaping it would flicker the preview when spoken
+    # symbols like "dot"/"slash" fuse prematurely. The LLM only ever consumes completed runs,
+    # so the tail never needs shaping. Reshape only when the committed runs actually change;
+    # most windows just churn the tail and reuse the cache.
     self._harvest_corrections()
     completed_source = build_completed_text_runs(state)
     if completed_source != self._shaped_completed_source:
@@ -446,12 +434,3 @@ class RecordingSession:
 def _format_word_timing(_index: int, word: TimedWord) -> str:
   duration_s = word.end_s - word.start_s
   return f"{word.text}   {word.start_s:.3f}-{word.end_s:.3f} ({duration_s:.3f})"
-
-
-def _format_segment_prob(segment: Segment) -> str:
-  text = segment.text.strip()
-  return (
-    f"{text}   avg_logprob={segment.avg_logprob:.3f}"
-    f" p={segment.avg_probability:.3f}"
-    f" {'complete' if segment.completed else 'incomplete'}"
-  )

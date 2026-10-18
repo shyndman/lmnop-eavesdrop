@@ -12,6 +12,8 @@ def test_transcriber_factory_sets_transcriber_mode() -> None:
   client = EavesdropClient.transcriber(audio_device="default")
 
   assert client._client_type == ClientType.TRANSCRIBER
+  assert client._transcription_options.word_timestamps is True
+  assert client._transcription_options.language is None
 
 
 def test_subscriber_factory_sets_subscriber_mode() -> None:

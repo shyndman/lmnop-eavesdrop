@@ -9,13 +9,7 @@ from decimal import Decimal
 from typing import Protocol
 
 from active_listener.recording.reducer import RecordingReducerState
-from eavesdrop.client import (
-  ConnectedEvent,
-  DisconnectedEvent,
-  ReconnectedEvent,
-  ReconnectingEvent,
-  TranscriptionEvent,
-)
+from eavesdrop.client import LiveClientEvent
 from eavesdrop.wire import TranscriptionMessage
 
 CorrectionLoadTask = asyncio.Task[dict[str, str]]
@@ -148,11 +142,7 @@ class ActiveListenerClient(Protocol):
     """Request a committed transcription flush from the server."""
     ...
 
-  def __aiter__(
-    self,
-  ) -> AsyncIterator[
-    ConnectedEvent | DisconnectedEvent | ReconnectingEvent | ReconnectedEvent | TranscriptionEvent
-  ]:
+  def __aiter__(self) -> AsyncIterator[LiveClientEvent]:
     """Iterate ordered client lifecycle events."""
     ...
 

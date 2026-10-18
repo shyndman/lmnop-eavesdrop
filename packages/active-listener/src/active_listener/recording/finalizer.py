@@ -154,8 +154,7 @@ class RecordingFinalizer:
         # LLM-input view: command runs are wrapped in instruction markers. Marker-wrapping is
         # an LLM-boundary concern, so the shaping pipeline never needs to know the LLM exists.
         rewrite_input = serialize_runs_for_rewrite(completed_runs)
-        # Shaping can empty the committed text (e.g. a dictation that was only a hallucinated
-        # "thank you"); skip the rewrite rather than calling the LLM on empty input.
+        # Skip the rewrite if shaping and normalization leave no committed text.
         if not rewrite_input.strip():
           self.logger.info("recording finalized without committed text", stream=message.stream)
           return
