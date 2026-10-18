@@ -10,7 +10,7 @@ from typing import Protocol, cast
 import numpy as np
 from numpy.typing import NDArray
 
-# Audio configuration constants (WhisperLive compatible)
+# Audio configuration constants for the server PCM contract
 SAMPLE_RATE = 16000
 CHANNELS = 1
 DTYPE = np.float32

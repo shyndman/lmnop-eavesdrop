@@ -8,11 +8,11 @@ from eavesdrop.wire import ServerReadyMessage, deserialize_message, serialize_me
 
 
 def test_server_ready_message_round_trips() -> None:
-  message = ServerReadyMessage(stream="stream-1", backend="faster_whisper")
+  message = ServerReadyMessage(stream="stream-1", backend="parakeet")
 
   serialized = serialize_message(message)
   decoded = deserialize_message(serialized)
 
   assert decoded.type == "server_ready"
   assert decoded.stream == "stream-1"
-  assert decoded.backend == "faster_whisper"
+  assert decoded.backend == "parakeet"

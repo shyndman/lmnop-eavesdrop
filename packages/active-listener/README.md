@@ -70,6 +70,12 @@ The sample config leaves `ffmpeg_path: null`, which means PATH lookup remains th
 
 ## Rewrite model and prompt files
 
+Completed transcript runs receive deterministic spelling substitutions, spoken-symbol
+conversion, and stored corrections before appearing in the preview or entering the rewrite
+step. The unstable live tail stays unshaped until it is committed. Dictated phrases such as
+`thank you` and `escape thank you` are preserved literally; `escape` has no special meaning
+in text shaping.
+
 Rewrite config now uses a provider block under `llm_rewrite.provider`. The seeded sample config uses:
 
 - `prompt_path: "prompts/rewrite_prompt.md"`

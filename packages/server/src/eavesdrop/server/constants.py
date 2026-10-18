@@ -31,4 +31,4 @@ SINGLE_MODEL = True
 """Whether to use single shared model instance - hardcoded constant."""
 
 SAMPLE_RATE = 16_000
-"""Sample rate required for the Whisper model - hardcoded constant."""
+"""Sample rate required for the speech recognition model - hardcoded constant."""

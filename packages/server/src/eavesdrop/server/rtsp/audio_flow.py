@@ -23,7 +23,7 @@ class RTSPAudioSource(AudioSource):
   """
   RTSP implementation of AudioSource protocol.
 
-  Converts raw FFmpeg audio bytes to numpy arrays suitable for Whisper transcription.
+  Converts raw FFmpeg audio bytes to numpy arrays suitable for speech recognition transcription.
   Handles the complex audio format conversion chain from RTSP streams through FFmpeg
   to the streaming transcription processor.
 
@@ -33,13 +33,13 @@ class RTSPAudioSource(AudioSource):
   Data Conversion:
     1. FFmpeg outputs 16-bit signed PCM little-endian (s16le) as bytes
     2. np.frombuffer() converts bytes → int16 numpy array
-    3. Normalize int16 → float32 [-1.0, 1.0] for Whisper compatibility
+    3. Normalize int16 → float32 [-1.0, 1.0] for speech recognition compatibility
     4. Division by 32768.0 handles int16 → float32 normalization
 
   Format Specifications:
     - Input: Raw bytes from FFmpeg (16-bit PCM, little-endian, 16kHz)
     - Output: numpy.ndarray (float32, normalized [-1.0, 1.0], 16kHz)
-    - Sample Rate: 16000 Hz (required by Whisper)
+    - Sample Rate: 16000 Hz (required by speech recognition)
     - Bit Depth: 16-bit signed → float32 conversion
 
   Timeout Behavior:
@@ -86,7 +86,7 @@ class RTSPAudioSource(AudioSource):
       # FFmpeg outputs 16-bit signed PCM little-endian (s16le)
       audio_array = np.frombuffer(chunk, dtype=np.int16)
 
-      # Convert to float32 normalized to [-1.0, 1.0] for Whisper
+      # Convert to float32 normalized to [-1.0, 1.0] for speech recognition
       audio_array = audio_array.astype(np.float32) / 32768.0
 
       return audio_array
@@ -191,9 +191,6 @@ class RTSPTranscriptionSink(TranscriptionSink):
         start=segment.start,
         end=segment.end,
         completed=False,
-        temp=segment.temperature,
-        compression=segment.compression_ratio,
-        avg_logprob=segment.avg_logprob,
       )
 
     # Store transcription in cache for later retrieval by new subscribers

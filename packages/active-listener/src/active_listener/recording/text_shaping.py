@@ -50,18 +50,14 @@ _REPLACEMENT_PATTERN = (
   if _REPLACEMENTS
   else None
 )
-_THANK_YOU_PATTERN = re.compile(r"\b(?:(escape)\s+)?(thank you)\b([,.!?;:]*)", re.IGNORECASE)
-_HORIZONTAL_WHITESPACE_PATTERN = re.compile(r"[ \t]{2,}")
 
 
 def shape_runs(runs: Sequence[TextRun], corrections: CorrectionMap) -> list[TextRun]:
   """Apply deterministic text shaping to every run, per run.
 
-  Transforms apply within a single run, so a symbol phrase or thank-you split
-  across a command/normal boundary will not fuse — accepted, those splits do
-  not occur in practice. ``normalize_runs`` re-application is required because
-  thank-you removal can empty a run; ``normalize_runs`` drops empties and
-  re-merges adjacent same-flag runs.
+  Transforms apply within a single run, so a symbol phrase split across a
+  command/normal boundary will not fuse. ``normalize_runs`` drops empty runs
+  and merges adjacent runs with identical flags after shaping.
 
   :param runs: Transcript runs to shape.
   :param corrections: Stored corrections applied after the built-in transforms.
@@ -72,7 +68,6 @@ def shape_runs(runs: Sequence[TextRun], corrections: CorrectionMap) -> list[Text
 
 def _shape_text(text: str, corrections: CorrectionMap) -> str:
   text = _apply_replacements(text)  # replacements BEFORE symbol fusion (existing order)
-  text = _apply_thank_you(text)
   text = _replace_symbols(text)
   text = apply_corrections(text, corrections)
   return text
@@ -92,21 +87,3 @@ def _replace_symbols(text: str) -> str:
   # Fuse spoken symbol words into their glyphs, swallowing adjacent whitespace:
   # e.g. "tild slash dot omp slash agent slash skills" -> "~/.omp/agent/skills".
   return _SYMBOL_PATTERN.sub(lambda m: _SYMBOL_WORDS[m.group(1).lower()], text)
-
-
-def _apply_thank_you(text: str) -> str:
-  # Whisper hallucinates "thank you" at utterance/silence boundaries; it is a
-  # model artifact, not user speech, so it is always removed before display and
-  # before the LLM. "escape thank you" is the deliberate opt-out: the escape
-  # word is consumed and the literal "thank you" is preserved.
-  def replace_match(match: re.Match[str]) -> str:
-    thank_you_text = f"{match.group(2)}{match.group(3)}"
-    if match.group(1) is not None:
-      return thank_you_text
-
-    return ""
-
-  return _HORIZONTAL_WHITESPACE_PATTERN.sub(
-    " ",
-    _THANK_YOU_PATTERN.sub(replace_match, text),
-  ).strip()

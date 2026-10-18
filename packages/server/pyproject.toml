@@ -7,28 +7,16 @@ requires-python = ">=3.12.3,<3.13"
 dependencies = [
   "eavesdrop-common",
   "eavesdrop-wire",
-  "evaluate",
-  "jiwer",
-  "kaldialign",
   "langfuse>=4.5.1",
   "netifaces>=0.11.0",
-  "numba",
   "numpy<2",
   "psutil",
   "pydantic>=2",
   "pyyaml>=6.0",
-  "sentencepiece",
   "soundfile",
   "structlog>=25.4.0",
   "websocket-client>=1.8.0",
   "websockets>=13.0",
-  # These are installed via other means (see Dockerfile)
-  # "tokenizers==0.20.3",
-  # "transformers[torch]==4.54",
-  # "faster-whisper==1.2.1",
-  # "openai-whisper==20240930",
-  # "ctranslate2 @ file:///~/dev/github.com/ctranslate2",
-  # "tokenizers>=0.22.0",
 ]
 license = {text = "MIT"}
 
@@ -54,14 +42,6 @@ dev = [
     "pyfakefs>=5.9.3",
     "pytest>=8.3.5",
     "pytest-asyncio>=0.24.0",
-]
-# Host-only typing deps for packages provided by the ROCm image at runtime.
-type_checkable = [
-  "ctranslate2==4.6.0",
-  "torch==2.10.0",
-  "torchaudio==2.10.0",
-  "faster-whisper==1.2.1",
-  "tokenizers==0.22.0",
 ]
 
 [tool.pytest.ini_options]
@@ -111,16 +91,9 @@ line-ending = "auto"
 
 [tool.uv.sources]
 eavesdrop-wire = { workspace = true }
-torch = {index = "pytorch-cpu"}
-torchaudio = {index = "pytorch-cpu"}
 eavesdrop-common = { workspace = true }
 
 [[tool.uv.index]]
 name = "pypi"
 url = "https://pypi.org/simple"
 default = true
-
-[[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true

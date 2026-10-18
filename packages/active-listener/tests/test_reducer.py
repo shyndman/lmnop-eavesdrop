@@ -34,14 +34,9 @@ def _segment(
 ) -> Segment:
   return Segment(
     id=segment_id,
-    seek=0,
     start=start,
     end=end,
     text=text,
-    tokens=[],
-    temperature=0.0,
-    avg_logprob=0.0,
-    compression_ratio=1.0,
     words=words,
     time_offset=time_offset,
     completed=True,
@@ -49,7 +44,7 @@ def _segment(
 
 
 def _word(text: str, *, start: float, end: float) -> Word:
-  return Word(start=start, end=end, word=text, probability=1.0)
+  return Word(start=start, end=end, word=text)
 
 
 def test_reduce_new_segments_preserves_last_id_for_empty_input() -> None:

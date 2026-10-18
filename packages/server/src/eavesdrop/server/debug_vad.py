@@ -3,7 +3,7 @@
 VAD Debug Tool - Isolated testing of Voice Activity Detection
 
 This script tests VAD in isolation to debug why it's not detecting speech
-that Whisper can successfully transcribe. It takes a WAV file, processes it
+that the recognizer can successfully transcribe. It takes a WAV file, processes it
 through the same VAD pipeline used by the server, and provides detailed output.
 
 Usage:
@@ -21,6 +21,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from eavesdrop.common import get_logger
+from eavesdrop.server.transcription.models import VadParameters
 
 logger = get_logger("vad-debug")
 
@@ -52,40 +53,6 @@ class SoundFileModule(Protocol):
   ) -> tuple[Float32Audio, int]: ...
 
 
-class VadOptionsLike(Protocol):
-  threshold: float
-  neg_threshold: float
-  min_speech_duration_ms: int
-  max_speech_duration_s: float
-  min_silence_duration_ms: int
-  speech_pad_ms: int
-
-
-class VadOptionsConstructor(Protocol):
-  def __call__(
-    self,
-    *,
-    threshold: float = ...,
-    neg_threshold: float = ...,
-    min_speech_duration_ms: int = ...,
-    max_speech_duration_s: float = ...,
-    min_silence_duration_ms: int = ...,
-    speech_pad_ms: int = ...,
-  ) -> VadOptionsLike: ...
-
-
-class VadModule(Protocol):
-  VadOptions: VadOptionsConstructor
-
-  def get_speech_timestamps(
-    self,
-    audio: Float32Audio,
-    vad_options: VadOptionsLike | None = None,
-    sampling_rate: int = 16000,
-    **kwargs: object,
-  ) -> list[SpeechTimestamp]: ...
-
-
 class DebugVadArgs(Protocol):
   wav_file: Path
   silence_threshold: float
@@ -93,9 +60,11 @@ class DebugVadArgs(Protocol):
 
 
 sf = cast(SoundFileModule, cast(object, import_module("soundfile")))
-vad_module = cast(VadModule, cast(object, import_module("faster_whisper.vad")))
-VadOptions: VadOptionsConstructor = vad_module.VadOptions
-get_speech_timestamps = vad_module.get_speech_timestamps
+
+
+def get_speech_timestamps(audio: Float32Audio, options: VadParameters) -> list[SpeechTimestamp]:
+  """Standalone VAD adapter is introduced with the replacement backend."""
+  raise NotImplementedError("VAD backend removed; replacement follows separately")
 
 
 def load_and_prepare_audio(wav_path: Path) -> tuple[Float32Audio, int]:
@@ -122,9 +91,9 @@ def load_and_prepare_audio(wav_path: Path) -> tuple[Float32Audio, int]:
   return audio, sample_rate
 
 
-def create_vad_options(silence_completion_threshold: float = 0.8) -> VadOptionsLike:
+def create_vad_options(silence_completion_threshold: float = 0.8) -> VadParameters:
   """Create VAD options matching the server configuration."""
-  vad_options = VadOptions()
+  vad_options = VadParameters()
 
   # Set the min_silence_duration_ms to match our server logic
   vad_options.min_silence_duration_ms = int(silence_completion_threshold * 1000)
@@ -133,7 +102,7 @@ def create_vad_options(silence_completion_threshold: float = 0.8) -> VadOptionsL
 
 
 def analyze_with_vad(
-  audio: Float32Audio, sample_rate: int, vad_options: VadOptionsLike
+  audio: Float32Audio, sample_rate: int, vad_options: VadParameters
 ) -> list[SpeechTimestamp]:
   """Run VAD analysis and print detailed results."""
   logger.info("Running VAD analysis...")
@@ -229,7 +198,7 @@ def test_different_vad_settings(audio: Float32Audio, sample_rate: int) -> None:
   logger.info("Testing different VAD parameter combinations...")
 
   test_configs = [
-    ("Default", VadOptions()),
+    ("Default", VadParameters()),
     ("More Sensitive", VadOptions(threshold=0.3, neg_threshold=0.25)),
     ("Less Sensitive", VadOptions(threshold=0.7, neg_threshold=0.45)),
     ("Very Sensitive", VadOptions(threshold=0.2, neg_threshold=0.15)),

@@ -1,18 +1,15 @@
 """
-Streaming transcription processor with integrated Faster Whisper transcriber.
+Streaming transcription processor with integrated speech recognition transcriber.
 """
 
 from __future__ import annotations
 
 import asyncio
-import os
 import time
-from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
-from importlib import import_module
 from pathlib import Path
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import TypedDict, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -20,7 +17,6 @@ from structlog.stdlib import BoundLogger
 
 from eavesdrop.common import Pretty, Range, Seconds, get_logger
 from eavesdrop.server.config import TranscriptionConfig
-from eavesdrop.server.constants import CACHE_PATH, SINGLE_MODEL
 from eavesdrop.server.streaming.buffer import AudioStreamBuffer
 from eavesdrop.server.streaming.debug_capture import AudioDebugCapture
 from eavesdrop.server.streaming.flush_state import LiveSessionFlushState, PendingFlush
@@ -29,33 +25,13 @@ from eavesdrop.server.transcription.models import (
   SpeechChunk,
   TranscriptionInfo,
   VadParameters,
-  check_translate_supported,
 )
 from eavesdrop.server.transcription.session import TranscriptionSession
-from eavesdrop.server.transcription.utils import summarize_array
-from eavesdrop.server.transcription.vendor_types import (
-  ContainsModel,
-  TransformersConverterFactory,
-  load_contains_model,
-  load_torch,
-  load_transformers_converter,
-)
 from eavesdrop.wire import Segment
-
-if TYPE_CHECKING:
-  from eavesdrop.server.transcription.pipeline import WhisperModel
-  from eavesdrop.server.transcription.session import TranscriptionSessionProtocol
 
 tracing_logger = get_logger("tracing")
 
 Float32Audio = NDArray[np.float32]
-SnapshotDownload = Callable[..., str]
-
-
-def _load_snapshot_download() -> SnapshotDownload:
-  return cast(SnapshotDownload, getattr(import_module("huggingface_hub"), "snapshot_download"))
-
-
 class ClientSegmentDict(TypedDict):
   id: str
   start: str
@@ -120,15 +96,15 @@ class TranscriptionPassStatus(str, Enum):
 
 class StreamingTranscriptionProcessor:
   """
-  Orchestrates streaming transcription processing with integrated Faster Whisper.
+  Orchestrates streaming transcription processing with integrated speech recognition.
 
   This class combines audio buffering, transcription processing, and result
-  delivery by combining an AudioStreamBuffer with integrated Faster Whisper
+  delivery by combining an AudioStreamBuffer with integrated speech recognition
   model management.
   """
 
   # Class variable for single model mode
-  SINGLE_MODEL: WhisperModel | None = None
+  SINGLE_MODEL: object | None = None
 
   def __init__(
     self,
@@ -158,26 +134,7 @@ class StreamingTranscriptionProcessor:
     # Segment processing state - repetition logic removed
 
     # Model attributes
-    self.transcriber: WhisperModel | None = None
-    self.compute_type: str = ""
-    self.model_sizes: list[str] = [
-      "tiny",
-      "tiny.en",
-      "base",
-      "base.en",
-      "small",
-      "small.en",
-      "medium",
-      "medium.en",
-      "large-v2",
-      "large-v3",
-      "distil-small.en",
-      "distil-medium.en",
-      "distil-large-v2",
-      "distil-large-v3",
-      "large-v3-turbo",
-      "turbo",
-    ]
+    self.transcriber: object | None = None
     self.vad_parameters: VadParameters = config.vad_parameters
 
     # Initialize debug capture if configured
@@ -190,134 +147,8 @@ class StreamingTranscriptionProcessor:
       )
 
   async def initialize(self) -> None:
-    """Initialize the transcriber model."""
-    torch = load_torch()
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    self.logger.debug("Selected device", device=device)
-
-    if device == "cuda":
-      major_version, _ = torch.cuda.get_device_capability(device)
-      # self.compute_type = "float16"
-      self.compute_type = "int8"
-
-      self.logger.debug(
-        "CUDA device capability", major=major_version, compute_type=self.compute_type
-      )
-    else:
-      self.compute_type = "int8"
-      self.logger.debug("Using CPU with compute_type", compute_type=self.compute_type)
-
-    self.logger.info("Using Device with precision", device=device, precision=self.compute_type)
-
-    try:
-      await asyncio.to_thread(self._create_model, device)
-    except Exception:
-      self.logger.exception("Failed to load model")
-      # TODO: Add try
-      await self.sink.send_error(f"Failed to load model: {self.config.model}")
-      raise
-
-    if self.transcriber is None:
-      raise RuntimeError("Transcriber not initialized after model creation")
-    check_translate_supported(
-      self.config.task, self.transcriber.model.is_multilingual, self.config.model_path
-    )
-
-    # Send server ready message
-    await self.sink.send_server_ready("faster_whisper")
-
-  def _create_model(self, device: str) -> None:
-    """Create and initialize the Whisper model."""
-    self.logger.debug("Creating model", model_reference=self.config.model)
-
-    if SINGLE_MODEL:
-      self.logger.debug("Using single model mode", stream=self.stream_name)
-      if StreamingTranscriptionProcessor.SINGLE_MODEL is None:
-        self.logger.debug("Creating new single model instance")
-        self._create_model_instance(device, self.config.model_path)
-        StreamingTranscriptionProcessor.SINGLE_MODEL = self.transcriber
-      else:
-        self.logger.debug("Reusing existing single model instance")
-        self.transcriber = StreamingTranscriptionProcessor.SINGLE_MODEL
-    else:
-      self.logger.debug("Creating dedicated model", stream=self.stream_name)
-      self._create_model_instance(device, self.config.model_path)
-
-  def _create_model_instance(self, device: str, model_ref: str) -> None:
-    """Create a single model instance."""
-    from eavesdrop.server.transcription.pipeline import WhisperModel
-
-    model_to_load = self._resolve_model_path(model_ref)
-
-    self.logger.info("Loading model", model=model_to_load)
-    self.transcriber = WhisperModel(
-      model_to_load,
-      device=device,
-      device_index=self.config.device_index,
-      compute_type=self.compute_type,
-      num_workers=self.config.num_workers,
-      download_root=CACHE_PATH,
-      local_files_only=False,
-    )
-    self.logger.debug("Model loaded successfully")
-
-  def _resolve_model_path(self, model_ref: str) -> str:
-    """Resolve model reference to a loadable path."""
-    if model_ref in self.model_sizes:
-      self.logger.debug("Model found in standard model sizes", model=model_ref)
-      return model_ref
-
-    if self._is_local_ct2_model(model_ref):
-      self.logger.debug("Found local CTranslate2 model", path=model_ref)
-      return model_ref
-
-    return self._download_and_convert_model(model_ref)
-
-  def _is_local_ct2_model(self, model_ref: str) -> bool:
-    """Check if model reference points to a local CTranslate2 model."""
-    contains_model: ContainsModel = load_contains_model()
-    return os.path.isdir(model_ref) and contains_model(model_ref)
-
-  def _download_and_convert_model(self, model_ref: str) -> str:
-    """Download model from HuggingFace and convert to CTranslate2 if needed."""
-    contains_model: ContainsModel = load_contains_model()
-    snapshot_download = _load_snapshot_download()
-    self.logger.debug("Downloading model from HuggingFace", model=model_ref)
-    local_snapshot = snapshot_download(repo_id=model_ref, repo_type="model")
-    self.logger.debug("Downloaded model", path=local_snapshot)
-
-    if contains_model(local_snapshot):
-      self.logger.debug("Downloaded model is already in CTranslate2 format")
-      return local_snapshot
-
-    return self._convert_to_ct2(model_ref, local_snapshot)
-
-  def _convert_to_ct2(self, model_ref: str, local_snapshot: str) -> str:
-    """Convert downloaded model to CTranslate2 format."""
-    contains_model: ContainsModel = load_contains_model()
-    transformers_converter: TransformersConverterFactory = load_transformers_converter()
-    cache_root = os.path.expanduser(os.path.join(CACHE_PATH, "whisper-ct2-models/"))
-    os.makedirs(cache_root, exist_ok=True)
-    safe_name = model_ref.replace("/", "--")
-    ct2_dir = os.path.join(cache_root, safe_name)
-    self.logger.debug("CTranslate2 cache directory", path=ct2_dir)
-
-    if contains_model(ct2_dir):
-      self.logger.debug("CTranslate2 model already exists in cache")
-      return ct2_dir
-
-    self.logger.info("Converting to CTranslate2", model=model_ref, output_dir=ct2_dir)
-    ct2_converter = transformers_converter(
-      local_snapshot,
-      copy_files=["tokenizer.json", "preprocessor_config.json"],
-    )
-    _ = ct2_converter.convert(
-      output_dir=ct2_dir,
-      quantization=self.compute_type,
-      force=False,
-    )
-    self.logger.debug("Model conversion completed")
-    return ct2_dir
+    """Initialize the replacement transcription backend."""
+    raise NotImplementedError("Transcription backend removed; replacement follows separately")
 
   async def start_processing(self) -> None:
     """Start the transcription processing loop."""
@@ -694,116 +525,18 @@ class StreamingTranscriptionProcessor:
   def _transcribe_audio(
     self, chunk: AudioChunk
   ) -> tuple[list[Segment] | None, TranscriptionInfo, list[SpeechChunk] | None]:
-    """Transcribe audio sample using the Faster Whisper model."""
+    """Transcribe audio sample using the speech recognition model."""
     if not self.transcriber:
       raise RuntimeError("Transcriber not initialized")
 
     self.session.update_recording_context(self.recording_id)
 
-    self.logger.debug(
-      "Entering transcriber.transcribe",
-      recording_relative_start_time=chunk.start_time,
-      duration=chunk.duration,
-      recording_relative_processed_up_to_time=self.buffer.processed_up_to_time,
-      language=self.language,
-      use_vad=self.config.use_vad,
-      beam_size=self.config.beam_size,
-      word_timestamps=self.config.word_timestamps,
-      task=self.config.task,
-      has_hotwords=bool(self.config.hotwords),
-      **summarize_array("audio", chunk.data),
-    )
-
-    result, info = self.transcriber.transcribe(
-      chunk.data,
-      initial_prompt=self.config.initial_prompt,
-      language=self.language,
-      vad_filter=self.config.use_vad,
-      vad_parameters=self.vad_parameters,
-      # Compatibility name from the transcription pipeline. The value is the
-      # canonical recording-relative chunk start for live WebSocket recordings.
-      absolute_stream_start=chunk.start_time,
-      hotwords=" ".join(self.config.hotwords) if self.config.hotwords else None,
-      session=cast("TranscriptionSessionProtocol", cast(object, self.session)),
-      start_offset=self.buffer.processed_up_to_time,
-      beam_size=self.config.beam_size,
-      word_timestamps=self.config.word_timestamps,
-      task=self.config.task,
-    )
-    self.logger.debug(
-      "Returned from transcriber.transcribe",
-      info_present=True,
-      speech_chunk_count=len(info.speech_chunks) if info.speech_chunks else 0,
-    )
-    result_list = list(result) if result else None
-    self.logger.debug(
-      "Materialized transcriber result",
-      segment_count=len(result_list) if result_list else 0,
-    )
-
-    # Store VAD speech chunks for silence analysis
-    speech_chunks = info.speech_chunks
-
-    # TRACING: Audio characteristics analysis
-    sample_rate = 16000  # Standard Whisper sample rate
-    rms = np.sqrt(np.mean(chunk.data**2)) if len(chunk.data) > 0 else 0.0
-    peak = np.max(np.abs(chunk.data)) if len(chunk.data) > 0 else 0.0
-    zero_crossings = np.sum(np.diff(np.signbit(chunk.data))) if len(chunk.data) > 1 else 0
-    zcr = zero_crossings / len(chunk.data) * sample_rate if len(chunk.data) > 0 else 0
-
-    # TRACING: VAD speech detection results
-    if speech_chunks:
-      speech_ranges = [
-        f"{chunk['start'] / sample_rate:.2f}-{chunk['end'] / sample_rate:.2f}s"
-        for chunk in speech_chunks
-      ]
-      total_speech_duration = sum(
-        (chunk["end"] - chunk["start"]) / sample_rate for chunk in speech_chunks
-      )
-
-      # Build timeline showing speech vs silence (S=speech, ~=silence)
-      timeline = ["~"] * int(chunk.duration * 10)  # 100ms resolution
-      for speech_chunk in speech_chunks:
-        start_idx = int((speech_chunk["start"] / sample_rate) * 10)
-        end_idx = int((speech_chunk["end"] / sample_rate) * 10)
-        for i in range(start_idx, min(end_idx, len(timeline))):
-          timeline[i] = "S"
-      timeline_str = "".join(timeline)
-
-      tracing_logger.info(
-        "VAD analysis",
-        speech_ranges=speech_ranges,
-        speech_duration=f"{total_speech_duration:.2f}s",
-        silence_duration=f"{chunk.duration - total_speech_duration:.2f}s",
-        audio_duration=f"{chunk.duration:.2f}s",
-        speech_ratio=f"{total_speech_duration / chunk.duration:.1%}",
-        timeline=timeline_str,
-        audio_rms=f"{rms:.6f}",
-        audio_peak=f"{peak:.6f}",
-        audio_zcr=f"{zcr:.1f}",
-      )
-    else:
-      tracing_logger.info(
-        "VAD analysis",
-        speech_ranges=[],
-        speech_duration="0.00s",
-        silence_duration=f"{chunk.duration:.2f}s",
-        audio_duration=f"{chunk.duration:.2f}s",
-        speech_ratio="0.0%",
-        timeline="~" * int(chunk.duration * 10),
-        audio_rms=f"{rms:.6f}",
-        audio_peak=f"{peak:.6f}",
-        audio_zcr=f"{zcr:.1f}",
-      )
-
-    return result_list, info, speech_chunks
-
+    raise NotImplementedError("Transcription backend removed; replacement follows separately")
   async def _set_language(self, info: TranscriptionInfo) -> None:
     """Update language based on detection info."""
     self.logger.debug(
       "Language detection info",
       language=info.language,
-      probability=info.language_probability,
     )
 
     if info.language_probability > 0.5:
@@ -811,7 +544,6 @@ class StreamingTranscriptionProcessor:
       self.logger.info(
         "Detected language",
         language=self.language,
-        probability=info.language_probability,
       )
       await self.sink.send_language_detection(info.language, info.language_probability)
 
@@ -839,19 +571,18 @@ class StreamingTranscriptionProcessor:
       return
 
     if result:
-      # TRACING: Raw Whisper segments generated
+      # TRACING: Raw speech recognition segments generated
       raw_segments = [
         {
           "id": seg.id,
           "timespan": Range(Seconds(seg.start), Seconds(seg.end)),
           "text": seg.text[:50] + ("..." if len(seg.text) > 50 else ""),
-          "logprob": f"{seg.avg_logprob:.3f}",
           "completed": seg.completed,
         }
         for seg in result
       ]
       tracing_logger.info(
-        "Whisper generated segments",
+        "speech recognition generated segments",
         segment_count=len(result),
         segments=Pretty(raw_segments),
         audio_duration=Seconds(duration),
@@ -1152,15 +883,10 @@ class StreamingTranscriptionProcessor:
 
     return Segment(
       id=compute_segment_chain_id(0, ""),  # Baseline ID for incomplete
-      seek=0,
       start=recording_start,
       end=recording_start,  # Zero-duration synthetic segment
       text="",  # Empty text is fine for client state machine
-      tokens=[],
-      avg_logprob=0.0,
-      compression_ratio=0.0,
       words=None,
-      temperature=0.0,
       completed=False,
       time_offset=0.0,
     )

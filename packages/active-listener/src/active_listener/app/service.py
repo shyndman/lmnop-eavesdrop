@@ -40,6 +40,8 @@ from active_listener.recording.spectrum import SpectrumAnalyzer
 from eavesdrop.client import (
   ConnectedEvent,
   DisconnectedEvent,
+  LanguageDetectionEvent,
+  LiveClientEvent,
   ReconnectedEvent,
   ReconnectingEvent,
   TranscriptionEvent,
@@ -356,12 +358,11 @@ class ActiveListenerService:
       if should_finish_recording:
         _ = await self.handle_action(AppAction.START_OR_FINISH)
 
-  async def handle_client_event(
-    self,
-    event: (
-      ConnectedEvent | DisconnectedEvent | ReconnectingEvent | ReconnectedEvent | TranscriptionEvent
-    ),
-  ) -> None:
+  async def handle_client_event(self, event: LiveClientEvent) -> None:
+    if isinstance(event, LanguageDetectionEvent):
+      # Language metadata does not change the recording lifecycle or transcript.
+      return
+
     if isinstance(event, TranscriptionEvent):
       self._current_stream = event.stream
       await self._handle_transcription_event(event)
