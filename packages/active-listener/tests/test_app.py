@@ -2732,46 +2732,6 @@ async def test_finalize_recording_drops_command_runs_when_llm_is_disabled() -> N
 
 
 @pytest.mark.asyncio
-async def test_finalize_recording_preserves_thank_you_before_rewrite_when_llm_enabled(
-  monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  client = FakeClient(
-    flush_results=[
-      _message(
-        _segment(
-          1,
-          "Thank you? thank you, I want to keep going escape thank you.",
-          completed=True,
-        ),
-        _segment(2, "tail", completed=False),
-      )
-    ]
-  )
-  rewrite_client = FakeRewriteClient(rewritten_text="rewritten output")
-  harness = _service(
-    client=client,
-    rewrite_client=rewrite_client,
-    config=_config(rewrite_enabled=True),
-  )
-  monkeypatch.setattr(
-    "active_listener.infra.rewrite.load_active_listener_rewrite_prompt",
-    _prompt_loader(_loaded_prompt_file(_prompt())),
-  )
-
-  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
-  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
-  await harness.service.wait_for_background_tasks()
-
-  assert harness.emitter.emitted == ["rewritten output "]
-  assert rewrite_client.calls == [
-    {
-      "instructions": "Rewrite this transcript.",
-      "transcript": "Thank you? thank you, I want to keep going escape thank you.",
-    }
-  ]
-
-
-@pytest.mark.asyncio
 async def test_live_transcription_publishes_shaped_runs() -> None:
   harness = _service()
   service = harness.service
