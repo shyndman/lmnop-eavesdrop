@@ -1,3 +1,4 @@
+import os
 from collections.abc import Iterable
 
 import numpy as np
@@ -5,7 +6,18 @@ from numpy.typing import NDArray
 
 from eavesdrop.wire import Segment
 
+SAMPLE_RATE = 16000
+FloatAudio = NDArray[np.float32]
 NumericArray = NDArray[np.generic]
+
+
+def disable_runtime_telemetry() -> None:
+  """Disable optional inference-library telemetry before importing their runtimes."""
+  # Must be set BEFORE NeMo/Silero can import ONNX Runtime. The Python API alone
+  # cannot prevent its initialization event. Official process-lifetime opt-out:
+  # https://github.com/microsoft/onnxruntime/blob/main/docs/Privacy.md
+  os.environ["ORT_DISABLE_TELEMETRY"] = "1"
+  os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 
 
 def summarize_array(name: str, array: NumericArray) -> dict[str, object]:
