@@ -22,7 +22,7 @@ from numpy.typing import NDArray
 
 from eavesdrop.common import get_logger
 from eavesdrop.server.transcription.models import VadParameters
-from eavesdrop.server.transcription.parakeet import SileroSpeechDetector
+from eavesdrop.server.transcription.vad import SileroSpeechDetector
 
 logger = get_logger("vad-debug")
 
