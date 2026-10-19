@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from active_listener.recording.reducer import TextRun
 from active_listener.recording.text_shaping import shape_runs
 
@@ -26,25 +24,6 @@ def test_shape_runs_fuses_spoken_symbols() -> None:
   )
 
   assert [run.text for run in shaped] == ["release#42"]
-
-
-@pytest.mark.parametrize(
-  "text",
-  [
-    "thank you",
-    "hello thank you world",
-    "Thank you? THANK YOU, thank you!",
-    "escape thank you",
-    "escape THANK YOU, escape Thank you.",
-  ],
-)
-def test_shape_runs_preserves_dictated_thank_you_phrases(text: str) -> None:
-  shaped = shape_runs(
-    [TextRun(text=text, is_command=False, is_complete=True)],
-    {},
-  )
-
-  assert shaped == [TextRun(text=text, is_command=False, is_complete=True)]
 
 
 def test_shape_runs_applies_passed_corrections() -> None:

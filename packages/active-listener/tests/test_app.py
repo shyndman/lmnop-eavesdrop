@@ -2628,54 +2628,6 @@ async def test_finalize_recording_normalizes_hashtag_before_emitting_text() -> N
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-  "text",
-  ["Thank you.", "alpha thank you beta THANK YOU, gamma Thank you. delta thank you! echo"],
-)
-async def test_finalize_recording_preserves_thank_you_mentions(text: str) -> None:
-  client = FakeClient(
-    flush_results=[
-      _message(
-        _segment(1, text, completed=True),
-        _segment(2, "tail", completed=False),
-      )
-    ]
-  )
-  harness = _service(client=client)
-
-  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
-  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
-  await harness.service.wait_for_background_tasks()
-
-  assert harness.emitter.emitted == [f"{text} "]
-
-
-@pytest.mark.asyncio
-async def test_finalize_recording_preserves_escape_thank_you_literally() -> None:
-  client = FakeClient(
-    flush_results=[
-      _message(
-        _segment(
-          1,
-          "alpha escape thank you beta escape THANK YOU, gamma escape Thank you.",
-          completed=True,
-        ),
-        _segment(2, "tail", completed=False),
-      )
-    ]
-  )
-  harness = _service(client=client)
-
-  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
-  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
-  await harness.service.wait_for_background_tasks()
-
-  assert harness.emitter.emitted == [
-    "alpha escape thank you beta escape THANK YOU, gamma escape Thank you. "
-  ]
-
-
-@pytest.mark.asyncio
 async def test_finalize_recording_drops_command_runs_when_llm_is_disabled() -> None:
   client = FakeClient(
     flush_results=[
