@@ -195,9 +195,7 @@ class TestHandleTranscriberConnection:
     websocket: FakeWebSocket,
     client_initializer: RecordingClientInitializer,
   ) -> None:
-    websocket.recv_messages = [
-      '{"type":"transcription_setup","stream":"test","options":{"beam_size":5}}'
-    ]
+    websocket.recv_messages = ['{"type":"setup","stream":"test","options":{"beam_size":5}}']
     result = await handler.handle_connection(as_server_connection(websocket))
     assert result is None
     assert client_initializer.calls == []
@@ -205,7 +203,8 @@ class TestHandleTranscriberConnection:
     error = deserialize_message(websocket.sent_messages[0])
     assert isinstance(error, ErrorMessage)
     assert "Setup rejected" in error.message
-    assert "beam_size" in error.message
+    assert "TranscriptionSetupMessage.options.beam_size" in error.message
+    assert "type=extra_forbidden" in error.message
 
   async def test_handle_connection_closed_during_handshake(
     self,
