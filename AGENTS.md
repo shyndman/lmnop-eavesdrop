@@ -99,3 +99,17 @@ Check package configuration for test commands — don't assume.
 - Preserve native timing: CPU token onsets/durations on the 80 ms encoder grid; Vulkan word times converted from milliseconds; original recording offsets across VAD gaps
 - Run inference directly on the host; `transcription.device` selects `cpu` (default) or `vulkan` (Linux x86_64, GPU 0)
 - Docker build context is the repository root; use its `uv.lock` and `/opt/venv`
+
+## Agent skills
+
+### Issue tracker
+
+Track issues and specs in GitHub Issues. Read `docs/agents/issue-tracker.md` before ticket operations.
+
+### Triage labels
+
+Use the five canonical triage labels. Read `docs/agents/triage-labels.md` before triage.
+
+### Domain docs
+
+Use multi-context package glossaries and ADRs. Read `docs/agents/domain.md` before exploring a domain.
