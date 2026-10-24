@@ -9,7 +9,7 @@ CPU_BASE_IMAGE=${CPU_BASE_IMAGE:-eavesdrop-cpu-base}
 SERVER_IMAGE=${SERVER_IMAGE:-ghcr.io/shyndman/lmnop-eavesdrop:latest}
 
 if [ "$#" -ne 0 ]; then
-    echo "Usage: $0 (CPU only; configure CPU_BASE_IMAGE and SERVER_IMAGE via environment)" >&2
+    echo "Usage: $0 (CPU/Vulkan image; configure CPU_BASE_IMAGE and SERVER_IMAGE via environment)" >&2
     exit 1
 fi
 

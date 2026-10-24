@@ -11,6 +11,14 @@ ENV ORT_DISABLE_TELEMETRY=1 \
     HF_HOME=/root/.cache/eavesdrop/huggingface
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
+# Mesa backports supplies the Vulkan driver for the host's Radeon 780M.
+RUN printf '%s\n' 'deb http://deb.debian.org/debian bookworm-backports main' \
+      > /etc/apt/sources.list.d/bookworm-backports.list \
+    && apt-get update \
+    && apt-get install --yes --no-install-recommends --target-release bookworm-backports \
+      libstdc++6 libvulkan1 mesa-vulkan-drivers \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 # Keep the workspace layout and authoritative root lockfile intact. The other
 # manifests are needed to validate the lock; their packages are not installed.

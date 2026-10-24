@@ -8,7 +8,8 @@ transcription:
   model: "oruk/orukeet"
 
   # cpu (default): sherpa-onnx. vulkan: pinned NeMo-Speech.cpp on Linux x86_64, GPU 0.
-  # Docker supports cpu only; standalone Silero VAD stays ONNX CPU for both.
+  # Docker supports both: Vulkan needs the host kernel GPU driver and /dev/dri.
+  # Mesa userspace drivers are in the image; standalone Silero VAD stays ONNX CPU.
   device: "cpu"
 
   # The client contract supports English transcription only (no translation).

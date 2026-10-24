@@ -235,7 +235,7 @@ tasks:
       - docker build --progress=plain -f packages/server/docker/Dockerfile.cpu-base -t {{.CPU_BASE_IMAGE}} .
 
   build-server-image:
-    desc: Build the Orukeet INT8 CPU server
+    desc: Build the Orukeet server with CPU and Vulkan inference
     dir: .
     vars:
       SERVER_IMAGE: '{{default "ghcr.io/shyndman/lmnop-eavesdrop:latest" .SERVER_IMAGE}}'
@@ -249,16 +249,24 @@ tasks:
           -t {{.SERVER_IMAGE}} .
 
   run-server-image:
-    desc: Run the optional CPU server container
+    desc: Run the server container using the configured CPU or Vulkan backend
     deps: [build-server-image]
     dotenv: ['.env']
     dir: .
-    vars:
+    vars: &server_container_vars
       SERVER_IMAGE: '{{default "ghcr.io/shyndman/lmnop-eavesdrop:latest" .SERVER_IMAGE}}'
       LOG_LEVEL: '{{default "INFO" .LOG_LEVEL}}'
+      SERVER_CONFIG: '{{default (printf "%s/packages/server/config.yaml" .ROOT_DIR) .SERVER_CONFIG}}'
+      SERVER_DEVICE:
+        sh: >-
+          uv run --package eavesdrop-server python -c
+          'import sys, yaml; from pathlib import Path; from eavesdrop.server.config import EavesdropConfig;
+          print(EavesdropConfig.model_validate(yaml.safe_load(Path(sys.argv[1]).read_text())).transcription.device)'
+          '{{.SERVER_CONFIG}}'
     cmds:
       - docker run --interactive --tty
         --rm
+        {{if eq .SERVER_DEVICE "vulkan"}}--device /dev/dri{{end}}
         --publish '9090:9090'
         --name eavesdrop
         --env LOG_LEVEL='{{.LOG_LEVEL}}'
@@ -266,18 +274,16 @@ tasks:
         --env LANGFUSE_SECRET_KEY
         --env LANGFUSE_BASE_URL
         --volume "$HOME/.cache/lmnop/eavesdrop-models:/root/.cache/eavesdrop"
-        --volume "$PWD/packages/server/config.yaml:/app/config.yaml:ro"
+        --volume "{{.SERVER_CONFIG}}:/app/config.yaml:ro"
         --env EAVESDROP_CONFIG=/app/config.yaml
         {{.SERVER_IMAGE}}
 
   run-server-image-persistent:
-    desc: Run the optional CPU server as a background container
+    desc: Run the configured CPU or Vulkan server as a background container
     deps: [build-server-image]
     dotenv: ['.env']
     dir: .
-    vars:
-      SERVER_IMAGE: '{{default "ghcr.io/shyndman/lmnop-eavesdrop:latest" .SERVER_IMAGE}}'
-      LOG_LEVEL: '{{default "INFO" .LOG_LEVEL}}'
+    vars: *server_container_vars
     cmds:
       - |
         if docker inspect -f '{{"{{"}}.State.Running{{"}}"}}' eavesdrop >/dev/null 2>&1 && [ "$(docker inspect -f '{{"{{"}}.State.Running{{"}}"}}' eavesdrop)" = "true" ]; then
@@ -286,6 +292,7 @@ tasks:
       - docker rm eavesdrop || true
       - docker run --detach
         --restart always
+        {{if eq .SERVER_DEVICE "vulkan"}}--device /dev/dri{{end}}
         --publish '9090:9090'
         --name eavesdrop
         --env LOG_LEVEL='{{.LOG_LEVEL}}'
@@ -293,7 +300,7 @@ tasks:
         --env LANGFUSE_SECRET_KEY
         --env LANGFUSE_BASE_URL
         --volume "$HOME/.cache/lmnop/eavesdrop-models:/root/.cache/eavesdrop"
-        --volume "$PWD/packages/server/config.yaml:/app/config.yaml:ro"
+        --volume "{{.SERVER_CONFIG}}:/app/config.yaml:ro"
         --env EAVESDROP_CONFIG=/app/config.yaml
         {{.SERVER_IMAGE}}
 

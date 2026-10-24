@@ -97,8 +97,8 @@ Check package configuration for test commands — don't assume.
 - Declare matching `sherpa-onnx` and `sherpa-onnx-core` dependencies explicitly; uv otherwise omits the native ONNX shared library
 - Keep normal unit tests independent of model downloads and inference runtime availability
 - Preserve native timing: CPU token onsets/durations on the 80 ms encoder grid; Vulkan word times converted from milliseconds; original recording offsets across VAD gaps
-- Run inference directly on the host; `transcription.device` selects `cpu` (default) or `vulkan` (Linux x86_64, GPU 0)
-- Docker build context is the repository root; use its `uv.lock` and `/opt/venv`
+- Deploy in Docker or directly on the host; `transcription.device` selects `cpu` (default) or `vulkan` (Linux x86_64, GPU 0)
+- Docker uses the repository-root `uv.lock` and `/opt/venv`; the final image includes Mesa Vulkan drivers and the run tasks grant `/dev/dri` only for `device: vulkan`
 
 ## Agent skills
 

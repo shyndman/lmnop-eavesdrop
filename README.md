@@ -1,6 +1,6 @@
 # Eavesdrop
 
-A real-time English audio transcription system using Orukeet through CPU sherpa-onnx (INT8 ONNX) or Vulkan NeMo-Speech.cpp (Q8 GGUF). Run directly on the host; optional CPU-only Docker packaging is also available.
+A real-time English audio transcription system using Orukeet through CPU sherpa-onnx (INT8 ONNX) or Vulkan NeMo-Speech.cpp (Q8 GGUF). Run directly on the host or use the unified CPU/Vulkan Docker image.
 
 ## Architecture
 
@@ -127,12 +127,14 @@ Unit tests inject recognizer/VAD fakes; they do not download a checkpoint or est
 ## Docker
 
 ```bash
-# Optional CPU packaging. Run from the repository root.
+# Unified CPU/Vulkan image. Run from the repository root.
 task build-server-image
 task run-server-image
 ```
 
-See [server Docker instructions](./packages/server/README.md#optional-cpu-docker-packaging) for prerequisites, cache volumes, and verification limits.
+The run tasks select CPU (default) or Vulkan from `transcription.device` in the mounted config. Override its path with `SERVER_CONFIG=/path/to/config.yaml`; use `task run-server-image-persistent` for a background container with `--restart always`. Vulkan containers require Linux x86_64 with a Mesa-supported GPU, its host kernel driver, and `/dev/dri`; Mesa userspace drivers are included in the image.
+
+See [server Docker instructions](./packages/server/README.md#docker-deployment) for prerequisites, cache volumes, manual commands, and verification limits.
 
 ## License
 

@@ -1,6 +1,6 @@
 # Eavesdrop server
 
-English speech recognition using the fixed [`oruk/orukeet`](https://huggingface.co/oruk/orukeet) model through standard PyPI `sherpa-onnx` on CPU (INT8 ONNX) or pinned NeMo-Speech.cpp on Vulkan (Q8 GGUF). Run directly on the host. The server retains WebSocket and RTSP streaming, silence-based completion, and recording-relative word timestamps.
+English speech recognition using the fixed [`oruk/orukeet`](https://huggingface.co/oruk/orukeet) model through standard PyPI `sherpa-onnx` on CPU (INT8 ONNX) or pinned NeMo-Speech.cpp on Vulkan (Q8 GGUF). Deploy directly on the host or in the unified CPU/Vulkan container. The server retains WebSocket and RTSP streaming, silence-based completion, and recording-relative word timestamps.
 
 ## Runtime and timing
 
@@ -42,27 +42,27 @@ transcription:
 ```
 
 - `model` is fixed; alternate IDs and local custom checkpoints are rejected.
-- `device` accepts `cpu` (default) or `vulkan`. Vulkan requires a Linux x86_64 host with a Vulkan-capable GPU and driver, and uses GPU 0; configurable GPU selection via `device_index` is unsupported. Docker remains CPU-only.
+- `device` accepts `cpu` (default) or `vulkan`. Vulkan requires Linux x86_64 and uses GPU 0; configurable GPU selection via `device_index` is unsupported. Native host inference requires a Vulkan-capable GPU and userspace driver. Container requirements are described below.
 - The client contract remains English-only (`language: en`), without a new language-selection feature or translation.
 - Input audio remains mono float32 at 16 kHz, with original recording offsets preserved.
 - `word_timestamps: false` hides client word details; native timing still drives segmentation and completion.
 
 Start from `config.sample.yaml` when upgrading. Removed options such as `custom_model`, `initial_prompt`, `hotwords`, `beam_size`, `num_workers`, `same_output_threshold`, and `gpu_name` remain unsupported. Clients must not send removed task/model options. The former Python NeMo runtime and its caches are not used; the Vulkan backend uses NeMo-Speech.cpp instead.
 
-## Optional CPU Docker packaging
+## Docker deployment
 
-Host deployment is preferred. Docker packaging is CPU-only; the former CUDA and ROCm base images, build tasks, and GPU device mappings have been removed. PyTorch/torchaudio CPU wheels remain solely for standalone Silero VAD, not recognition inference.
+The same image supports CPU (default) and Vulkan, selected by the mounted configuration's `transcription.device`. Native host setup above is an alternative deployment path, not a prerequisite for container userspace dependencies. The Debian bookworm CPU Torch/audio base is retained: PyTorch/torchaudio CPU wheels remain solely for standalone Silero VAD, not recognition inference. There are no CUDA or ROCm image variants.
 
 ```bash
 task build-server-image
 task run-server-image
-# Or run in the background:
+# Or run in the background with --restart always:
 task run-server-image-persistent
 # Stop and remove the container:
 task stop-server-image
 ```
 
-The final image installs the `transcription` extra using the workspace-root `uv.lock` and `/opt/venv`, preserving the base's CPU Torch/audio wheels. Build-time dependency import checks are not inference tests. Override names with `CPU_BASE_IMAGE` and `SERVER_IMAGE`; `SKIP_CACHE=true` disables caching for the final image build.
+The final image installs the `transcription` extra using the workspace-root `uv.lock` and `/opt/venv`, preserving the base's CPU Torch/audio wheels. It also installs `libvulkan1`, `libstdc++6`, and Mesa 25 `mesa-vulkan-drivers` from bookworm-backports. Build-time dependency import checks are not inference tests. Override names with `CPU_BASE_IMAGE` and `SERVER_IMAGE`; `SKIP_CACHE=true` disables caching for the final image build.
 
 Equivalent manual builds, also available through `packages/server/scripts/build.sh`:
 
@@ -73,7 +73,25 @@ docker build -f packages/server/docker/Dockerfile \
   -t ghcr.io/shyndman/lmnop-eavesdrop:latest .
 ```
 
-Container tasks expose port `9090`, mount `packages/server/config.yaml` read-only, and persist downloads in `~/.cache/lmnop/eavesdrop-models`. `HF_HOME` points inside that mounted cache. Keep `transcription.device: cpu` for Docker; no GPU permissions or relaxed container security are needed.
+Both run tasks load and strictly validate `SERVER_CONFIG` as `EavesdropConfig` before launching Docker, select the backend from its `transcription.device`, and mount that same file read-only at `/app/config.yaml`. The default is `packages/server/config.yaml`; for another configuration, run `task run-server-image SERVER_CONFIG=/absolute/path/to/config.yaml` (the persistent task accepts the same override). They expose port `9090` and persist downloads in `~/.cache/lmnop/eavesdrop-models`; `HF_HOME` points inside that mounted cache.
+
+For `vulkan`, the tasks add `--device /dev/dri`. This deployment targets Linux x86_64 Mesa GPUs, including the current AMD Radeon 780M host: the host must supply the appropriate kernel GPU driver and accessible `/dev/dri` render devices, while the image supplies the Vulkan loader and Mesa userspace drivers. Installing host Python inference dependencies is unnecessary. CPU runs do not map GPU devices. Neither backend needs privileged mode, `/dev/kfd`, or the NVIDIA container runtime.
+
+For a manual run after building, choose a config with `transcription.device: cpu` or `vulkan`, and match the device argument to that selection:
+
+```bash
+docker run --interactive --tty --rm \
+  --publish 9090:9090 \
+  --volume "/absolute/path/to/config.yaml:/app/config.yaml:ro" \
+  --volume "$HOME/.cache/lmnop/eavesdrop-models:/root/.cache/eavesdrop" \
+  --env EAVESDROP_CONFIG=/app/config.yaml \
+  ghcr.io/shyndman/lmnop-eavesdrop:latest
+# For Vulkan, add --device /dev/dri to the docker run arguments above.
+# For a persistent container, replace --interactive --tty --rm with
+# --detach --restart always --name eavesdrop.
+```
+
+The container image was built through `task build-server-image` and verified on the Radeon 780M with Mesa 25.0.7. A persistent container selected `Vulkan0` and transcribed a 14-second WebSocket upload containing two speech copies and silence gaps into two completed segments and 12 timed words without warnings. The same upload passed after restarting the container, reusing its persisted model and SDK cache. Verification used a separate container and port; it did not replace the existing running server.
 
 ## Langfuse tracing
 
