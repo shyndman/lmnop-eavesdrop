@@ -1,8 +1,5 @@
 version: '3'
 
-vars:
-  DEFAULT_ACCELERATOR: '{{default "cpu" .ACCELERATOR}}'
-
 tasks:
   run-active-listener:
     desc: Start the active-listener workstation dictation CLI
@@ -204,7 +201,7 @@ tasks:
       - uv run python examples/simple_transcriber.py --server "{{.host}}:{{.port}}" --audio-device "{{.audio_device}}" {{.CLI_ARGS}}
 
   prepare-server:
-    desc: Install the server and opt-in Parakeet transcription dependencies
+    desc: Install server transcription dependencies for CPU or host Vulkan recognition
     dir: .
     cmds:
       - uv sync --package eavesdrop-server --extra transcription
@@ -221,11 +218,6 @@ tasks:
     cmds:
       - uv run --extra transcription basedpyright
 
-  list-gpus:
-    desc: Print GPU names as reported by PyTorch on the current machine
-    cmds:
-      - uv run --no-project "$(command -v python3)" -c 'import json, torch; print(json.dumps([torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())]))'
-
   run-server:
     desc: Start the transcription server with local config
     deps: [prepare-server]
@@ -235,68 +227,40 @@ tasks:
       - uv run --extra transcription eavesdrop-server --config config.yaml
 
   build-cpu-base-image:
-    desc: Build the CPU PyTorch base image
+    desc: Build the CPU base image with Torch/audio for standalone Silero VAD
     dir: .
     vars:
       CPU_BASE_IMAGE: '{{default "eavesdrop-cpu-base" .CPU_BASE_IMAGE}}'
     cmds:
       - docker build --progress=plain -f packages/server/docker/Dockerfile.cpu-base -t {{.CPU_BASE_IMAGE}} .
 
-  build-cuda-base-image:
-    desc: Build the NVIDIA CUDA PyTorch base image
-    dir: .
-    vars:
-      CUDA_BASE_IMAGE: '{{default "eavesdrop-cuda-base" .CUDA_BASE_IMAGE}}'
-    cmds:
-      - docker build --progress=plain -f packages/server/docker/Dockerfile.cuda-base -t {{.CUDA_BASE_IMAGE}} .
-
-  build-rocm-base-image:
-    desc: Build the experimental AMD ROCm PyTorch base image
-    dir: .
-    vars:
-      ROCM_BASE_IMAGE: '{{default "eavesdrop-rocm-base" .ROCM_BASE_IMAGE}}'
-    cmds:
-      - docker build --progress=plain -f packages/server/docker/Dockerfile.rocm-base -t {{.ROCM_BASE_IMAGE}} .
-
   build-server-image:
-    desc: Build the Parakeet server (ACCELERATOR=cpu, cuda, or rocm; default cpu)
+    desc: Build the Orukeet INT8 CPU server
     dir: .
     vars:
-      ACCELERATOR: '{{.DEFAULT_ACCELERATOR}}'
       SERVER_IMAGE: '{{default "ghcr.io/shyndman/lmnop-eavesdrop:latest" .SERVER_IMAGE}}'
       CPU_BASE_IMAGE: '{{default "eavesdrop-cpu-base" .CPU_BASE_IMAGE}}'
-      CUDA_BASE_IMAGE: '{{default "eavesdrop-cuda-base" .CUDA_BASE_IMAGE}}'
-      ROCM_BASE_IMAGE: '{{default "eavesdrop-rocm-base" .ROCM_BASE_IMAGE}}'
-      BASE_IMAGE: '{{if eq .ACCELERATOR "cuda"}}{{.CUDA_BASE_IMAGE}}{{else if eq .ACCELERATOR "rocm"}}{{.ROCM_BASE_IMAGE}}{{else}}{{.CPU_BASE_IMAGE}}{{end}}'
       SKIP_CACHE: '{{default "false" .SKIP_CACHE}}'
-    preconditions:
-      - sh: 'test "{{.ACCELERATOR}}" = cpu || test "{{.ACCELERATOR}}" = cuda || test "{{.ACCELERATOR}}" = rocm'
-        msg: 'ACCELERATOR must be cpu, cuda, or rocm'
     cmds:
-      - task: build-{{.ACCELERATOR}}-base-image
+      - task: build-cpu-base-image
       - docker build {{if eq .SKIP_CACHE "true"}}--no-cache {{end}}--progress=plain
           -f packages/server/docker/Dockerfile
-          --build-arg BASE_IMAGE={{.BASE_IMAGE}}
-          --label io.eavesdrop.accelerator={{.ACCELERATOR}}
+          --build-arg BASE_IMAGE={{.CPU_BASE_IMAGE}}
           -t {{.SERVER_IMAGE}} .
 
   run-server-image:
-    desc: Run the server container (ACCELERATOR=cpu, cuda, or rocm; default cpu)
+    desc: Run the optional CPU server container
     deps: [build-server-image]
     dotenv: ['.env']
     dir: .
     vars:
-      ACCELERATOR: '{{.DEFAULT_ACCELERATOR}}'
       SERVER_IMAGE: '{{default "ghcr.io/shyndman/lmnop-eavesdrop:latest" .SERVER_IMAGE}}'
       LOG_LEVEL: '{{default "INFO" .LOG_LEVEL}}'
     cmds:
       - docker run --interactive --tty
-        {{if eq .ACCELERATOR "cuda"}}--gpus all{{end}}
-        {{if eq .ACCELERATOR "rocm"}}--device /dev/kfd --device /dev/dri --security-opt seccomp=unconfined{{end}}
         --rm
         --publish '9090:9090'
         --name eavesdrop
-        {{if and (eq .ACCELERATOR "rocm") .HSA_OVERRIDE_GFX_VERSION}}--env HSA_OVERRIDE_GFX_VERSION='{{.HSA_OVERRIDE_GFX_VERSION}}'{{end}}
         --env LOG_LEVEL='{{.LOG_LEVEL}}'
         --env LANGFUSE_PUBLIC_KEY
         --env LANGFUSE_SECRET_KEY
@@ -307,12 +271,11 @@ tasks:
         {{.SERVER_IMAGE}}
 
   run-server-image-persistent:
-    desc: Run the server as a background container (ACCELERATOR=cpu, cuda, or rocm)
+    desc: Run the optional CPU server as a background container
     deps: [build-server-image]
     dotenv: ['.env']
     dir: .
     vars:
-      ACCELERATOR: '{{.DEFAULT_ACCELERATOR}}'
       SERVER_IMAGE: '{{default "ghcr.io/shyndman/lmnop-eavesdrop:latest" .SERVER_IMAGE}}'
       LOG_LEVEL: '{{default "INFO" .LOG_LEVEL}}'
     cmds:
@@ -322,12 +285,9 @@ tasks:
         fi
       - docker rm eavesdrop || true
       - docker run --detach
-        {{if eq .ACCELERATOR "cuda"}}--gpus all{{end}}
-        {{if eq .ACCELERATOR "rocm"}}--device /dev/kfd --device /dev/dri --security-opt seccomp=unconfined{{end}}
         --restart always
         --publish '9090:9090'
         --name eavesdrop
-        {{if and (eq .ACCELERATOR "rocm") .HSA_OVERRIDE_GFX_VERSION}}--env HSA_OVERRIDE_GFX_VERSION='{{.HSA_OVERRIDE_GFX_VERSION}}'{{end}}
         --env LOG_LEVEL='{{.LOG_LEVEL}}'
         --env LANGFUSE_PUBLIC_KEY
         --env LANGFUSE_SECRET_KEY

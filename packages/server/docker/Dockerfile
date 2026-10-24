@@ -8,8 +8,7 @@ ENV ORT_DISABLE_TELEMETRY=1 \
     UV_COMPILE_BYTECODE=1 \
     UV_PROJECT_ENVIRONMENT=/opt/venv \
     VIRTUAL_ENV=/opt/venv \
-    HF_HOME=/root/.cache/eavesdrop/huggingface \
-    NEMO_CACHE_DIR=/root/.cache/eavesdrop/nemo
+    HF_HOME=/root/.cache/eavesdrop/huggingface
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
 WORKDIR /app
@@ -26,8 +25,7 @@ COPY packages/wire/src/ ./packages/wire/src/
 COPY packages/server/src/ ./packages/server/src/
 COPY packages/server/docker/install-runtime.sh /app/install-runtime.sh
 
-# --inexact alone does not protect a GPU wheel from replacement by a locked CPU
-# wheel. Explicitly exclude the base's vendor packages from the synchronization.
+# Retain the base's CPU Torch/audio wheels for standalone Silero VAD.
 RUN --mount=type=cache,target=/root/.cache/uv \
     bash /app/install-runtime.sh
 

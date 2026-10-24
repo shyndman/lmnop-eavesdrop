@@ -3,19 +3,19 @@
 # Usage: eavesdrop-server --config /path/to/your/config.yaml
 
 transcription:
-  # Fixed English-only checkpoint, loaded by NVIDIA NeMo on first use.
+  # Fixed Orukeet model: CPU INT8 ONNX or Vulkan Q8 GGUF, loaded on first use.
   # Other model IDs and local custom checkpoints are not supported.
-  model: "nvidia/parakeet-tdt-0.6b-v2"
+  model: "oruk/orukeet"
 
-  # auto selects a visible CUDA/HIP GPU, otherwise CPU. Use cpu to force CPU.
-  # PyTorch uses the cuda device namespace for both NVIDIA CUDA and AMD ROCm.
-  device: "auto"
-  device_index: 0
+  # cpu (default): sherpa-onnx. vulkan: pinned NeMo-Speech.cpp on Linux x86_64, GPU 0.
+  # Docker supports cpu only; standalone Silero VAD stays ONNX CPU for both.
+  device: "cpu"
 
-  # Parakeet v2 supports English transcription only (no translation).
+  # The client contract supports English transcription only (no translation).
   language: "en"
 
-  # Include native word start/end timestamps in client output.
+  # Include native word timings: CPU token onsets/durations (80 ms), or Vulkan
+  # native word timestamps converted from milliseconds.
   # Native timings are still used internally when this is false.
   word_timestamps: true
 
@@ -65,7 +65,7 @@ transcription:
   # Audio buffer management settings that control how audio is processed and stored.
   # These settings affect memory usage and real-time performance.
   buffer:
-    # Audio sample rate in Hz. Must be 16000 for Parakeet compatibility.
+    # Audio sample rate in Hz. Must be 16000 for Orukeet compatibility.
     # Do not change unless you know what you're doing.
     sample_rate: 16000
 

@@ -96,14 +96,11 @@ class TranscriptionConfig(BaseModel):
 
   model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", strict=True)
 
-  model: Literal["nvidia/parakeet-tdt-0.6b-v2"] = "nvidia/parakeet-tdt-0.6b-v2"
-  """Fixed official English-only checkpoint; other model families are rejected."""
+  model: Literal["oruk/orukeet"] = "oruk/orukeet"
+  """Fixed Orukeet model with CPU INT8 ONNX or Vulkan Q8 GGUF assets."""
 
-  device: Literal["auto", "cpu", "cuda"] = "auto"
-  """PyTorch device selection. ROCm uses the CUDA-compatible namespace."""
-
-  device_index: int = Field(default=0, ge=0)
-  """GPU index when auto or cuda selects a GPU."""
+  device: Literal["cpu", "vulkan"] = "cpu"
+  """CPU INT8 ONNX or Vulkan Q8 GGUF inference."""
 
   language: Literal["en"] = "en"
   """Only English transcription is supported."""
@@ -143,7 +140,7 @@ class TranscriptionConfig(BaseModel):
   def align_vad_parameters(self) -> "TranscriptionConfig":
     """Align VAD silence duration with completion threshold for consistent behavior."""
     if self.buffer.sample_rate != 16000:
-      raise ValueError("Parakeet requires buffer.sample_rate=16000")
+      raise ValueError("Orukeet requires buffer.sample_rate=16000")
     self.vad_parameters.min_silence_duration_ms = int(self.silence_completion_threshold * 1000)
     return self
 
@@ -172,7 +169,7 @@ class EavesdropConfig(BaseModel):
     # Transcription settings - all properties
     logger.info("TRANSCRIPTION SETTINGS:")
     logger.info(f"  Model: {self.transcription.model}")
-    logger.info(f"  Device: {self.transcription.device}:{self.transcription.device_index}")
+    logger.info(f"  Device: {self.transcription.device}")
     logger.info(f"  Language: {self.transcription.language}")
     logger.info(f"  Word Timestamps: {self.transcription.word_timestamps}")
     logger.info(f"  Send Last N Segments: {self.transcription.send_last_n_segments}")

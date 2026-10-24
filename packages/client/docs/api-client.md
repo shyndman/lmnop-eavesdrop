@@ -1,7 +1,7 @@
 # Eavesdrop Client API
 
 `EavesdropClient` connects to an Eavesdrop transcription server using the
-English-only NVIDIA Parakeet TDT v2 backend. It provides live transcription,
+English-only Orukeet CPU (INT8 ONNX) or Vulkan (Q8 GGUF) backend. It provides live transcription,
 finite-file transcription, and RTSP subscriptions.
 
 ## Live transcription
@@ -140,12 +140,15 @@ Each `Segment` contains:
 - `id`: the existing chained CRC64 identifier assigned on completion
 - `start` and `end`: seconds on the recording timeline
 - `text`: recognized text
-- `words`: native word timings, or `None` when omitted
+- `words`: words grouped from native token timings, or `None` when omitted
 - `completed`: whether this segment is finalized
 - `duration`: `end - start`
 
-Each `Word` contains `start`, `end`, and `word`. Segment and word timestamps share
-the same recording timeline. Completed chain IDs and the trailing incomplete
+Each `Word` contains `start`, `end`, and `word`. CPU boundaries derive from native
+token onsets and durations at 80 ms granularity; Vulkan uses native word timestamps
+converted from milliseconds. Neither backend uses proportional duration estimates.
+Segment and word timestamps share the original recording timeline, including
+silent gaps skipped by VAD. Completed chain IDs and the trailing incomplete
 segment convention are unchanged.
 
 Segments no longer contain `seek`, `tokens`, `compression_ratio`, `temperature`,

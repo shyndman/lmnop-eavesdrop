@@ -4,11 +4,11 @@ The rules in @CODE_STYLE.md are an imperative. Failure to follow them will repre
 
 ## Project Overview
 
-Eavesdrop is a real-time audio transcription system using NVIDIA Parakeet TDT 0.6B v2 through NeMo. Monorepo with six packages:
+Eavesdrop is a real-time audio transcription system using Orukeet through sherpa-onnx on CPU (INT8 ONNX) or NeMo-Speech.cpp on Vulkan (Q8 GGUF). Monorepo with six packages:
 
 | Package | Description |
 |---------|-------------|
-| `server` | Core transcription server (WebSocket, RTSP, Parakeet integration) |
+| `server` | Core transcription server (WebSocket, RTSP, Orukeet integration) |
 | `client` | Python client library for streaming transcription |
 | `wire` | Shared Pydantic message types and protocol definitions |
 | `common` | Shared Python utilities and data structures |
@@ -78,7 +78,7 @@ Silence-based segment completion:
 # Type checking
 task typecheck
 
-# Optional runtime type check with NeMo/Silero dependencies
+# Optional runtime type check with sherpa-onnx/Silero dependencies
 task typecheck-server
 
 # GNOME extension build and install
@@ -92,10 +92,10 @@ Check package configuration for test commands — don't assume.
 
 ## Transcription Runtime
 
-- Fixed English-only model: `nvidia/parakeet-tdt-0.6b-v2`; no translation, prompts, hotwords, or alternate checkpoints
-- Heavy dependencies are opt-in: `uv sync --package eavesdrop-server --extra transcription`
-- Keep normal unit tests independent of NeMo, model downloads, and GPU availability
-- Docker build context is the repository root; use its `uv.lock`, not package-local historical locks
-- All image variants use `/opt/venv`; protect vendor Torch/audio/vision and GPU libraries during dependency synchronization
-- `task build-server-image` defaults to CPU; set `ACCELERATOR=cuda` or `ACCELERATOR=rocm` explicitly
-- ROCm is experimental; never treat import/unit checks as real GPU inference validation
+- Fixed model: `oruk/orukeet`, pinned CPU INT8 ONNX or Vulkan Q8 GGUF assets; English client contract
+- Runtime dependencies are opt-in: `uv sync --package eavesdrop-server --extra transcription`
+- Declare matching `sherpa-onnx` and `sherpa-onnx-core` dependencies explicitly; uv otherwise omits the native ONNX shared library
+- Keep normal unit tests independent of model downloads and inference runtime availability
+- Preserve native timing: CPU token onsets/durations on the 80 ms encoder grid; Vulkan word times converted from milliseconds; original recording offsets across VAD gaps
+- Run inference directly on the host; `transcription.device` selects `cpu` (default) or `vulkan` (Linux x86_64, GPU 0)
+- Docker build context is the repository root; use its `uv.lock` and `/opt/venv`

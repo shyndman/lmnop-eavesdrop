@@ -141,7 +141,7 @@ class EavesdropClient:
     send_last_n_segments: int | None = None,
     language: Literal["en"] | None = None,
   ) -> "EavesdropClient":
-    """Create a client for English-only Parakeet TDT v2 transcription.
+    """Create a client for English-only Orukeet transcription.
 
     :param host: Server hostname.
     :type host: str

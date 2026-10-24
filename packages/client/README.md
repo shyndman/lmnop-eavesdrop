@@ -1,7 +1,7 @@
 # Eavesdrop Client
 
-Python client for English speech transcription with the Eavesdrop server's NVIDIA
-Parakeet TDT v2 backend. Supports live microphone capture, finite audio files, and
+Python client for English speech transcription with the Eavesdrop server's
+Orukeet CPU (INT8 ONNX) or Vulkan (Q8 GGUF) backend. Supports live microphone capture, finite audio files, and
 RTSP stream subscriptions.
 
 ```python

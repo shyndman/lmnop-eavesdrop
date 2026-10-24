@@ -121,6 +121,7 @@ class TestTranscriptionConfig:
       "same_output_threshold",
       "custom_model",
       "gpu_name",
+      "device_index",
       "task",
     ],
   )
@@ -137,6 +138,18 @@ class TestTranscriptionConfig:
   def test_non_native_sample_rate_is_rejected(self) -> None:
     with pytest.raises(ValueError, match="sample_rate=16000"):
       TranscriptionConfig(buffer=BufferConfig(sample_rate=22050))
+
+  @pytest.mark.parametrize(
+    "settings",
+    [
+      {"model": "nvidia/parakeet-tdt-0.6b-v2"},
+      {"device": "cuda"},
+      {"device": "auto"},
+    ],
+  )
+  def test_removed_checkpoint_and_devices_are_rejected(self, settings: dict[str, str]) -> None:
+    with pytest.raises(ValueError):
+      TranscriptionConfig.model_validate(settings)
 
   def test_non_english_language_is_rejected(self) -> None:
     with pytest.raises(ValueError, match="Input should be 'en'"):

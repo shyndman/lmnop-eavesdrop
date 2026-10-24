@@ -45,7 +45,7 @@ class SileroSpeechDetector:
       self._runtime: SileroRuntime = cast(SileroRuntime, cast(object, import_module("silero_vad")))
     finally:
       # Silero's module import sets PyTorch globally to one thread, even for
-      # ONNX inference. Restore the host's policy so CPU Parakeet is unaffected.
+      # ONNX inference. Restore the host's policy so other CPU inference is unaffected.
       threads.set_num_threads(previous_threads)
     self._model: object = self._runtime.load_silero_vad(onnx=True)
     self._lock: Lock = Lock()

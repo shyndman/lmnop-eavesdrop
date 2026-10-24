@@ -13,7 +13,7 @@ NumericArray = NDArray[np.generic]
 
 def disable_runtime_telemetry() -> None:
   """Disable optional inference-library telemetry before importing their runtimes."""
-  # Must be set BEFORE NeMo/Silero can import ONNX Runtime. The Python API alone
+  # Must be set BEFORE sherpa/Silero can import ONNX Runtime. The Python API alone
   # cannot prevent its initialization event. Official process-lifetime opt-out:
   # https://github.com/microsoft/onnxruntime/blob/main/docs/Privacy.md
   os.environ["ORT_DISABLE_TELEMETRY"] = "1"

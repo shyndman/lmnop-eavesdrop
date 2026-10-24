@@ -68,7 +68,7 @@ The manual `asyncio.wait()` + cancellation pattern is correct but verbose. Pytho
 
 **Location:** `packages/server/src/eavesdrop/server/constants.py:10`
 
-This critical architectural decision (`SINGLE_MODEL = True`) controls whether all clients share a single Parakeet model. It's buried in a constants file with no documentation.
+This critical architectural decision (`SINGLE_MODEL = True`) controls whether all clients share a single Orukeet model for the configured CPU or Vulkan backend. It's buried in a constants file with no documentation.
 
 Future improvement: make configurable via `EavesdropConfig` and inject the model instance into `StreamingTranscriptionProcessor` rather than having it reach up to a class variable.
 
@@ -91,5 +91,5 @@ When a new subscriber connects to an RTSP stream, the old one is disconnected wi
 1. **Protocol-based abstractions**  `AudioSource` and `TranscriptionSink` in `streaming/interfaces.py` cleanly decouple I/O from processing
 2. **Configuration validation**  Pydantic validators enforce invariants and derive VAD parameters from `silence_completion_threshold`
 3. **Session tracing**  `TranscriptionSession` provides consistent observability with stage-specific tracers
-4. **Single-model sharing**  Efficient GPU/CPU utilization across concurrent clients
-5. **Pipeline pattern**  `AudioSource ’ StreamingTranscriptionProcessor ’ TranscriptionSink` is sound and extensible
+4. **Single-model sharing**  Efficient CPU utilization across concurrent clients
+5. **Pipeline pattern**  `AudioSource StreamingTranscriptionProcessor TranscriptionSink` is sound and extensible

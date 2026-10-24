@@ -129,7 +129,7 @@ class Segment(BaseModel):
 
 
 class UserTranscriptionOptions(BaseModel):
-  """Supported session options for English-only Parakeet TDT v2 transcription."""
+  """Supported session options for Orukeet's English transcription contract."""
 
   model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", strict=True)
 

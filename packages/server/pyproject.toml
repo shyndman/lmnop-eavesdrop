@@ -31,8 +31,9 @@ eavesdrop-debug-vad = "eavesdrop.server.debug_vad:main"
 
 [project.optional-dependencies]
 transcription = [
-    "nemo-toolkit[asr]==2.7.3",
-    "pyarrow<26",
+    "huggingface-hub>=0.36,<2",
+    "sherpa-onnx==1.13.4",
+    "sherpa-onnx-core==1.13.4",
     "silero-vad[onnx-cpu]>=6.2,<7",
     "torch==2.9.1",
     "torchaudio==2.9.1",

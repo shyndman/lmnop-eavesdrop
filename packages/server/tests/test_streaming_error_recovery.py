@@ -99,7 +99,7 @@ class ProcessorHarness(StreamingTranscriptionProcessor):
 @pytest.fixture
 def processor_config() -> TranscriptionConfig:
   return TranscriptionConfig(
-    model="nvidia/parakeet-tdt-0.6b-v2",
+    model="oruk/orukeet",
     language="en",
     buffer=BufferConfig(transcription_interval=0.05, min_chunk_duration=0.01),
   )

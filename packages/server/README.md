@@ -1,117 +1,79 @@
 # Eavesdrop server
 
-English speech recognition using NVIDIA's [`nvidia/parakeet-tdt-0.6b-v2`](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2) checkpoint through NeMo. The server retains WebSocket and RTSP streaming, silence-based completion, and recording-relative word timestamps.
+English speech recognition using the fixed [`oruk/orukeet`](https://huggingface.co/oruk/orukeet) model through standard PyPI `sherpa-onnx` on CPU (INT8 ONNX) or pinned NeMo-Speech.cpp on Vulkan (Q8 GGUF). Run directly on the host. The server retains WebSocket and RTSP streaming, silence-based completion, and recording-relative word timestamps.
 
-The model supplies native word start/end times. Silero VAD runs separately through its ONNX implementation to detect speech and silence. The model is downloaded on first use; first startup needs network access and sufficient disk space for the checkpoint and dependencies.
+## Runtime and timing
 
-## Model and runtime choice
+The CPU backend's released INT8 encoder, decoder, and joiner use sherpa-onnx's offline `nemo_transducer` recognizer with 128-dimensional features, 16 kHz input, the CPU provider, and greedy decoding. The Vulkan backend uses pinned NeMo-Speech.cpp with a Q8 GGUF model on Linux x86_64 and selects GPU 0. Streaming remains rolling offline chunk re-decoding with the existing buffering, cancellation, flush, and silence-completion behavior; it is not a stateful streaming recognizer.
 
-The official English-only v2 checkpoint is the baseline. Its [model card](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2) documents native word and segment timing; no separate alignment model is needed. We did not find evidence sufficient to prefer a general-purpose English fine-tune over NVIDIA's checkpoint.
+CPU native token onsets and durations have 80 ms granularity. Subword tokens are grouped into words without proportional duration estimates or a separate alignment stage; punctuation and exact recognized text are preserved. Vulkan native word timestamps are converted from milliseconds. Standalone Silero VAD remains ONNX CPU to detect speech and silence, retaining PyTorch/torchaudio as its dependencies. For both backends, each speech span's original sample offset and the stream chunk's absolute offset are added once. Word times therefore remain on the original recording timeline across VAD gaps.
 
-The popular [istupakov ONNX conversion](https://huggingface.co/istupakov/parakeet-tdt-0.6b-v2) is an alternate runtime representation, not a demonstrated accuracy improvement. The evaluated [onnx-asr result API](https://github.com/istupakov/onnx-asr/blob/main/src/onnx_asr/asr.py) exposes token onsets rather than the native word start/end contract required by active-listener. NeMo 2.7.3 preserves that contract directly, at the cost of a substantially larger dependency footprint. PyArrow is constrained below 26 because its 26 wheel requires NumPy 2 while this workspace remains on NumPy 1.
+For CPU, the adapter downloads `onnx/sherpa-onnx-orukeet-v0.1.0-int8.tar.bz2` from `oruk/orukeet` at revision `55a984d46f68323301837194ce647c702f55facc` through `huggingface_hub.hf_hub_download`. The archive SHA256 is `f9191f30178cc9122ce2f023bf9fefafc822028307b0efa4caff645ba3fe8d0a`. Downloads use the standard Hugging Face cache; extracted files are reused after safe tar data-filter extraction. First startup requires network access and disk space for both archive and extracted model. Vulkan uses separately pinned NeMo-Speech.cpp and Q8 GGUF assets. No runtime benchmark or accuracy improvement is implied by either model packaging.
 
-The Whisper engine, CTranslate2, and separate forced-alignment stage are removed. NeMo's ASR extra still declares the transitive `whisper-normalizer` text utility; it is not a retained Whisper recognizer or alignment stage.
+## Native host setup
 
-Streaming remains rolling offline chunk re-decoding, with the existing buffer, cancellation, flush, and silence-completion behavior. Native boundaries are shifted to recording time exactly once. Short chunks are right-padded to avoid NeMo's default centered padding; final token durations are clipped at the original audio boundary. Those are timeline conversions, not forced alignment or phrase filtering.
-
-## Native CPU setup
-
-Run these commands from the repository root with Python 3.12 and `uv` installed. FFmpeg is required for RTSP ingestion and file decoding; NeMo also uses libsndfile and SoX. On Debian/Ubuntu, install the system packages first:
+Use Python 3.12 and `uv`, from the repository root. FFmpeg supports RTSP ingestion and file decoding; libsndfile supports WAV loading:
 
 ```bash
-sudo apt-get install build-essential ffmpeg libsndfile1 sox
+sudo apt-get install build-essential ffmpeg libsndfile1
 uv sync --package eavesdrop-server --extra transcription
 cp packages/server/config.sample.yaml packages/server/config.yaml
-# Set transcription.device: cpu to force CPU inference.
 uv run --package eavesdrop-server --extra transcription eavesdrop-server \
   --config packages/server/config.yaml
 ```
 
-ONNX Runtime and Hugging Face usage telemetry are disabled before runtime imports. The Docker image also sets `ORT_DISABLE_TELEMETRY=1` before Python starts, following Microsoft’s [process-lifetime opt-out](https://github.com/microsoft/onnxruntime/blob/main/docs/Privacy.md#disabling-telemetry).
+The `transcription` extra supplies sherpa-onnx, huggingface-hub, Silero, and its Torch/audio dependencies. Lightweight development can omit the extra. ONNX Runtime and Hugging Face usage telemetry are disabled before runtime imports. Docker also sets `ORT_DISABLE_TELEMETRY=1` before Python starts, following Microsoft's [process-lifetime opt-out](https://github.com/microsoft/onnxruntime/blob/main/docs/Privacy.md#disabling-telemetry).
 
-The heavy runtime is an opt-in `transcription` extra. Unit tests and normal workspace development can omit it. A native GPU installation needs a compatible, matching vendor PyTorch/torchaudio stack; the container paths below protect these wheels from replacement by the portable host dependency lock.
+The runtime pins both `sherpa-onnx` and `sherpa-onnx-core` to `1.13.4`. The explicit core dependency is required because uv's package metadata omitted that transitive dependency even though the installed sherpa-onnx wheel declares it; both packages are needed for `import sherpa_onnx`.
 
-Allow several GB each for installed packages, the roughly 2.5 GB checkpoint, and temporary checkpoint extraction, plus enough RAM to construct the model and load its weights. If `/tmp` is small or RAM-backed, point `TMPDIR` at a disk-backed directory with free space before starting the server.
+The asset loader selects Hub's standard HTTP transport before importing the Hub library. Xet's reconstruction endpoint returned HTTP 416 for this pinned archive during host verification. The archive is still SHA256-verified before extraction.
+
+The Vulkan SDK bundles an older C++ runtime that cannot load current Mesa drivers. The adapter loads the host `libstdc++.so.6` before the SDK, allowing both the SDK and Vulkan driver to use the host runtime. Vulkan requires the host Vulkan loader, GPU driver, and C++ runtime; startup fails if GPU 0 is unavailable.
 
 ## Configuration and migration
 
 ```yaml
 transcription:
-  model: nvidia/parakeet-tdt-0.6b-v2
-  device: auto
-  device_index: 0
+  model: oruk/orukeet
+  device: cpu
   language: en
   word_timestamps: true
   use_vad: true
-  silence_completion_threshold: 0.8
 ```
 
-- `model` is fixed to the NVIDIA v2 checkpoint; other models and local custom checkpoints are rejected.
-- `device` accepts `auto`, `cpu`, or `cuda`. `auto` chooses an available GPU, otherwise CPU. PyTorch uses `cuda` for both NVIDIA CUDA and AMD ROCm devices.
-- `device_index` selects the zero-based visible GPU index; the default is `0`.
-- Input audio remains mono float32 at 16 kHz. Timing stays relative to the original recording, including when VAD removes silent regions.
-- `word_timestamps: false` hides word details from clients; native timings are still used for segmentation and completion.
-- English transcription is the only supported task. Translation, non-English language selection, prompts, hotwords, custom checkpoints, beam search, and the previous model-selection options are removed.
+- `model` is fixed; alternate IDs and local custom checkpoints are rejected.
+- `device` accepts `cpu` (default) or `vulkan`. Vulkan requires a Linux x86_64 host with a Vulkan-capable GPU and driver, and uses GPU 0; configurable GPU selection via `device_index` is unsupported. Docker remains CPU-only.
+- The client contract remains English-only (`language: en`), without a new language-selection feature or translation.
+- Input audio remains mono float32 at 16 kHz, with original recording offsets preserved.
+- `word_timestamps: false` hides client word details; native timing still drives segmentation and completion.
 
-Start from `config.sample.yaml` when upgrading. Old options such as `custom_model`, `initial_prompt`, `hotwords`, `beam_size`, `num_workers`, `same_output_threshold`, and `gpu_name` are rejected. Use `device` and `device_index` instead of GPU-name matching. Clients must use the matching updated protocol and must not send removed task/model options.
+Start from `config.sample.yaml` when upgrading. Removed options such as `custom_model`, `initial_prompt`, `hotwords`, `beam_size`, `num_workers`, `same_output_threshold`, and `gpu_name` remain unsupported. Clients must not send removed task/model options. The former Python NeMo runtime and its caches are not used; the Vulkan backend uses NeMo-Speech.cpp instead.
 
-## Docker builds
+## Optional CPU Docker packaging
 
-All Docker commands use the repository root as their build context. The default task target is now **CPU**; select GPU support explicitly:
+Host deployment is preferred. Docker packaging is CPU-only; the former CUDA and ROCm base images, build tasks, and GPU device mappings have been removed. PyTorch/torchaudio CPU wheels remain solely for standalone Silero VAD, not recognition inference.
 
 ```bash
-# CPU (default)
 task build-server-image
-
-task build-server-image ACCELERATOR=cuda
-
-# Experimental AMD path; not a claim of GPU inference validation.
-task build-server-image ACCELERATOR=rocm
+task run-server-image
+# Or run in the background:
+task run-server-image-persistent
+# Stop and remove the container:
+task stop-server-image
 ```
 
-The three base images share `/opt/venv`:
+The final image installs the `transcription` extra using the workspace-root `uv.lock` and `/opt/venv`, preserving the base's CPU Torch/audio wheels. Build-time dependency import checks are not inference tests. Override names with `CPU_BASE_IMAGE` and `SERVER_IMAGE`; `SKIP_CACHE=true` disables caching for the final image build.
 
-- CPU: Python 3.12 and official PyTorch 2.9.1 CPU wheels
-- CUDA: NVIDIA CUDA 12.8.1 / Ubuntu 24.04, Python 3.12, and official PyTorch 2.9.1 CUDA 12.8 wheels
-- ROCm: AMD's `rocm/pytorch:rocm7.2.3_ubuntu24.04_py3.12_pytorch_release_2.9.1` image and its existing vendor stack
-
-The final image installs the server's `transcription` extra using the workspace-root `uv.lock`. It explicitly skips the base's Torch, torchaudio, torchvision, Triton, and vendor GPU libraries, then checks that the Torch build is unchanged and NeMo/Silero import. Those build checks do not execute the model or prove GPU compatibility.
-
-You can override the image names with `CPU_BASE_IMAGE`, `CUDA_BASE_IMAGE`, `ROCM_BASE_IMAGE`, and `SERVER_IMAGE`. `SKIP_CACHE=true` disables caching for the final image build. Equivalent manual CPU commands are:
+Equivalent manual builds, also available through `packages/server/scripts/build.sh`:
 
 ```bash
 docker build -f packages/server/docker/Dockerfile.cpu-base -t eavesdrop-cpu-base .
 docker build -f packages/server/docker/Dockerfile \
-  --build-arg BASE_IMAGE=eavesdrop-cpu-base -t eavesdrop-server .
+  --build-arg BASE_IMAGE=eavesdrop-cpu-base \
+  -t ghcr.io/shyndman/lmnop-eavesdrop:latest .
 ```
 
-AMD's [7.2.3 PyTorch installation guide](https://rocm.docs.amd.com/projects/install-on-linux/en/docs-7.2.3/install/3rd-party/pytorch-install.html) lists the selected image. The [compatibility matrix](https://rocm.docs.amd.com/en/docs-7.2.3/compatibility/compatibility-matrix.html) lists gfx1030 and gfx1100. Neither W6800 Pro nor W7800 Pro inference has been validated here. The integrated gfx1103 target is not verified by this base and may need a different compatible vendor build; it is not ruled out. Test the actual GPU and driver combination.
-
-The old `GFX_ARCH` build option is gone: it controlled compilation of the previous backend and cannot change the architectures supported by a prebuilt ROCm PyTorch wheel. ROCm remains experimental for NeMo/Parakeet; validate on your actual hardware before relying on it. The adapter disables NeMo's optional CUDA graph decoder before model construction, avoiding its NVIDIA-driver probe on CPU/ROCm hosts. No HSA override is applied automatically. Supply `HSA_OVERRIDE_GFX_VERSION` only if your hardware requires one and you have verified the value.
-
-## Docker runs
-
-Create `packages/server/config.yaml` from the sample first. Use the same accelerator selection for build and run:
-
-```bash
-task run-server-image                         # CPU
-task run-server-image ACCELERATOR=cuda        # NVIDIA Container Toolkit required
-task run-server-image ACCELERATOR=rocm        # Experimental; requires /dev/kfd and /dev/dri
-
-# Background container with restart policy
-task run-server-image-persistent ACCELERATOR=cuda
-task stop-server-image
-```
-
-The tasks expose port `9090`, mount the config read-only, and persist model downloads in `~/.cache/lmnop/eavesdrop-models`. The container sets `HF_HOME` and `NEMO_CACHE_DIR` inside that mounted cache. CUDA runs pass `--gpus all`. ROCm runs pass the two device mappings and `--security-opt seccomp=unconfined`; this relaxes container isolation and is unnecessary for CPU/CUDA.
-
-For an end-to-end check, start the selected image and transcribe a short English WAV:
-
-```bash
-task transcribe-file audio_file=/absolute/path/to/speech.wav
-```
-
-The CLI prints final text. To inspect word start/end times, use `EavesdropClient.transcribe_file()` and inspect `result.segments` and each segment's `words`. Also test a recording with leading/trailing silence. CPU, CUDA, and ROCm must each be checked on their intended hosts; a successful dependency import or unit-test run is not an inference benchmark.
+Container tasks expose port `9090`, mount `packages/server/config.yaml` read-only, and persist downloads in `~/.cache/lmnop/eavesdrop-models`. `HF_HOME` points inside that mounted cache. Keep `transcription.device: cpu` for Docker; no GPU permissions or relaxed container security are needed.
 
 ## Langfuse tracing
 
@@ -119,21 +81,24 @@ Tracing is env-driven. `task run-server`, `task run-server-image`, and `task run
 
 ## Real-model smoke test
 
-Use an English 16 kHz mono WAV (the [NVIDIA model card](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2) links a public example):
+From the repository root, use an English 16 kHz mono WAV and a configuration selecting the desired backend:
 
 ```bash
 uv run --package eavesdrop-server --extra transcription \
-  python -m eavesdrop.server.smoke_parakeet /path/to/speech.wav --device cpu
+  python -m eavesdrop.server.smoke_orukeet /path/to/speech.wav \
+  --config packages/server/config.yaml
 ```
 
-This verifies nonempty speech output, native word boundaries at recording offsets 0 and 40 seconds, a sub-second speech excerpt at offset 60, and VAD silence bypass, and reports load/inference timings. Use `--device cuda --device-index 0` for an explicitly requested NVIDIA or HIP GPU; unavailable GPUs fail rather than silently falling back. Model-independent tests use injected typed doubles and never download weights.
+The smoke module exercises real recognition, recording-offset word timing, short audio, and VAD silence bypass, and reports load/inference timings. Model-independent unit tests use typed doubles and do not download weights. For end-to-end validation, run the server and transcribe a file through `EavesdropClient.transcribe_file()`, inspecting each segment's words as well as final text. Include recordings with leading, trailing, and internal silence; dependency import checks alone do not establish recognition or streaming correctness.
 
-### Migration validation (2026-10-18)
+### Previously verified CPU host run
 
-A real CPU adapter smoke passed with NeMo 2.7.3, Torch 2.9.1+cpu, the official model-card sample `2086-149220-0033.wav` (7.435 seconds), and `OMP_NUM_THREADS=4 MKL_NUM_THREADS=4`. It produced 23 native-timed words at offsets 0 and 40, passed the 0.8-second speech excerpt at offset 60, and bypassed silence through VAD. First inference took 4.61 seconds; the warm repeat took 2.92 seconds (real-time factor 0.39). Cached model initialization took 78.2 seconds. This is one sample on a shared CPU host, not an accuracy evaluation or an end-to-end WebSocket benchmark.
+A real CPU smoke run with sherpa-onnx/core 1.13.4 transcribed a 10.435-second mono 16 kHz WAV in 1.27 seconds (real-time factor 0.122), producing 28 timed words. Re-decoding at a 40-second recording offset preserved the word timeline. A 0.8-second speech excerpt at offset 60 and VAD silence bypass also passed. First load including archive extraction took 49.5 seconds. These are observations from one local sample, not an accuracy benchmark.
 
-The downloaded model snapshot was `ae9ad07059c7c739ffaf932226a8fe64ae2620b0`. Initial attempts exposed small `/tmp` extraction capacity and memory pressure from a RAM-backed dependency cache; moving the cache and extraction directory to disk allowed the run to complete on the 9.8 GiB host. Docker builds and CUDA/ROCm inference were not executed here.
+The same CPU sample also passed a real WebSocket upload through `EavesdropClient.transcribe_file()`, including final completion and all 28 word boundaries. Concatenating two copies with a two-second silence gap produced two VAD spans and retained their recording-relative offsets within the CPU model's 80 ms timing grid. These CPU observations do not establish Vulkan correctness or performance.
 
-A separate loopback WebSocket run passed with the actual server and file client: the file produced 23 timed words and terminated. Paced live PCM produced four updates and exactly one flush completion; a second 0.8-second recording on the same socket reset timestamps and completed exactly once. Segment completion, native word containment, and the single incomplete-tail invariant held. This uncovered and fixed finite EOF re-decoding: an EOF-covering snapshot now completes the last sentence and drains residual audio even without trailing silence; older snapshots cannot discard later audio.
+### Verified Vulkan host run
 
-The five Python package suites passed 499 tests with 7 optional DBus skips. Workspace/server type checks and lint/format checks on every changed Python file passed. Repository-wide Ruff still reports 20 pre-existing issues in the historical `openspec` client contract and untouched active-listener CLI. The lockfile consistency check passed with uv 0.12.23.
+A real Vulkan smoke run selected `Vulkan0` on an AMD Radeon 780M (Mesa RADV 26.0.8). A 12-second excerpt produced 21 timed words across three VAD spans, retaining leading and internal silence. The same excerpt passed at a 40-second recording offset; a 0.8-second speech excerpt at offset 60 and VAD silence bypass also passed. With cached assets, model/VAD load took 3.33 seconds, the first full pass took 0.93 seconds, and the second took 0.49 seconds. These are single-sample host observations.
+
+A real Vulkan server also passed WebSocket upload through `EavesdropClient.transcribe_file()`. A 14-second recording containing two speech copies, leading/trailing silence, and a two-second inserted gap yielded two completed segments and 12 timed words without warnings. Every delivered word boundary matched direct inference of the same waveform exactly. Independent VAD crops can change native word alignments, so repeated speech copies are checked against their own native boundaries rather than an assumed constant word-time shift.

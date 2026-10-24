@@ -1,6 +1,6 @@
 # Eavesdrop
 
-A real-time English audio transcription system using NVIDIA Parakeet TDT 0.6B v2 through NeMo. Supports native CPU and containerized CPU/CUDA deployments, with an experimental AMD ROCm path.
+A real-time English audio transcription system using Orukeet through CPU sherpa-onnx (INT8 ONNX) or Vulkan NeMo-Speech.cpp (Q8 GGUF). Run directly on the host; optional CPU-only Docker packaging is also available.
 
 ## Architecture
 
@@ -30,15 +30,15 @@ For detailed architecture information, see [ARCHITECTURE.md](./ARCHITECTURE.md).
 ### Server
 
 ```bash
-# From the repository root; Python 3.12, FFmpeg, libsndfile, and SoX required.
+# From the repository root; Python 3.12, FFmpeg, and libsndfile required.
 uv sync --package eavesdrop-server --extra transcription
 cp packages/server/config.sample.yaml packages/server/config.yaml
-# Set transcription.device to cpu to force CPU; auto also permits GPU use.
+# The sample defaults to CPU; select device: vulkan for a Linux x86_64 Vulkan host.
 uv run --package eavesdrop-server --extra transcription eavesdrop-server \
   --config packages/server/config.yaml
 ```
 
-The checkpoint downloads on first use. See the [server guide](./packages/server/README.md) for system dependencies, device selection, model caching, and migration from the previous backend.
+The selected backend's pinned model assets download on first use and are cached for reuse. Vulkan uses GPU 0 on Linux x86_64. See the [server guide](./packages/server/README.md) for system dependencies, model caching, and migration from the previous backend.
 
 ### Active Listener (Desktop Voice Input)
 
@@ -83,9 +83,9 @@ uv sync
 
 ### Core Transcription
 - **Real-time transcription** - Stream audio and get transcription results in real-time with configurable latency
-- **Parakeet TDT** - Fixed `nvidia/parakeet-tdt-0.6b-v2` checkpoint for English transcription
-- **Native word timestamps** - Word start/end boundaries remain on the original recording timeline
-- **Device selection** - CPU or NVIDIA CUDA; AMD ROCm is experimental and needs hardware validation
+- **Orukeet backends** - Fixed `oruk/orukeet` model with CPU INT8 ONNX or Vulkan Q8 GGUF recognition
+- **Native word timestamps** - CPU token onsets and durations at 80 ms granularity, or Vulkan native word timestamps converted from milliseconds, preserved on the original recording timeline
+- **Host inference** - CPU sherpa-onnx by default, or pinned NeMo-Speech.cpp on Vulkan GPU 0 for Linux x86_64
 - **Voice Activity Detection** - Standalone Silero VAD with configurable speech/silence thresholds
 
 ### Connectivity & Streaming
@@ -110,11 +110,11 @@ uv run --package eavesdrop-server pytest packages/server/tests
 uvx ruff check
 uv run --package eavesdrop-server basedpyright
 
-# Opt into NeMo/Silero only when running the transcription runtime.
+# Opt into sherpa-onnx and standalone Silero when running transcription.
 uv sync --package eavesdrop-server --extra transcription
 ```
 
-Unit tests inject recognizer/VAD fakes; they do not download a checkpoint or establish real-model accuracy or GPU performance. Use the server guide's audio smoke check for runtime validation.
+Unit tests inject recognizer/VAD fakes; they do not download a checkpoint or establish real-model accuracy or performance. Use the server guide's audio smoke check for runtime validation.
 
 ### Development Tools
 
@@ -127,16 +127,12 @@ Unit tests inject recognizer/VAD fakes; they do not download a checkpoint or est
 ## Docker
 
 ```bash
-# CPU is the default. Run from the repository root.
+# Optional CPU packaging. Run from the repository root.
 task build-server-image
 task run-server-image
-
-# Select the accelerator explicitly for GPU builds/runs.
-task run-server-image ACCELERATOR=cuda
-task run-server-image ACCELERATOR=rocm  # experimental
 ```
 
-See [server Docker instructions](./packages/server/README.md#docker-builds) for prerequisites, cache volumes, and verification limits.
+See [server Docker instructions](./packages/server/README.md#optional-cpu-docker-packaging) for prerequisites, cache volumes, and verification limits.
 
 ## License
 

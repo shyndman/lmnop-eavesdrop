@@ -28,7 +28,7 @@ from eavesdrop.server.transcription.models import (
   TranscriptionInfo,
   VadParameters,
 )
-from eavesdrop.server.transcription.parakeet import ParakeetTranscriber
+from eavesdrop.server.transcription.orukeet import OrukeetTranscriber
 from eavesdrop.server.transcription.session import TranscriptionSession
 from eavesdrop.wire import Segment
 
@@ -109,7 +109,7 @@ class StreamingTranscriptionProcessor:
   """
 
   # Class variable for single model mode
-  _models: dict[tuple[str, str, int, bool], ParakeetTranscriber] = {}
+  _models: dict[tuple[str, str, bool], OrukeetTranscriber] = {}
   _model_lock: Lock = Lock()
 
   def __init__(
@@ -138,7 +138,7 @@ class StreamingTranscriptionProcessor:
     self.recording_id: str | None = None
 
     # Model attributes
-    self.transcriber: ParakeetTranscriber | None = None
+    self.transcriber: OrukeetTranscriber | None = None
     self.vad_parameters: VadParameters = config.vad_parameters
 
     # Initialize debug capture if configured
@@ -151,22 +151,22 @@ class StreamingTranscriptionProcessor:
       )
 
   async def initialize(self) -> None:
-    """Initialize the Parakeet model off the event loop and announce readiness."""
+    """Initialize the Orukeet model off the event loop and announce readiness."""
     try:
       self.transcriber = await asyncio.to_thread(self._load_model)
     except Exception:
-      self.logger.exception("Failed to load Parakeet")
-      await self.sink.send_error("Failed to load Parakeet TDT v2")
+      self.logger.exception("Failed to load Orukeet")
+      await self.sink.send_error("Failed to load Orukeet")
       raise
-    await self.sink.send_server_ready("parakeet_tdt")
+    await self.sink.send_server_ready("orukeet_tdt")
 
-  def _load_model(self) -> ParakeetTranscriber:
+  def _load_model(self) -> OrukeetTranscriber:
     if not SINGLE_MODEL:
-      return ParakeetTranscriber.load(self.config)
-    key = (self.config.model, self.config.device, self.config.device_index, self.config.use_vad)
+      return OrukeetTranscriber.load(self.config)
+    key = (self.config.model, self.config.device, self.config.use_vad)
     with self._model_lock:
       if key not in self._models:
-        self._models[key] = ParakeetTranscriber.load(self.config)
+        self._models[key] = OrukeetTranscriber.load(self.config)
       return self._models[key]
 
   async def start_processing(self) -> None:
