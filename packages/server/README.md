@@ -72,6 +72,14 @@ until an explicit force-completing flush**; elapsed time, silence, new audio,
 and non-trailing segment position cannot finalize it. Disconnect cancels and
 awaits connection-owned work and releases session resources.
 
+The streaming processor coordinates three focused modules under
+`streaming/processing/`: scheduling selects buffer views and owns interruptible
+waits; recognition owns cached models and cancellation-safe native workers; output
+owns transcript completion, undelivered completion accounting, sink delivery, and
+buffer advancement. Typed chunk/result models live alongside these modules.
+Replacing the processor's current session updates output while an in-flight
+worker retains the session it captured when recognition began.
+
 ## Docker deployment
 
 The same image supports CPU (default) and Vulkan, selected by the mounted configuration's `transcription.device`. Native host setup above is an alternative deployment path, not a prerequisite for container userspace dependencies. The Debian bookworm CPU Torch/audio base is retained: PyTorch/torchaudio CPU wheels remain solely for standalone Silero VAD, not recognition inference. There are no CUDA or ROCm image variants.

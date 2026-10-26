@@ -18,6 +18,16 @@ Cancellation discards the current utterance and suppresses its outstanding resul
 without requiring a new connection. Historical listener audio archival remains
 available independently of transcription and retains its FFmpeg dependency.
 
+## Runtime module ownership
+
+`app/service.py` coordinates keyboard and client events sequentially and retains
+recording lifecycle policy, the pending-flush gate, and background finalization.
+`app/workstation.py` owns recording-scoped media pause/resume and spectrum tasks;
+its shutdown cleanup never cancels finalization work. `app/overlay.py` publishes
+live recording transcript updates without handling completed recording emission.
+`infra/langfuse.py` owns best-effort tracing and the foreground recording
+observation, which is transferred exactly once to recording finalization.
+
 ## Install or update the user service
 
 Run from the repo root:

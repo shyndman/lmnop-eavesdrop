@@ -3,10 +3,10 @@ from __future__ import annotations
 import asyncio
 import secrets
 from dataclasses import dataclass, field
-from typing import Protocol
 
 from structlog.stdlib import BoundLogger
 
+from active_listener.app.overlay import publish_live_transcription
 from active_listener.app.ports import (
   ActiveListenerClient,
   ActiveListenerRewriteClient,
@@ -22,21 +22,19 @@ from active_listener.app.state import (
   decide_app_action,
   decide_client_event,
 )
+from active_listener.app.workstation import (
+  SpectrumRuntime,
+  WorkstationEffects,
+  build_noop_spectrum_analyzer,
+)
 from active_listener.config.models import ActiveListenerConfig
 from active_listener.infra.corrections import ActiveListenerCorrectionStore, CorrectionStore
 from active_listener.infra.dbus import AppStateService
 from active_listener.infra.emitter import TextEmitter
 from active_listener.infra.keyboard import KeyboardControlEvent, KeyboardEventKind, KeyboardInput
-from active_listener.infra.langfuse import (
-  RecordingObservation,
-  end_recording_observation,
-  record_recording_event,
-  record_session_event,
-  start_recording_observation,
-)
+from active_listener.infra.langfuse import RecordingTrace, end_recording_observation
 from active_listener.recording.finalizer import RecordingFinalizer
 from active_listener.recording.session import RecordingAudioBuffer, RecordingSession
-from active_listener.recording.spectrum import SpectrumAnalyzer
 from eavesdrop.client import (
   ConnectedEvent,
   DisconnectedEvent,
@@ -48,20 +46,6 @@ from eavesdrop.client import (
 )
 
 UNKNOWN_DISCONNECT_REASON = "unknown disconnect reason"
-
-
-class SpectrumRuntime(Protocol):
-  def start(self) -> asyncio.Task[None]: ...
-
-  async def stop(self) -> None: ...
-
-
-async def _publish_noop_spectrum(_bars: bytes) -> None:
-  return None
-
-
-def _build_noop_spectrum_analyzer() -> SpectrumAnalyzer:
-  return SpectrumAnalyzer(publish=_publish_noop_spectrum)
 
 
 @dataclass
@@ -79,20 +63,22 @@ class ActiveListenerService:
   media_playback_controller: MediaPlaybackController
   recording_audio_buffer: RecordingAudioBuffer
   correction_store: ActiveListenerCorrectionStore = field(default_factory=CorrectionStore.default)
-  spectrum_analyzer: SpectrumRuntime = field(default_factory=_build_noop_spectrum_analyzer)
+  spectrum_analyzer: SpectrumRuntime = field(default_factory=build_noop_spectrum_analyzer)
   phase: ForegroundPhase = ForegroundPhase.IDLE
   disconnect_generation: int = 0
-  _was_playing_before_recording: bool = field(default=False, init=False)
-  _current_stream: str | None = field(default=None, init=False)
   _llm_available: bool = field(default=False, init=False)
   _llm_active: bool = field(default=False, init=False)
-  _recording_observation: RecordingObservation | None = field(default=None, init=False)
+  _trace: RecordingTrace = field(init=False)
+  _workstation: WorkstationEffects = field(init=False)
   _recording_session: RecordingSession = field(init=False)
   _recording_finalizer: RecordingFinalizer = field(init=False)
   _background_tasks: set[asyncio.Task[None]] = field(default_factory=set)
-  _spectrum_task: asyncio.Task[None] | None = field(default=None, init=False)
 
   def __post_init__(self) -> None:
+    self._trace = RecordingTrace(self.logger)
+    self._workstation = WorkstationEffects(
+      self.media_playback_controller, self.spectrum_analyzer, self.logger
+    )
     self._llm_available = self.config.llm_rewrite is not None
     self._llm_active = self._llm_available
     self._recording_session = RecordingSession(
@@ -148,7 +134,7 @@ class ActiveListenerService:
     cleanup_errors: list[Exception] = []
 
     try:
-      await self._stop_spectrum_analysis()
+      await self._workstation.close()
     except Exception as exc:
       cleanup_errors.append(exc)
 
@@ -162,7 +148,7 @@ class ActiveListenerService:
       if self.phase is ForegroundPhase.RECORDING:
         try:
           self.phase = ForegroundPhase.IDLE
-          recording_observation = self._take_recording_observation()
+          recording_observation = self._trace.take()
           try:
             await self._recording_session.stop_recording()
           finally:
@@ -171,7 +157,7 @@ class ActiveListenerService:
               logger=self.logger,
               status_message="recording stopped during shutdown",
             )
-            await self._resume_media_if_needed()
+            await self._workstation.resume_media()
         except Exception as exc:
           cleanup_errors.append(exc)
 
@@ -230,10 +216,9 @@ class ActiveListenerService:
 
       recording_id = secrets.token_hex(8)
       correction_load_task = asyncio.create_task(self.correction_store.load_async())
-      self._recording_observation = self._start_recording_observation(recording_id=recording_id)
+      self._trace.start(recording_id=recording_id)
       await asyncio.sleep(0)
-      self._was_playing_before_recording = await self._pause_media_if_playing()
-      self._start_spectrum_analysis()
+      await self._workstation.start()
       try:
         await self._recording_session.start_recording(
           recording_id,
@@ -243,13 +228,13 @@ class ActiveListenerService:
         self.phase = ForegroundPhase.RECORDING
         await self.dbus_service.set_state(self.phase)
         self.logger.info("recording started")
-        self._record_recording_event(
+        self._trace.recording_event(
           name="active-listener-recording-started",
-          metadata={"stream": self._current_stream, "recording_id": recording_id},
+          metadata={"stream": self._trace.stream, "recording_id": recording_id},
         )
         return decision
       except Exception:
-        recording_observation = self._take_recording_observation()
+        recording_observation = self._trace.take()
         try:
           if self._recording_session.is_recording:
             await self._recording_session.stop_recording()
@@ -257,7 +242,7 @@ class ActiveListenerService:
             if not correction_load_task.done():
               _ = correction_load_task.cancel()
             _ = await asyncio.gather(correction_load_task, return_exceptions=True)
-          await self._stop_spectrum_analysis()
+          await self._workstation.stop_spectrum()
         finally:
           end_recording_observation(
             recording_observation,
@@ -265,7 +250,7 @@ class ActiveListenerService:
             level="ERROR",
             status_message="recording start failed",
           )
-          await self._resume_media_if_needed()
+          await self._workstation.resume_media()
         raise
 
     if decision is AppActionDecision.CANCEL_RECORDING:
@@ -274,20 +259,20 @@ class ActiveListenerService:
         raise RuntimeError("cancel requested without active recording id")
 
       self.phase = ForegroundPhase.IDLE
-      recording_observation = self._take_recording_observation()
+      recording_observation = self._trace.take()
       observation_level: str | None = None
       observation_status_message = "recording cancelled"
       try:
-        await self._stop_spectrum_analysis()
+        await self._workstation.stop_spectrum()
         await self._recording_session.stop_recording()
         await self.dbus_service.set_state(self.phase)
         await self.client.cancel_utterance(recording_id)
         self._recording_session.reset_connection_cursor()
         self.logger.info("recording cancelled")
-        self._record_recording_event(
+        self._trace.recording_event(
           recording_observation=recording_observation,
           name="active-listener-recording-cancelled",
-          metadata={"stream": self._current_stream, "recording_id": recording_id},
+          metadata={"stream": self._trace.stream, "recording_id": recording_id},
         )
         return decision
       except Exception:
@@ -301,13 +286,13 @@ class ActiveListenerService:
           level=observation_level,
           status_message=observation_status_message,
         )
-        await self._resume_media_if_needed()
+        await self._workstation.resume_media()
 
     self.phase = ForegroundPhase.IDLE
-    recording_observation = self._take_recording_observation()
+    recording_observation = self._trace.take()
     try:
       finished_recording = await self._recording_session.finish_recording()
-      await self._stop_spectrum_analysis()
+      await self._workstation.stop_spectrum()
       await self.dbus_service.set_state(self.phase)
       self._recording_finalizer.reserve_flush()
       try:
@@ -335,7 +320,7 @@ class ActiveListenerService:
       )
       raise
     finally:
-      await self._resume_media_if_needed()
+      await self._workstation.resume_media()
 
   async def handle_keyboard_event(self, event: KeyboardControlEvent) -> None:
     if event.kind is KeyboardEventKind.ESCAPE_DOWN:
@@ -364,11 +349,17 @@ class ActiveListenerService:
       return
 
     if isinstance(event, TranscriptionEvent):
-      self._current_stream = event.stream
-      await self._handle_transcription_event(event)
+      self._trace.stream = event.stream
+      await publish_live_transcription(
+        event,
+        phase=self.phase,
+        recording=self._recording_session,
+        dbus=self.dbus_service,
+        logger=self.logger,
+      )
       return
 
-    self._current_stream = event.stream
+    self._trace.stream = event.stream
 
     if isinstance(event, ConnectedEvent | ReconnectedEvent):
       self._recording_session.reset_connection_cursor()
@@ -376,7 +367,7 @@ class ActiveListenerService:
     decision = decide_client_event(self.phase, event)
 
     if isinstance(event, ConnectedEvent):
-      self._record_session_event(
+      self._trace.session_event(
         session_id=event.stream,
         name="active-listener-client-connected",
         metadata={"stream": event.stream},
@@ -403,7 +394,7 @@ class ActiveListenerService:
           attempt=reconnect_event.attempt,
           retry_delay_s=reconnect_event.retry_delay_s,
         )
-        self._record_session_event(
+        self._trace.session_event(
           session_id=reconnect_event.stream,
           name="active-listener-client-reconnecting",
           metadata={
@@ -421,7 +412,7 @@ class ActiveListenerService:
       reconnected_event = event
       assert isinstance(reconnected_event, ReconnectedEvent)
       self.logger.info("client reconnected", stream=reconnected_event.stream)
-      self._record_session_event(
+      self._trace.session_event(
         session_id=reconnected_event.stream,
         name="active-listener-client-reconnected",
         metadata={"stream": reconnected_event.stream},
@@ -438,7 +429,7 @@ class ActiveListenerService:
     if decision is ConnectionDecision.ABORT_RECORDING:
       self.phase = ForegroundPhase.RECONNECTING
       try:
-        await self._stop_spectrum_analysis()
+        await self._workstation.stop_spectrum()
         await self._recording_session.stop_recording()
         await self.dbus_service.set_state(self.phase)
         await self.dbus_service.recording_aborted(disconnect_reason)
@@ -448,7 +439,7 @@ class ActiveListenerService:
           stream=disconnected_event.stream,
           reason=disconnect_reason,
         )
-        self._record_recording_event(
+        self._trace.recording_event(
           name="active-listener-recording-aborted",
           metadata={
             "stream": disconnected_event.stream,
@@ -458,7 +449,7 @@ class ActiveListenerService:
         )
         return
       finally:
-        await self._resume_media_if_needed()
+        await self._workstation.resume_media()
 
     await self.dbus_service.set_state(self.phase)
 
@@ -467,48 +458,10 @@ class ActiveListenerService:
       stream=disconnected_event.stream,
       reason=disconnect_reason,
     )
-    self._record_session_event(
+    self._trace.session_event(
       session_id=disconnected_event.stream,
       name="active-listener-client-disconnected",
       metadata={"stream": disconnected_event.stream, "reason": disconnect_reason},
-    )
-
-  async def _handle_transcription_event(self, event: TranscriptionEvent) -> None:
-    message = event.message
-    self.logger.debug(
-      "live transcription event received",
-      stream=message.stream,
-      phase=self.phase.value,
-      flush_complete=message.flush_complete is True,
-      segment_count=len(message.segments),
-    )
-
-    if self.phase is not ForegroundPhase.RECORDING:
-      self.logger.debug(
-        "live transcription event ignored",
-        stream=message.stream,
-        phase=self.phase.value,
-      )
-      return
-
-    transcription_update = self._recording_session.ingest_live_transcription_message(message)
-    if transcription_update is None:
-      self.logger.debug(
-        "live transcription event reduced without overlay update",
-        stream=message.stream,
-      )
-      return
-
-    self.logger.debug(
-      "publishing live transcription update",
-      stream=message.stream,
-      runs=transcription_update.runs,
-    )
-    await self.dbus_service.transcription_updated(transcription_update.runs)
-    self.logger.debug(
-      "live transcription update published",
-      stream=message.stream,
-      run_count=len(transcription_update.runs),
     )
 
   async def _pump_keyboard_events(self, signal_queue: asyncio.Queue[RuntimeSignal]) -> None:
@@ -521,113 +474,3 @@ class ActiveListenerService:
 
   def _current_disconnect_generation(self) -> int:
     return self.disconnect_generation
-
-  async def _pause_media_if_playing(self) -> bool:
-    try:
-      was_playing_before_recording = await self.media_playback_controller.pause_if_playing()
-    except Exception:
-      self.logger.exception("media pause failed")
-      return False
-
-    if was_playing_before_recording:
-      self.logger.debug("media pause requested for recording")
-
-    return was_playing_before_recording
-
-  async def _resume_media_if_needed(self) -> None:
-    was_playing_before_recording = self._was_playing_before_recording
-    self._was_playing_before_recording = False
-
-    if not was_playing_before_recording:
-      return None
-
-    try:
-      await self.media_playback_controller.resume()
-    except Exception:
-      self.logger.exception("media resume failed")
-      return None
-
-    self.logger.debug("media resume requested after recording")
-    return None
-
-  def _record_session_event(
-    self,
-    *,
-    name: str,
-    metadata: dict[str, object],
-    session_id: str | None = None,
-  ) -> None:
-    resolved_session_id = session_id or self._current_stream
-    if resolved_session_id is None:
-      return
-
-    try:
-      record_session_event(
-        session_id=resolved_session_id,
-        name=name,
-        metadata=metadata,
-      )
-    except Exception:
-      self.logger.exception("langfuse session event failed", name=name)
-
-  def _record_recording_event(
-    self,
-    *,
-    name: str,
-    metadata: dict[str, object],
-    recording_observation: RecordingObservation | None = None,
-  ) -> None:
-    resolved_observation = (
-      recording_observation if recording_observation is not None else self._recording_observation
-    )
-    try:
-      record_recording_event(
-        parent_observation=resolved_observation,
-        name=name,
-        metadata=metadata,
-      )
-    except Exception:
-      self.logger.exception("langfuse recording event failed", name=name)
-
-  def _start_recording_observation(self, *, recording_id: str) -> RecordingObservation | None:
-    stream = self._current_stream
-    if stream is None:
-      return None
-
-    try:
-      return start_recording_observation(
-        stream=stream,
-        recording_id=recording_id,
-      )
-    except Exception:
-      self.logger.exception(
-        "langfuse recording observation start failed",
-        stream=stream,
-        recording_id=recording_id,
-      )
-      return None
-
-  def _take_recording_observation(self) -> RecordingObservation | None:
-    recording_observation = self._recording_observation
-    self._recording_observation = None
-    return recording_observation
-
-  def _start_spectrum_analysis(self) -> None:
-    spectrum_task = self.spectrum_analyzer.start()
-    if spectrum_task is self._spectrum_task:
-      return
-
-    self._spectrum_task = spectrum_task
-    self._background_tasks.add(spectrum_task)
-    spectrum_task.add_done_callback(self._background_tasks.discard)
-    spectrum_task.add_done_callback(self._clear_spectrum_task)
-
-  async def _stop_spectrum_analysis(self) -> None:
-    await self.spectrum_analyzer.stop()
-    if self._spectrum_task is not None:
-      self._background_tasks.discard(self._spectrum_task)
-      self._spectrum_task = None
-
-  def _clear_spectrum_task(self, task: asyncio.Task[None]) -> None:
-    if self._spectrum_task is task:
-      self._spectrum_task = None

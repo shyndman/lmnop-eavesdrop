@@ -279,7 +279,7 @@ class WebSocketStreamingClient:
 
     :returns: Language code, or ``None`` before recognition identifies it.
     """
-    return self.processor.language
+    return self.processor.output.language
 
   def cleanup(self) -> None:
     """Log completion of connection resource cleanup."""

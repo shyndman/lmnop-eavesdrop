@@ -17,7 +17,7 @@ from eavesdrop.server.connection_handler import WebSocketConnectionHandler
 from eavesdrop.server.constants import SAMPLE_RATE
 from eavesdrop.server.server import TranscriptionServer
 from eavesdrop.server.streaming.interfaces import Float32Audio
-from eavesdrop.server.streaming.processor import StreamingTranscriptionProcessor
+from eavesdrop.server.streaming.processing.recognition import RecognitionWorker
 from eavesdrop.server.transcription.models import TranscriptionInfo
 from eavesdrop.server.transcription.orukeet import OrukeetTranscriber
 from eavesdrop.server.transcription.session import TranscriptionSession
@@ -165,15 +165,15 @@ async def protocol_server(
   """
   model = DeterministicTranscriber(hold=hold)
 
-  def load_model(_processor: StreamingTranscriptionProcessor) -> OrukeetTranscriber:
+  def load_model(_worker: RecognitionWorker) -> OrukeetTranscriber:
     """Return the configured recognizer at the production loader boundary.
 
-    :param _processor: Processor requesting its recognizer.
+    :param _worker: Recognition worker requesting its recognizer.
     :returns: The explicitly supplied recognizer or the standalone test fake.
     """
     return cast(OrukeetTranscriber, cast(object, model)) if transcriber is None else transcriber
 
-  monkeypatch.setattr(StreamingTranscriptionProcessor, "_load_model", load_model)
+  monkeypatch.setattr(RecognitionWorker, "_load_model", load_model)
   shell = TranscriptionServer()
   shell.transcription_config = TranscriptionConfig(
     use_vad=use_vad,

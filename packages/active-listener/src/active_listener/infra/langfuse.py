@@ -279,3 +279,66 @@ def start_rewrite_observation(
       metadata=observation_metadata,
     ) as observation:
       yield _rewrite_observation(observation)
+
+
+class RecordingTrace:
+  """Own the foreground observation until it is handed to finalization.
+
+  :param logger: Sink for tracing failures, which never interrupt recording.
+  """
+
+  def __init__(self, logger: BoundLogger) -> None:
+    self.logger: BoundLogger = logger
+    self.stream: str | None = None
+    self._observation: RecordingObservation | None = None
+
+  def start(self, *, recording_id: str) -> None:
+    """Start an observation for the current connection stream."""
+    if self.stream is None:
+      self._observation = None
+      return
+    try:
+      self._observation = start_recording_observation(stream=self.stream, recording_id=recording_id)
+    except Exception:
+      self.logger.exception(
+        "langfuse recording observation start failed",
+        stream=self.stream,
+        recording_id=recording_id,
+      )
+      self._observation = None
+
+  def take(self) -> RecordingObservation | None:
+    """Transfer observation ownership exactly once to the caller."""
+    observation = self._observation
+    self._observation = None
+    return observation
+
+  def session_event(
+    self,
+    *,
+    name: str,
+    metadata: dict[str, object],
+    session_id: str | None = None,
+  ) -> None:
+    """Publish connection metadata without affecting recording policy."""
+    resolved_session_id = session_id or self.stream
+    if resolved_session_id is None:
+      return
+    try:
+      record_session_event(session_id=resolved_session_id, name=name, metadata=metadata)
+    except Exception:
+      self.logger.exception("langfuse session event failed", name=name)
+
+  def recording_event(
+    self,
+    *,
+    name: str,
+    metadata: dict[str, object],
+    recording_observation: RecordingObservation | None = None,
+  ) -> None:
+    """Publish against the foreground or explicitly transferred observation."""
+    observation = recording_observation if recording_observation is not None else self._observation
+    try:
+      record_recording_event(parent_observation=observation, name=name, metadata=metadata)
+    except Exception:
+      self.logger.exception("langfuse recording event failed", name=name)

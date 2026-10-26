@@ -1,4 +1,4 @@
-# Eavesdrop Server Architecture
+# Eavesdrop Architecture
 
 Eavesdrop has one production audio path: live audio supplied by a transcriber over WebSocket. Transcript updates and control responses return on that connection. A connection can carry multiple recordings; a recording is not a socket lifetime.
 
@@ -25,7 +25,15 @@ graph LR
 - **OrukeetTranscriber (`transcription/orukeet.py`)** loads the fixed recognition model, serializes shared recognizer access, optionally runs standalone Silero VAD, and converts native timing to the recording timeline. Model dependencies load lazily so ordinary unit tests remain lightweight.
 - **Configuration (`config.py`)** validates YAML settings through Pydantic, including recognition backend, live buffering, segmentation, and VAD configuration.
 
-The audio-source and transcription-sink interfaces separate live transport from processing. They are implementation boundaries for the live workflow, not alternate production ingestion or delivery modes.
+The live connection handles incoming audio and controls. The transcription-sink interface handles response delivery.
+
+### Module Ownership
+
+- `client/core.py` coordinates connection lifetime, capture, and serialized recording transitions. `client/inbox.py` owns recording-scoped incoming transcripts, ordered events, and flush waiter lifetime.
+- `streaming/processor.py` coordinates scheduling, recognition, output delivery, and flush acknowledgement. Its `streaming/processing/` package separates buffer selection and wakeups (`scheduling.py`), model and native-worker lifetime (`recognition.py`), completion and transcript delivery (`output.py`), and identity-bearing recognition data (`models.py`).
+- `transcription/session.py` owns connection-scoped transcript history. `transcription/tracing/context.py` owns the shared timing, logger, recording-relative context, and observation creation used by the session and stage tracers. `tracing/stages.py` shares stage timing and observation lifetime through `BaseTracer`.
+- The active listener's `app/service.py` keeps recording policy and finalization ownership. `app/workstation.py` owns media and spectrum effects, `app/overlay.py` publishes live transcript updates, and `infra/langfuse.py` owns recording trace events and observation handoff. Spectrum cleanup and media restoration remain independent of pending transcript finalization.
+- `scripts/update-langfuse-models` retains the executable interface, `uv` dependency declaration, and repository-root `.env` lookup. `scripts/langfuse_models/` shares typed schemas and HTTP transport across catalog pricing translation and ownership-checked synchronization.
 
 ## Recognition Runtime and Timing Contract
 

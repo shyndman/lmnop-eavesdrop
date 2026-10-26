@@ -13,11 +13,8 @@ import pytest
 
 from eavesdrop.server.config import BufferConfig, TranscriptionConfig
 from eavesdrop.server.streaming.buffer import AudioStreamBuffer
-from eavesdrop.server.streaming.processor import (
-  AudioChunk,
-  ChunkTranscriptionResult,
-  StreamingTranscriptionProcessor,
-)
+from eavesdrop.server.streaming.processing.models import AudioChunk, ChunkTranscriptionResult
+from eavesdrop.server.streaming.processor import StreamingTranscriptionProcessor
 from eavesdrop.server.transcription.session import TranscriptionSession, create_session
 
 

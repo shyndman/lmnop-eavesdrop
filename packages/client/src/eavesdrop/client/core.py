@@ -13,15 +13,13 @@ from eavesdrop.client.connection import WebSocketConnection
 from eavesdrop.client.events import (
   ConnectedEvent,
   DisconnectedEvent,
-  LanguageDetectionEvent,
   LiveClientEvent,
   ReconnectedEvent,
   ReconnectingEvent,
-  TranscriptionEvent,
 )
+from eavesdrop.client.inbox import ClientInbox
 from eavesdrop.common import get_logger
 from eavesdrop.wire import (
-  LanguageDetectionMessage,
   TranscriptionMessage,
   UserTranscriptionOptions,
 )
@@ -61,19 +59,12 @@ class EavesdropClient:
     self._audio_capture: AudioCapture | None = None
     self._connected: bool = False
     self._streaming: bool = False
-    self._message_queue: asyncio.Queue[TranscriptionMessage] = asyncio.Queue()
-    self._event_queue: asyncio.Queue[LiveClientEvent] = asyncio.Queue()
     self._background_tasks: set[asyncio.Task[None]] = set()
     self._message_task: asyncio.Task[None] | None = None
     self._audio_loop_task: asyncio.Task[None] | None = None
     self._reconnect_task: asyncio.Task[None] | None = None
     self._recording_transition_lock: asyncio.Lock = asyncio.Lock()
-    self._disconnect_event: asyncio.Event = asyncio.Event()
-    self._disconnect_reason: str | None = None
-    self._flush_waiting: bool = False
-    self._flush_error: str | None = None
     self._disconnect_requested: bool = False
-    self._event_stream_open: bool = False
     self._reconnect_enabled: bool = False
     self._live_setup_options: UserTranscriptionOptions | None = None
     self._current_recording_id: str | None = None
@@ -82,6 +73,7 @@ class EavesdropClient:
       host=host,
       port=port,
     )
+    self._inbox: ClientInbox = ClientInbox(self._logger)
 
     # Validate configuration
     self._validate_configuration()
@@ -108,19 +100,12 @@ class EavesdropClient:
     """Create a client for English-only Orukeet transcription.
 
     :param host: Server hostname.
-    :type host: str
     :param port: Server port.
-    :type port: int
     :param audio_device: Audio device to capture from.
-    :type audio_device: str
     :param on_capture: Optional callback receiving each captured audio chunk.
-    :type on_capture: Callable[[bytes], None] | None
     :param send_last_n_segments: Number of recent segments to include.
-    :type send_last_n_segments: int | None
     :param language: English-only compatibility hint; None also selects English.
-    :type language: Literal["en"] | None
     :returns: Configured EavesdropClient in transcriber mode.
-    :rtype: EavesdropClient
     :raises pydantic.ValidationError: If transcription options are invalid.
     """
     transcription_options = UserTranscriptionOptions(
@@ -148,11 +133,6 @@ class EavesdropClient:
     task.add_done_callback(self._background_tasks.discard)
     return task
 
-  def _emit_event(self, event: LiveClientEvent) -> None:
-    """Publish a live-client event to async iterator consumers."""
-    if self._event_stream_open:
-      self._event_queue.put_nowait(event)
-
   def _set_audio_loop_task(self, task: asyncio.Task[None] | None) -> None:
     """Store the dedicated live audio-loop task and clear it on completion."""
     self._audio_loop_task = task
@@ -178,12 +158,12 @@ class EavesdropClient:
       host=self._host,
       port=self._port,
       stream_name=stream_name,
-      on_ready=self._on_ready,
-      on_transcription=self._on_transcription_text,
+      on_ready=lambda _backend: None,
+      on_transcription=lambda _text: None,
       on_error=self._on_error,
-      on_transcription_message=self._on_transcription_message,
+      on_transcription_message=self._inbox.accept_transcription,
       on_disconnect=self._on_disconnect,
-      on_language_detection=self._on_language_detection,
+      on_language_detection=self._inbox.accept_language,
     )
 
   def _start_message_task(self) -> None:
@@ -204,21 +184,19 @@ class EavesdropClient:
       return
 
     self._disconnect_requested = False
-    self._disconnect_event.clear()
-    self._disconnect_reason = None
-    self._event_stream_open = True
+    self._inbox.open()
 
     try:
       self._live_setup_options = setup_options or self._transcription_options
       self._reconnect_enabled = True
       await self._connect_transcriber(setup_options)
     except Exception:
-      self._event_stream_open = False
+      self._inbox.close()
       self._reconnect_enabled = False
       raise
 
     self._connected = True
-    self._emit_event(ConnectedEvent(stream=self._ensure_stream_name()))
+    self._inbox.publish(ConnectedEvent(stream=self._ensure_stream_name()))
 
   async def _connect_transcriber(
     self, setup_options: UserTranscriptionOptions | None = None
@@ -240,7 +218,7 @@ class EavesdropClient:
       not self._connected
       and self._connection is None
       and self._reconnect_task is None
-      and not self._event_stream_open
+      and not self._inbox.is_open
     ):
       return
 
@@ -248,7 +226,7 @@ class EavesdropClient:
     self._reconnect_enabled = False
     self._connected = False
     self._streaming = False
-    self._event_stream_open = False
+    self._inbox.close()
 
     # Stop audio capture if active
     if self._audio_capture:
@@ -278,11 +256,8 @@ class EavesdropClient:
     if self._background_tasks:
       _ = await asyncio.gather(*self._background_tasks, return_exceptions=True)
     self._background_tasks.clear()
-    self._disconnect_event.clear()
-    self._disconnect_reason = None
-    self._flush_error = None
     self._current_recording_id = None
-    self._clear_event_queue()
+    self._inbox.reset()
 
   async def start_streaming(self, recording_id: str) -> None:
     """Start capture after any preceding recording's flush has completed."""
@@ -304,6 +279,7 @@ class EavesdropClient:
 
     await self._await_prior_audio_loop()
     self._current_recording_id = recording_id
+    self._inbox.start_recording(recording_id)
     self._audio_capture.clear_queue()
     await self._connection.send_recording_started(recording_id, SAMPLE_RATE)
 
@@ -347,8 +323,7 @@ class EavesdropClient:
     await self.stop_streaming()
     await self._connection.send_utterance_cancelled(recording_id)
     self._current_recording_id = None
-    self._clear_message_queue()
-    self._clear_event_queue()
+    self._inbox.cancel_recording()
 
   async def _reconnect_loop(self) -> None:
     """Reconnect a live transcriber session on a fixed retry cadence."""
@@ -356,7 +331,7 @@ class EavesdropClient:
 
     try:
       while self._reconnect_enabled and not self._disconnect_requested:
-        self._emit_event(
+        self._inbox.publish(
           ReconnectingEvent(
             stream=self._ensure_stream_name(),
             attempt=attempt,
@@ -367,7 +342,7 @@ class EavesdropClient:
           "live transcriber reconnect scheduled",
           attempt=attempt,
           retry_delay_s=RECONNECT_DELAY_SECONDS,
-          reason=self._disconnect_reason,
+          reason=self._inbox.disconnect_reason,
         )
         await asyncio.sleep(RECONNECT_DELAY_SECONDS)
 
@@ -385,10 +360,9 @@ class EavesdropClient:
           continue
 
         self._connected = True
-        self._disconnect_event.clear()
-        self._disconnect_reason = None
+        self._inbox.reconnected()
         self._start_message_task()
-        self._emit_event(ReconnectedEvent(stream=self._ensure_stream_name()))
+        self._inbox.publish(ReconnectedEvent(stream=self._ensure_stream_name()))
         self._logger.info("live transcriber reconnected", stream=self._ensure_stream_name())
         return
     finally:
@@ -409,9 +383,7 @@ class EavesdropClient:
       flush is already pending, the server rejects the request, or the live connection closes
       before the flush completes.
     """
-    if self._flush_waiting:
-      self._logger.warning("rejecting concurrent flush", recording_id=recording_id)
-      raise RuntimeError("flush() already in progress")
+    self._inbox.reject_concurrent_flush(recording_id)
     async with self._recording_transition_lock:
       return await self._flush_recording(recording_id, force_complete=force_complete)
 
@@ -426,62 +398,15 @@ class EavesdropClient:
     ):
       raise RuntimeError("flush() requires an active live transcriber connection")
 
-    if self._flush_waiting:
-      self._logger.warning("rejecting concurrent flush", recording_id=recording_id)
-      raise RuntimeError("flush() already in progress")
-
     if self._current_recording_id != recording_id:
       raise RuntimeError("flush() requires the active recording id")
 
-    self._flush_waiting = True
-    self._flush_error = None
-
-    try:
-      self._clear_message_queue()
-      await self._connection.send_flush_control(recording_id, force_complete=force_complete)
-
-      while True:
-        if self._flush_error is not None:
-          raise RuntimeError(self._flush_error)
-
-        if self._message_task.done() and self._message_queue.empty():
-          raise RuntimeError(self._flush_disconnect_message())
-
-        try:
-          message = await asyncio.wait_for(self._message_queue.get(), timeout=0.1)
-        except asyncio.TimeoutError:
-          if self._disconnect_event.is_set():
-            raise RuntimeError(self._flush_disconnect_message())
-          continue
-
-        if message.recording_id == recording_id and message.flush_complete is True:
-          return message
-    finally:
-      self._flush_waiting = False
-      self._flush_error = None
-
-  def _clear_message_queue(self) -> None:
-    """Drain stale buffered messages before a new operation or recording epoch."""
-    while not self._message_queue.empty():
-      _ = self._message_queue.get_nowait()
-
-  def _clear_event_queue(self) -> None:
-    """Drain stale transcription iterator events while preserving connection events."""
-    preserved_events: list[LiveClientEvent] = []
-    while not self._event_queue.empty():
-      event = self._event_queue.get_nowait()
-      if isinstance(event, TranscriptionEvent):
-        continue
-      preserved_events.append(event)
-
-    for event in preserved_events:
-      self._event_queue.put_nowait(event)
-
-  def _flush_disconnect_message(self) -> str:
-    """Build a truthful flush failure message from current disconnect state."""
-    if self._disconnect_reason:
-      return self._disconnect_reason
-    return "flush() failed because the live connection closed before flush completion"
+    connection = self._connection
+    return await self._inbox.flush(
+      recording_id,
+      lambda: connection.send_flush_control(recording_id, force_complete=force_complete),
+      self._message_task,
+    )
 
   async def _audio_streaming_loop(self) -> None:
     """Background task to stream audio data to server."""
@@ -517,12 +442,7 @@ class EavesdropClient:
 
   async def __anext__(self) -> LiveClientEvent:
     """Get the next live-client event in temporal order."""
-    while self._event_stream_open or not self._event_queue.empty():
-      try:
-        return await asyncio.wait_for(self._event_queue.get(), timeout=0.1)
-      except asyncio.TimeoutError:
-        continue
-    raise StopAsyncIteration
+    return await self._inbox.next_event()
 
   # Async context manager protocol
   async def __aenter__(self) -> "EavesdropClient":
@@ -539,63 +459,9 @@ class EavesdropClient:
     """Exit async context manager."""
     await self.disconnect()
 
-  # Callback handlers
-  def _on_ready(self, _backend: str) -> None:
-    """Handle server ready callback."""
-    # Server is ready for transcription
-    pass
-
-  def _on_transcription_message(self, message: TranscriptionMessage) -> None:
-    """Handle full TranscriptionMessage from connection."""
-    if not self._should_accept_transcription_message(message):
-      self._logger.debug(
-        "dropping stale transcription message",
-        stream=message.stream,
-        recording_id=message.recording_id,
-        active_recording_id=self._current_recording_id,
-      )
-      return
-
-    self._message_queue.put_nowait(message)
-    self._emit_event(TranscriptionEvent(stream=message.stream, message=message))
-
-  def _on_language_detection(self, message: LanguageDetectionMessage) -> None:
-    """Handle a LanguageDetectionMessage from the connection."""
-    self._logger.info(
-      "language detected",
-      stream=message.stream,
-      language=message.language,
-      probability=message.language_prob,
-    )
-    self._emit_event(
-      LanguageDetectionEvent(
-        stream=message.stream,
-        language=message.language,
-        probability=message.language_prob,
-      )
-    )
-
-  def _should_accept_transcription_message(self, message: TranscriptionMessage) -> bool:
-    """Return whether an incoming transcription belongs to the current client epoch."""
-    current_recording_id = self._current_recording_id
-    if current_recording_id is None:
-      return message.recording_id is None
-
-    return message.recording_id == current_recording_id
-
-  def _on_transcription_text(self, _text: str) -> None:
-    """Handle legacy transcription text callback from existing connection."""
-    # This is primarily for backward compatibility
-    # The main message flow now uses _on_transcription_message
-    pass
-
   def _on_disconnect(self, reason: str | None) -> None:
     """Handle terminal disconnect signaling from the server."""
-    self._disconnect_reason = reason
-    self._disconnect_event.set()
-
-    if self._flush_waiting and self._flush_error is None:
-      self._flush_error = self._flush_disconnect_message()
+    self._inbox.disconnected(reason)
 
     if not self._reconnect_enabled:
       return
@@ -608,7 +474,7 @@ class EavesdropClient:
 
     self._connected = False
     self._streaming = False
-    self._emit_event(DisconnectedEvent(stream=self._ensure_stream_name(), reason=reason))
+    self._inbox.publish(DisconnectedEvent(stream=self._ensure_stream_name(), reason=reason))
     self._logger.warning(
       "live transcriber disconnected", stream=self._ensure_stream_name(), reason=reason
     )
@@ -620,6 +486,5 @@ class EavesdropClient:
 
   def _on_error(self, error: str) -> None:
     """Handle error callback."""
-    if self._flush_waiting and self._flush_error is None:
-      self._flush_error = error
+    self._inbox.fail_flush(error)
     self._logger.error("client error", error=error)

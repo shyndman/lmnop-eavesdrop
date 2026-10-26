@@ -109,6 +109,15 @@ Clients iterate over events including `connected`, `transcription`,
 retry unexpected disconnects. Legacy `language_detection` events remain decodable,
 but the English-only backend does not perform language detection.
 
+Internally, `core.py` owns connection and capture lifecycle, reconnection, and
+serialized recording transitions. `inbox.py` owns recording-scoped incoming
+results, ordered event delivery, and the lifetime of each flush waiter. A new
+recording preserves accepted events; cancellation explicitly discards queued
+transcription events while retaining connection events. Transport failures affect
+only the outstanding flush request, including when reconnection succeeds before
+that waiter resumes. These internal modules do not change the public
+`eavesdrop.client.EavesdropClient` interface.
+
 ## Transcription data
 
 A `TranscriptionMessage` contains its stream, message timestamp, language, and

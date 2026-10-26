@@ -29,6 +29,7 @@ include = [
   "packages/wire/tests",
   "packages/active-listener/src",
   "packages/active-listener/tests",
+  "scripts/langfuse_models",
 ]
 ignore = ["**/.venv"]
 defineConstant = {DEBUG = true}
@@ -142,6 +143,10 @@ reportUnknownParameterType = "none"
 reportUnknownVariableType = "none"
 reportUnusedCallResult = "none"
 reportUnusedParameter = "none"
+
+[[tool.basedpyright.executionEnvironments]]
+root = "scripts"
+extraPaths = ["scripts"]
 
 [[tool.basedpyright.executionEnvironments]]
 root = "packages/common"

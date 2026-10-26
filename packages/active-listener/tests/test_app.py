@@ -883,15 +883,15 @@ async def test_langfuse_events_split_connection_and_recording_lifecycle(
   service = harness.service
 
   monkeypatch.setattr(
-    "active_listener.app.service.record_session_event",
+    "active_listener.infra.langfuse.record_session_event",
     lambda **kwargs: observed_session_calls.append(kwargs),
   )
   monkeypatch.setattr(
-    "active_listener.app.service.record_recording_event",
+    "active_listener.infra.langfuse.record_recording_event",
     lambda **kwargs: observed_recording_calls.append(kwargs),
   )
   monkeypatch.setattr(
-    "active_listener.app.service.start_recording_observation",
+    "active_listener.infra.langfuse.start_recording_observation",
     lambda **_kwargs: recording_observation,
   )
   monkeypatch.setattr("active_listener.app.service.secrets.token_hex", lambda _n: "recording-1")
@@ -984,7 +984,7 @@ async def test_cancel_recording_ends_recording_observation(
   service = harness.service
 
   monkeypatch.setattr(
-    "active_listener.app.service.start_recording_observation",
+    "active_listener.infra.langfuse.start_recording_observation",
     lambda **kwargs: start_calls.append(kwargs) or FakeLangfuseObservation(),
   )
   monkeypatch.setattr("active_listener.app.service.secrets.token_hex", lambda _n: "recording-1")
@@ -1168,15 +1168,15 @@ async def test_disconnect_during_recording_forces_local_abort(
   service = harness.service
 
   monkeypatch.setattr(
-    "active_listener.app.service.record_session_event",
+    "active_listener.infra.langfuse.record_session_event",
     lambda **kwargs: observed_session_calls.append(kwargs),
   )
   monkeypatch.setattr(
-    "active_listener.app.service.record_recording_event",
+    "active_listener.infra.langfuse.record_recording_event",
     lambda **kwargs: observed_recording_calls.append(kwargs),
   )
   monkeypatch.setattr(
-    "active_listener.app.service.start_recording_observation",
+    "active_listener.infra.langfuse.start_recording_observation",
     lambda **_kwargs: recording_observation,
   )
   monkeypatch.setattr("active_listener.app.service.secrets.token_hex", lambda _n: "recording-1")
@@ -1339,7 +1339,7 @@ async def test_close_ends_open_recording_observation(
   service = harness.service
 
   monkeypatch.setattr(
-    "active_listener.app.service.start_recording_observation",
+    "active_listener.infra.langfuse.start_recording_observation",
     lambda **_kwargs: FakeLangfuseObservation(),
   )
 
@@ -3257,7 +3257,7 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
     lambda *_args, **_kwargs: b"m4a-bytes",
   )
   monkeypatch.setattr(
-    "active_listener.app.service.start_recording_observation",
+    "active_listener.infra.langfuse.start_recording_observation",
     fake_start_recording_observation,
   )
   monkeypatch.setattr(
