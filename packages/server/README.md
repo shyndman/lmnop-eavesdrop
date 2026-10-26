@@ -1,21 +1,21 @@
 # Eavesdrop server
 
-English speech recognition using the fixed [`oruk/orukeet`](https://huggingface.co/oruk/orukeet) model through standard PyPI `sherpa-onnx` on CPU (INT8 ONNX) or pinned NeMo-Speech.cpp on Vulkan (Q8 GGUF). Deploy directly on the host or in the unified CPU/Vulkan container. The server retains WebSocket and RTSP streaming, silence-based completion, and recording-relative word timestamps.
+English speech recognition using the fixed [`oruk/orukeet`](https://huggingface.co/oruk/orukeet) model through standard PyPI `sherpa-onnx` on CPU (INT8 ONNX) or pinned NeMo-Speech.cpp on Vulkan (Q8 GGUF). Deploy directly on the host or in the unified CPU/Vulkan container. Live audio over WebSocket is the sole ingestion path. Every transcription includes native segment and individual word timestamps on the original recording timeline.
 
 ## Runtime and timing
 
 The CPU backend's released INT8 encoder, decoder, and joiner use sherpa-onnx's offline `nemo_transducer` recognizer with 128-dimensional features, 16 kHz input, the CPU provider, and greedy decoding. The Vulkan backend uses pinned NeMo-Speech.cpp with a Q8 GGUF model on Linux x86_64 and selects GPU 0. Streaming remains rolling offline chunk re-decoding with the existing buffering, cancellation, flush, and silence-completion behavior; it is not a stateful streaming recognizer.
 
-CPU native token onsets and durations have 80 ms granularity. Subword tokens are grouped into words without proportional duration estimates or a separate alignment stage; punctuation and exact recognized text are preserved. Vulkan native word timestamps are converted from milliseconds. Standalone Silero VAD remains ONNX CPU to detect speech and silence, retaining PyTorch/torchaudio as its dependencies. For both backends, each speech span's original sample offset and the stream chunk's absolute offset are added once. Word times therefore remain on the original recording timeline across VAD gaps.
+CPU native token onsets and durations have 80 ms granularity. Subword tokens are grouped into words without proportional duration estimates or a separate alignment stage; punctuation and exact recognized text are preserved. Vulkan native word timestamps are converted from milliseconds. Standalone Silero VAD remains ONNX CPU to detect speech and silence, retaining PyTorch/torchaudio as its dependencies. For both backends, each speech segment's original sample offset and the stream chunk's absolute offset are added once. Word times therefore remain on the original recording timeline across VAD gaps.
 
 For CPU, the adapter downloads `onnx/sherpa-onnx-orukeet-v0.1.0-int8.tar.bz2` from `oruk/orukeet` at revision `55a984d46f68323301837194ce647c702f55facc` through `huggingface_hub.hf_hub_download`. The archive SHA256 is `f9191f30178cc9122ce2f023bf9fefafc822028307b0efa4caff645ba3fe8d0a`. Downloads use the standard Hugging Face cache; extracted files are reused after safe tar data-filter extraction. First startup requires network access and disk space for both archive and extracted model. Vulkan uses separately pinned NeMo-Speech.cpp and Q8 GGUF assets. No runtime benchmark or accuracy improvement is implied by either model packaging.
 
 ## Native host setup
 
-Use Python 3.12 and `uv`, from the repository root. FFmpeg supports RTSP ingestion and file decoding; libsndfile supports WAV loading:
+Use Python 3.12 and `uv`, from the repository root. libsndfile supports WAV loading for the standalone recognition smoke test:
 
 ```bash
-sudo apt-get install build-essential ffmpeg libsndfile1
+sudo apt-get install build-essential libsndfile1
 uv sync --package eavesdrop-server --extra transcription
 cp packages/server/config.sample.yaml packages/server/config.yaml
 uv run --package eavesdrop-server --extra transcription eavesdrop-server \
@@ -37,7 +37,6 @@ transcription:
   model: oruk/orukeet
   device: cpu
   language: en
-  word_timestamps: true
   use_vad: true
 ```
 
@@ -45,9 +44,33 @@ transcription:
 - `device` accepts `cpu` (default) or `vulkan`. Vulkan requires Linux x86_64 and uses GPU 0; configurable GPU selection via `device_index` is unsupported. Native host inference requires a Vulkan-capable GPU and userspace driver. Container requirements are described below.
 - The client contract remains English-only (`language: en`), without a new language-selection feature or translation.
 - Input audio remains mono float32 at 16 kHz, with original recording offsets preserved.
-- `word_timestamps: false` hides client word details; native timing still drives segmentation and completion.
+- Native segment and individual word timestamps are mandatory output.
 
 Start from `config.sample.yaml` when upgrading. Removed options such as `custom_model`, `initial_prompt`, `hotwords`, `beam_size`, `num_workers`, `same_output_threshold`, and `gpu_name` remain unsupported. Clients must not send removed task/model options. The former Python NeMo runtime and its caches are not used; the Vulkan backend uses NeMo-Speech.cpp instead.
+
+## Live recording lifecycle
+
+One connection supports multiple recordings. A recording boundary establishes a
+fresh identifier, transcript state, and recording-relative timestamp zero. Stop
+recording A, send its flush with force completion enabled, and await and deliver
+its final `flush_complete` result before processing recording B. Starting B must
+not invalidate A's accepted audio, in-flight recognition, transcript, or pending
+flush response. Accepted B audio queues until A finishes.
+
+Flush processes through its accepted audio boundary, interrupting the ordinary
+processing interval. Its `force_complete` choice remains: `False` returns the
+requested update and acknowledgement without explicitly completing pending
+segments; `True` completes all pending segments through that boundary. Empty
+recordings and already-consumed buffers still receive flush completion.
+Cancellation instead discards the current utterance and its utterance-local
+history and suppresses outstanding results. Recording can restart on the same
+connection. Stale recording identifiers cannot affect the current recording.
+
+With VAD enabled, ordinary silence completion and the trailing incomplete segment
+convention remain. With VAD disabled, **every pending segment stays incomplete
+until an explicit force-completing flush**; elapsed time, silence, new audio,
+and non-trailing segment position cannot finalize it. Disconnect cancels and
+awaits connection-owned work and releases session resources.
 
 ## Docker deployment
 
@@ -91,7 +114,6 @@ docker run --interactive --tty --rm \
 # --detach --restart always --name eavesdrop.
 ```
 
-The container image was built through `task build-server-image` and verified on the Radeon 780M with Mesa 25.0.7. A persistent container selected `Vulkan0` and transcribed a 14-second WebSocket upload containing two speech copies and silence gaps into two completed segments and 12 timed words without warnings. The same upload passed after restarting the container, reusing its persisted model and SDK cache. Verification used a separate container and port; it did not replace the existing running server.
 
 ## Langfuse tracing
 
@@ -107,16 +129,14 @@ uv run --package eavesdrop-server --extra transcription \
   --config packages/server/config.yaml
 ```
 
-The smoke module exercises real recognition, recording-offset word timing, short audio, and VAD silence bypass, and reports load/inference timings. Model-independent unit tests use typed doubles and do not download weights. For end-to-end validation, run the server and transcribe a file through `EavesdropClient.transcribe_file()`, inspecting each segment's words as well as final text. Include recordings with leading, trailing, and internal silence; dependency import checks alone do not establish recognition or streaming correctness.
+The smoke module exercises real recognition, recording-offset word timing, short audio, and VAD silence bypass, and reports load/inference timings. Model-independent protocol tests substitute deterministic recognition without downloading weights. For end-to-end validation, run live WebSocket audio through the active-listener client and observe transcription, flush completion, cancellation, a second recording with fresh timestamps, and cleanup. Include leading, trailing, and internal silence. Direct recognition and dependency import checks alone do not establish live protocol or workstation correctness.
 
 ### Previously verified CPU host run
 
 A real CPU smoke run with sherpa-onnx/core 1.13.4 transcribed a 10.435-second mono 16 kHz WAV in 1.27 seconds (real-time factor 0.122), producing 28 timed words. Re-decoding at a 40-second recording offset preserved the word timeline. A 0.8-second speech excerpt at offset 60 and VAD silence bypass also passed. First load including archive extraction took 49.5 seconds. These are observations from one local sample, not an accuracy benchmark.
 
-The same CPU sample also passed a real WebSocket upload through `EavesdropClient.transcribe_file()`, including final completion and all 28 word boundaries. Concatenating two copies with a two-second silence gap produced two VAD spans and retained their recording-relative offsets within the CPU model's 80 ms timing grid. These CPU observations do not establish Vulkan correctness or performance.
 
 ### Verified Vulkan host run
 
 A real Vulkan smoke run selected `Vulkan0` on an AMD Radeon 780M (Mesa RADV 26.0.8). A 12-second excerpt produced 21 timed words across three VAD spans, retaining leading and internal silence. The same excerpt passed at a 40-second recording offset; a 0.8-second speech excerpt at offset 60 and VAD silence bypass also passed. With cached assets, model/VAD load took 3.33 seconds, the first full pass took 0.93 seconds, and the second took 0.49 seconds. These are single-sample host observations.
 
-A real Vulkan server also passed WebSocket upload through `EavesdropClient.transcribe_file()`. A 14-second recording containing two speech copies, leading/trailing silence, and a two-second inserted gap yielded two completed segments and 12 timed words without warnings. Every delivered word boundary matched direct inference of the same waveform exactly. Independent VAD crops can change native word alignments, so repeated speech copies are checked against their own native boundaries rather than an assumed constant word-time shift.

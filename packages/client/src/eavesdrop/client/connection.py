@@ -28,7 +28,6 @@ from eavesdrop.wire import (
   serialize_message,
 )
 
-FILE_UPLOAD_CHUNK_BYTES = 64 * 1024
 DEFAULT_SOCKET_CLOSE_REASON = "websocket connection closed"
 
 
@@ -43,8 +42,6 @@ class WebSocketConnection:
     on_ready: Callable[[str], None],
     on_transcription: Callable[[str], None],
     on_error: Callable[[str], None],
-    client_type: ClientType = ClientType.TRANSCRIBER,
-    stream_names: list[str] | None = None,
     on_transcription_message: Callable[[TranscriptionMessage], None] | None = None,
     on_disconnect: Callable[[str | None], None] | None = None,
     on_language_detection: Callable[[LanguageDetectionMessage], None] | None = None,
@@ -55,8 +52,6 @@ class WebSocketConnection:
     self.on_ready: Callable[[str], None] = on_ready
     self.on_transcription: Callable[[str], None] = on_transcription
     self.on_error: Callable[[str], None] = on_error
-    self.client_type: ClientType = client_type
-    self.stream_names: list[str] = stream_names or []
     self.on_transcription_message: Callable[[TranscriptionMessage], None] | None = (
       on_transcription_message
     )
@@ -68,7 +63,7 @@ class WebSocketConnection:
     self._logger: BoundLogger = get_logger(
       "client/conn",
       stream=stream_name,
-      client_type=client_type.value,
+      client_type=ClientType.TRANSCRIBER.value,
       host=host,
       port=port,
     )
@@ -88,11 +83,7 @@ class WebSocketConnection:
   async def connect(self, transcription_options: UserTranscriptionOptions | None = None):
     """Establish WebSocket connection to server."""
     socket_url = f"ws://{self.host}:{self.port}"
-    headers = {WebSocketHeaders.CLIENT_TYPE.value: self.client_type.value}
-
-    # Add stream names for subscriber mode
-    if self.client_type == ClientType.RTSP_SUBSCRIBER:
-      headers[WebSocketHeaders.STREAM_NAMES.value] = ",".join(self.stream_names)
+    headers = {WebSocketHeaders.CLIENT_TYPE.value: ClientType.TRANSCRIBER.value}
 
     self._logger.debug("connecting websocket", socket_url=socket_url)
     self.ws = await websockets.connect(socket_url, additional_headers=headers)
@@ -100,16 +91,12 @@ class WebSocketConnection:
     self._disconnect_notified = False
     self._logger.debug("websocket connected", socket_url=socket_url)
 
-    # Send client configuration for transcriber mode
-    if self.client_type == ClientType.TRANSCRIBER:
-      options = transcription_options or UserTranscriptionOptions()
-
-      config_message = TranscriptionSetupMessage(
-        stream=self.stream_name,
-        options=options,
-      )
-
-      await self.ws.send(serialize_message(config_message))
+    options = transcription_options or UserTranscriptionOptions()
+    config_message = TranscriptionSetupMessage(
+      stream=self.stream_name,
+      options=options,
+    )
+    await self.ws.send(serialize_message(config_message))
 
   async def disconnect(self):
     """Close WebSocket connection."""
@@ -155,31 +142,14 @@ class WebSocketConnection:
             self.on_ready(ready_msg.backend)
 
         case TranscriptionMessage() as transcription:
-          # Handle transcription messages differently for different client types
-          if self.client_type == ClientType.TRANSCRIBER:
-            # For transcriber mode, check stream name match
-            if transcription.stream == self.stream_name:
-              # Call both callbacks for backward compatibility
-              if self.on_transcription_message:
-                self.on_transcription_message(transcription)
+          if transcription.stream == self.stream_name:
+            if self.on_transcription_message:
+              self.on_transcription_message(transcription)
 
-              # Legacy text callback
-              text_parts = [seg.text.strip() for seg in transcription.segments if seg.text.strip()]
-              if text_parts:
-                text = " ".join(text_parts)
-                self.on_transcription(text)
-
-          elif self.client_type == ClientType.RTSP_SUBSCRIBER:
-            # For subscriber mode, accept any stream we're subscribed to
-            if transcription.stream in self.stream_names:
-              if self.on_transcription_message:
-                self.on_transcription_message(transcription)
-
-              # Legacy text callback (include stream name)
-              text_parts = [seg.text.strip() for seg in transcription.segments if seg.text.strip()]
-              if text_parts:
-                text = " ".join(text_parts)
-                self.on_transcription(f"[{transcription.stream}] {text}")
+            text_parts = [seg.text.strip() for seg in transcription.segments if seg.text.strip()]
+            if text_parts:
+              text = " ".join(text_parts)
+              self.on_transcription(text)
 
         case ErrorMessage() as error:
           if error.stream == self.stream_name or error.stream is None:
@@ -192,18 +162,8 @@ class WebSocketConnection:
             self._notify_disconnect(disconnect.message)
 
         case LanguageDetectionMessage() as detection:
-          # Language detection is intentionally TRANSCRIBER-only for now. We
-          # deliberately do NOT surface it for RTSP_SUBSCRIBER yet — unlike the
-          # transcription handler above, there is no `detection.stream in
-          # self.stream_names` branch. The wiring side enforces this too:
-          # EavesdropClient._build_connection omits on_language_detection for
-          # RTSP_SUBSCRIBER, so self.on_language_detection is None here anyway.
-          # Branch on client_type (mirroring the transcription case) so the
-          # absence of subscriber support reads as a choice, not an oversight.
-          if self.client_type == ClientType.TRANSCRIBER:
-            if detection.stream == self.stream_name and self.on_language_detection is not None:
-              self.on_language_detection(detection)
-          # RTSP_SUBSCRIBER: language detection deliberately unsupported — drop.
+          if detection.stream == self.stream_name and self.on_language_detection is not None:
+            self.on_language_detection(detection)
 
         case _:
           # Handle unexpected message types
@@ -225,16 +185,6 @@ class WebSocketConnection:
       await self._send_bytes(audio_data)
     except Exception as e:
       self.on_error(f"Error sending audio data: {e}")
-
-  async def send_end_of_audio(self):
-    """Send end of audio signal to server."""
-    if not self.ws or not self.connected:
-      return
-
-    try:
-      await self._send_bytes(b"END_OF_AUDIO")
-    except Exception as e:
-      self.on_error(f"Error sending END_OF_AUDIO: {e}")
 
   async def send_recording_started(self, recording_id: str, sample_rate_hz: int) -> None:
     """Send the live recording boundary control before any audio bytes."""
@@ -288,32 +238,6 @@ class WebSocketConnection:
       await self._send_text(serialize_message(cancel_message))
     except Exception as e:
       self.on_error(f"Error sending utterance cancel control: {e}")
-      raise
-
-  async def send_file_bytes(
-    self,
-    file_bytes: bytes,
-    chunk_size: int = FILE_UPLOAD_CHUNK_BYTES,
-  ) -> None:
-    """Upload file payload bytes over websocket in deterministic chunk sizes.
-
-    :param file_bytes: Raw bytes from the local transcription input file.
-    :type file_bytes: bytes
-    :param chunk_size: Chunk size used for websocket sends.
-    :type chunk_size: int
-    """
-    if not self.ws or not self.connected:
-      return
-
-    if chunk_size <= 0:
-      raise ValueError(f"chunk_size must be positive, got {chunk_size}")
-
-    try:
-      for offset in range(0, len(file_bytes), chunk_size):
-        chunk = file_bytes[offset : offset + chunk_size]
-        await self._send_bytes(chunk)
-    except Exception as e:
-      self.on_error(f"Error sending file bytes: {e}")
       raise
 
   async def _send_text(self, payload: str) -> None:

@@ -1,13 +1,18 @@
 """Regression tests for recording-relative timestamp behavior in transcription output."""
 
-import json
+from dataclasses import dataclass, field
 from typing import cast
 
+import numpy as np
+import pytest
+from numpy.typing import NDArray
+from protocol_harness import flush, protocol_server, start, transcription
+
+from eavesdrop.server.transcription.models import SpeechChunk, VadParameters
+from eavesdrop.server.transcription.orukeet import OrukeetTranscriber
 from eavesdrop.server.transcription.session import create_session
-from eavesdrop.server.transcription.utils import (
-  finalize_recording_timestamps,
-)
-from eavesdrop.wire import Segment, TranscriptionMessage, Word, serialize_message
+from eavesdrop.server.transcription.utils import FloatAudio, finalize_recording_timestamps
+from eavesdrop.wire import Segment, Word
 
 
 def _segment(*, start: float, end: float, time_offset: float) -> Segment:
@@ -16,7 +21,7 @@ def _segment(*, start: float, end: float, time_offset: float) -> Segment:
     start=start,
     end=end,
     text="hello",
-    words=None,
+    words=[],
     time_offset=time_offset,
     completed=False,
   )
@@ -54,63 +59,86 @@ def test_recording_relative_times_remain_monotonic_across_window_boundaries() ->
   assert second.absolute_start_time > first.absolute_end_time
 
 
-def test_transcription_message_serializes_flattened_timestamps() -> None:
-  segment = Segment(
-    id=1,
-    start=43.0,
-    end=45.0,
-    text="hello",
-    words=None,
-    time_offset=40.0,
-    completed=False,
-  )
-  message = TranscriptionMessage(stream="s1", segments=[segment], language="en")
-
-  payload = cast(dict[str, object], json.loads(serialize_message(message)))
-  serialized_segments = cast(list[dict[str, object]], payload["segments"])
-  serialized_segment = serialized_segments[0]
-
-  assert "time_offset" not in serialized_segment
-  assert "absolute_start_time" not in serialized_segment
-  assert "absolute_end_time" not in serialized_segment
-  assert serialized_segment["start"] == 43.0
-  assert serialized_segment["end"] == 45.0
-
-
-def test_transcription_message_word_timestamps_share_recording_timeline() -> None:
-  segment = Segment(
-    id=1,
-    start=40.0,
-    end=42.5,
-    text="worded hello",
-    words=[
-      Word(
-        start=40.25,
-        end=40.6,
-        word="word",
-      )
-    ],
-    time_offset=40.0,
-    completed=False,
-  )
-  message = TranscriptionMessage(stream="s1", segments=[segment], language="en")
-
-  payload = cast(dict[str, object], json.loads(serialize_message(message)))
-  serialized_segments = cast(list[dict[str, object]], payload["segments"])
-  serialized_segment = serialized_segments[0]
-  serialized_words = cast(list[dict[str, object]], serialized_segment["words"])
-  serialized_word = serialized_words[0]
-
-  assert "time_offset" not in serialized_segment
-  assert "absolute_start_time" not in serialized_word
-  assert "absolute_end_time" not in serialized_word
-  assert serialized_word["start"] == 40.25
-  assert serialized_word["end"] == 40.6
-
-
 def test_session_reports_recording_relative_chunk_time_range() -> None:
   session = create_session("stream-1")
 
   session.update_audio_context(start_offset=61.0, duration=1.5)
 
   assert session.get_recording_time_range() == (61.0, 62.5)
+
+
+@dataclass
+class _NativeHypothesis:
+  text: str = "Hello."
+  tokens: list[str] = field(default_factory=lambda: ["▁Hel", "lo", "."])
+  timestamps: list[float] = field(default_factory=lambda: [0.08, 0.16, 0.24])
+  durations: list[float] = field(default_factory=lambda: [0.08, 0.08, 0.0])
+
+
+class _NativeRecognizer:
+  def recognize(self, audio: FloatAudio) -> _NativeHypothesis:
+    return _NativeHypothesis()
+
+
+class _SpeechSpans:
+  def detect(self, audio: FloatAudio, parameters: VadParameters) -> list[SpeechChunk]:
+    # Deterministic VAD substitute: zero is silence, nonzero is speech.
+    active = cast(NDArray[np.bool_], np.concatenate(([False], audio != 0, [False])))
+    changes = cast(NDArray[np.bool_], active[1:] != active[:-1])
+    boundaries = np.flatnonzero(changes)
+    return [
+      {
+        "start": int(cast(np.intp, boundaries[index])),
+        "end": int(cast(np.intp, boundaries[index + 1])),
+      }
+      for index in range(0, boundaries.size, 2)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_native_words_keep_leading_internal_silence_and_segment_window_offsets(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  adapter = OrukeetTranscriber(_NativeRecognizer(), _SpeechSpans())
+  async with protocol_server(
+    monkeypatch,
+    use_vad=True,
+    window=2,
+    minimum=0.1,
+    interval=30,
+    transcriber=adapter,
+  ) as server:
+    async with server.connection() as socket:
+      await start(socket, "native")
+      waveform = np.zeros(64000, dtype=np.float32)
+      waveform[8000:16000] = 0.5
+      waveform[32000:40000] = 0.5
+      await socket.send(waveform.tobytes())
+      interim = await transcription(socket)
+      spoken = [segment for segment in interim.segments if segment.text.strip()]
+      assert [segment.start for segment in spoken] == pytest.approx([0.58, 2.08])
+      assert [segment.words[0].start for segment in spoken] == pytest.approx([0.58, 2.08])
+      assert [segment.end for segment in spoken] == pytest.approx([0.74, 2.24])
+      assert [segment.words[-1].end for segment in spoken] == pytest.approx([0.74, 2.24])
+      await flush(socket, "native")
+      first = await transcription(socket, flushed=True)
+      assert first.recording_id == "native"
+      assert all(segment.completed for segment in first.segments if segment.text.strip())
+      # Completion must consume the full VAD speech span, not re-recognize the
+      # tail after the native word's earlier end during the flush.
+      first_spoken = [segment for segment in first.segments if segment.text.strip()]
+      assert [segment.start for segment in first_spoken] == pytest.approx([0.58, 2.08])
+      assert [segment.end for segment in first_spoken] == pytest.approx([0.74, 2.24])
+      assert [segment.id for segment in first_spoken] == [segment.id for segment in spoken]
+
+      following = np.zeros(32000, dtype=np.float32)
+      following[8000:16000] = 0.5
+      await socket.send(following.tobytes())
+      await flush(socket, "native")
+      second = await transcription(socket, flushed=True)
+      spoken = [segment for segment in second.segments if segment.text.strip()]
+      assert len(spoken) == 2
+      assert [segment.start for segment in spoken] == pytest.approx([2.08, 4.58])
+      assert [segment.words[0].start for segment in spoken] == pytest.approx([2.08, 4.58])
+      assert [segment.end for segment in spoken] == pytest.approx([2.24, 4.74])
+      assert len({segment.id for segment in spoken}) == 2

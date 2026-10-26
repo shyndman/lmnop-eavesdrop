@@ -1,14 +1,14 @@
 ## Why
 
-Current test coverage is concentrated in configuration and connection setup while the highest-risk behavior lives in streaming lifecycle orchestration, timestamped output contracts, buffer boundaries, and protocol serialization. We need targeted regression coverage now so future feature work (including file ingestion and batching paths) can move quickly without silently breaking production-critical transcription behavior.
+Current test coverage is concentrated in configuration and connection setup while the highest-risk behavior lives in live streaming lifecycle orchestration, timestamped output contracts, buffer boundaries, and protocol serialization. Targeted regression coverage protects production-critical live transcription behavior through the live-only cutover.
 
 ## What Changes
 
 - Add a focused, high-value automated test suite across server, wire, and client packages for lifecycle/state-machine behavior, output invariants, protocol contracts, and failure recovery.
-- Introduce deterministic integration-style tests (with mocks/fakes) for streaming completion semantics, segment emission contract, and disconnect ordering.
-- Add property/invariant-oriented tests for audio buffer boundaries and monotonic timing progression.
+- Add deterministic integration-style tests through the WebSocket protocol, substituting recognition at the existing transcriber interface, for recording completion, flush, cancellation, and disconnect.
+- Add property/invariant-oriented tests for audio buffer boundaries and mandatory native segment and individual word timing on the recording timeline.
 - Add wire protocol contract tests (round-trip serialization, discriminator handling, backwards compatibility-sensitive fields).
-- Add targeted client tests for setup/options emission, streaming stop/start behavior, and message routing by mode.
+- Add targeted client tests for live setup/options emission, streaming stop/start behavior, and recording-aware message routing.
 - Define parallel implementation tasks with explicit dependency edges and sub-agent assignments using high-capability agents.
 
 ## Capabilities
@@ -21,6 +21,6 @@ Current test coverage is concentrated in configuration and connection setup whil
 
 ## Impact
 
-- Affected code paths under test: `packages/server/src/eavesdrop/server/streaming/*`, `packages/server/src/eavesdrop/server/transcription/*`, `packages/server/src/eavesdrop/server/rtsp/*`, `packages/wire/src/eavesdrop/wire/*`, and `packages/client/src/eavesdrop/client/*`.
+- Affected code paths under test: `packages/server/src/eavesdrop/server/streaming/*`, `packages/server/src/eavesdrop/server/transcription/*`, `packages/wire/src/eavesdrop/wire/*`, and `packages/client/src/eavesdrop/client/*`.
 - New tests will increase CI runtime moderately but reduce operational risk from regressions in lifecycle/timestamp/protocol behavior.
 - No production API behavior changes in this change; this is test infrastructure and contract hardening.

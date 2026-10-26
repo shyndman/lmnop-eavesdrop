@@ -293,16 +293,13 @@ class RecordingSession:
       self._last_transcription_runs = []
     else:
       self._last_transcription_runs = list(transcription_update.runs)
-    incomplete_segment = reduction.incomplete_segment
     self.logger.debug(
       "transcription window reduced",
       stream=message.stream,
       new_last_id=reduction.last_id,
       new_segment_ids=[segment.id for segment in reduction.segments],
-      incomplete_segment_id=None if incomplete_segment is None else incomplete_segment.id,
-      incomplete_segment_text=(
-        None if incomplete_segment is None else incomplete_segment.text.strip()
-      ),
+      incomplete_segment_ids=[segment.id for segment in reduction.incomplete_segments],
+      incomplete_segment_texts=[segment.text.strip() for segment in reduction.incomplete_segments],
       committed_segment_count=len(reduction.segments),
       committed_word_count=len(state.completed_words),
       incomplete_word_count=len(state.incomplete_words),

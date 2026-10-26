@@ -562,7 +562,9 @@ def _segment(
     start=start,
     end=end,
     text=text,
-    words=words,
+    words=(
+      words if words is not None else [_word(token, start=start, end=end) for token in text.split()]
+    ),
     completed=completed,
   )
 
@@ -2469,6 +2471,49 @@ async def test_disconnect_during_background_finalization_skips_emission() -> Non
 
 
 @pytest.mark.asyncio
+async def test_multiple_provisional_revisions_remain_raw_until_force_flush() -> None:
+  client = FakeClient(
+    flush_results=[
+      _message(
+        _segment(1, "alpha", completed=True),
+        _segment(2, "bravo", completed=True),
+      )
+    ]
+  )
+  emitter = FakeEmitter()
+  harness = _service(client=client, emitter=emitter)
+  service = harness.service
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
+
+  for first, second in [("draft", "rough"), ("alpha", "bravo")]:
+    await service.handle_client_event(
+      _transcription_event(
+        _live_message(
+          service,
+          _segment(1, first, completed=False),
+          _segment(2, second, completed=False),
+          flush_complete=False,
+        )
+      )
+    )
+
+  published = [
+    runs for name, runs in harness.dbus_service.signals if name == "TranscriptionUpdated"
+  ]
+  assert published == [
+    [TextRun(text="draft rough", is_command=False, is_complete=False)],
+    [TextRun(text="alpha bravo", is_command=False, is_complete=False)],
+  ]
+  assert emitter.emitted == []
+
+  _ = await service.handle_action(AppAction.START_OR_FINISH)
+  await service.wait_for_background_tasks()
+
+  assert client.flush_calls == [True]
+  assert emitter.emitted == ["alpha bravo "]
+
+
+@pytest.mark.asyncio
 async def test_finished_recording_emits_joined_text_from_live_updates_and_flush() -> None:
   client = FakeClient(
     flush_results=[
@@ -2744,7 +2789,7 @@ async def test_live_transcription_publishes_shaped_runs() -> None:
         _segment(
           2,
           "scratch that.",
-          completed=True,
+          completed=False,
           start=0.6,
           end=0.9,
           words=[
@@ -2794,7 +2839,7 @@ async def test_live_overlay_leaves_incomplete_tail_unshaped() -> None:
         _segment(
           2,
           "dot slash",
-          completed=True,
+          completed=False,
           start=0.3,
           end=0.5,
           words=[
@@ -3502,9 +3547,9 @@ async def test_finalize_recording_emits_shaped_text_and_signals_failure_when_rew
   _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
   await harness.service.wait_for_background_tasks()
 
-  assert harness.emitter.emitted == ["release#42 "]
+  assert harness.emitter.emitted == ["release#42 thank you "]
   record = harness.history_store.recordings[0].record
-  assert record.post_finalization_text == "release#42 "
+  assert record.post_finalization_text == "release#42 thank you "
   assert record.llm_model is None
   assert record.tokens_in is None
   assert record.tokens_out is None

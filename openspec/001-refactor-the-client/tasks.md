@@ -9,9 +9,9 @@
    → Tech stack: Python 3.11+, websockets, sounddevice, numpy, pydantic, structlog, eavesdrop-wire
    → Structure: Single project (refactor within existing packages/client)
 2. Load design documents:
-   → data-model.md: EavesdropClient, ClientCallbacks, TranscriberOptions, SubscriberOptions
+   → data-model.md: EavesdropClient, ClientCallbacks, TranscriberOptions
    → contracts/: EavesdropClient API contract definition
-   → quickstart.md: Integration test scenarios for both modes
+   → quickstart.md: Live transcription and lifecycle integration scenarios
 3. Generate tasks by category:
    → Setup: Remove CLI components, prepare library structure
    → Tests: Contract tests for API, integration tests for usage scenarios
@@ -41,7 +41,7 @@
 
 ### Contract Tests (API Surface)
 - [ ] T005 [P] Contract test EavesdropClient.transcriber() factory method in tests/contract/test_transcriber_factory.py
-- [ ] T006 [P] Contract test EavesdropClient.subscriber() factory method in tests/contract/test_subscriber_factory.py  
+- [ ] T006 [P] Contract test mandatory native segment and word timings in tests/contract/test_word_timings.py
 - [ ] T007 [P] Contract test async iterator protocol (__aiter__/__anext__) in tests/contract/test_async_iterator.py
 - [ ] T008 [P] Contract test async context manager protocol (__aenter__/__aexit__) in tests/contract/test_context_manager.py
 - [ ] T009 [P] Contract test connection management (connect/disconnect) in tests/contract/test_connection_lifecycle.py
@@ -51,7 +51,7 @@
 ### Integration Tests (Usage Scenarios)
 - [ ] T012 [P] Integration test basic transcriber mode with context manager in tests/integration/test_basic_transcriber.py
 - [ ] T013 [P] Integration test advanced transcriber configuration in tests/integration/test_advanced_transcriber.py
-- [ ] T014 [P] Integration test subscriber mode multi-stream monitoring in tests/integration/test_subscriber_mode.py
+- [ ] T014 [P] Integration test recording boundaries, flush completion, and cancellation in tests/integration/test_recording_lifecycle.py
 - [ ] T015 [P] Integration test audio device selection patterns in tests/integration/test_audio_device_selection.py
 - [ ] T016 [P] Integration test error handling scenarios in tests/integration/test_error_handling.py
 - [ ] T017 [P] Integration test manual connection lifecycle in tests/integration/test_manual_lifecycle.py
@@ -59,17 +59,17 @@
 ## Phase 3.3: Core Implementation (ONLY after tests are failing)
 
 ### Refactor Existing Components
-- [ ] T018 Modify packages/client/src/eavesdrop/client/connection.py to support both ClientType.TRANSCRIBER and ClientType.RTSP_SUBSCRIBER
+- [ ] T018 Modify packages/client/src/eavesdrop/client/connection.py for the retained live transcriber protocol
 - [ ] T019 Update WebSocketConnection message processing to handle rich TranscriptionMessage callbacks instead of text-only
-- [ ] T020 Remove stream filtering in WebSocketConnection message processing for multi-stream subscriber support
-- [ ] T021 Add X-Stream-Names header support to WebSocketConnection for subscriber mode
+- [ ] T020 Preserve mandatory native word timestamps in rich transcription message processing
+- [ ] T021 Preserve recording controls, force-completing flush acknowledgement, and cancellation on one connection
 - [ ] T022 Update packages/client/src/eavesdrop/client/audio.py to support enhanced device selection (index, name, substring)
 
 ### New EavesdropClient Implementation  
-- [ ] T023 Create packages/client/src/eavesdrop/client/client.py with EavesdropClient class and factory methods
+- [ ] T023 Create packages/client/src/eavesdrop/client/client.py with EavesdropClient class and transcriber factory
 - [ ] T024 Implement async iterator protocol (__aiter__/__anext__) with internal message queue in EavesdropClient
 - [ ] T025 Implement async context manager protocol (__aenter__/__aexit__) in EavesdropClient  
-- [ ] T026 Implement connection management and mode-specific logic in EavesdropClient
+- [ ] T026 Implement independent connection, capture, and transmission lifecycle management in EavesdropClient
 
 ## Phase 3.4: Integration & Polish
 - [ ] T027 Update packages/client/src/eavesdrop/client/__init__.py to export EavesdropClient as main API
@@ -94,7 +94,7 @@
 ```python
 # Launch all contract tests together (different files):
 Task: "Contract test EavesdropClient.transcriber() factory method in tests/contract/test_transcriber_factory.py"
-Task: "Contract test EavesdropClient.subscriber() factory method in tests/contract/test_subscriber_factory.py" 
+Task: "Contract test mandatory native segment and word timings in tests/contract/test_word_timings.py"
 Task: "Contract test async iterator protocol in tests/contract/test_async_iterator.py"
 Task: "Contract test async context manager protocol in tests/contract/test_context_manager.py"
 Task: "Contract test connection management in tests/contract/test_connection_lifecycle.py"
@@ -107,7 +107,7 @@ Task: "Contract test status properties in tests/contract/test_status_properties.
 # Launch all integration tests together (different files):
 Task: "Integration test basic transcriber mode in tests/integration/test_basic_transcriber.py"
 Task: "Integration test advanced transcriber configuration in tests/integration/test_advanced_transcriber.py"
-Task: "Integration test subscriber mode in tests/integration/test_subscriber_mode.py"
+Task: "Integration test recording boundaries, flush completion, and cancellation in tests/integration/test_recording_lifecycle.py"
 Task: "Integration test audio device selection in tests/integration/test_audio_device_selection.py" 
 Task: "Integration test error handling in tests/integration/test_error_handling.py"
 Task: "Integration test manual lifecycle in tests/integration/test_manual_lifecycle.py"
@@ -117,7 +117,7 @@ Task: "Integration test manual lifecycle in tests/integration/test_manual_lifecy
 
 ### Key Refactoring Changes
 1. **Remove CLI Components**: Tasks T001-T003 eliminate all terminal/CLI dependencies
-2. **WebSocket Protocol Enhancement**: Tasks T018-T021 add dual client type support
+2. **WebSocket Protocol Preservation**: Tasks T018-T021 retain live transcription, mandatory native word timings, and recording controls
 3. **Message Processing Changes**: Remove text extraction, pass full TranscriptionMessage objects
 4. **Audio Device Enhancement**: Task T022 adds flexible device selection
 5. **New Library API**: Tasks T023-T026 implement the unified EavesdropClient interface
@@ -157,9 +157,11 @@ tests/
 
 ## Success Criteria
 1. All CLI components removed while preserving core functionality
-2. Unified EavesdropClient API supporting both transcriber and subscriber modes
+2. Unified EavesdropClient API for live microphone transcription
 3. Full async iterator and context manager protocol compliance
-4. Enhanced WebSocket connection supporting dual client types  
+4. Live WebSocket connection preserving recording boundaries, flush, and cancellation
 5. Rich TranscriptionMessage callbacks instead of text-only
 6. Thread-safe operation through instance isolation
 7. Comprehensive test coverage for all API contracts and usage scenarios
+8. Native segment and individual word timestamps in every transcription, relative to each recording
+9. With VAD disabled, all pending segments remain incomplete until explicit force completion; VAD-enabled silence completion remains supported

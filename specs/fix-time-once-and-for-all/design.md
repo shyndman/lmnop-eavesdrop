@@ -43,8 +43,6 @@ Locked decisions from prior discussion:
 
 - No client-side late timestamp translation as the primary fix.
 - No preserving pre-boundary server audio across active-listener recordings.
-- No change to finite file transcription semantics.
-- No change to RTSP subscriber timeline semantics unless shared types require optional fields.
 - No attempt to make wall-clock/log timestamps part of app semantics.
 - No multi-recording concurrency inside one live transcriber connection. One live connection has at most one active recording epoch.
 
@@ -68,7 +66,7 @@ These are the existing APIs and files the implementation is expected to use. The
       sample_rate_hz: int
     ```
 
-  - Add `recording_id: str | None = None` to `TranscriptionMessage`, `FlushControlMessage`, and `UtteranceCancelledMessage`. Live active-listener paths must set it; file and RTSP compatibility may leave it `None`.
+  - Add `recording_id: str | None = None` to `TranscriptionMessage`, `FlushControlMessage`, and `UtteranceCancelledMessage`. Live active-listener paths must set it.
 - `packages/wire/src/eavesdrop/wire/codec.py`
   - `Message` is a type union used by `_MessageCodec` with `Field(discriminator="type")`.
   - Add `RecordingStartedMessage` to the `Message` union.
@@ -91,8 +89,8 @@ These are the existing APIs and files the implementation is expected to use. The
   - `_audio_streaming_loop()` sends bytes through `WebSocketConnection.send_audio_data()` and then calls `_on_capture(audio_data)` with the same bytes. That callback is the active-listener local capture mirror.
   - `flush(recording_id: str, *, force_complete: bool = True)` must wait only for `TranscriptionMessage(recording_id=recording_id, flush_complete=True)`.
   - `cancel_utterance(recording_id: str)` must stop streaming and send `UtteranceCancelledMessage(recording_id=recording_id)`.
-  - `_on_transcription_message()` is the shared callback feeding the internal flush queue and live event queue. It must drop stale live messages before they reach either queue. File-mode collection is exempt because file transcription has no active-listener recording epoch.
-  - `_clear_message_queue()` only drains the internal flush/file queue today; stale live events can also sit in `_event_queue`, so a new recording boundary must drain or filter both paths.
+  - `_on_transcription_message()` is the shared callback feeding the internal flush queue and live event queue. It must drop stale live messages before they reach either queue.
+  - `_clear_message_queue()` drains the internal flush queue; a new recording boundary must also drain or filter stale events in `_event_queue`.
 - `packages/client/src/eavesdrop/client/audio.py`
   - `AudioCapture.audio_callback()` queues `float32` microphone bytes with `audio_data.tobytes()`.
   - `AudioCapture.audio_queue` is not currently cleared between recordings; the new start path must clear it before capture begins.
@@ -105,7 +103,6 @@ These are the existing APIs and files the implementation is expected to use. The
 - `packages/server/src/eavesdrop/server/streaming/client.py`
   - `_audio_ingestion_loop()` is the single post-setup WebSocket receive owner in live mode.
   - Text frames are routed to `_handle_live_text_frame()`; binary frames go to `add_frames()`.
-  - `_handle_file_text_frame()` rejects live controls in file mode; it must reject `RecordingStartedMessage` in file mode too.
   - `_handle_live_text_frame()` must handle `RecordingStartedMessage` by coordinating a full recording reset before any following binary frame is accepted into the buffer.
 - `packages/server/src/eavesdrop/server/streaming/buffer.py`
   - `AudioStreamBuffer.reset()` sets `frames_np = None`, `buffer_start_time = 0.0`, and `processed_up_to_time = 0.0`; this is the required new-recording buffer operation.
@@ -149,7 +146,7 @@ These are the existing APIs and files the implementation is expected to use. The
   - `RecordingReducerState` stores `completed_words`, `incomplete_words`, `closed_command_spans`, and `open_command_start_s` in seconds today.
   - `apply_segment_reduction()` appends committed words and replaces incomplete words.
   - `reduce_new_segments()` returns `missing_last_id=True` and the whole committed prefix when the previous sentinel is absent. That must not erase the local prefix; after epoch scoping, missing sentinels inside one recording should log a data-integrity warning and avoid duplicate committed words by segment id.
-  - If command text is active and any segment lacks `words`, `CommandTextWordTimestampError` is raised; word timestamps remain mandatory for command classification.
+  - Native word timestamps are mandatory for every transcription segment and are used directly for command classification; no timing opt-out or synthesized fallback exists.
 
 ### Validation commands
 

@@ -1,7 +1,9 @@
 # Quickstart Guide: EavesdropClient Library
 
 ## Overview
-This guide demonstrates the essential usage patterns for the refactored EavesdropClient library. All examples assume a running eavesdrop server.
+This guide demonstrates the essential usage patterns for the live-only EavesdropClient library. All examples assume a running eavesdrop server. Every transcription includes native segment and individual word timestamps; no option is needed to enable them.
+
+Recording lifetime is independent of connection lifetime. Complete recording A with a force-completing flush and await its final transcript and flush-complete response before starting recording B. Each recording starts a fresh transcript and recording-relative timeline. A non-force-completing flush requests an update without completing pending segments. With VAD disabled, all pending segments remain provisional until explicit force completion; with VAD enabled, silence-based completion remains available. Cancellation discards the active utterance rather than completing it.
 
 ## Basic Transcriber Mode Usage
 
@@ -32,10 +34,6 @@ async def advanced_transcription():
         host="home-brainbox",
         port=9090,
         audio_device="USB Audio",  # Specific device
-        beam_size=10,  # Higher quality
-        word_timestamps=True,
-        initial_prompt="This is a technical meeting",
-        hotwords=["Python", "asyncio", "WebSocket"],
         on_ready=lambda backend: print(f"Ready with {backend}"),
         on_error=lambda msg: print(f"Error: {msg}"),
         on_streaming_started=lambda: print("Started streaming"),
@@ -54,24 +52,6 @@ async def advanced_transcription():
                     print(f"  Confidence: {segment.confidence:.2f}")
     finally:
         await client.disconnect()
-```
-
-## Basic Subscriber Mode Usage
-
-### Monitor RTSP Streams
-```python
-async def monitor_streams():
-    async with EavesdropClient.subscriber(
-        host="localhost",
-        port=9090,
-        stream_names=["office_audio", "meeting_room_1"],
-        on_stream_status=lambda stream, status, msg: print(f"[{stream}] {status}: {msg}")
-    ) as client:
-        
-        async for transcription in client:
-            print(f"[{transcription.stream}] {transcription.language}")
-            for segment in transcription.segments:
-                print(f"  {segment.text}")
 ```
 
 ## Audio Device Selection
@@ -214,36 +194,6 @@ async def test_transcriber_basic_flow():
     assert not client.is_connected()
 ```
 
-### Subscriber Mode Integration Test
-```python
-@pytest.mark.asyncio
-async def test_subscriber_basic_flow():
-    """Test basic subscriber mode functionality."""
-    client = EavesdropClient.subscriber(
-        host="localhost",
-        port=9090,
-        stream_names=["test_stream"]
-    )
-    
-    # Test connection
-    await client.connect()
-    assert client.is_connected()
-    
-    # Should raise error for transcriber-only methods
-    with pytest.raises(RuntimeError):
-        await client.start_streaming()
-    
-    with pytest.raises(RuntimeError):
-        client.is_streaming()
-    
-    # Should receive transcriptions immediately after connection
-    transcription = await client.__anext__()
-    assert transcription.stream == "test_stream"
-    
-    # Cleanup
-    await client.disconnect()
-```
-
 ### Error Condition Tests
 ```python
 @pytest.mark.asyncio
@@ -251,12 +201,6 @@ async def test_invalid_audio_device():
     """Test invalid audio device handling."""
     with pytest.raises(InvalidAudioDeviceError):
         EavesdropClient.transcriber(audio_device="nonexistent_device")
-
-@pytest.mark.asyncio  
-async def test_empty_stream_names():
-    """Test empty stream names handling."""
-    with pytest.raises(InvalidStreamNameError):
-        EavesdropClient.subscriber(stream_names=[])
 
 @pytest.mark.asyncio
 async def test_connection_failure():

@@ -4,17 +4,9 @@ Transcription data types for wire protocol communication.
 Contains the core data structures used for transcription results and user configuration.
 """
 
-from enum import StrEnum
 from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field
-
-
-class TranscriptionSourceMode(StrEnum):
-  """Declares how a transcriber session sources audio for server routing decisions."""
-
-  LIVE = "live"
-  FILE = "file"
 
 
 def compute_segment_chain_id(previous_id: int, text: str) -> int:
@@ -61,8 +53,8 @@ class Segment(BaseModel):
   text: str
   """Transcribed text content of the audio segment."""
 
-  words: list[Word] | None = None
-  """Word-level timing breakdown when word timestamps are enabled, None otherwise."""
+  words: list[Word]
+  """Native word-level text and recording-relative timing breakdown."""
 
   time_offset: float = Field(default=0.0, exclude=True)
   """Internal segment-local offset retained only for Python-side compatibility helpers."""
@@ -133,14 +125,8 @@ class UserTranscriptionOptions(BaseModel):
 
   model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", strict=True)
 
-  source_mode: TranscriptionSourceMode = TranscriptionSourceMode.LIVE
-  """Declares live-stream versus finite-file source intent for this session."""
-
   send_last_n_segments: int | None = Field(default=None, gt=0)
   """Number of most recent segments to send to the client."""
-
-  word_timestamps: bool = True
-  """Include native word timestamps by default; False omits words from results."""
 
   language: Literal["en"] | None = None
   """English-only compatibility hint; None also selects English, without detection."""

@@ -1,6 +1,6 @@
 ## Context
 
-The current live transcriber protocol uses a single WebSocket connection with a setup message followed by raw float32 audio frames. On the server side, `TranscriptionServer.get_audio_from_websocket(...)` reads each post-setup frame and treats it as audio bytes unless it matches the `END_OF_AUDIO` sentinel. On the processing side, `StreamingTranscriptionProcessor` snapshots all unprocessed audio from `AudioStreamBuffer`, runs transcription, commits completed segments, and then sleeps to satisfy `min_chunk_duration` and `transcription_interval` pacing.
+The live transcriber protocol uses a single WebSocket connection with a setup message followed by raw float32 audio frames and explicit text controls. `StreamingTranscriptionProcessor` snapshots unprocessed audio from `AudioStreamBuffer`, runs transcription, and respects `min_chunk_duration` and `transcription_interval` pacing.
 
 That shape is fine for always-on microphone streaming, but it is a poor fit for push-to-talk. A user who releases the key is communicating an end-of-utterance boundary, yet the current system may still wait for more audio, wait for the next interval, or leave the current segment tentative until later speech arrives.
 
@@ -25,7 +25,6 @@ Third-party dependency baseline, verified against current manifests and official
 1. Introducing a general transport-agnostic command bus.
 2. Adding session IDs or flush IDs to the wire protocol.
 3. Interrupting library calls inside Silero VAD, feature extraction, or Whisper generation.
-4. Changing file-mode or RTSP control semantics in this change.
 5. Removing the invariant incomplete tail segment from transcription responses.
 
 ## File Map and Ownership
@@ -153,7 +152,6 @@ Concretely:
 2. Exactly one code path may call `websocket.recv()` in live mode.
 3. That code path must branch on frame type:
    1. binary frame -> decode to float32 audio and append to the buffer,
-   2. `b"END_OF_AUDIO"` -> end the live audio source,
    3. text frame -> deserialize and handle session commands.
 
 This matters because the `websockets` library forbids concurrent `recv()` calls on the same connection. A junior engineer should not introduce a second background task that also reads the socket.
@@ -164,10 +162,8 @@ This matters because the `websockets` library forbids concurrent `recv()` calls 
 
 Explicit rejection rules:
 1. **Before setup completes**: reject with `ErrorMessage`, because the server does not yet know which live transcription session should own the command.
-2. **File-mode transcriber session**: reject with `ErrorMessage`, because file mode already has deterministic `END_OF_AUDIO` finalization and file upload frames are not session-control traffic.
-3. **RTSP subscriber session**: reject with `ErrorMessage`, because subscribers do not own transcription processor state.
 
-Connection behavior for all three cases:
+Connection behavior for an unconfigured session:
 1. keep the connection open unless another existing validation rule already closes it,
 2. do not create or mutate any pending flush state,
 3. do not treat the text frame as audio bytes.
@@ -176,7 +172,6 @@ Connection behavior for all three cases:
 The current code spreads this responsibility across `TranscriptionServer.get_audio_from_websocket(...)`, `WebSocketAudioSource.read_audio()`, and `WebSocketStreamingClient._audio_ingestion_loop()`. During implementation, prefer the smallest refactor that leaves only one `recv()` owner in live mode. The easiest shape is:
 1. move live frame reading into `WebSocketStreamingClient`,
 2. keep `server.py` as a binary-audio decoder helper only,
-3. leave file-mode reading untouched.
 
 ## Decision 3: Keep one canonical pending-flush record on the server
 
@@ -413,17 +408,17 @@ The flush change must preserve step 3 for **every** emitted response.
 
 ### Force-complete behavior
 
-If `force_complete=true` and the pass that covers the boundary still has a tentative tail segment:
-1. mark that tentative tail complete even if silence threshold has not been met,
-2. add it to the completed chain,
-3. append a fresh incomplete tail segment after it,
+If `force_complete=true`, complete all remaining provisional segments covered by the flush boundary:
+1. mark those segments complete even if silence threshold has not been met,
+2. add them to the completed chain,
+3. append a fresh incomplete tail segment after them,
 4. send the response.
 
 ### Non-force-complete behavior
 
 If `force_complete=false`:
 1. do not invent extra completion,
-2. preserve the ordinary incomplete-tail logic,
+2. with VAD disabled, preserve all segments as provisional; with VAD enabled, preserve silence-based completion,
 3. still ensure the emitted response ends with one incomplete tail segment.
 
 ## Decision 9: Expose flush as an awaitable client-library API

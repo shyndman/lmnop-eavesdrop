@@ -2,7 +2,7 @@
 
 The repository has limited automated coverage in the exact places where regressions are most expensive: asynchronous lifecycle coordination, streaming output invariants, protocol serialization, and buffer/timing edge conditions. Existing tests are concentrated in configuration and connection setup, with sparse direct coverage for `streaming/processor.py`, `streaming/client.py`, `streaming/buffer.py`, `wire/codec.py`, and client runtime behavior.
 
-This change adds a test-hardening layer that establishes executable contracts before broader feature work lands (file ingestion, throughput tuning, batching, and additional transport modes). The design must keep tests deterministic, fast enough for regular CI runs, and isolated from heavyweight model runtime dependencies.
+This change adds a test-hardening layer for the supported live WebSocket workflow. The design must keep tests deterministic, fast enough for regular CI runs, and isolated from heavyweight model runtime dependencies.
 
 ## Goals / Non-Goals
 
@@ -13,7 +13,7 @@ This change adds a test-hardening layer that establishes executable contracts be
 - Keep tests deterministic via mocks/fakes and contract fixtures rather than model-heavy end-to-end inference.
 
 **Non-Goals:**
-- No production feature implementation (no batching/file ingestion behavior changes in this change).
+- No production feature implementation or additional ingestion paths in this change.
 - No broad load/performance benchmarking framework rollout in this iteration.
 - No protocol redesign; only test and validate current contracts.
 
@@ -25,14 +25,14 @@ This change adds a test-hardening layer that establishes executable contracts be
   2. Output contract invariants
   3. Wire protocol compatibility/round-trip
   4. Buffer/timing invariants
-  5. Client mode/message behavior
+  5. Live client/message behavior
 - **Rationale:** Contract-oriented tests fail where user-facing behavior breaks, even if internals refactor.
 - **Alternatives considered:**
   - *Pure file-by-file unit tests only:* easier to write but weaker at catching cross-module regressions.
   - *Full e2e only:* expensive, flaky, and too coarse for fast diagnosis.
 
 ### Decision 2: Keep high-value integration tests deterministic with explicit fakes/mocks
-- **Choice:** Use mocked sinks/sources/transcribers and synthetic audio fixtures to avoid model/GPU dependence.
+- **Choice:** Exercise real WebSocket orchestration, buffering, controls, and serialization with deterministic recognition substituted at the existing transcriber interface. Retain focused synthetic-audio buffer tests where useful.
 - **Rationale:** Deterministic tests are reliable in CI and easier to parallelize across agents.
 - **Alternatives considered:**
   - *Real model invocation:* more realism but high runtime cost and nondeterministic outputs.
@@ -40,8 +40,10 @@ This change adds a test-hardening layer that establishes executable contracts be
 
 ### Decision 3: Treat output shape and progression as normative contracts
 - **Choice:** Assert strict invariants for:
-  - completed vs incomplete segment semantics,
-  - monotonic `absolute_*` timestamps,
+  - VAD-enabled silence completion and trailing incomplete output,
+  - every VAD-disabled pending segment remaining provisional until explicit force completion,
+  - mandatory native segment and word timestamps on each recording's timeline across silence,
+  - force-completing and non-force-completing flush responses, including empty buffers,
   - disconnect and language event ordering,
   - serialization stability for wire message variants.
 - **Rationale:** These are external contracts consumed by downstream clients/UI and are high-breakage/high-impact.
@@ -55,7 +57,7 @@ This change adds a test-hardening layer that establishes executable contracts be
   - *Single-agent sequential execution:* lower coordination complexity, but slower and increases context-switch errors.
 
 ### Decision 5: Add a lightweight quality gate for new tests
-- **Choice:** Require targeted pytest run(s) plus ruff check/format checks for changed tests in each task acceptance criteria.
+- **Choice:** Run targeted pytest and ruff check/format checks after independent changes are consolidated.
 - **Rationale:** Ensures each parallel task is merge-safe and locally verifiable.
 - **Alternatives considered:**
   - *Rely only on final global run:* slower feedback and harder fault localization.
@@ -71,7 +73,7 @@ This change adds a test-hardening layer that establishes executable contracts be
 ## Migration Plan
 
 1. Add new tests in isolated files/workstreams without changing production logic.
-2. Run targeted suites per workstream during implementation.
+2. Consolidate independent workstreams before running verification.
 3. Consolidate and run package-level test commands as final verification.
 4. If instability appears, quarantine only the unstable test case with a follow-up fix task; do not weaken contractual assertions broadly.
 

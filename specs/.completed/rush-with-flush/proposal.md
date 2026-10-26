@@ -1,30 +1,30 @@
 ## Why
 
-Push-to-talk style transcription is a planned primary user flow. Verified current behavior is close, but not explicit enough: `EavesdropClient.stop_streaming()` stops local microphone capture while keeping the WebSocket session open, and the live server path keeps running on its normal processing cadence until more audio arrives, `END_OF_AUDIO` is sent, or the connection closes. That makes end-of-utterance responsiveness depend on existing pacing rather than an explicit user boundary.
+Push-to-talk transcription needs an explicit end-of-utterance boundary. `EavesdropClient.stop_streaming()` stops local microphone capture while keeping the WebSocket session open; flush must bypass avoidable processing waits and finalize the captured boundary without closing the session.
 
 ## Verified Baseline (Current Code)
 
 - **Live client streaming already has separate stop vs disconnect semantics**: `EavesdropClient` exposes `connect()`, `disconnect()`, `start_streaming()`, and `stop_streaming()`. `stop_streaming()` only clears `_streaming` and stops the recorder; it does not close the socket (`packages/client/src/eavesdrop/client/core.py`).
-- **The client already has an awaitable request/response pattern we can borrow**: `transcribe_file(...)` is non-reentrant, guarded by `_operation_lock`, and uses `_message_queue` plus `_disconnect_event` to wait for a terminal result (`packages/client/src/eavesdrop/client/core.py`).
-- **The wire protocol already has a text setup phase and explicit source-mode routing**: `UserTranscriptionOptions` already carries `source_mode` (`LIVE` / `FILE`), and transcriber setup is sent as `TranscriptionSetupMessage` JSON before live streaming begins (`packages/wire/src/eavesdrop/wire/transcription.py`, `packages/client/src/eavesdrop/client/connection.py`, `packages/server/src/eavesdrop/server/connection_handler.py`).
+- **The client uses an awaitable request/response pattern**: use `_message_queue` plus `_disconnect_event` to wait for a terminal flush result.
+- **The wire protocol has a text setup phase**: transcriber setup is sent as `TranscriptionSetupMessage` JSON before live streaming begins.
 - **The wire codec already has the necessary third-party support**: wire messages are Pydantic dataclasses collected into a discriminated union codec, so adding a new message variant does not require a new serialization package (`packages/wire/src/eavesdrop/wire/messages.py`, `packages/wire/src/eavesdrop/wire/codec.py`, `packages/wire/pyproject.toml`).
 - **There is no existing flush primitive**: no `CONTROL_FLUSH` message or `flush(...)` client API exists in `packages/` today.
-- **Post-setup live ingest is currently audio-only at the server read boundary**: the live transcriber path has a single `websocket.recv()` reader that treats `b"END_OF_AUDIO"` as EOF and otherwise coerces text frames to bytes before `np.frombuffer(..., dtype=np.float32)`. A text control frame sent during live ingest would not be interpreted as a protocol message today (`packages/server/src/eavesdrop/server/server.py`).
+- **Post-setup live ingest needs explicit control routing**: keep one WebSocket reader and decode text control frames separately from binary float32 audio.
 - **Dependency drift already exists around WebSocket transport**: the client declares `websockets>=13.0`, while the server leaves `websockets` unbounded despite importing `websockets.asyncio.server.ServerConnection` and using `recv(decode=True)` from that API (`packages/client/pyproject.toml`, `packages/server/pyproject.toml`, `packages/server/src/eavesdrop/server/connection_handler.py`).
 - **Current latency comes from two explicit waits**: the processor waits for `min_chunk_duration` (default `1.0s`) before processing short live chunks and then waits out `transcription_interval` (default `2.0s`) after a normal pass (`packages/server/src/eavesdrop/server/config.py`, `packages/server/src/eavesdrop/server/streaming/processor.py`).
-- **The current output contract assumes an in-progress tail**: the processor marks all but the last segment complete, may complete the last segment by silence analysis, and always sends an incomplete tail or synthetic placeholder. The active-listener workspace currently reads `message.segments[-1]` as the in-progress segment (`packages/server/src/eavesdrop/server/streaming/processor.py`, `packages/active-listener/src/eavesdrop/active_listener/workspace.py`).
-- **Relevant contract tests already exist for adjacent behavior**: the repo already has wire codec contract tests, live streaming lifecycle/output contract tests, and client file-transcription contract tests (`packages/wire/tests/test_wire_codec_contracts.py`, `packages/server/tests/test_streaming_lifecycle_contracts.py`, `packages/server/tests/test_transcription_output_contracts.py`, `packages/client/tests/test_file_transcription_contracts.py`).
+- **The output contract preserves an in-progress tail**: with VAD disabled every segment remains provisional until force-complete flush; with VAD enabled silence may complete segments. Preserve the incomplete tail or synthetic placeholder expected by consumers.
+- **Relevant contract tests cover adjacent behavior**: wire codec contracts and live streaming lifecycle/output contracts.
 
 ## What Changes
 
 - Add a session-level `CONTROL_FLUSH` command on the existing transcriber WebSocket protocol.
 - Define flush as a request/response boundary: every accepted flush produces exactly one `TranscriptionMessage` while keeping the session connected.
-- Allow flush callers to request `force_complete`, which treats the flush as an explicit end-of-utterance boundary and completes the current tentative segment before returning the response.
+- Allow flush callers to request `force_complete`, which treats the flush as an explicit end-of-utterance boundary and completes all remaining provisional segments before returning the response.
 - Reject a second flush while one is already pending and return an explicit error message instead of coalescing requests.
 - Add a single-source-of-truth pending-flush state on the server, captured as a stream boundary sample index.
 - Wake the processor early from minimum-chunk and interval waits when a flush is pending.
 - Add cooperative pre-commit interrupt checkpoints so stale in-flight work can be abandoned before VAD or Whisper inference when a flush supersedes it.
-- Expose a high-level client-library `flush(...)` API that awaits and returns the flush-correlated transcription result, following the same request/response style the client already uses for `transcribe_file(...)`.
+- Expose a high-level client-library `flush(...)` request/response API that awaits and returns the flush-correlated transcription result.
 
 ## Capabilities
 

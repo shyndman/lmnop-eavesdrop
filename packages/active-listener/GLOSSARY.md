@@ -13,7 +13,7 @@ Deterministic spelling substitutions, spoken-symbol conversion,
 and stored corrections applied to completed transcript runs.
 
 **Live tail**:
-The unstable trailing transcript text awaiting commitment.
+The unstable, incomplete transcript text awaiting commitment.
 _Avoid_: Final text.
 
 **Rewrite**:

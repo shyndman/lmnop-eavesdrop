@@ -226,7 +226,7 @@ class OrukeetTranscriber:
         for span in speech:
           if span["end"] <= span["start"]:
             continue
-          segments.extend(self._transcribe_span(audio, span, config, absolute_stream_start))
+          segments.extend(self._transcribe_span(audio, span, absolute_stream_start))
         tracer()
       with session.trace_segment_stage() as tracer:
         tracer(segments)
@@ -236,16 +236,10 @@ class OrukeetTranscriber:
       speech_chunks=speech if config.use_vad else [],
     )
 
-  def _transcribe_span(
-    self, audio: FloatAudio, span: SpeechChunk, config: TranscriptionConfig, offset: float
-  ) -> list[Segment]:
+  def _transcribe_span(self, audio: FloatAudio, span: SpeechChunk, offset: float) -> list[Segment]:
     waveform = np.ascontiguousarray(audio[span["start"] : span["end"]])
     segments = native_segments(self._recognize(waveform), len(waveform) / SAMPLE_RATE)
     _ = finalize_recording_timestamps(segments, offset + span["start"] / SAMPLE_RATE)
-
-    if not config.word_timestamps:
-      for segment in segments:
-        segment.words = None
 
     return segments
 

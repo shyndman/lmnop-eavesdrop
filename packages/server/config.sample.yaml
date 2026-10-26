@@ -15,28 +15,18 @@ transcription:
   # The client contract supports English transcription only (no translation).
   language: "en"
 
-  # Include native word timings: CPU token onsets/durations (80 ms), or Vulkan
-  # native word timestamps converted from milliseconds.
-  # Native timings are still used internally when this is false.
-  word_timestamps: true
-
   # Standalone Silero VAD detects speech and silence before transcription.
   use_vad: true
+  # When disabled, every pending segment stays incomplete until a flush with
+  # force_complete=true. Silence and segment position do not complete it.
 
   # Number of most recent transcription segments to send to each client.
   send_last_n_segments: 10
 
-  # Duration of silence (in seconds) after speech to automatically mark segments as completed.
+  # With VAD enabled, silence duration (seconds) after speech that completes segments.
   # Lower values complete segments faster but may cut off slow speech patterns.
   # Higher values wait longer for speech to continue but may delay completion.
   silence_completion_threshold: 0.8
-
-  # Debug audio recording configuration for troubleshooting and analysis.
-  # Records audio at different stages of the processing pipeline.
-  debug_audio: null
-    # Uncomment and configure to enable debug audio recording:
-    # pre_buffer: "/tmp/eavesdrop-debug/pre"    # Records raw audio before buffering
-    # post_buffer: "/tmp/eavesdrop-debug/post"  # Records processed audio after dequeuing
 
   # Advanced Voice Activity Detection parameters for fine-tuning speech detection.
   # Most users should leave these at defaults unless experiencing specific issues.
@@ -94,24 +84,3 @@ transcription:
     # Prevents buildup of problematic audio that can't be transcribed.
     max_stall_duration: 25.0
 
-# RTSP stream configuration for processing IP camera and network audio streams.
-# Leave streams empty ({}) to run in WebSocket-only mode.
-rtsp:
-  # Named RTSP stream URLs to process. Each stream runs independently.
-  # Supports various RTSP URL formats including authentication.
-  streams: {}
-    # Example configurations (uncomment and modify as needed):
-    # office: "rtsp://username:password@camera-ip:554/stream1"
-    # lobby: "rtsp://camera-ip:554/main_stream"
-    # kitchen: "rtsp://192.168.1.100:554/cam/realmonitor?channel=1&subtype=0"
-
-  # Caching behavior for transcription results based on whether clients are listening.
-  # Longer cache times when no listeners preserve history for new connections.
-  cache:
-    # How long to cache transcriptions when no clients are listening (seconds).
-    # Longer duration provides more history when clients reconnect.
-    waiting_for_listener_duration: 10800.0
-
-    # How long to cache transcriptions when clients are actively listening (seconds).
-    # Shorter duration saves memory when clients are receiving real-time updates.
-    has_listener_cache_duration: 600.0

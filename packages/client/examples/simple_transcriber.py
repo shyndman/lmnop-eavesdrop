@@ -40,7 +40,6 @@ async def test_transcriber(
       host=host,
       port=port,
       audio_device=audio_device,
-      word_timestamps=True,
     )
     print("✅ Client created successfully")
 

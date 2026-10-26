@@ -8,7 +8,7 @@ Observed current behavior from the repository:
 - `packages/active-listener-ui-gnome/src/active-listener-service-client.ts` and `packages/active-listener-ui-gnome/src/transcript-overlay.ts` currently move `(completed segments, incomplete segment)` text over D-Bus and reconstruct one display string locally.
 - `packages/active-listener-ui-gnome/src/transcript-attributes.ts` already treats completeness as a presentation axis by applying lower alpha to the incomplete tail.
 - `packages/active-listener/src/active_listener/recording/finalizer.py` already runs a single-string finalization pipeline: `render_text(reducer_state.parts)` becomes `FinalizationState.text`, optional rewrite is called as `rewrite_text(instructions=..., transcript=state.text)`, and any pipeline-step exception already emits `PipelineFailed(step, reason)` and skips workstation emission.
-- `packages/active-listener/src/active_listener/bootstrap.py` already constructs the live client with `EavesdropClient.transcriber(..., word_timestamps=True, ...)`, so this path does request word-level timings today.
+- The live transcription contract always includes native word-level timings; command classification consumes those timings without a client option.
 
 A recently completed wire/server change flattened serialized segment and word timestamps onto the recording timeline. That matters here because command-text classification no longer needs segment-window math. The wire models now document `Word.start/end` and `Segment.start/end` as recording-relative, and `time_offset` is excluded from serialization. However, active-listener still ignores `Segment.words` entirely and only uses segment-level compatibility helpers (`absolute_start_time` / `absolute_end_time`) plus stripped segment text, so this feature must explicitly preserve word payloads through the active-listener path.
 
@@ -127,12 +127,11 @@ EavesdropClient.transcriber(
     host=config.host,
     port=config.port,
     audio_device=config.audio_device,
-    word_timestamps=True,
     on_capture=on_capture,
 )
 ```
 
-This feature depends on that staying true unless the request path is made more explicit in config.
+This feature relies on the mandatory timed output contract.
 
 `packages/wire/src/eavesdrop/wire/transcription.py`
 
@@ -143,11 +142,9 @@ This feature depends on that staying true unless the request path is made more e
   - `probability: float`
 - `class Segment(BaseModel)`
   - `start: float` and `end: float` are documented as recording-timeline seconds
-  - `words: list[Word] | None` is present only when word timestamps are enabled
+  - `words: list[Word]` contains the mandatory individual word timings
   - `time_offset` exists only as `Field(..., exclude=True)` compatibility state and is not serialized
   - `absolute_start_time` / `absolute_end_time` are compatibility properties, not wire fields
-- `class UserTranscriptionOptions(BaseModel)`
-  - `word_timestamps: bool | None = None`
 
 ### 3. Current reducer and recording-session APIs
 
@@ -550,7 +547,7 @@ Rationale:
 
 ### 4. Word classification happens on one shared recording timeline using midpoint-in-span
 
-Each transcript word is classified independently. This depends on active-listener continuing to request `word_timestamps=True` and on the reducer/session path preserving `Segment.words` instead of flattening immediately to stripped segment text.
+Each transcript word is classified independently. This depends on the reducer/session path preserving mandatory `Segment.words` instead of flattening immediately to stripped segment text.
 
 ```python
 def classify_word(word, closed_spans, open_start_s):
@@ -975,7 +972,6 @@ Holding `Caps Lock` while idle is intentionally left unspecified. The user has a
    - This spec has not verified an existing GNOME overlay/client test harness.
    - If the GNOME package has no current tests for these modules, implementation should plan to add them rather than assuming a ready-made scaffold.
 
-3. Word-timestamp dependency visibility
-   - Runtime behavior currently depends on `bootstrap.build_client()` hardcoding `word_timestamps=True`.
-   - `ActiveListenerConfig` does not surface that dependency today.
-   - The feature can rely on the current bootstrap contract, but if the team wants this dependency to be more obvious, it may be worth promoting it into explicit runtime policy later.
+3. Word-timestamp dependency
+   - Native individual word timings are mandatory for every transcription.
+   - Preserve those timings through the reducer and recording session; no configuration policy or timing switch is needed.

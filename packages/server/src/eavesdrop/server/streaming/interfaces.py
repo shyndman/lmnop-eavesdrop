@@ -1,9 +1,4 @@
-"""
-Protocol interfaces for streaming transcription components.
-
-Defines the contracts for audio input sources and transcription output sinks
-using Python's Protocol system for structural typing.
-"""
+"""Shared audio representation and live transcription output contract."""
 
 from typing import Protocol
 
@@ -35,27 +30,6 @@ class TranscriptionResult:
 
   language_probability: float | None = Field(default=None, ge=0.0, le=1.0)
   """Confidence score for language detection."""
-
-
-class AudioSource(Protocol):
-  """
-  Protocol for audio input sources.
-
-  Implementations provide audio data to the streaming transcription system.
-  """
-
-  async def read_audio(self) -> Float32Audio | None:
-    """
-    Read the next chunk of audio data.
-
-    :returns:
-        Audio data as numpy array, or None for end-of-stream.
-    """
-    ...
-
-  def close(self) -> None:
-    """Close the audio source and clean up resources."""
-    ...
 
 
 class TranscriptionSink(Protocol):

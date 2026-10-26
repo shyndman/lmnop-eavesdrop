@@ -1,11 +1,6 @@
-"""Contract tests for mode-specific client runtime behavior.
-
-These tests pin the public client factories to wire-level behavior so mode-specific
-configuration cannot silently drift across connection setup and streaming control flows.
-"""
+"""Contract tests for the live client runtime and recording controls."""
 
 import asyncio
-import json
 from typing import cast
 
 import pytest
@@ -24,7 +19,6 @@ from eavesdrop.client.events import (
   TranscriptionEvent,
 )
 from eavesdrop.wire import (
-  ClientType,
   LanguageDetectionMessage,
   Segment,
   TranscriptionMessage,
@@ -208,15 +202,13 @@ def _segment(text: str) -> Segment:
     start=0.0,
     end=0.5,
     text=text,
-    words=None,
+    words=[],
   )
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("word_timestamps", [True, False])
 async def test_transcriber_factory_options_reach_setup_payload(
   monkeypatch: pytest.MonkeyPatch,
-  word_timestamps: bool,
 ) -> None:
   """Factory options must survive all layers and appear in setup wire payload."""
 
@@ -232,7 +224,6 @@ async def test_transcriber_factory_options_reach_setup_payload(
 
   client = EavesdropClient.transcriber(
     audio_device="default",
-    word_timestamps=word_timestamps,
     send_last_n_segments=3,
     language="en",
   )
@@ -248,47 +239,11 @@ async def test_transcriber_factory_options_reach_setup_payload(
   setup_message = deserialize_message(serialized_setup)
   assert setup_message.type == "setup"
   assert setup_message.stream == "tbeef"
-  assert setup_message.options.word_timestamps is word_timestamps
   assert setup_message.options.language == "en"
   assert setup_message.options.send_last_n_segments == 3
 
   await client.disconnect()
   assert fake_ws.closed is True
-
-
-@pytest.mark.asyncio
-async def test_subscriber_connect_sends_stream_subscription_header(
-  monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  """Subscriber mode must route stream subscriptions via websocket headers only."""
-
-  fake_ws = FakeWebSocket()
-  captured_headers: dict[str, str] = {}
-
-  async def fake_connect(_url: str, additional_headers: dict[str, str]) -> FakeWebSocket:
-    captured_headers.update(additional_headers)
-    return fake_ws
-
-  monkeypatch.setattr("eavesdrop.client.connection.websockets.connect", fake_connect)
-
-  connection = WebSocketConnection(
-    host="localhost",
-    port=9090,
-    stream_name="s-test",
-    on_ready=lambda _backend: None,
-    on_transcription=lambda _text: None,
-    on_error=lambda _message: None,
-    client_type=ClientType.RTSP_SUBSCRIBER,
-    stream_names=["cam-a", "cam-b"],
-  )
-
-  await connection.connect()
-
-  assert captured_headers == {
-    "X-Client-Type": "rtsp_subscriber",
-    "X-Stream-Names": "cam-a,cam-b",
-  }
-  assert fake_ws.sent_payloads == []
 
 
 @pytest.mark.asyncio
@@ -317,56 +272,11 @@ async def test_connection_serializes_utterance_cancel_control_message() -> None:
   assert decoded.recording_id == RECORDING_ID
 
 
-@pytest.mark.asyncio
-async def test_subscriber_routes_only_messages_for_subscribed_streams() -> None:
-  """Subscriber routing must emit callbacks only for configured stream names."""
-
-  received_messages: list[TranscriptionMessage] = []
-  received_text: list[str] = []
-  received_errors: list[str] = []
-
-  connection = WebSocketConnection(
-    host="localhost",
-    port=9090,
-    stream_name="subscriber-session",
-    on_ready=lambda _backend: None,
-    on_transcription=received_text.append,
-    on_error=received_errors.append,
-    client_type=ClientType.RTSP_SUBSCRIBER,
-    stream_names=["cam-a"],
-    on_transcription_message=received_messages.append,
-  )
-
-  subscribed_payload = json.dumps(
-    {
-      "type": "transcription",
-      "stream": "cam-a",
-      "segments": [_segment(" target ").model_dump()],
-      "language": "en",
-    }
-  )
-  unsubscribed_payload = json.dumps(
-    {
-      "type": "transcription",
-      "stream": "cam-b",
-      "segments": [_segment("ignored").model_dump()],
-      "language": "en",
-    }
-  )
-
-  await connection._process_message(subscribed_payload)
-  await connection._process_message(unsubscribed_payload)
-
-  assert [message.stream for message in received_messages] == ["cam-a"]
-  assert received_text == ["[cam-a] target"]
-  assert received_errors == []
-
-
-def test_transcriber_mode_requires_audio_device_configuration() -> None:
-  """Mode-specific validation must fail fast for invalid transcriber input."""
+def test_transcriber_requires_audio_device_configuration() -> None:
+  """Live capture validation must fail fast for invalid device input."""
 
   with pytest.raises(ValueError, match="audio device"):
-    EavesdropClient(client_type=ClientType.TRANSCRIBER)
+    EavesdropClient()
 
 
 @pytest.mark.asyncio
@@ -770,10 +680,10 @@ async def test_audio_streaming_loop_skips_capture_callback_when_unset() -> None:
 
 
 @pytest.mark.asyncio
-async def test_start_streaming_drains_stale_message_and_transcription_event_queues(
+async def test_start_streaming_preserves_accepted_message_and_transcription_event_queues(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-  """A new recording start must clear stale per-recording client state before capture begins."""
+  """Starting B must retain already accepted A results for their consumers."""
 
   client = EavesdropClient.transcriber(audio_device="default")
   audio_capture = RecordingAudioCapture()
@@ -785,7 +695,7 @@ async def test_start_streaming_drains_stale_message_and_transcription_event_queu
   client._message_queue.put_nowait(
     TranscriptionMessage(
       stream="stream-live",
-      segments=[_segment("stale")],
+      segments=[_segment("accepted")],
       language="en",
       recording_id="old-recording",
       flush_complete=True,
@@ -796,7 +706,7 @@ async def test_start_streaming_drains_stale_message_and_transcription_event_queu
       stream="stream-live",
       message=TranscriptionMessage(
         stream="stream-live",
-        segments=[_segment("stale")],
+        segments=[_segment("accepted")],
         language="en",
         recording_id="old-recording",
       ),
@@ -817,15 +727,110 @@ async def test_start_streaming_drains_stale_message_and_transcription_event_queu
   await asyncio.wait_for(loop_started.wait(), timeout=0.2)
 
   assert audio_capture.clear_calls == 1
-  assert client._message_queue.empty() is True
+  preserved_message = client._message_queue.get_nowait()
+  assert preserved_message.recording_id == "old-recording"
+  assert preserved_message.segments[0].text == "accepted"
   preserved_event = client._event_queue.get_nowait()
-  assert preserved_event == ConnectedEvent(stream="stream-live")
+  assert isinstance(preserved_event, TranscriptionEvent)
+  assert preserved_event.message.recording_id == "old-recording"
+  assert preserved_event.message.segments[0].text == "accepted"
+  assert client._event_queue.get_nowait() == ConnectedEvent(stream="stream-live")
   assert client._event_queue.empty() is True
 
   allow_exit.set()
   await client.stop_streaming()
   if client._audio_loop_task is not None:
     await client._audio_loop_task
+
+
+@pytest.mark.asyncio
+async def test_next_recording_waits_for_pending_flush_and_preserves_final_event(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """B cannot replace A while A's accepted flush response is outstanding."""
+
+  client = EavesdropClient.transcriber(audio_device="default")
+  audio_capture = RecordingAudioCapture()
+  connection = RecordingConnection()
+  client._connected = True
+  client._event_stream_open = True
+  client._current_recording_id = RECORDING_ID
+  client._audio_capture = cast(AudioCapture, cast(object, audio_capture))
+  client._connection = cast(WebSocketConnection, cast(object, connection))
+  keepalive = asyncio.Event()
+  client._message_task = asyncio.create_task(_hold_open(keepalive))
+  release_audio = asyncio.Event()
+
+  async def fake_audio_streaming_loop() -> None:
+    await release_audio.wait()
+
+  monkeypatch.setattr(client, "_audio_streaming_loop", fake_audio_streaming_loop)
+  flush_task = asyncio.create_task(client.flush(RECORDING_ID))
+  await connection.flush_sent.wait()
+  start_task = asyncio.create_task(client.start_streaming("rec-next"))
+  await asyncio.sleep(0)
+
+  try:
+    assert start_task.done() is False
+    assert connection.recording_start_ids == []
+    assert audio_capture.start_calls == 0
+
+    final_a = TranscriptionMessage(
+      stream="stream-live",
+      segments=[_segment("recording A final")],
+      language="en",
+      recording_id=RECORDING_ID,
+      flush_complete=True,
+    )
+    client._on_transcription_message(final_a)
+    assert await asyncio.wait_for(flush_task, timeout=0.2) == final_a
+    await asyncio.wait_for(start_task, timeout=0.2)
+
+    assert connection.command_log == ["flush", "recording_started"]
+    assert connection.recording_start_ids == ["rec-next"]
+    event = client._event_queue.get_nowait()
+    assert isinstance(event, TranscriptionEvent)
+    assert event.message == final_a
+  finally:
+    for task in (flush_task, start_task):
+      if not task.done():
+        task.cancel()
+    await asyncio.gather(flush_task, start_task, return_exceptions=True)
+    release_audio.set()
+    await client.stop_streaming()
+    keepalive.set()
+    await client._message_task
+
+
+@pytest.mark.asyncio
+async def test_cancelled_recording_results_do_not_return_before_next_start() -> None:
+  """Late recognition for a cancelled recording must not reach either consumer."""
+
+  client = EavesdropClient.transcriber(audio_device="default")
+  connection = RecordingConnection()
+  client._connected = True
+  client._event_stream_open = True
+  client._current_recording_id = RECORDING_ID
+  client._connection = cast(WebSocketConnection, cast(object, connection))
+  keepalive = asyncio.Event()
+  client._message_task = asyncio.create_task(_hold_open(keepalive))
+
+  await client.cancel_utterance(RECORDING_ID)
+  client._on_transcription_message(
+    TranscriptionMessage(
+      stream="stream-live",
+      segments=[_segment("cancelled speech")],
+      language="en",
+      recording_id=RECORDING_ID,
+      flush_complete=True,
+    )
+  )
+  keepalive.set()
+  await client._message_task
+
+  assert connection.cancel_recording_ids == [RECORDING_ID]
+  assert client._message_queue.empty() is True
+  assert client._event_queue.empty() is True
 
 
 def test_on_transcription_message_drops_stale_recording_messages() -> None:

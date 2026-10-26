@@ -15,7 +15,6 @@ from .messages import (
   LanguageDetectionMessage,
   RecordingStartedMessage,
   ServerReadyMessage,
-  StreamStatusMessage,
   TranscriptionMessage,
   TranscriptionSetupMessage,
   UtteranceCancelledMessage,
@@ -23,7 +22,6 @@ from .messages import (
 
 type Message = (
   TranscriptionMessage
-  | StreamStatusMessage
   | ErrorMessage
   | RecordingStartedMessage
   | FlushControlMessage

@@ -200,7 +200,7 @@ class TranscriptionSession:
   """Context object that tracks timing and metadata for a transcription session.
 
   Bridges the gap between recording-relative chunk time and audio buffer time to provide
-  comprehensive logging across both WebSocket and RTSP clients.
+  comprehensive logging for live WebSocket clients.
 
   :param connection_start_time: When the client connection was established (perf_counter).
   :type connection_start_time: float

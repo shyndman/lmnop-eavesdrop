@@ -4,8 +4,7 @@
 
 - [Server](packages/server/GLOSSARY.md): recognition, speech detection,
   and segment completion.
-- [Client](packages/client/GLOSSARY.md): live transcription, file
-  transcription, and subscriptions.
+- [Client](packages/client/GLOSSARY.md): live transcription and audio capture.
 - [Wire](packages/wire/GLOSSARY.md): shared transcript vocabulary.
 - [Common](packages/common/GLOSSARY.md): shared utilities and pointers
   to domain vocabulary.

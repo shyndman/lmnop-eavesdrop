@@ -87,24 +87,26 @@ def test_processed_boundary_advances_monotonically_with_repeated_advancement() -
     previous = buffer.processed_up_to_time
 
 
-def test_cleanup_keeps_processed_boundary_safe_when_buffer_is_trimmed() -> None:
-  """Cleanup must not leave processed recording time behind the trimmed buffer start."""
+def test_cleanup_preserves_all_audio_after_the_processed_boundary() -> None:
+  """Cleanup may discard completed samples, never unprocessed recording audio."""
   config = _make_config()
   buffer = AudioStreamBuffer(config)
 
-  _add_frames(buffer, _frames(4.5, sample_rate=config.sample_rate))
+  original = _frames(4.5, sample_rate=config.sample_rate)
+  _add_frames(buffer, original)
   buffer.advance_processed_boundary(1.0)
 
   # Cleanup runs at the beginning of add_frames when the existing buffer already exceeds max.
-  _add_frames(buffer, _frames(0.1, sample_rate=config.sample_rate))
+  following = _frames(0.1, sample_rate=config.sample_rate)
+  _add_frames(buffer, following)
 
-  assert buffer.buffer_start_time == config.cleanup_duration
-  assert buffer.processed_up_to_time == buffer.buffer_start_time
+  assert buffer.processed_up_to_time == 1.0
+  assert buffer.buffer_start_time <= buffer.processed_up_to_time
 
   chunk, duration, start_time = _get_chunk(buffer)
-  assert start_time == buffer.processed_up_to_time
-  assert duration == chunk.shape[0] / config.sample_rate
-  assert start_time <= buffer.buffer_start_time + buffer.total_duration
+  assert start_time == 1.0
+  assert duration == 3.6
+  np.testing.assert_array_equal(chunk, np.concatenate((original[10:], following)))
 
 
 def test_discard_unprocessed_audio_preserves_processed_cursor_for_next_utterance() -> None:
@@ -131,7 +133,7 @@ def test_discard_unprocessed_audio_preserves_processed_cursor_for_next_utterance
 
 
 def test_discard_through_sample_preserves_audio_after_boundary() -> None:
-  """Flush cleanup must drop accepted audio without deleting later buffered frames."""
+  """Discarding a completed flush boundary must preserve later accepted frames."""
   config = _make_config()
   buffer = AudioStreamBuffer(config)
   _add_frames(buffer, _frames(5.0, sample_rate=config.sample_rate))
@@ -152,7 +154,7 @@ def test_discard_through_sample_preserves_audio_after_boundary() -> None:
 
 
 def test_discard_through_sample_uses_buffer_sample_index_truncation() -> None:
-  """Flush cleanup must use the same recording-relative sample index as capture."""
+  """Explicit flush cleanup must use the same recording-relative sample index as capture."""
   config = _make_config()
   buffer = AudioStreamBuffer(config)
   buffer.advance_processed_boundary(0.26)

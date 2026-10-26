@@ -177,9 +177,6 @@ jobs:
           version: '0.12.23'
           enable-cache: true
 
-      - name: Install ffmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
-
       - name: Sync dependencies
         run: uv sync --locked
 

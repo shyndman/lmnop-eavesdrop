@@ -15,7 +15,6 @@ from eavesdrop.wire.messages import (
   LanguageDetectionMessage,
   RecordingStartedMessage,
   ServerReadyMessage,
-  StreamStatusMessage,
   TranscriptionMessage,
   TranscriptionSetupMessage,
   UtteranceCancelledMessage,
@@ -23,7 +22,6 @@ from eavesdrop.wire.messages import (
 )
 from eavesdrop.wire.transcription import (
   Segment,
-  TranscriptionSourceMode,
   UserTranscriptionOptions,
   Word,
 )
@@ -38,9 +36,7 @@ __all__ = [
   "RecordingStartedMessage",
   "Segment",
   "ServerReadyMessage",
-  "StreamStatusMessage",
   "TranscriptionMessage",
-  "TranscriptionSourceMode",
   "TranscriptionSetupMessage",
   "UtteranceCancelledMessage",
   "UserTranscriptionOptions",

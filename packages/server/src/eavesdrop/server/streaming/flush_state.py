@@ -28,6 +28,8 @@ class LiveSessionFlushState:
     self._current_recording_id: str | None = None
     self._wakeup: asyncio.Event = asyncio.Event()
     self._interrupt: threading.Event = threading.Event()
+    self._completed: asyncio.Event = asyncio.Event()
+    self._completed.set()
 
   def current_generation(self) -> int:
     """Return the current active-utterance generation."""
@@ -87,6 +89,7 @@ class LiveSessionFlushState:
         force_complete=force_complete,
       )
       self._pending_flush = pending_flush
+      self._completed.clear()
       self._wakeup.set()
       self._interrupt.set()
       return pending_flush
@@ -108,6 +111,7 @@ class LiveSessionFlushState:
       self._active_utterance_generation += 1
       self._pending_flush = None
       generation = self._active_utterance_generation
+      self._completed.set()
       self._wakeup.set()
       self._interrupt.set()
       return generation
@@ -123,7 +127,12 @@ class LiveSessionFlushState:
       self._pending_flush = None
       self._wakeup.clear()
       self._interrupt.clear()
+      self._completed.set()
       return previous
+
+  async def wait_until_complete(self) -> None:
+    """Wait until the accepted flush response has been delivered or cancelled."""
+    _ = await self._completed.wait()
 
   @property
   def wakeup(self) -> asyncio.Event:

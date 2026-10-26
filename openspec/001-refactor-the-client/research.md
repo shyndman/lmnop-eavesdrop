@@ -22,13 +22,12 @@ This document consolidates research findings for transforming the CLI-based eave
 
 ### 2. Factory Method Pattern vs Constructor Parameters
 
-**Decision**: Use class methods `EavesdropClient.transcriber()` and `EavesdropClient.subscriber()` 
+**Decision**: Use `EavesdropClient.transcriber()` for the sole supported live audio workflow.
 
 **Rationale**:
-- Type safety: Each factory method can have mode-specific parameter signatures
-- Clear intent: Method names make usage obvious without reading documentation
-- Validation: Can validate mode-specific parameters at creation time
-- Extensibility: Easy to add new modes without breaking existing constructors
+- Clear intent: The factory identifies live audio transcription.
+- Validation: Audio-device and supported configuration checks occur at creation time.
+- Lifecycle: One client retains independent capture, transmission, and connection management.
 
 **Alternatives Considered**:
 - Single constructor with mode parameter: Rejected due to weaker type safety
@@ -107,9 +106,9 @@ This document consolidates research findings for transforming the CLI-based eave
 
 **Implementation Details**:
 - Use existing types: `TranscriptionMessage`, `Segment`, `UserTranscriptionOptions`
-- Support both `ClientType.TRANSCRIBER` and `ClientType.RTSP_SUBSCRIBER`
-- Pass stream names via `WebSocketHeaders.STREAM_NAMES` for subscriber mode
-- Remove stream filtering in message processing for multi-stream subscriber mode
+- Use `ClientType.TRANSCRIBER` for live transcription connections.
+- Preserve recording boundaries, flush acknowledgement and force completion, cancellation, and disconnect cleanup.
+- Include native segment and individual word timestamps in every transcription on the original recording timeline.
 
 **Alternatives Considered**:
 - Text-only callbacks: Rejected as losing valuable metadata
@@ -118,18 +117,17 @@ This document consolidates research findings for transforming the CLI-based eave
 
 ### 8. Configuration Options Exposure
 
-**Decision**: Expose all transcription options (beam_size, word_timestamps, initial_prompt, hotwords) as factory method parameters
+**Decision**: Expose only supported live setup options, without an ingestion selector or timing toggle.
 
 **Rationale**:
-- Complete feature parity with existing CLI client
-- Direct mapping to underlying Whisper/transcription engine capabilities
-- Type-safe parameter validation at client creation
-- Clear documentation of available options
+- Native segment and individual word timings are mandatory output.
+- Configuration maps directly to the retained shared protocol.
+- Client creation validates supported parameters.
 
 **Alternatives Considered**:
 - Configuration objects: Rejected as adding abstraction layer
 - Post-creation configuration: Rejected due to state management complexity
-- Subset of options: Rejected as reducing functionality
+- Optional timed output: Rejected because every transcription has native segment and individual word timestamps.
 
 ## Implementation Dependencies
 
@@ -149,12 +147,12 @@ This document consolidates research findings for transforming the CLI-based eave
 
 ## Architecture Decisions Summary
 
-1. **Factory Methods**: `EavesdropClient.transcriber()` and `EavesdropClient.subscriber()`
+1. **Factory Method**: `EavesdropClient.transcriber()` for live microphone transcription
 2. **Async Iteration**: Native `__aiter__()/__anext__()` protocol implementation
 3. **Context Management**: `async with` support for automatic lifecycle
 4. **Instance Isolation**: Thread safety through independent instances
 5. **Fail-Fast**: Immediate exceptions for configuration errors
 6. **Protocol Preservation**: Direct reuse of existing message formats
-7. **Full Configuration**: Expose all transcription options in factory methods
+7. **Supported Configuration**: Expose retained live setup options; timed output is mandatory
 
 All research areas have been resolved with no remaining NEEDS CLARIFICATION items.

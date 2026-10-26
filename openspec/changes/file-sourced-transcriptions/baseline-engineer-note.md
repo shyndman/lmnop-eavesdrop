@@ -1,23 +1,15 @@
-# Baseline Engineer Note (pre-implementation)
+# Retired baseline engineer note
 
-## Live mode setup path
-1. Client transcriber connects via `WebSocketConnection.connect(...)` and sends a `TranscriptionSetupMessage` with `UserTranscriptionOptions`.
-2. Server `WebSocketConnectionHandler.handle_connection(...)` reads the first message and routes `(ClientType.TRANSCRIBER, TranscriptionSetupMessage)` to `_handle_transcriber_connection(...)`.
-3. `TranscriptionServer.initialize_client(...)` merges user options into server transcription config and builds `WebSocketStreamingClient` with `get_audio_from_websocket` as the source callback.
-4. `WebSocketStreamingClient.start()` initializes processor, starts processing + ingestion tasks, and returns completion task.
+## Status
 
-## END_OF_AUDIO handling
-1. Client signals EOF by sending `b"END_OF_AUDIO"` through `WebSocketConnection.send_end_of_audio()`.
-2. Server `TranscriptionServer.get_audio_from_websocket(...)` maps `b"END_OF_AUDIO"` to `False`.
-3. `WebSocketAudioSource.read_audio()` converts `False` into `None` (end-of-stream).
-4. `WebSocketStreamingClient._audio_ingestion_loop()` breaks when audio source returns `None`.
+This note described the implementation before the historical file-sourced transcription change. It is not a description of the current server or client.
 
-## Disconnect handling (current)
-1. Server sink (`WebSocketTranscriptionSink.disconnect`) emits a `DisconnectMessage` and marks sink closed.
-2. Client `WebSocketConnection._process_message(...)` currently handles `ServerReadyMessage`, `TranscriptionMessage`, `ErrorMessage` only.
-3. `DisconnectMessage` currently falls through to default/unknown path and is reported as unexpected.
+## Historical observations
 
-## Completion orchestration (current)
-1. `WebSocketStreamingClient._wait_for_completion()` uses `asyncio.wait(..., return_when=FIRST_COMPLETED)` over audio and processing tasks.
-2. As soon as either task completes, it cancels the other task.
-3. This is safe for open-ended live mode but does not provide explicit finite-source drain/finalization guarantees for file uploads.
+The earlier live pipeline paired ingestion and processing tasks, recognized an end-of-input sentinel, and had incomplete handling of terminal disconnect messages. The file proposal used those observations to motivate finite-input draining and explicit terminal cleanup.
+
+These observations do not prescribe current APIs, task orchestration, or input signaling. The finite-file capability is retired by issue 20, and its upload instructions and implementation references have been removed from this record.
+
+## Current scope
+
+The supported server ingests live transcriber audio over WebSocket. Recording boundaries, flush, cancellation, mandatory native segment and word timing, and connection-owned cleanup remain governed by the active live specifications. Ending a normal recording must preserve accepted work; cancelling an utterance explicitly discards it.

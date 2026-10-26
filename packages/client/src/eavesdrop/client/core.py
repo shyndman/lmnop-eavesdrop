@@ -1,15 +1,8 @@
-"""
-EavesdropClient: Unified programmatic interface for eavesdrop transcription services.
-
-Provides factory methods for creating mode-specific clients with async iterator
-and context manager protocols for streaming transcription results.
-"""
+"""Live audio capture and timed transcription over a persistent WebSocket."""
 
 import asyncio
 import secrets
 from collections.abc import AsyncIterator, Callable
-from dataclasses import dataclass, field
-from pathlib import Path
 from types import TracebackType
 from typing import Literal
 
@@ -28,58 +21,34 @@ from eavesdrop.client.events import (
 )
 from eavesdrop.common import get_logger
 from eavesdrop.wire import (
-  ClientType,
   LanguageDetectionMessage,
-  Segment,
   TranscriptionMessage,
-  TranscriptionSourceMode,
   UserTranscriptionOptions,
 )
 
 RECONNECT_DELAY_SECONDS = 10.0
 
 
-@dataclass(frozen=True)
-class FileTranscriptionResult:
-  """Deterministic result envelope returned by ``EavesdropClient.transcribe_file``."""
-
-  segments: list[Segment]
-  text: str
-  language: str | None
-  warnings: list[str] = field(default_factory=list)
-
-
 class EavesdropClient:
-  """
-  Unified client for eavesdrop transcription services.
-
-  Supports both transcriber mode (sending audio for transcription) and
-  subscriber mode (receiving transcriptions from RTSP streams).
-  """
+  """Capture live audio and receive ordered, natively timed transcription events."""
 
   def __init__(
     self,
-    client_type: ClientType,
     host: str = "localhost",
     port: int = 9090,
-    stream_names: list[str] | None = None,
     audio_device: str | None = None,
     transcription_options: UserTranscriptionOptions | None = None,
     on_capture: Callable[[bytes], None] | None = None,
   ):
     """Initialize EavesdropClient.
 
-    :param client_type: Type of client (TRANSCRIBER or RTSP_SUBSCRIBER)
     :param host: Server hostname
     :param port: Server port
-    :param stream_names: For subscriber mode, list of stream names to subscribe to
-    :param audio_device: For transcriber mode, audio device to use
+    :param audio_device: Audio device to capture from
     :param transcription_options: Transcription configuration options
     """
     self._host: str = host
     self._port: int = port
-    self._client_type: ClientType = client_type
-    self._stream_names: list[str] = stream_names or []
     self._audio_device: str | None = audio_device
     self._transcription_options: UserTranscriptionOptions = (
       transcription_options or UserTranscriptionOptions()
@@ -98,7 +67,7 @@ class EavesdropClient:
     self._message_task: asyncio.Task[None] | None = None
     self._audio_loop_task: asyncio.Task[None] | None = None
     self._reconnect_task: asyncio.Task[None] | None = None
-    self._operation_lock: asyncio.Lock = asyncio.Lock()
+    self._recording_transition_lock: asyncio.Lock = asyncio.Lock()
     self._disconnect_event: asyncio.Event = asyncio.Event()
     self._disconnect_reason: str | None = None
     self._flush_waiting: bool = False
@@ -110,7 +79,6 @@ class EavesdropClient:
     self._current_recording_id: str | None = None
     self._logger: BoundLogger = get_logger(
       "client/core",
-      client_type=client_type.value,
       host=host,
       port=port,
     )
@@ -120,12 +88,9 @@ class EavesdropClient:
 
   def _validate_configuration(self) -> None:
     """Validate client configuration parameters."""
-    if self._client_type == ClientType.RTSP_SUBSCRIBER:
-      if not self._stream_names:
-        raise ValueError("Subscriber mode requires at least one stream name")
-    elif self._client_type == ClientType.TRANSCRIBER:
-      if not self._audio_device:
-        raise ValueError("Transcriber mode requires audio device specification")
+
+    if not self._audio_device:
+      raise ValueError("Live transcription requires audio device specification")
 
     if self._port <= 0 or self._port > 65535:
       raise ValueError(f"Invalid port number: {self._port}")
@@ -137,7 +102,6 @@ class EavesdropClient:
     port: int = 9090,
     audio_device: str = "default",
     on_capture: Callable[[bytes], None] | None = None,
-    word_timestamps: bool = True,
     send_last_n_segments: int | None = None,
     language: Literal["en"] | None = None,
   ) -> "EavesdropClient":
@@ -151,8 +115,6 @@ class EavesdropClient:
     :type audio_device: str
     :param on_capture: Optional callback receiving each captured audio chunk.
     :type on_capture: Callable[[bytes], None] | None
-    :param word_timestamps: Include native word timestamps, enabled by default.
-    :type word_timestamps: bool
     :param send_last_n_segments: Number of recent segments to include.
     :type send_last_n_segments: int | None
     :param language: English-only compatibility hint; None also selects English.
@@ -162,13 +124,11 @@ class EavesdropClient:
     :raises pydantic.ValidationError: If transcription options are invalid.
     """
     transcription_options = UserTranscriptionOptions(
-      word_timestamps=word_timestamps,
       send_last_n_segments=send_last_n_segments,
       language=language,
     )
 
     return cls(
-      client_type=ClientType.TRANSCRIBER,
       host=host,
       port=port,
       audio_device=audio_device,
@@ -176,35 +136,10 @@ class EavesdropClient:
       on_capture=on_capture,
     )
 
-  @classmethod
-  def subscriber(
-    cls,
-    stream_names: list[str],
-    host: str = "localhost",
-    port: int = 9090,
-  ) -> "EavesdropClient":
-    """Create a subscriber client for receiving RTSP stream transcriptions.
-
-    :param stream_names: List of RTSP stream names to subscribe to
-    :param host: Server hostname
-    :param port: Server port
-    :returns: Configured EavesdropClient in subscriber mode
-    """
-    if not stream_names:
-      raise ValueError("stream_names cannot be empty")
-
-    return cls(
-      client_type=ClientType.RTSP_SUBSCRIBER,
-      host=host,
-      port=port,
-      stream_names=stream_names,
-    )
-
   def _ensure_stream_name(self) -> str:
     """Return the stable protocol stream identifier for this client instance."""
     if self._stream_name is None:
-      prefix = "t" if self._client_type == ClientType.TRANSCRIBER else "s"
-      self._stream_name = f"{prefix}{secrets.token_hex(2)}"
+      self._stream_name = f"t{secrets.token_hex(2)}"
     return self._stream_name
 
   def _track_background_task(self, task: asyncio.Task[None]) -> asyncio.Task[None]:
@@ -239,25 +174,6 @@ class EavesdropClient:
   def _build_connection(self) -> WebSocketConnection:
     """Create a websocket connection bound to this client's stable stream."""
     stream_name = self._ensure_stream_name()
-    if self._client_type == ClientType.TRANSCRIBER:
-      return WebSocketConnection(
-        host=self._host,
-        port=self._port,
-        stream_name=stream_name,
-        on_ready=self._on_ready,
-        on_transcription=self._on_transcription_text,
-        on_error=self._on_error,
-        client_type=ClientType.TRANSCRIBER,
-        on_transcription_message=self._on_transcription_message,
-        on_disconnect=self._on_disconnect,
-        on_language_detection=self._on_language_detection,
-      )
-
-    # NOTE: on_language_detection is deliberately NOT passed for RTSP_SUBSCRIBER.
-    # Server language-detection messages are keyed by the subscribed stream and
-    # would need to match against self._stream_names, but subscriber-mode
-    # language detection is intentionally unsupported for now. See the
-    # client_type branch in WebSocketConnection._process_message.
     return WebSocketConnection(
       host=self._host,
       port=self._port,
@@ -265,9 +181,9 @@ class EavesdropClient:
       on_ready=self._on_ready,
       on_transcription=self._on_transcription_text,
       on_error=self._on_error,
-      client_type=ClientType.RTSP_SUBSCRIBER,
-      stream_names=self._stream_names,
       on_transcription_message=self._on_transcription_message,
+      on_disconnect=self._on_disconnect,
+      on_language_detection=self._on_language_detection,
     )
 
   def _start_message_task(self) -> None:
@@ -293,15 +209,9 @@ class EavesdropClient:
     self._event_stream_open = True
 
     try:
-      # Create connection based on client type
-      if self._client_type == ClientType.TRANSCRIBER:
-        options = setup_options or self._transcription_options
-        self._live_setup_options = options
-        self._reconnect_enabled = options.source_mode != TranscriptionSourceMode.FILE
-        await self._connect_transcriber(setup_options)
-      else:
-        self._reconnect_enabled = False
-        await self._connect_subscriber()
+      self._live_setup_options = setup_options or self._transcription_options
+      self._reconnect_enabled = True
+      await self._connect_transcriber(setup_options)
     except Exception:
       self._event_stream_open = False
       self._reconnect_enabled = False
@@ -322,13 +232,6 @@ class EavesdropClient:
 
     options = setup_options or self._transcription_options
     await self._connection.connect(options)
-    self._start_message_task()
-
-  async def _connect_subscriber(self) -> None:
-    """Connect in subscriber mode."""
-    self._connection = self._build_connection()
-
-    await self._connection.connect()
     self._start_message_task()
 
   async def disconnect(self) -> None:
@@ -382,10 +285,11 @@ class EavesdropClient:
     self._clear_event_queue()
 
   async def start_streaming(self, recording_id: str) -> None:
-    """Start audio streaming (transcriber mode only)."""
-    if self._client_type != ClientType.TRANSCRIBER:
-      raise RuntimeError("start_streaming() only supported in transcriber mode")
+    """Start capture after any preceding recording's flush has completed."""
+    async with self._recording_transition_lock:
+      await self._start_streaming(recording_id)
 
+  async def _start_streaming(self, recording_id: str) -> None:
     if not self._connected:
       raise RuntimeError("Must connect() before start_streaming()")
 
@@ -401,8 +305,6 @@ class EavesdropClient:
     await self._await_prior_audio_loop()
     self._current_recording_id = recording_id
     self._audio_capture.clear_queue()
-    self._clear_message_queue()
-    self._clear_event_queue()
     await self._connection.send_recording_started(recording_id, SAMPLE_RATE)
 
     # Start audio capture
@@ -415,9 +317,6 @@ class EavesdropClient:
 
   async def stop_streaming(self) -> None:
     """Stop audio streaming and wait for the active audio loop to exit."""
-    if self._client_type != ClientType.TRANSCRIBER:
-      raise RuntimeError("stop_streaming() only supported in transcriber mode")
-
     if not self._streaming:
       await self._await_prior_audio_loop()
       return
@@ -434,12 +333,6 @@ class EavesdropClient:
 
     :raises RuntimeError: If cancel is unsupported for the current mode/session.
     """
-    if self._client_type != ClientType.TRANSCRIBER:
-      raise RuntimeError("cancel_utterance() only supported in transcriber mode")
-
-    if self._operation_lock.locked():
-      raise RuntimeError("cancel_utterance() unavailable during transcribe_file() operation")
-
     if (
       not self._connected
       or not self._connection
@@ -504,10 +397,9 @@ class EavesdropClient:
   async def flush(self, recording_id: str, *, force_complete: bool = True) -> TranscriptionMessage:
     """Request a live transcription flush and await the terminal flush response.
 
-    This API is only valid for active transcriber websocket sessions. The client drains
-    stale buffered transcription updates before sending the flush command, then waits for
-    the next ``TranscriptionMessage`` whose ``flush_complete`` field is ``True``. Ordinary
-    transcription updates received while waiting are ignored.
+    A pending flush retains its recording identity until its terminal response arrives.
+    Starting the next recording waits for that response; accepted iterator events remain
+    available to consumers.
 
     :param force_complete: Whether the server should force-complete the current tentative tail.
     :type force_complete: bool
@@ -517,12 +409,14 @@ class EavesdropClient:
       flush is already pending, the server rejects the request, or the live connection closes
       before the flush completes.
     """
-    if self._client_type != ClientType.TRANSCRIBER:
-      raise RuntimeError("flush() only supported in transcriber mode")
+    if self._flush_waiting:
+      raise RuntimeError("flush() already in progress")
+    async with self._recording_transition_lock:
+      return await self._flush_recording(recording_id, force_complete=force_complete)
 
-    if self._operation_lock.locked():
-      raise RuntimeError("flush() unavailable during transcribe_file() operation")
-
+  async def _flush_recording(
+    self, recording_id: str, *, force_complete: bool
+  ) -> TranscriptionMessage:
     if (
       not self._connected
       or not self._connection
@@ -563,152 +457,6 @@ class EavesdropClient:
     finally:
       self._flush_waiting = False
       self._flush_error = None
-
-  async def transcribe_file(
-    self,
-    file_path: str,
-    timeout_s: float | None = None,
-  ) -> FileTranscriptionResult:
-    """Transcribe a finite local audio file in one non-reentrant operation.
-
-    :param file_path: Path to the local audio file to upload.
-    :type file_path: str
-    :param timeout_s: Optional per-call timeout in seconds.
-    :type timeout_s: float | None
-    :returns: Final reduced transcription result for the file.
-    :rtype: FileTranscriptionResult
-    :raises RuntimeError: If called in non-transcriber mode or another operation is active.
-    :raises TimeoutError: If the operation exceeds ``timeout_s``.
-    """
-    if self._client_type != ClientType.TRANSCRIBER:
-      raise RuntimeError("transcribe_file() only supported in transcriber mode")
-
-    if self._streaming or self._connected:
-      raise RuntimeError("transcribe_file() requires an idle client instance")
-
-    if self._operation_lock.locked():
-      raise RuntimeError("transcribe_file() operation already in progress")
-
-    target_path = Path(file_path)
-    file_bytes = target_path.read_bytes()
-
-    async with self._operation_lock:
-      operation = self._transcribe_file_operation(file_bytes=file_bytes)
-
-      try:
-        if timeout_s is None:
-          return await operation
-        return await asyncio.wait_for(operation, timeout=timeout_s)
-      except asyncio.TimeoutError as exc:
-        raise TimeoutError(f"transcribe_file() timed out after {timeout_s}s") from exc
-      except asyncio.CancelledError:
-        raise
-      except Exception:
-        self._logger.exception("transcribe_file failed", file_path=file_path)
-        raise
-      finally:
-        await self.disconnect()
-
-  async def _transcribe_file_operation(self, file_bytes: bytes) -> FileTranscriptionResult:
-    """Execute connect/upload/reduce/finalize steps for one finite-file transcription."""
-    self._clear_message_queue()
-    self._disconnect_event.clear()
-    self._disconnect_reason = None
-
-    setup_options = self._transcription_options.model_copy(
-      update={"source_mode": TranscriptionSourceMode.FILE}
-    )
-    await self.connect(setup_options=setup_options)
-
-    if not self._connection:
-      raise RuntimeError("Connection not initialized for transcribe_file operation")
-
-    await self._connection.send_file_bytes(file_bytes)
-    await self._connection.send_end_of_audio()
-
-    return await self._collect_file_result()
-
-  async def _collect_file_result(self) -> FileTranscriptionResult:
-    """Collect transcription windows until disconnect or socket-close terminal state."""
-    reduced_segments: list[Segment] = []
-    warnings: list[str] = []
-    language: str | None = None
-    last_committed_id: int | None = None
-
-    while True:
-      if self._disconnect_event.is_set():
-        break
-
-      if self._message_task and self._message_task.done() and self._message_queue.empty():
-        break
-
-      try:
-        message = await asyncio.wait_for(self._message_queue.get(), timeout=0.1)
-      except asyncio.TimeoutError:
-        continue
-
-      if message.language is not None:
-        language = message.language
-
-      last_committed_id = self._reduce_windowed_segments(
-        message=message,
-        reduced_segments=reduced_segments,
-        last_committed_id=last_committed_id,
-        warnings=warnings,
-      )
-
-    text = " ".join(segment.text.strip() for segment in reduced_segments if segment.text.strip())
-    return FileTranscriptionResult(
-      segments=reduced_segments,
-      text=text,
-      language=language,
-      warnings=warnings,
-    )
-
-  def _reduce_windowed_segments(
-    self,
-    message: TranscriptionMessage,
-    reduced_segments: list[Segment],
-    last_committed_id: int | None,
-    warnings: list[str],
-  ) -> int | None:
-    """Reduce completed-window emissions to new committed segments only."""
-    if not message.segments:
-      return last_committed_id
-
-    completed_segments = message.segments[:-1]
-    if not completed_segments:
-      return last_committed_id
-
-    if last_committed_id is None:
-      new_segments = completed_segments
-    else:
-      sentinel_index: int | None = None
-      for idx in range(len(completed_segments) - 1, -1, -1):
-        if completed_segments[idx].id == last_committed_id:
-          sentinel_index = idx
-          break
-
-      if sentinel_index is None:
-        warning = (
-          f"Reducer sentinel missing for stream={message.stream}: "
-          f"last_committed_id={last_committed_id}"
-        )
-        warnings.append(warning)
-        self._logger.warning(
-          "reducer sentinel missing",
-          stream=message.stream,
-          last_committed_id=last_committed_id,
-        )
-        new_segments = completed_segments
-      else:
-        new_segments = completed_segments[sentinel_index + 1 :]
-
-    if not new_segments:
-      return last_committed_id
-
-    reduced_segments.extend(new_segments)
-    return new_segments[-1].id
 
   def _clear_message_queue(self) -> None:
     """Drain stale buffered messages before a new operation or recording epoch."""
@@ -757,9 +505,7 @@ class EavesdropClient:
     return self._connected
 
   def is_streaming(self) -> bool:
-    """Check if client is actively streaming (transcriber mode only)."""
-    if self._client_type != ClientType.TRANSCRIBER:
-      return False
+    """Check if client is actively streaming live audio."""
     return self._streaming
 
   # Async iterator protocol
@@ -829,18 +575,9 @@ class EavesdropClient:
 
   def _should_accept_transcription_message(self, message: TranscriptionMessage) -> bool:
     """Return whether an incoming transcription belongs to the current client epoch."""
-    if self._client_type != ClientType.TRANSCRIBER:
-      return True
-
-    if (
-      self._live_setup_options
-      and self._live_setup_options.source_mode == TranscriptionSourceMode.FILE
-    ):
-      return True
-
     current_recording_id = self._current_recording_id
     if current_recording_id is None:
-      return True
+      return message.recording_id is None
 
     return message.recording_id == current_recording_id
 
@@ -858,7 +595,7 @@ class EavesdropClient:
     if self._flush_waiting and self._flush_error is None:
       self._flush_error = self._flush_disconnect_message()
 
-    if self._client_type != ClientType.TRANSCRIBER or not self._reconnect_enabled:
+    if not self._reconnect_enabled:
       return
 
     if self._disconnect_requested:

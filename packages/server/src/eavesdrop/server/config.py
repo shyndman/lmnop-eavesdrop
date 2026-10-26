@@ -1,5 +1,4 @@
 import os
-from pathlib import Path
 from typing import ClassVar, Literal, cast
 
 import yaml
@@ -50,43 +49,6 @@ class BufferConfig:
     return self
 
 
-class RTSPCacheConfig(BaseModel):
-  """Configuration for RTSP stream caching behavior based on listener presence."""
-
-  waiting_for_listener_duration: float = Field(
-    default=10800.0, gt=0.0, description="Cache duration in seconds when streams have no listeners"
-  )
-
-  has_listener_cache_duration: float = Field(
-    default=600.0,
-    gt=0.0,
-    description="Cache duration in seconds when streams have active listeners",
-  )
-
-
-class DebugAudioConfig(BaseModel):
-  """Configuration for debug audio recording behavior."""
-
-  pre_buffer: Path | None = Field(
-    default=None, description="Path prefix for pre-buffer audio files. Records audio before buffer."
-  )
-
-  post_buffer: Path | None = Field(
-    default=None,
-    description="Path prefix for post-buffer audio files. Records audio after dequeuing.",
-  )
-
-
-class RTSPConfig(BaseModel):
-  """Configuration for RTSP stream behavior."""
-
-  streams: dict[str, str] = Field(default={}, description="RTSP stream URLs")
-
-  cache: RTSPCacheConfig = Field(
-    default_factory=RTSPCacheConfig, description="RTSP cache configuration"
-  )
-
-
 class TranscriptionConfig(BaseModel):
   """Configuration for transcription processing behavior."""
 
@@ -105,9 +67,6 @@ class TranscriptionConfig(BaseModel):
   language: Literal["en"] = "en"
   """Only English transcription is supported."""
 
-  word_timestamps: bool = True
-  """Whether to include native word boundaries in output."""
-
   buffer: BufferConfig = Field(default_factory=BufferConfig)
   """Audio buffer configuration for streaming transcription."""
 
@@ -119,9 +78,6 @@ class TranscriptionConfig(BaseModel):
 
   silence_completion_threshold: float = Field(default=0.8, gt=0.0)
   """Seconds of silence after speech to mark segment as completed."""
-
-  debug_audio: DebugAudioConfig | None = None
-  """Debug audio recording configuration. When set, audio is saved at different pipeline stages."""
 
   @model_validator(mode="before")
   @classmethod
@@ -146,13 +102,12 @@ class TranscriptionConfig(BaseModel):
 
 
 class EavesdropConfig(BaseModel):
-  """Top-level Eavesdrop configuration with transcription and RTSP settings."""
+  """Top-level configuration for live WebSocket transcription."""
 
   transcription: TranscriptionConfig = Field(default_factory=TranscriptionConfig)
   """Transcription processing configuration."""
 
-  rtsp: RTSPConfig = Field(default_factory=RTSPConfig)
-  """RTSP stream configuration."""
+  model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
 
   def pretty_print(self) -> None:
     """
@@ -171,7 +126,6 @@ class EavesdropConfig(BaseModel):
     logger.info(f"  Model: {self.transcription.model}")
     logger.info(f"  Device: {self.transcription.device}")
     logger.info(f"  Language: {self.transcription.language}")
-    logger.info(f"  Word Timestamps: {self.transcription.word_timestamps}")
     logger.info(f"  Send Last N Segments: {self.transcription.send_last_n_segments}")
     silence_threshold = self.transcription.silence_completion_threshold
     logger.info(f"  Silence Completion Threshold: {silence_threshold}s")
@@ -196,26 +150,6 @@ class EavesdropConfig(BaseModel):
     logger.info(f"  Transcription Interval: {self.transcription.buffer.transcription_interval}s")
     logger.info(f"  Clip Audio: {self.transcription.buffer.clip_audio}")
     logger.info(f"  Max Stall Duration: {self.transcription.buffer.max_stall_duration}s")
-
-    # Debug audio settings
-    logger.info("DEBUG AUDIO SETTINGS:")
-    if self.transcription.debug_audio:
-      logger.info(f"  Pre-Buffer Path: {self.transcription.debug_audio.pre_buffer}")
-      logger.info(f"  Post-Buffer Path: {self.transcription.debug_audio.post_buffer}")
-    else:
-      logger.info("  Debug Audio: Disabled")
-
-    # RTSP settings - all properties
-    logger.info("RTSP SETTINGS:")
-    if self.rtsp.streams:
-      logger.info(f"  Streams ({len(self.rtsp.streams)}):")
-      for name, url in self.rtsp.streams.items():
-        logger.info(f"    {name}: {url}")
-    else:
-      logger.info("  Streams: None (WebSocket-only mode)")
-
-    logger.info(f"  Cache Waiting Duration: {self.rtsp.cache.waiting_for_listener_duration:.1f}s")
-    logger.info(f"  Cache Listener Duration: {self.rtsp.cache.has_listener_cache_duration:.1f}s")
 
     # System constants
     logger.info("SYSTEM CONSTANTS:")

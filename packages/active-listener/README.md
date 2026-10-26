@@ -2,6 +2,22 @@
 
 `active-listener` is a user-session dictation service. The supported operator workflow is `systemd --user`, not a custom bootstrap shell script.
 
+## Live transcription
+
+The listener supplies live audio over WebSocket. One connection can carry multiple
+recordings, each with its own identifier, transcript state, and timestamp zero.
+Normal completion stops capture, sends a force-completing flush, and delivers its
+`flush_complete` result before starting the next recording. Accepted audio for a
+later recording queues while the preceding recording finishes.
+
+Every transcription includes native segment and individual word timestamps,
+including offsets across silence. With VAD enabled, silence can complete segments.
+With VAD disabled, all pending segments remain revisable until an explicit
+force-completing flush; more than the trailing segment can be incomplete.
+Cancellation discards the current utterance and suppresses its outstanding results
+without requiring a new connection. Historical listener audio archival remains
+available independently of transcription and retains its FFmpeg dependency.
+
 ## Install or update the user service
 
 Run from the repo root:

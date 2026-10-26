@@ -29,7 +29,7 @@
 - Phase 3-4: Implementation execution (manual or via tools)
 
 ## Summary
-Transform the existing CLI-based eavesdrop client into a clean, importable Python library while preserving all existing functionality. Create a unified programmatic API with factory methods that supports both transcriber mode (sending audio for transcription) and subscriber mode (receiving transcriptions from RTSP streams) through a streaming async iterator interface.
+Transform the CLI-based eavesdrop client into a clean, importable Python library for live microphone audio over WebSocket. Preserve async iteration, rich callbacks, independent capture and transmission control, and explicit connection lifecycle management. Every transcription includes native segment and individual word timestamps; timing is not configurable.
 
 ## Technical Context
 **Language/Version**: Python 3.11+  
@@ -205,13 +205,13 @@ ios/ or android/
 **Key Refactoring Tasks**:
 1. Extract EavesdropClient class from existing MicrophoneClient
 2. Remove TerminalInterface and CLI dependencies (app.py, __main__.py, interface.py)
-3. Modify WebSocketConnection to support both ClientType.TRANSCRIBER and ClientType.RTSP_SUBSCRIBER
-4. Update WebSocketConnection message processing to handle rich TranscriptionMessage callbacks
-5. Remove stream filtering in message processing for subscriber mode multi-stream support
-6. Add factory methods and async protocols (transcriber/subscriber, __aiter__/__anext__, context manager)
-7. Preserve existing AudioCapture functionality with enhanced device selection
-8. Update package exports to expose EavesdropClient as main API
-9. Add support for X-Stream-Names header in subscriber mode connections
+3. Modify WebSocketConnection for the retained live transcriber protocol
+4. Update message processing to deliver rich TranscriptionMessage callbacks
+5. Preserve recording boundaries, flush force-completion and acknowledgements, and utterance cancellation
+6. Add the transcriber factory, async iterator, and context manager protocols
+7. Preserve AudioCapture functionality with enhanced device selection
+8. Update package exports to expose EavesdropClient as the main API
+9. Preserve recording-relative native segment and word timings; with VAD disabled, all segments remain provisional until explicit force completion, while VAD-enabled silence completion remains available
 
 **IMPORTANT**: This phase is executed by the /tasks command, NOT by /plan
 

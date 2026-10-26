@@ -6,15 +6,13 @@ This document defines the data entities and their relationships for the refactor
 ## Core Entities
 
 ### EavesdropClient
-**Purpose**: Primary interface providing unified access to transcription services with mode-specific behavior
+**Purpose**: Primary interface providing live transcription and independent connection, capture, and transmission lifecycles
 
 **Fields**:
 - `host: str` - WebSocket server hostname/IP
 - `port: int` - WebSocket server port 
-- `_mode: ClientMode` - Internal mode (transcriber/subscriber)
 - `_ws_connection: WebSocketConnection | None` - Active WebSocket connection
-- `_audio_session: AudioCapture | None` - Audio capture session (transcriber mode only)
-- `_stream_subscriptions: list[str] | None` - RTSP stream names (subscriber mode only)
+- `_audio_session: AudioCapture | None` - Live audio capture session
 - `_message_queue: asyncio.Queue[TranscriptionMessage]` - Internal message queue for async iteration
 - `_callbacks: ClientCallbacks` - User-provided callback functions
 - `_connected: bool` - Connection status flag
@@ -30,14 +28,6 @@ This document defines the data entities and their relationships for the refactor
 - `host` must be non-empty string
 - `port` must be valid TCP port (1-65535)
 - Audio device (transcriber mode) must exist and be accessible
-- Stream names (subscriber mode) must be non-empty list
-
-### ClientMode
-**Purpose**: Enumeration defining client operation modes
-
-**Values**:
-- `TRANSCRIBER` - Send audio for transcription
-- `SUBSCRIBER` - Receive transcriptions from RTSP streams
 
 ### ClientCallbacks
 **Purpose**: Container for user-provided callback functions
@@ -48,7 +38,6 @@ This document defines the data entities and their relationships for the refactor
 - `on_error: Callable[[str], None] | None` - Error occurred
 - `on_streaming_started: Callable[[], None] | None` - Audio streaming started (transcriber only)
 - `on_streaming_stopped: Callable[[], None] | None` - Audio streaming stopped (transcriber only)
-- `on_stream_status: Callable[[str, str, str | None], None] | None` - Stream status change (subscriber only)
 
 **Breaking Change from Existing Client**:
 - Current `WebSocketConnection.on_transcription` receives extracted text string
@@ -59,24 +48,11 @@ This document defines the data entities and their relationships for the refactor
 
 **Fields**:
 - `audio_device: int | str | None` - Audio device selection (index, name, or substring)
-- `beam_size: int` - Whisper beam search size (default: 5)
-- `word_timestamps: bool` - Include word-level timestamps (default: False)
-- `initial_prompt: str | None` - Initial prompt for transcription context
-- `hotwords: list[str] | None` - Priority words for recognition
+- `language: str` - Fixed English recognition language
+- `send_last_n_segments: int` - Live transcript segment window
 
 **Validation Rules**:
-- `beam_size` must be positive integer
 - `audio_device` if provided must match available device
-
-### SubscriberOptions  
-**Purpose**: Configuration options for subscriber mode
-
-**Fields**:
-- `stream_names: list[str]` - RTSP stream names to subscribe to
-
-**Validation Rules**:
-- `stream_names` must be non-empty list
-- Each stream name must be non-empty string
 
 ## Existing Entities (Reused from eavesdrop.wire)
 
@@ -86,7 +62,7 @@ This document defines the data entities and their relationships for the refactor
 **Fields** (from existing schema):
 - `stream: str` - Stream identifier  
 - `language: str | None` - Detected/specified language
-- `segments: list[Segment]` - Rich segment data with timestamps, confidence scores
+- `segments: list[Segment]` - Segment data with mandatory native segment and individual word timestamps
 - `timestamp: float` - Message timestamp
 
 ### Segment
@@ -97,25 +73,25 @@ This document defines the data entities and their relationships for the refactor
 - `start: float` - Start timestamp in seconds
 - `end: float` - End timestamp in seconds  
 - `confidence: float | None` - Recognition confidence score
+- `words: list[Word]` - Required native individual word timestamps on the recording timeline
 
 ### UserTranscriptionOptions
 **Purpose**: Server-side transcription configuration
 
 **Fields** (from existing schema):
-- `initial_prompt: str | None`
-- `hotwords: list[str] | None`
-- `beam_size: int`
-- `word_timestamps: bool`
+- `language: str`
+- `send_last_n_segments: int`
+
+Native segment and individual word timings are mandatory output, not a user-selectable configuration field.
 
 ## Entity Relationships
 
 ```
 EavesdropClient
-├── ClientMode (composition)
 ├── ClientCallbacks (composition)
-├── TranscriberOptions | SubscriberOptions (composition, mode-dependent)
+├── TranscriberOptions (composition)
 ├── WebSocketConnection (aggregation, lifecycle managed)
-├── AudioCapture (aggregation, transcriber mode only)
+├── AudioCapture (aggregation, lifecycle managed)
 └── Queue[TranscriptionMessage] (composition, internal)
 
 TranscriptionMessage
@@ -141,17 +117,10 @@ Segment
 5. Messages queued internally and yielded via async iteration
 6. `stop_streaming()` stops transmission while maintaining capture and connection
 
-### Subscriber Mode Flow  
-1. `EavesdropClient.subscriber()` creates instance with `SubscriberOptions`
-2. `connect()` establishes WebSocket with `ClientType.RTSP_SUBSCRIBER` and stream names in `X-Stream-Names` header
-3. Server immediately begins sending `TranscriptionMessage` objects for all subscribed streams
-4. Messages queued internally and yielded via async iteration (no stream filtering)
-5. `disconnect()` closes WebSocket connection
+### Recording Lifecycle
+One connection supports multiple recordings. Each recording boundary resets transcript state and recording-relative timestamp zero after accepted work for the preceding recording has completed. Stop recording A, force-complete its flush, and deliver its final transcript and flush-complete response before processing B. Flush covers audio accepted at its boundary and acknowledges completion even when no audio is pending.
 
-**Implementation Notes**:
-- Uses `WebSocketHeaders.STREAM_NAMES` to pass comma-separated stream names during connection
-- Message processing removes stream filtering to receive transcriptions from all subscribed streams
-- `StreamStatusMessage` objects handled via `on_stream_status` callback for stream health monitoring
+Cancellation discards the active utterance, clears its utterance-local history, and suppresses outstanding results; another recording can start on the same connection. With VAD disabled, every pending segment remains incomplete until an explicit force-completing flush. An ordinary update or non-force-completing flush cannot complete any segment. With VAD enabled, preserve silence-based completion and the trailing incomplete segment. Native word times retain original recording offsets across silence.
 
 ## State Management
 

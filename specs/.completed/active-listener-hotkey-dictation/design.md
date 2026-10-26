@@ -161,7 +161,6 @@ This matters for `active-listener` because microphone ownership stays in the cli
 Mode caveat:
 
 - these streaming methods are transcriber-only
-- they are not valid for RTSP subscriber mode
 
 The MVP client work extends this surface with a unified async event iterator. The app should consume that iterator rather than reaching into private client fields.
 
@@ -194,7 +193,7 @@ Because `flush()` already returns only the final window, the app must not build 
 
 **Non-Goals:**
 - No overlay UI, Electron shell, clipboard/paste fallback, notifications, or other visual feedback in this feature.
-- No file-transcription entrypoint in `active-listener`.
+- `active-listener` consumes live microphone transcription only.
 - No raw key emission API beyond text emission.
 - No portability work beyond the user’s current workstation and keyboard.
 - No buffering or recovery of a recording interrupted by connection loss.

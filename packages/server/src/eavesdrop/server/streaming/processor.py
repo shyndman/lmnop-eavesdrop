@@ -8,7 +8,6 @@ import asyncio
 import time
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
 from threading import Lock
 from typing import TypedDict
 
@@ -20,7 +19,6 @@ from eavesdrop.common import Pretty, Range, Seconds, get_logger
 from eavesdrop.server.config import TranscriptionConfig
 from eavesdrop.server.constants import SINGLE_MODEL
 from eavesdrop.server.streaming.buffer import AudioStreamBuffer
-from eavesdrop.server.streaming.debug_capture import AudioDebugCapture
 from eavesdrop.server.streaming.flush_state import LiveSessionFlushState, PendingFlush
 from eavesdrop.server.streaming.interfaces import TranscriptionResult, TranscriptionSink
 from eavesdrop.server.transcription.models import (
@@ -131,24 +129,17 @@ class StreamingTranscriptionProcessor:
 
     # Transcription state
     self.exit: bool = False
-    self._source_exhausted: bool = False
     self._minimum_chunk_wait_logged: bool = False
     self.language: str | None = config.language
     self.text: list[str] = []
     self.recording_id: str | None = None
+    self._pending_segments: list[Segment] = []
+    self._idle: asyncio.Event = asyncio.Event()
+    self._idle.set()
 
     # Model attributes
     self.transcriber: OrukeetTranscriber | None = None
     self.vad_parameters: VadParameters = config.vad_parameters
-
-    # Initialize debug capture if configured
-    self._debug_capture: AudioDebugCapture | None = None
-    if config.debug_audio and config.debug_audio.post_buffer:
-      self._debug_capture = AudioDebugCapture(
-        output_path=Path(str(config.debug_audio.post_buffer)),
-        stream_name=stream_name,
-        sample_rate=buffer.config.sample_rate,
-      )
 
   async def initialize(self) -> None:
     """Initialize the Orukeet model off the event loop and announce readiness."""
@@ -180,10 +171,6 @@ class StreamingTranscriptionProcessor:
     self.exit = True
     await self.sink.disconnect()
 
-  def mark_source_exhausted(self) -> None:
-    """Mark that no additional audio will arrive for this session."""
-    self._source_exhausted = True
-
   def add_audio_frames(self, frames: Float32Audio) -> None:
     """Add audio frames to the buffer for processing."""
     self.buffer.add_frames(frames)
@@ -203,6 +190,7 @@ class StreamingTranscriptionProcessor:
     """
     self.recording_id = recording_id
     self.text = []
+    self._pending_segments = []
     if not preserve_language:
       self.language = self.config.language
 
@@ -213,6 +201,13 @@ class StreamingTranscriptionProcessor:
       preserve_language=preserve_language,
     )
 
+  @property
+  def has_pending_segments(self) -> bool:
+    return bool(self._pending_segments)
+
+  async def wait_until_idle(self) -> None:
+    _ = await self._idle.wait()
+
   async def _transcription_loop(self) -> None:
     """Main processing loop: get audio → transcribe → send results → wait."""
     while not self.exit:
@@ -222,13 +217,15 @@ class StreamingTranscriptionProcessor:
         audio_chunk = await self._get_next_audio_chunk()
         chunk_fetch_duration = time.monotonic() - chunk_fetch_start
         if audio_chunk is None:
-          if self._source_exhausted and self.buffer.available_duration <= 0:
-            break
           continue
 
         result_processing_start = time.monotonic()
-        transcription_result = await self._transcribe_chunk(audio_chunk)
-        await self._process_transcription_result(transcription_result)
+        self._idle.clear()
+        try:
+          transcription_result = await self._transcribe_chunk(audio_chunk)
+          await self._process_transcription_result(transcription_result)
+        finally:
+          self._idle.set()
         result_processing_duration = time.monotonic() - result_processing_start
 
         if transcription_result.status is TranscriptionPassStatus.INTERRUPTED_BEFORE_COMMIT:
@@ -255,8 +252,29 @@ class StreamingTranscriptionProcessor:
 
   async def _get_next_audio_chunk(self) -> AudioChunk | None:
     """Get the next audio chunk, handling buffer management and minimum duration."""
-    self.buffer.clip_if_stalled()
+    pending_flush = self._pending_flush()
+    if self.config.use_vad and pending_flush is None:
+      self.buffer.clip_if_stalled()
     input_bytes, duration, start_time = self.buffer.get_chunk_for_processing()
+    if pending_flush is not None:
+      boundary_offset = pending_flush.boundary_sample - int(
+        round(start_time * self.buffer.config.sample_rate)
+      )
+      input_bytes = input_bytes[: max(0, boundary_offset)]
+      duration = input_bytes.shape[0] / self.buffer.config.sample_rate
+    if pending_flush is not None and duration == 0:
+      await self._handle_transcription_output(
+        self._pending_segments.copy(),
+        0.0,
+        flush_complete=True,
+        force_complete=pending_flush.force_complete,
+      )
+      if self.flush_state is not None:
+        _ = self.flush_state.complete()
+      return None
+
+    if pending_flush is not None and duration > 0:
+      return AudioChunk(data=input_bytes, duration=duration, start_time=start_time)
 
     # Debug logging to track buffer catchup patterns
     available_duration = self.buffer.available_duration
@@ -272,8 +290,6 @@ class StreamingTranscriptionProcessor:
     )
 
     if duration < self.buffer.config.min_chunk_duration:
-      if self._source_exhausted and duration > 0:
-        return AudioChunk(data=input_bytes, duration=duration, start_time=start_time)
       remaining_wait = self.buffer.config.min_chunk_duration - duration
       if not self._minimum_chunk_wait_logged:
         self.logger.info(
@@ -320,12 +336,23 @@ class StreamingTranscriptionProcessor:
 
   async def _transcribe_chunk(self, chunk: AudioChunk) -> ChunkTranscriptionResult:
     """Transcribe an audio chunk and return results with timing information."""
-    # Debug audio capture (post-buffer)
-    if self._debug_capture:
-      self._debug_capture.capture(chunk)
-
     transcription_start = time.monotonic()
-    pass_result = await asyncio.to_thread(self._run_transcription_pass, chunk)
+    worker = asyncio.create_task(
+      asyncio.to_thread(
+        self._run_transcription_pass,
+        chunk,
+        self._current_utterance_generation(),
+        self.recording_id,
+        self.session,
+      )
+    )
+    try:
+      pass_result = await asyncio.shield(worker)
+    except asyncio.CancelledError:
+      # Cancelling to_thread does not stop native inference. Await it before
+      # releasing connection/session ownership, but never commit its output.
+      await worker
+      raise
     processing_time = time.monotonic() - transcription_start
 
     if pass_result.status is TranscriptionPassStatus.INTERRUPTED_BEFORE_COMMIT:
@@ -368,10 +395,7 @@ class StreamingTranscriptionProcessor:
     flush_boundary_reached = pending_flush is not None and self._covers_flush_boundary(
       result, pending_flush
     )
-    result_end_sample = result.chunk_start_sample + result.chunk_sample_count
-    source_end_reached = (
-      self._source_exhausted and result_end_sample >= self.buffer.get_buffer_end_sample()
-    )
+    force_complete = bool(flush_boundary_reached and pending_flush and pending_flush.force_complete)
 
     await self._handle_transcription_output(
       result.segments or [],
@@ -379,18 +403,12 @@ class StreamingTranscriptionProcessor:
       result.speech_chunks,
       emit_result=pending_flush is None or flush_boundary_reached,
       flush_complete=flush_boundary_reached,
-      force_complete=source_end_reached
-      or bool(flush_boundary_reached and pending_flush and pending_flush.force_complete),
+      force_complete=force_complete,
     )
 
-    if source_end_reached:
-      # A finite file need not end with enough silence to complete its final
-      # sentence. Once this snapshot covers EOF, finalize it and drain the tail
-      # instead of repeatedly decoding the same unfinished sentence forever.
-      _ = self.buffer.discard_through_sample(result_end_sample)
-
     if flush_boundary_reached:
-      self._discard_flushed_audio(pending_flush)
+      if force_complete:
+        self._discard_flushed_audio(pending_flush)
       if self.flush_state is not None:
         _ = self.flush_state.complete()
 
@@ -465,9 +483,14 @@ class StreamingTranscriptionProcessor:
       return 0
     return self.flush_state.current_generation()
 
-  def _run_transcription_pass(self, chunk: AudioChunk) -> ChunkTranscriptionResult:
-    """Run one worker-thread transcription pass or report interruption before commit."""
-    utterance_generation = self._current_utterance_generation()
+  def _run_transcription_pass(
+    self,
+    chunk: AudioChunk,
+    utterance_generation: int,
+    recording_id: str | None,
+    session: TranscriptionSession,
+  ) -> ChunkTranscriptionResult:
+    """Run one worker-thread pass with identity captured before scheduling."""
     if self._consume_precommit_interrupt():
       return ChunkTranscriptionResult(
         status=TranscriptionPassStatus.INTERRUPTED_BEFORE_COMMIT,
@@ -479,10 +502,10 @@ class StreamingTranscriptionProcessor:
         audio_duration=chunk.duration,
         speech_chunks=None,
         utterance_generation=utterance_generation,
-        recording_id=self.recording_id,
+        recording_id=recording_id,
       )
 
-    result, info, speech_chunks = self._transcribe_audio(chunk)
+    result, info, speech_chunks = self._transcribe_audio(chunk, session, recording_id)
     return ChunkTranscriptionResult(
       status=TranscriptionPassStatus.TRANSCRIBED,
       chunk_start_sample=self._chunk_start_sample(chunk),
@@ -493,7 +516,7 @@ class StreamingTranscriptionProcessor:
       audio_duration=chunk.duration,
       speech_chunks=speech_chunks,
       utterance_generation=utterance_generation,
-      recording_id=self.recording_id,
+      recording_id=recording_id,
     )
 
   def _covers_flush_boundary(
@@ -546,18 +569,19 @@ class StreamingTranscriptionProcessor:
         _ = sleep_task.cancel()
       if not wake_task.done():
         _ = wake_task.cancel()
+      _ = await asyncio.gather(sleep_task, wake_task, return_exceptions=True)
 
   def _transcribe_audio(
-    self, chunk: AudioChunk
+    self, chunk: AudioChunk, session: TranscriptionSession, recording_id: str | None
   ) -> tuple[list[Segment] | None, TranscriptionInfo, list[SpeechChunk] | None]:
     """Transcribe audio sample using the speech recognition model."""
     if not self.transcriber:
       raise RuntimeError("Transcriber not initialized")
 
-    self.session.update_recording_context(self.recording_id)
+    session.update_recording_context(recording_id)
 
     result, info = self.transcriber.transcribe(
-      chunk.data, config=self.config, absolute_stream_start=chunk.start_time, session=self.session
+      chunk.data, config=self.config, absolute_stream_start=chunk.start_time, session=session
     )
     self.logger.debug(
       "Returned from transcriber.transcribe",
@@ -647,8 +671,12 @@ class StreamingTranscriptionProcessor:
 
     if not result and not flush_complete:
       self.logger.debug("No segments to send to client")
-      self.buffer.advance_processed_boundary(duration)
+      if self.config.use_vad:
+        self.buffer.advance_processed_boundary(duration)
       return
+
+    if not result:
+      result = self._pending_segments.copy()
 
     if result:
       # TRACING: Raw speech recognition segments generated
@@ -672,66 +700,33 @@ class StreamingTranscriptionProcessor:
     # Update the internal transcript.
     self._update_segments(result, duration)
 
-    # Apply explicit completion rule: all but last segment are completed
-    # Plus enhanced rule: last segment can also complete based on silence
     current_incomplete_segment: Segment | None = None
     silence_threshold = self.config.silence_completion_threshold
+    incomplete_segments: list[Segment] = []
 
     for i, segment in enumerate(result):
-      is_last_segment = i == len(result) - 1
-
-      # Explicit rule: all segments except last are marked complete
-      should_complete = not is_last_segment
-
-      # Enhanced rule: last segment can also complete if silence analysis says so
-      if is_last_segment:
-        should_complete = self._should_complete_segment_by_silence(
-          segment, speech_chunks, silence_threshold, duration
-        )
-
-      if should_complete and not segment.completed:
-        # Mark as completed and assign chain-based ID
-        preceding_segment = self.session.get_last_completed_segment()
-        segment.mark_completed(preceding_segment)
-
-        # Add to session's completed segments chain
-        self.session.add_completed_segment(segment)
-
-        # TRACING: Completion decision
-        completion_reason = "positional" if not is_last_segment else "silence_analysis"
-        tracing_logger.info(
-          "Segment marked complete",
-          segment_id=segment.id,
-          reason=completion_reason,
-          text=segment.text[:50] + ("..." if len(segment.text) > 50 else ""),
-          time_range=f"{segment.start:.2f}-{segment.end:.2f}s",
-        )
-      else:
-        # This is the incomplete (current) segment
-        current_incomplete_segment = segment
-
-        # TRACING: Incomplete segment
-        if is_last_segment:
-          tracing_logger.info(
-            "Last segment remains incomplete",
-            segment_id=segment.id,
-            reason="insufficient_silence",
-            text=segment.text[:50] + ("..." if len(segment.text) > 50 else ""),
-            time_range=f"{segment.start:.2f}-{segment.end:.2f}s",
+      should_complete = force_complete or (
+        self.config.use_vad
+        and (
+          i < len(result) - 1
+          or self._should_complete_segment_by_silence(
+            segment, speech_chunks, silence_threshold, duration
           )
-
-    if force_complete and current_incomplete_segment is not None:
-      preceding_segment = self.session.get_last_completed_segment()
-      current_incomplete_segment.mark_completed(preceding_segment)
-      self.session.add_completed_segment(current_incomplete_segment)
-      current_incomplete_segment = None
-
-      tracing_logger.info(
-        "Forced completion of tentative tail at explicit boundary",
-        flush_complete=flush_complete,
+        )
       )
+      if should_complete:
+        if not segment.completed:
+          segment.mark_completed(self.session.get_last_completed_segment())
+          self.session.add_completed_segment(segment)
+      else:
+        segment.completed = False
+        incomplete_segments.append(segment)
 
-    if not result:
+    self._pending_segments = incomplete_segments
+    if incomplete_segments:
+      current_incomplete_segment = incomplete_segments[0]
+
+    if not result and self.config.use_vad:
       self.buffer.advance_processed_boundary(duration)
 
     # Prepare segments for client: last N completed + current incomplete
@@ -743,9 +738,8 @@ class StreamingTranscriptionProcessor:
     )
     segments_for_client.extend(recent_completed_segments)
 
-    # Ensure client invariant: always have an incomplete segment at the tail
-    if current_incomplete_segment:
-      segments_for_client.append(current_incomplete_segment)
+    if incomplete_segments:
+      segments_for_client.extend(incomplete_segments)
     else:
       # Create synthetic incomplete segment to maintain client state machine invariant
       synthetic_segment = self._create_synthetic_incomplete_segment(
@@ -753,10 +747,10 @@ class StreamingTranscriptionProcessor:
       )
       segments_for_client.append(synthetic_segment)
 
-    # Advance buffer pointer based on completed segments
-    self._advance_buffer_by_completed_segments(
-      speech_chunks, silence_threshold, duration, current_incomplete_segment
-    )
+    if self.config.use_vad or force_complete:
+      self._advance_buffer_by_completed_segments(
+        speech_chunks, silence_threshold, duration, current_incomplete_segment
+      )
 
     if not emit_result:
       self.logger.debug("Suppressing ordinary emission while flush remains pending")
@@ -901,9 +895,16 @@ class StreamingTranscriptionProcessor:
     if not last_completed:
       return
 
-    # Calculate how far we can safely advance
-    completed_end_time = last_completed.absolute_end_time
+    # Native word ends can precede the VAD speech end. Once every segment in
+    # this chunk is complete, consume its entire speech span so a later flush
+    # cannot recognize the already-completed word's remaining audio again.
     current_processed_time = self.buffer.processed_up_to_time
+    completed_end_time = last_completed.absolute_end_time
+    if speech_chunks and current_incomplete_segment is None:
+      completed_end_time = max(
+        completed_end_time,
+        current_processed_time + self._last_speech_chunk_time(speech_chunks),
+      )
 
     # Only advance if we're moving forward
     if completed_end_time > current_processed_time:
@@ -966,7 +967,7 @@ class StreamingTranscriptionProcessor:
       start=recording_start,
       end=recording_start,  # Zero-duration synthetic segment
       text="",  # Empty text is fine for client state machine
-      words=None,
+      words=[],
       completed=False,
       time_offset=0.0,
     )
