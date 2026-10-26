@@ -17,9 +17,8 @@ from eavesdrop.server.connection_handler import WebSocketConnectionHandler
 from eavesdrop.server.constants import SAMPLE_RATE
 from eavesdrop.server.server import TranscriptionServer
 from eavesdrop.server.streaming.interfaces import Float32Audio
-from eavesdrop.server.streaming.processing.recognition import RecognitionWorker
+from eavesdrop.server.streaming.processing.recognition import RecognitionWorker, Transcriber
 from eavesdrop.server.transcription.models import TranscriptionInfo
-from eavesdrop.server.transcription.orukeet import OrukeetTranscriber
 from eavesdrop.server.transcription.session import TranscriptionSession
 from eavesdrop.wire import (
   ErrorMessage,
@@ -77,7 +76,8 @@ class DeterministicTranscriber:
       if not self.release.wait(INFERENCE_RELEASE_TIMEOUT):
         raise TimeoutError("Test did not release held inference")
     duration = len(audio) / SAMPLE_RATE
-    session.update_audio_context(start_offset=absolute_stream_start, duration=duration)
+    session.tracing.audio_start_offset = absolute_stream_start
+    session.tracing.audio_duration = duration
     label = "A" if audio[0] > 0 else "B"
     tail_label = "B" if audio[-1] < 0 else label
     segments = [
@@ -99,7 +99,7 @@ class DeterministicTranscriber:
     return segments, TranscriptionInfo(
       duration=duration,
       duration_after_vad=0.08 if config.use_vad else duration,
-      speech_chunks=[{"start": 0, "end": 1280}] if config.use_vad else [],
+      speech_segments=[{"start": 0, "end": 1280}] if config.use_vad else [],
     )
 
 
@@ -122,7 +122,6 @@ class ProtocolServer:
     """
     async with connect(
       self.uri,
-      additional_headers={"X-Client-Type": "transcriber"},
       open_timeout=DEADLINE,
       close_timeout=DEADLINE,
     ) as socket:
@@ -150,7 +149,7 @@ async def protocol_server(
   minimum: float = 1.0,
   window: int = 10,
   hold: bool = False,
-  transcriber: OrukeetTranscriber | None = None,
+  transcriber: Transcriber | None = None,
 ) -> AsyncIterator[ProtocolServer]:
   """Run a real server with deterministic inference.
 
@@ -165,13 +164,13 @@ async def protocol_server(
   """
   model = DeterministicTranscriber(hold=hold)
 
-  def load_model(_worker: RecognitionWorker) -> OrukeetTranscriber:
+  def load_model(_worker: RecognitionWorker) -> Transcriber:
     """Return the configured recognizer at the production loader boundary.
 
     :param _worker: Recognition worker requesting its recognizer.
     :returns: The explicitly supplied recognizer or the standalone test fake.
     """
-    return cast(OrukeetTranscriber, cast(object, model)) if transcriber is None else transcriber
+    return model if transcriber is None else transcriber
 
   monkeypatch.setattr(RecognitionWorker, "_load_model", load_model)
   shell = TranscriptionServer()
@@ -266,8 +265,8 @@ async def transcription(socket: ClientConnection, *, flushed: bool = False) -> T
   async with asyncio.timeout(DEADLINE):
     while True:
       message = deserialize_message(await socket.recv(decode=True))
-      assert not isinstance(message, ErrorMessage), message
-      if isinstance(message, TranscriptionMessage):
+      assert message.type != "error", message
+      if message.type == "transcription":
         assert message.stream == STREAM
         if not flushed or message.flush_complete:
           return message
@@ -282,7 +281,7 @@ async def error(socket: ClientConnection) -> ErrorMessage:
   async with asyncio.timeout(DEADLINE):
     while True:
       message = deserialize_message(await socket.recv(decode=True))
-      if isinstance(message, ErrorMessage):
+      if message.type == "error":
         return message
 
 

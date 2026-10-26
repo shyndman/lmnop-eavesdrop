@@ -1,16 +1,19 @@
 """Model-independent contracts for the standalone Silero VAD adapter."""
 
+from __future__ import annotations
+
 import os
 from dataclasses import dataclass, field
-from typing import NamedTuple
-from unittest.mock import patch
+from typing import NamedTuple, cast
+from unittest.mock import patch, sentinel
 
 import numpy as np
 import pytest
 
-from eavesdrop.server.transcription.models import SpeechChunk, VadParameters
+from eavesdrop.server.config import TranscriptionConfig
+from eavesdrop.server.transcription.models import SpeechSegment, VadParameters
 from eavesdrop.server.transcription.utils import FloatAudio
-from eavesdrop.server.transcription.vad import SileroSpeechDetector
+from eavesdrop.server.transcription.vad import SileroOnnxModel, SileroSpeechDetector
 
 
 @dataclass
@@ -40,7 +43,7 @@ class DetectionCall(NamedTuple):
   """Capture the waveform, model, and exact arguments supplied to Silero."""
 
   audio: FloatAudio
-  model: object
+  model: SileroOnnxModel
   sampling_rate: int
   threshold: float
   neg_threshold: float | None
@@ -57,12 +60,12 @@ class FakeSileroRuntime:
   :param speech: Prepared speech intervals in original input samples.
   """
 
-  speech: list[SpeechChunk] = field(default_factory=list)
-  model: object = field(default_factory=object)
+  speech: list[SpeechSegment] = field(default_factory=list)
+  model: SileroOnnxModel = field(default_factory=lambda: cast(SileroOnnxModel, sentinel.vad_model))
   load_calls: list[bool] = field(default_factory=list)
   detect_calls: list[DetectionCall] = field(default_factory=list)
 
-  def load_silero_vad(self, *, onnx: bool) -> object:
+  def load_silero_vad(self, *, onnx: bool) -> SileroOnnxModel:
     """Record the chosen backend and return the prepared model.
 
     :param onnx: Whether to use the ONNX backend.
@@ -74,7 +77,7 @@ class FakeSileroRuntime:
   def get_speech_timestamps(
     self,
     audio: FloatAudio,
-    model: object,
+    model: SileroOnnxModel,
     *,
     sampling_rate: int,
     threshold: float,
@@ -83,7 +86,7 @@ class FakeSileroRuntime:
     max_speech_duration_s: float,
     min_silence_duration_ms: int,
     speech_pad_ms: int,
-  ) -> list[SpeechChunk]:
+  ) -> list[SpeechSegment]:
     """Record all detection arguments and return prepared sample intervals.
 
     :param audio: Original input waveform.
@@ -211,21 +214,23 @@ def test_detect_passes_all_parameters_and_preserves_original_sample_offsets(
   """
   monkeypatch.setenv("ORT_DISABLE_TELEMETRY", "0")
   monkeypatch.setenv("HF_HUB_DISABLE_TELEMETRY", "0")
-  speech: list[SpeechChunk] = [
+  speech: list[SpeechSegment] = [
     {"start": 1600, "end": 4800},
     {"start": 16000, "end": 24000},
   ]
   silero = FakeSileroRuntime(speech)
   imports = FakeImports(FakeTorchThreads(), silero)
   audio = np.linspace(-0.5, 0.5, num=32000, dtype=np.float32)
-  parameters = VadParameters(
-    threshold=0.72,
-    neg_threshold=0.33,
-    min_speech_duration_ms=120,
-    max_speech_duration_s=4.5,
-    min_silence_duration_ms=650,
-    speech_pad_ms=240,
-  )
+  parameters = TranscriptionConfig(
+    silence_completion_threshold=0.65,
+    vad_parameters=VadParameters(
+      threshold=0.72,
+      neg_threshold=0.33,
+      min_speech_duration_ms=120,
+      max_speech_duration_s=4.5,
+      speech_pad_ms=240,
+    ),
+  ).vad_parameters
 
   with patch("eavesdrop.server.transcription.vad.import_module", new=imports.import_module):
     detector = SileroSpeechDetector()

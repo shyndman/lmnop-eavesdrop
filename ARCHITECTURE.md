@@ -29,10 +29,10 @@ The live connection handles incoming audio and controls. The transcription-sink 
 
 ### Module Ownership
 
-- `client/core.py` coordinates connection lifetime, capture, and serialized recording transitions. `client/inbox.py` owns recording-scoped incoming transcripts, ordered events, and flush waiter lifetime.
+- `client/core.py` coordinates connection lifetime, capture, serialized recording transitions, and the single outstanding flush request. It pushes the original wire `TranscriptionMessage` directly to the caller. `client/connection.py` handles WebSocket messages and controls; stopping capture drains accepted frames before the next flush.
 - `streaming/processor.py` coordinates scheduling, recognition, output delivery, and flush acknowledgement. Its `streaming/processing/` package separates buffer selection and wakeups (`scheduling.py`), model and native-worker lifetime (`recognition.py`), completion and transcript delivery (`output.py`), and identity-bearing recognition data (`models.py`).
-- `transcription/session.py` owns connection-scoped transcript history. `transcription/tracing/context.py` owns the shared timing, logger, recording-relative context, and observation creation used by the session and stage tracers. `tracing/stages.py` shares stage timing and observation lifetime through `BaseTracer`.
-- The active listener's `app/service.py` keeps recording policy and finalization ownership. `app/workstation.py` owns media and spectrum effects, `app/overlay.py` publishes live transcript updates, and `infra/langfuse.py` owns recording trace events and observation handoff. Spectrum cleanup and media restoration remain independent of pending transcript finalization.
+- `transcription/session.py` owns recording transcript history and its tracing context. `transcription/tracing/context.py` owns shared timing, logging, recording-relative context, and observation creation. Callers use that state directly; `tracing/stages.py` manages stage timing and observation lifetime through `BaseTracer`.
+- The active listener's `app/service.py` coordinates recording actions and finalization. `app/recording_keyboard.py` owns keyboard grabs and gestures; `recording/session.py` owns the recording transcript and captured audio. `app/workstation.py` owns media playback and the spectrum analyzer, `app/overlay.py` sends transcript updates over D-Bus, and `infra/langfuse.py` owns recording observations until transfer to finalization. `recording/finalizer.py` owns accepted snapshots through emission and history storage; `recording/rewrite.py` owns prompt loading, rewriting, and correction persistence. Later foreground changes preserve already accepted finalization work.
 - `scripts/update-langfuse-models` retains the executable interface, `uv` dependency declaration, and repository-root `.env` lookup. `scripts/langfuse_models/` shares typed schemas and HTTP transport across catalog pricing translation and ownership-checked synchronization.
 
 ## Recognition Runtime and Timing Contract
@@ -43,7 +43,7 @@ The recognizer is Orukeet, using standard PyPI CPU sherpa-onnx with INT8 ONNX or
 
 Standalone Silero VAD remains ONNX CPU and supplies speech intervals as sample offsets into the unfiltered input chunk. Each speech segment is transcribed independently. CPU sherpa-onnx supplies native token onsets and durations at 80 ms granularity; `transcription/orukeet_timestamps.py` groups subword tokens into words while preserving punctuation and exact recognized text. Vulkan supplies native word timestamps, converted from milliseconds. For both backends, the adapter adds the speech segment's original offset and the recording chunk's offset once, preserving leading and internal silent gaps instead of compressing the recording timeline. No proportional word durations or separate forced alignment are invented.
 
-Every transcription includes native segment and individual word timestamps. Segment completion and buffer advancement use the same recording-relative boundaries. Starting a fresh recording establishes timestamp zero without changing model-cache lifetime.
+Every transcription includes timed segments and individual word timestamps. Segment completion and buffer advancement use the same recording-relative boundaries. Starting a fresh recording establishes timestamp zero without changing model-cache lifetime.
 
 Deploy directly on the host or use the unified CPU/Vulkan Docker image. The Debian bookworm CPU Torch/audio base, repository-root workspace lockfile, and `/opt/venv` retain CPU PyTorch/torchaudio for standalone Silero VAD. The final image includes `libvulkan1`, `libstdc++6`, and Mesa 25 `mesa-vulkan-drivers` from bookworm-backports. Container run tasks validate `SERVER_CONFIG` (default `packages/server/config.yaml`) as `EavesdropConfig`, mount that same file, and expose `/dev/dri` only for `transcription.device: vulkan`. Vulkan container deployment targets Linux x86_64 Mesa GPUs with the appropriate host kernel driver; it does not use NVIDIA container runtime, privileged mode, or `/dev/kfd`. The persistent task retains `--restart always`. There are no CUDA or ROCm inference variants. See the [server guide](./packages/server/README.md#docker-deployment) for setup and verification limits.
 
@@ -80,7 +80,7 @@ Recording transitions preserve accepted work. Starting B while A's recognition o
 
 Flush interrupts ordinary interval waiting and requests prompt processing through the audio already accepted at its boundary, including audio shorter than the normal processing minimum. It retains the force-completion option and the existing flush-complete acknowledgement.
 
-- With `force_complete=True`, pending segments through the accepted boundary complete and their final transcript is delivered before acknowledgement.
+- With `force_complete=True`, pending transcription through the accepted boundary completes and its final transcript is delivered before acknowledgement.
 - With `force_complete=False`, the requested update and acknowledgement are delivered without forcing completion. VAD-enabled automatic completion remains independent of this choice.
 - With no pending audio, including before the first frame or after consumption, the request still completes and acknowledges. It must not leave a pending request spinning or prevent other connections from progressing.
 
@@ -92,9 +92,11 @@ Cancellation discards the active utterance, clears its utterance-local transcrip
 
 Disconnect releases connection-owned work. Cancellation and cleanup of owned asynchronous tasks are explicit and awaited; a closed connection must not leave session tasks or resources running or disrupt other live connections.
 
+The client fails a pending flush immediately when its recording is cancelled or its connection closes. That request releases its recording-transition lock, allowing another recording after cancellation. A later request starts with a fresh completion future. Transcript callbacks receive accepted messages directly; no parallel transcript queue retains them.
+
 ## Transcription Pipeline and Completion
 
-The processor repeatedly recognizes buffered live audio and revises pending segments. The segment window controls retained transcript context, but segment position alone is not a universal completion rule. Consumers must support multiple provisional segments.
+The processor repeatedly recognizes buffered live audio and revises one incomplete timed segment. Completed segments are stable. The segment window limits completed history while preserving the full incomplete segment and its revision source audio.
 
 ### VAD Enabled
 
@@ -102,7 +104,7 @@ Standalone VAD supplies speech and silence metadata. Preserve ordinary silence-b
 
 ### VAD Disabled
 
-Every segment produced since the last explicit completion stays incomplete and available for revision. Elapsed time, silence, chunk duration, missing VAD metadata, new audio, and an earlier segment becoming non-trailing cannot complete it. A non-force-completing flush acknowledges the update while leaving every pending segment incomplete. Only a flush with `force_complete=True` completes pending content through its accepted boundary. Cancellation discards its targeted utterance instead of completing it.
+All transcription since the last explicit completion forms one incomplete timed segment. Recognized portions retain their text, words, and original recording-relative word timestamps when combined. Elapsed time, silence, chunk duration, missing VAD metadata, and new audio cannot complete it. A non-force-completing flush acknowledges the update while leaving it incomplete. Only a flush with `force_complete=True` completes pending content through its accepted boundary. Cancellation discards its targeted utterance instead of completing it.
 
 Buffer advancement and segment-window handling must preserve uncompleted work for revision and later explicit completion rather than treating a new segment as authority to discard it.
 
@@ -122,7 +124,7 @@ Users cannot manually set `min_silence_duration_ms` in VAD parameters. Validatio
 Structured tracing remains available for pipeline visibility:
 
 1. **Audio chunk processing:** buffer status and timestamp ranges.
-2. **VAD analysis:** speech/silence timeline with visual representation (`S` = speech, `~` = silence).
+2. **VAD analysis:** speech/silence timing when VAD ran; explicitly unanalyzed audio otherwise.
 3. **Orukeet output:** native word boundaries, text, and recording-relative times.
 4. **Completion decisions:** reasons for automatic or explicitly requested completion and provisional output.
 5. **Buffer advancement:** how far the processed boundary moved and why.

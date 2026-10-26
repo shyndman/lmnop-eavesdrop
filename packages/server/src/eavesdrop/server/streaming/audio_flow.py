@@ -14,7 +14,6 @@ from eavesdrop.server.streaming.interfaces import (
 from eavesdrop.wire import (
   DisconnectMessage,
   ErrorMessage,
-  LanguageDetectionMessage,
   ServerReadyMessage,
   TranscriptionMessage,
   serialize_message,
@@ -36,14 +35,12 @@ class WebSocketTranscriptionSink(TranscriptionSink):
   Message Types:
     - Transcription results: segments with text, timestamps, completion status
     - Error messages: transcription failures, model loading issues
-    - Language detection: detected language and confidence scores
     - Server status: ready notifications, disconnect signals
 
   JSON Message Format:
     - All messages include 'stream' field for client identification
     - Result messages: {"stream": str, "segments": [...]}
     - Error messages: {"stream": str, "status": "ERROR", "message": str}
-    - Language detection: {"stream": str, "language": str, "language_prob": float}
     - Server ready: {"stream": str, "message": "SERVER_READY", "backend": str}
 
   Error Handling:
@@ -90,16 +87,6 @@ class WebSocketTranscriptionSink(TranscriptionSink):
     )
 
   @override
-  async def send_language_detection(self, language: str, probability: float) -> None:
-    await self.send_message(
-      LanguageDetectionMessage(
-        stream=self.stream_name,
-        language=language,
-        language_prob=probability,
-      )
-    )
-
-  @override
   async def send_server_ready(self, backend: str) -> None:
     await self.send_message(
       ServerReadyMessage(
@@ -118,7 +105,7 @@ class WebSocketTranscriptionSink(TranscriptionSink):
       try:
         await self.websocket.send(serialize_message(DisconnectMessage(stream=self.stream_name)))
       except Exception:
-        pass
+        self.logger.exception("Failed to send disconnect notification")
     finally:
       self._closed = True
       self.logger.info("WebSocket transcription sink disconnected")

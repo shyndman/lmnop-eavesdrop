@@ -60,7 +60,7 @@ async def test_short_audio_flush_interrupts_long_normal_interval(
       await flush(socket, "short")
       result = await transcription(socket, flushed=True)
       assert result.recording_id == "short"
-      assert len([segment for segment in result.segments if segment.text.strip()]) == 2
+      assert len([segment for segment in result.segments if segment.text.strip()]) == 1
       assert all(segment.completed for segment in result.segments if segment.text.strip())
 
 
@@ -81,7 +81,7 @@ async def test_normal_two_recordings_reset_transcript_and_recording_zero(
         result = await transcription(socket, flushed=True)
         spoken = [segment for segment in result.segments if segment.text.strip()]
         assert result.recording_id == identifier
-        assert len(spoken) == 2
+        assert len(spoken) == 1
         assert all(segment.text.startswith(prefix) for segment in spoken)
         assert spoken[0].start == pytest.approx(0.01)
         assert spoken[0].words[0].start == pytest.approx(0.01)
@@ -108,11 +108,11 @@ async def test_boundary_queues_b_while_a_recognition_and_flush_are_outstanding(
       first = await transcription(socket, flushed=True)
       assert first.recording_id == "A"
       assert all(segment.text.startswith("A") for segment in first.segments if segment.text.strip())
-      assert len([segment for segment in first.segments if segment.text.strip()]) == 2
+      assert len([segment for segment in first.segments if segment.text.strip()]) == 1
       second = await transcription(socket, flushed=True)
       assert second.recording_id == "B"
       spoken = [segment for segment in second.segments if segment.text.strip()]
-      assert len(spoken) == 2
+      assert len(spoken) == 1
       assert all(segment.text.startswith("B") for segment in spoken)
       assert spoken[0].start == pytest.approx(0.01)
       assert all(segment.completed for segment in spoken)
@@ -147,7 +147,7 @@ async def test_cancel_outstanding_work_and_restart_suppresses_cancelled_results(
         if result.flush_complete:
           break
       spoken = [segment for segment in result.segments if segment.text.strip()]
-      assert len(spoken) == 2
+      assert len(spoken) == 1
       assert spoken[0].start == pytest.approx(0.01)
 
 
@@ -174,7 +174,7 @@ async def test_stale_controls_cannot_cancel_or_flush_current_recording(
       await flush(socket, "current")
       result = await transcription(socket, flushed=True)
       assert result.recording_id == "current"
-      assert len([segment for segment in result.segments if segment.text.startswith("B")]) == 2
+      assert len([segment for segment in result.segments if segment.text.startswith("B")]) == 1
 
 
 @pytest.mark.asyncio
@@ -200,7 +200,7 @@ async def test_disconnect_releases_connection_and_server_remains_usable(
       await flush(second, "survivor")
       result = await transcription(second, flushed=True)
       assert result.recording_id == "survivor"
-      assert len([segment for segment in result.segments if segment.text.startswith("B")]) == 2
+      assert len([segment for segment in result.segments if segment.text.startswith("B")]) == 1
 
 
 @pytest.mark.asyncio
@@ -221,7 +221,7 @@ async def test_flush_interrupts_interval_and_includes_newly_accepted_audio(
       await flush(socket, "waiting")
       result = await transcription(socket, flushed=True)
       assert result.recording_id == "waiting"
-      assert any(segment.text.startswith("B1") for segment in result.segments)
+      assert any(word.word == "B1" for segment in result.segments for word in segment.words)
       assert all(segment.completed for segment in result.segments if segment.text.strip())
 
 
@@ -249,9 +249,9 @@ async def test_deferred_recording_requires_explicit_completion_or_cancellation(
       # A stale control is an observable barrier even while B is deferred.
       await flush(socket, "stale")
       barrier = cast(ErrorMessage, deserialize_message(await socket.recv(decode=True)))
-      assert isinstance(barrier, ErrorMessage)
+      assert barrier.type == "error"
       assert barrier.message == (
-        "Live control rejected: recording_id does not match the active recording epoch"
+        "Live control rejected: recording_id does not match the active recording identifier"
       )
       with pytest.raises(TimeoutError):
         async with asyncio.timeout(0.05):

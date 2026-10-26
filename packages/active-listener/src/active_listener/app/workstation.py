@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
 from typing import Protocol
 
 from structlog.stdlib import BoundLogger
 
 from active_listener.app.ports import MediaPlaybackController
-from active_listener.recording.spectrum import SpectrumAnalyzer
+from active_listener.recording import spectrum as spectrum_module
 
 
-class SpectrumRuntime(Protocol):
+class SpectrumAnalyzer(Protocol):
+  """Spectrum analyzer lifecycle consumed by workstation coordination."""
+
   def start(self) -> asyncio.Task[None]: ...
 
   async def stop(self) -> None: ...
@@ -22,24 +23,30 @@ async def _publish_noop_spectrum(_bars: bytes) -> None:
   return None
 
 
-def build_noop_spectrum_analyzer() -> SpectrumAnalyzer:
-  return SpectrumAnalyzer(publish=_publish_noop_spectrum)
+def build_noop_spectrum_analyzer() -> spectrum_module.SpectrumAnalyzer:
+  """Build an analyzer with no D-Bus consumer.
+
+  :return: Analyzer retaining the ordinary capture/task lifecycle.
+  """
+  return spectrum_module.SpectrumAnalyzer(publish=_publish_noop_spectrum)
 
 
-@dataclass
-class WorkstationEffects:
+class RecordingWorkstation:
   """Keep recording-owned media pause and spectrum task lifetimes local.
 
   :param media: Controller whose playback is resumed only after our own pause.
-  :param spectrum: Spectrum runtime, separate from recording finalization tasks.
+  :param spectrum: Spectrum analyzer, separate from recording finalization tasks.
   :param logger: Sink for non-fatal media failures.
   """
 
-  media: MediaPlaybackController
-  spectrum: SpectrumRuntime
-  logger: BoundLogger
-  _paused_media: bool = field(default=False, init=False)
-  _spectrum_task: asyncio.Task[None] | None = field(default=None, init=False)
+  def __init__(
+    self, media: MediaPlaybackController, spectrum: SpectrumAnalyzer, logger: BoundLogger
+  ) -> None:
+    self.media: MediaPlaybackController = media
+    self.spectrum: SpectrumAnalyzer = spectrum
+    self.logger: BoundLogger = logger
+    self._paused_media: bool = False
+    self._spectrum_task: asyncio.Task[None] | None = None
 
   async def start(self) -> None:
     """Pause playing media, then start spectrum publication before capture."""

@@ -59,36 +59,9 @@ class ProcessingSchedule:
       is_caught_up=available_duration < 0.5,
     )
 
+    chunk = AudioChunk(data=input_bytes, duration=duration, start_time=start_time)
     if duration < self.buffer.config.min_chunk_duration:
-      remaining_wait = self.buffer.config.min_chunk_duration - duration
-      if not self._minimum_chunk_wait_logged:
-        self.logger.info(
-          "Transcription loop minimum chunk wait",
-          buffered_duration_s=f"{duration:.3f}",
-          required_duration_s=f"{self.buffer.config.min_chunk_duration:.3f}",
-          wait_s=f"{remaining_wait:.3f}",
-        )
-        self._minimum_chunk_wait_logged = True
-      observed_generation = self.current_generation()
-      wait_completed = await self._wait_for_live_control_wakeup(
-        remaining_wait,
-        observed_generation=observed_generation,
-      )
-      pending_flush = self.pending_flush()
-      if not wait_completed and pending_flush is not None and duration > 0:
-        self.logger.info(
-          "Pending flush interrupts minimum chunk wait",
-          buffered_duration_s=f"{duration:.3f}s",
-          boundary_sample=pending_flush.boundary_sample,
-        )
-        return AudioChunk(data=input_bytes, duration=duration, start_time=start_time)
-      if not wait_completed and self.current_generation() != observed_generation:
-        self.logger.info(
-          "Cancelled utterance interrupts minimum chunk wait",
-          buffered_duration_s=f"{duration:.3f}s",
-          utterance_generation=observed_generation,
-        )
-      return None
+      return await self._wait_for_minimum_chunk(chunk)
 
     # TRACING: Audio chunk range being processed
     tracing_logger.info("\n\n")
@@ -102,7 +75,38 @@ class ProcessingSchedule:
       buffer_processed=f"{processed_duration:.2f}s",
     )
 
-    return AudioChunk(data=input_bytes, duration=duration, start_time=start_time)
+    return chunk
+
+  async def _wait_for_minimum_chunk(self, chunk: AudioChunk) -> AudioChunk | None:
+    """Wait for enough audio unless an accepted flush requires the current chunk."""
+    remaining_wait = self.buffer.config.min_chunk_duration - chunk.duration
+    if not self._minimum_chunk_wait_logged:
+      self.logger.info(
+        "Transcription loop minimum chunk wait",
+        buffered_duration_s=f"{chunk.duration:.3f}",
+        required_duration_s=f"{self.buffer.config.min_chunk_duration:.3f}",
+        wait_s=f"{remaining_wait:.3f}",
+      )
+      self._minimum_chunk_wait_logged = True
+    observed_generation = self.current_generation()
+    wait_completed = await self._wait_for_live_control_wakeup(
+      remaining_wait, observed_generation=observed_generation
+    )
+    pending_flush = self.pending_flush()
+    if not wait_completed and pending_flush is not None and chunk.duration > 0:
+      self.logger.info(
+        "Pending flush interrupts minimum chunk wait",
+        buffered_duration_s=f"{chunk.duration:.3f}s",
+        boundary_sample=pending_flush.boundary_sample,
+      )
+      return chunk
+    if not wait_completed and self.current_generation() != observed_generation:
+      self.logger.info(
+        "Cancelled utterance interrupts minimum chunk wait",
+        buffered_duration_s=f"{chunk.duration:.3f}s",
+        utterance_generation=observed_generation,
+      )
+    return None
 
   async def wait_for_interval(self, processing_time: float) -> None:
     """Wait to maintain consistent transcription intervals."""

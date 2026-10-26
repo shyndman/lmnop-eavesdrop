@@ -24,6 +24,7 @@ from active_listener.infra.audio import resolve_ffmpeg_executable
 from active_listener.infra.dbus import AppStateService, NoopDbusService, SdbusDbusService
 from active_listener.infra.emitter import GnomeShellExtensionTextEmitter, TextEmitter
 from active_listener.infra.keyboard import KeyboardInput, resolve_keyboard
+from active_listener.infra.langfuse import flush_langfuse
 from active_listener.infra.mpris import PlayerctldMediaPlaybackController
 from active_listener.infra.rewrite import (
   DisabledRewriteClient,
@@ -40,8 +41,6 @@ from active_listener.recording.spectrum import (
 from eavesdrop.client import EavesdropClient
 from eavesdrop.common import get_logger
 
-from .infra.langfuse import flush_langfuse
-
 
 class SpectrumCaptureSink(Protocol):
   def ingest(self, chunk: Float32PcmChunk) -> None: ...
@@ -56,139 +55,122 @@ async def create_service(
   *,
   dbus_service: AppStateService | None = None,
   keyboard_resolver: Callable[[str], KeyboardInput] = resolve_keyboard,
-  client_factory: (
-    Callable[[ActiveListenerConfig, Callable[[Float32PcmChunk], None]], ActiveListenerClient] | None
-  ) = None,
+  client_factory: Callable[
+    [ActiveListenerConfig, Callable[[Float32PcmChunk], None]], ActiveListenerClient
+  ]
+  | None = None,
   emitter_factory: Callable[[], TextEmitter] | None = None,
   media_playback_controller_factory: Callable[[BoundLogger], MediaPlaybackController] | None = None,
   rewrite_client_factory: Callable[[LlmRewriteConfig | None], ActiveListenerRewriteClient]
   | None = None,
   history_store_factory: Callable[
-    [ActiveListenerConfig, BoundLogger, AppStateService],
-    ActiveListenerTranscriptHistoryStore,
+    [ActiveListenerConfig, BoundLogger, AppStateService], ActiveListenerTranscriptHistoryStore
   ]
   | None = None,
 ) -> ActiveListenerService:
-  """Construct a fully initialized service instance.
+  """Build resources and connect after binding push callbacks to the app queue.
 
-  :param config: Validated runtime configuration.
-  :type config: ActiveListenerConfig
-  :param keyboard_resolver: Resolver for the exact-name keyboard dependency.
-  :type keyboard_resolver: Callable[[str], KeyboardInput]
-  :param client_factory: Factory for the live transcriber dependency.
-  :type client_factory: Callable[[ActiveListenerConfig], ActiveListenerClient] | None
-  :param emitter_factory: Factory for the text emitter dependency.
-  :type emitter_factory: Callable[[], TextEmitter] | None
-  :param media_playback_controller_factory: Factory for the media playback controller.
-  :type media_playback_controller_factory: Callable[[BoundLogger], MediaPlaybackController] | None
-  :param history_store_factory: Factory for the transcript history dependency.
-  :type history_store_factory:
-      Callable[[ActiveListenerConfig, BoundLogger, AppStateService],
-      ActiveListenerTranscriptHistoryStore] | None
-  :returns: Ready-to-run service instance.
-  :rtype: ActiveListenerService
-  :raises ActiveListenerRuntimeError: If startup prerequisites cannot be satisfied.
+  :param config: Validated workstation configuration.
+  :param dbus_service: Optional D-Bus destination.
+  :param keyboard_resolver: Keyboard hardware resolver.
+  :param client_factory: Capture-aware transcription client factory.
+  :param emitter_factory: Initialized text emitter factory.
+  :param media_playback_controller_factory: Media controller factory.
+  :param rewrite_client_factory: Rewrite provider factory.
+  :param history_store_factory: Transcript archive factory.
+  :return: Connected service ready to consume queued callback signals.
+  :raises ActiveListenerRuntimeError: If dependency construction or connection fails.
   """
-
   logger = get_logger("al/app")
-  resolved_dbus_service = dbus_service or NoopDbusService()
-  resolved_client_factory = client_factory or build_client
-  resolved_emitter_factory = emitter_factory or build_emitter
-  resolved_media_playback_controller_factory = (
-    media_playback_controller_factory or build_media_playback_controller
+  dbus = dbus_service or NoopDbusService()
+  service = await _construct_service(
+    config,
+    dbus,
+    logger,
+    keyboard_resolver,
+    client_factory or build_client,
+    emitter_factory or build_emitter,
+    media_playback_controller_factory or build_media_playback_controller,
+    rewrite_client_factory or build_rewrite_client,
+    history_store_factory,
   )
-  resolved_rewrite_client_factory = rewrite_client_factory or build_rewrite_client
-  resolved_history_store_factory = history_store_factory or build_history_store
-  spectrum_analyzer = SpectrumAnalyzer(
-    publish=lambda bars: publish_spectrum_frame(
-      dbus_service=resolved_dbus_service,
-      logger=logger,
-      bars=bars,
-    )
-  )
-  recording_audio_buffer = RecordingAudioBuffer()
-  on_capture = build_capture_callback(
-    spectrum_analyzer=spectrum_analyzer,
-    audio_buffer=recording_audio_buffer,
-    logger=logger,
-  )
-  client: ActiveListenerClient | None = None
-  media_playback_controller: MediaPlaybackController | None = None
-  rewrite_client: ActiveListenerRewriteClient | None = None
-  history_store: ActiveListenerTranscriptHistoryStore | None = None
+  try:
+    await service.client.connect()
+  except Exception as exc:
+    logger.exception("server connection failed", host=config.host, port=config.port)
+    await service.close()
+    raise ActiveListenerRuntimeError(f"could not connect to eavesdrop server: {exc}") from exc
+  match dbus:
+    case SdbusDbusService():
+      dbus.attach_recording_control(service)
+      dbus.attach_llm_runtime_control(service)
+    case _:
+      pass
+  await dbus.set_state(ForegroundPhase.IDLE)
+  return service
 
+
+async def _construct_service(
+  config: ActiveListenerConfig,
+  dbus: AppStateService,
+  logger: BoundLogger,
+  keyboard_resolver: Callable[[str], KeyboardInput],
+  client_factory: Callable[
+    [ActiveListenerConfig, Callable[[Float32PcmChunk], None]], ActiveListenerClient
+  ],
+  emitter_factory: Callable[[], TextEmitter],
+  media_factory: Callable[[BoundLogger], MediaPlaybackController],
+  rewrite_factory: Callable[[LlmRewriteConfig | None], ActiveListenerRewriteClient],
+  history_factory: Callable[
+    [ActiveListenerConfig, BoundLogger, AppStateService], ActiveListenerTranscriptHistoryStore
+  ]
+  | None,
+) -> ActiveListenerService:
   try:
     keyboard = keyboard_resolver(config.keyboard_name)
   except Exception as exc:
     logger.exception("keyboard resolution failed", keyboard_name=config.keyboard_name)
     raise ActiveListenerRuntimeError(str(exc)) from exc
-
+  client: ActiveListenerClient | None = None
+  rewrite: ActiveListenerRewriteClient | None = None
   try:
-    if history_store_factory is None:
-      resolved_ffmpeg = resolve_ffmpeg_path(config.ffmpeg_path, logger=logger)
-      logger.info("resolved ffmpeg binary", ffmpeg_path=resolved_ffmpeg)
-    history_store = resolved_history_store_factory(config, logger, resolved_dbus_service)
-    emitter = resolved_emitter_factory()
-    client = resolved_client_factory(config, on_capture)
-    media_playback_controller = resolved_media_playback_controller_factory(logger)
-    rewrite_client = resolved_rewrite_client_factory(config.llm_rewrite)
+    if history_factory is None:
+      _ = resolve_ffmpeg_path(config.ffmpeg_path, logger=logger)
+    history = (history_factory or build_history_store)(config, logger, dbus)
+    emitter = emitter_factory()
+    spectrum = SpectrumAnalyzer(
+      publish=lambda bars: publish_spectrum_frame(dbus_service=dbus, logger=logger, bars=bars)
+    )
+    audio = RecordingAudioBuffer()
+    on_capture = build_capture_callback(
+      spectrum_analyzer=spectrum, audio_buffer=audio, logger=logger
+    )
+    client = client_factory(config, on_capture)
+    media = media_factory(logger)
+    rewrite = rewrite_factory(config.llm_rewrite)
+    return ActiveListenerService(
+      config=config,
+      keyboard=keyboard,
+      client=client,
+      emitter=emitter,
+      logger=logger,
+      rewrite_client=rewrite,
+      history_store=history,
+      dbus_service=dbus,
+      media_playback_controller=media,
+      recording_audio_buffer=audio,
+      spectrum_analyzer=spectrum,
+    )
   except Exception as exc:
+    logger.exception("startup dependency construction failed")
     await cleanup_startup_prerequisites(
       keyboard=keyboard,
       client=client,
-      rewrite_client=rewrite_client,
+      rewrite_client=rewrite,
       disconnect_client=False,
       logger=logger,
     )
-    logger.error("startup dependency construction failed", exc_info=exc)
     raise ActiveListenerRuntimeError(f"failed to build startup dependencies: {exc}") from exc
-
-  try:
-    await client.connect()
-  except Exception as exc:
-    await cleanup_startup_prerequisites(
-      keyboard=keyboard,
-      client=client,
-      rewrite_client=rewrite_client,
-      disconnect_client=True,
-      logger=logger,
-    )
-    server_url = f"ws://{config.host}:{config.port}"
-    logger.error(
-      "server connection failed",
-      server_url=server_url,
-      exc_info=exc,
-    )
-    raise ActiveListenerRuntimeError(
-      f"could not connect to eavesdrop server at {server_url}: {exc}"
-    ) from exc
-
-  logger.info(
-    "startup prerequisites satisfied",
-    keyboard_name=config.keyboard_name,
-    host=config.host,
-    port=config.port,
-  )
-  assert history_store is not None
-  assert media_playback_controller is not None
-  service = ActiveListenerService(
-    config=config,
-    keyboard=keyboard,
-    client=client,
-    emitter=emitter,
-    logger=logger,
-    rewrite_client=rewrite_client,
-    history_store=history_store,
-    dbus_service=resolved_dbus_service,
-    media_playback_controller=media_playback_controller,
-    recording_audio_buffer=recording_audio_buffer,
-    spectrum_analyzer=spectrum_analyzer,
-  )
-  if isinstance(resolved_dbus_service, SdbusDbusService):
-    resolved_dbus_service.attach_recording_control(service)
-    resolved_dbus_service.attach_llm_runtime_control(service)
-  await resolved_dbus_service.set_state(ForegroundPhase.IDLE)
-  return service
 
 
 async def run_service(
@@ -209,24 +191,18 @@ async def run_service(
   ]
   | None = None,
 ) -> None:
-  """Create and run the long-lived active-listener service.
+  """Create and run the service, reporting fatal failures through D-Bus.
 
   :param config: Validated runtime configuration.
-  :type config: ActiveListenerConfig
-  :param keyboard_resolver: Resolver for the exact-name keyboard dependency.
-  :type keyboard_resolver: Callable[[str], KeyboardInput]
-  :param client_factory: Factory for the live transcriber dependency.
-  :type client_factory: Callable[[ActiveListenerConfig], ActiveListenerClient] | None
-  :param emitter_factory: Factory for the text emitter dependency.
-  :type emitter_factory: Callable[[], TextEmitter] | None
-  :param media_playback_controller_factory: Factory for the media playback controller.
-  :type media_playback_controller_factory: Callable[[BoundLogger], MediaPlaybackController] | None
-  :param history_store_factory: Factory for the transcript history dependency.
-  :type history_store_factory:
-      Callable[[ActiveListenerConfig, BoundLogger, AppStateService],
-      ActiveListenerTranscriptHistoryStore] | None
-  :returns: None
-  :rtype: None
+  :param dbus_service: Optional D-Bus destination.
+  :param keyboard_resolver: Hardware resolver.
+  :param client_factory: Capture-aware client factory.
+  :param emitter_factory: Initialized emitter factory.
+  :param media_playback_controller_factory: Media controller factory.
+  :param rewrite_client_factory: Rewrite provider factory.
+  :param history_store_factory: Transcript archive factory.
+  :return: None after service shutdown.
+  :raises Exception: If startup or service execution fails after cleanup.
   """
 
   logger = get_logger("al/app")
@@ -251,19 +227,25 @@ async def run_service(
     )
     await resolved_dbus_service.close()
     raise
+  await _run_connected_service(service, resolved_dbus_service, logger)
 
+
+async def _run_connected_service(
+  service: ActiveListenerService, dbus: AppStateService, logger: BoundLogger
+) -> None:
   try:
     await service.run()
   except Exception as exc:
+    logger.exception("active-listener runtime failed")
     await emit_fatal_error_if_possible(
-      dbus_service=resolved_dbus_service,
+      dbus_service=dbus,
       reason=str(exc),
       logger=logger,
       failure_kind="runtime",
     )
     raise
   finally:
-    await resolved_dbus_service.close()
+    await dbus.close()
     try:
       flush_langfuse()
     except Exception:
@@ -284,8 +266,11 @@ async def emit_fatal_error_if_possible(
   there is no bus consumer that could observe the event.
   """
 
-  if isinstance(dbus_service, NoopDbusService):
-    return
+  match dbus_service:
+    case NoopDbusService():
+      return
+    case _:
+      pass
 
   try:
     await dbus_service.fatal_error(reason)
@@ -365,11 +350,11 @@ def build_rewrite_client(config: LlmRewriteConfig | None) -> ActiveListenerRewri
   if config is None:
     return DisabledRewriteClient()
 
-  provider = config.provider
-  if isinstance(provider, LiteRtRewriteProvider):
-    return LiteRtRewriteClient(model_path=provider.model_path)
-
-  return PydanticAiRewriteClient(model=provider.model)
+  match config.provider:
+    case LiteRtRewriteProvider(model_path=path):
+      return LiteRtRewriteClient(model_path=path)
+    case provider:
+      return PydanticAiRewriteClient(model=provider.model)
 
 
 def build_history_store(

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from eavesdrop.server.streaming.interfaces import Float32Audio
-from eavesdrop.server.transcription.models import SpeechChunk, TranscriptionInfo
+from eavesdrop.server.transcription.models import SpeechSegment, TranscriptionInfo
 from eavesdrop.wire import Segment
 
 
@@ -23,11 +23,18 @@ class AudioChunk:
   start_time: float
 
 
+class TranscriptionPassStatus(str, Enum):
+  """Outcome for one transcription pass over a buffered audio chunk."""
+
+  TRANSCRIBED = "transcribed"
+  INTERRUPTED_BEFORE_COMMIT = "interrupted_before_commit"
+
+
 @dataclass
 class ChunkTranscriptionResult:
   """Result of transcribing an audio chunk."""
 
-  status: "TranscriptionPassStatus"
+  status: TranscriptionPassStatus
   # Absolute sample indexes are in the buffer timeline. In live WebSocket mode,
   # recording boundaries reset the buffer, so these are recording-relative samples.
   chunk_start_sample: int
@@ -36,13 +43,6 @@ class ChunkTranscriptionResult:
   info: TranscriptionInfo | None
   processing_time: float
   audio_duration: float
-  speech_chunks: list[SpeechChunk] | None = None
+  speech_segments: list[SpeechSegment] | None = None
   utterance_generation: int = 0
   recording_id: str | None = None
-
-
-class TranscriptionPassStatus(str, Enum):
-  """Outcome for one transcription pass over a buffered audio chunk."""
-
-  TRANSCRIBED = "transcribed"
-  INTERRUPTED_BEFORE_COMMIT = "interrupted_before_commit"

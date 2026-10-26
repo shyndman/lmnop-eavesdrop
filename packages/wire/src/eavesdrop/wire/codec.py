@@ -7,12 +7,11 @@ and JSON strings, hiding the implementation details of Pydantic serialization.
 
 from pydantic import BaseModel, Field, TypeAdapter
 
-from .messages import (
+from eavesdrop.wire.messages import (
   DisconnectMessage,
   ErrorMessage,
   FlushControlMessage,
   HealthCheckRequest,
-  LanguageDetectionMessage,
   RecordingStartedMessage,
   ServerReadyMessage,
   TranscriptionMessage,
@@ -26,7 +25,6 @@ type Message = (
   | RecordingStartedMessage
   | FlushControlMessage
   | UtteranceCancelledMessage
-  | LanguageDetectionMessage
   | ServerReadyMessage
   | DisconnectMessage
   | HealthCheckRequest

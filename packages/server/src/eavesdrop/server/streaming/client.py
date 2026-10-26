@@ -30,7 +30,7 @@ LIVE_RECORDING_START_REQUIRED_MESSAGE = (
   "Live control rejected: control_recording_started is required before live controls"
 )
 LIVE_RECORDING_ID_MISMATCH_MESSAGE = (
-  "Live control rejected: recording_id does not match the active recording epoch"
+  "Live control rejected: recording_id does not match the active recording identifier"
 )
 LIVE_AUDIO_BEFORE_RECORDING_START_MESSAGE = (
   "Live audio rejected: control_recording_started is required before audio frames"
@@ -182,37 +182,11 @@ class WebSocketStreamingClient:
     try:
       message = deserialize_message(message_json)
     except Exception:
+      self.logger.exception("Rejected live control frame")
       await self.transcription_sink.send_error("Invalid live control frame")
       return
     if isinstance(message, RecordingStartedMessage):
-      if message.sample_rate_hz != self.buffer.config.sample_rate:
-        self.logger.warning(
-          "Recording rejected: sample rate mismatch", sample_rate_hz=message.sample_rate_hz
-        )
-        await self.transcription_sink.send_error(
-          "control_recording_started sample_rate_hz does not match server buffer sample rate"
-        )
-        return
-      if self._current_recording_id is not None:
-        if not self._deferred_frames:
-          pending = self._flush_state.pending()
-          if (
-            pending is None
-            and self.buffer.available_duration == 0
-            and not self.processor.has_pending_segments
-          ):
-            # Nothing remains to drain: accept B before reading later controls,
-            # so stale A controls cannot cancel the already-finished recording.
-            await self.processor.wait_until_idle()
-            self._accept_recording_boundary(message)
-            return
-        self._deferred_recording_ids.add(message.recording_id)
-        self._deferred_frames.append(message_json)
-        pending = self._flush_state.pending()
-        if pending is not None and pending.force_complete:
-          self._schedule_recording_transition()
-        return
-      self._accept_recording_boundary(message)
+      await self._handle_recording_start(message, message_json)
       return
     if (
       self._deferred_frames
@@ -254,6 +228,38 @@ class WebSocketStreamingClient:
     elif message.force_complete and self._deferred_frames:
       self._schedule_recording_transition()
 
+  async def _handle_recording_start(
+    self, message: RecordingStartedMessage, message_json: str
+  ) -> None:
+    """Accept the next recording only after prior accepted work has drained."""
+    if message.sample_rate_hz != self.buffer.config.sample_rate:
+      self.logger.warning(
+        "Recording rejected: sample rate mismatch", sample_rate_hz=message.sample_rate_hz
+      )
+      await self.transcription_sink.send_error(
+        "control_recording_started sample_rate_hz does not match server buffer sample rate"
+      )
+      return
+    if self._current_recording_id is None:
+      self._accept_recording_boundary(message)
+      return
+    if not self._deferred_frames:
+      pending = self._flush_state.pending()
+      if (
+        pending is None
+        and self.buffer.available_duration == 0
+        and not self.processor.has_pending_segments
+      ):
+        # Accept B before reading later controls so stale A cannot cancel finished work.
+        await self.processor.wait_until_idle()
+        self._accept_recording_boundary(message)
+        return
+    self._deferred_recording_ids.add(message.recording_id)
+    self._deferred_frames.append(message_json)
+    pending = self._flush_state.pending()
+    if pending is not None and pending.force_complete:
+      self._schedule_recording_transition()
+
   def _schedule_recording_transition(self) -> None:
     if self._boundary_task is None:
       self._boundary_task = asyncio.create_task(self._await_recording_transition())
@@ -268,7 +274,8 @@ class WebSocketStreamingClient:
     self._current_recording_id = message.recording_id
     self.buffer.reset()
     self.session.reset_utterance()
-    self.session.update_audio_context(0.0, 0.0)
+    self.session.tracing.audio_start_offset = 0.0
+    self.session.tracing.audio_duration = 0.0
     self.processor.reset_live_recording(
       recording_id=message.recording_id, generation=generation, preserve_language=False
     )

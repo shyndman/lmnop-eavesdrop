@@ -26,7 +26,7 @@ def compute_segment_chain_id(previous_id: int, text: str) -> int:
 
 
 class Word(BaseModel):
-  """Native word text and recording-relative timestamps emitted with segments."""
+  """Recognized word text and recording-relative timestamps emitted with timed segments."""
 
   start: float
   """Start timestamp of the word in seconds on the recording timeline."""
@@ -39,7 +39,7 @@ class Word(BaseModel):
 
 
 class Segment(BaseModel):
-  """Transcript text, native timings, and stable completion identity for one segment."""
+  """Timed transcript segment with text, word timings, and stable completion identity."""
 
   id: int
   """Unique segment identifier computed using chain-based CRC64 hash."""
@@ -54,7 +54,7 @@ class Segment(BaseModel):
   """Transcribed text content of the audio segment."""
 
   words: list[Word]
-  """Native word-level text and recording-relative timing breakdown."""
+  """Recognized word-level text and recording-relative timing breakdown."""
 
   time_offset: float = Field(default=0.0, exclude=True)
   """Internal segment-local offset retained only for Python-side compatibility helpers."""

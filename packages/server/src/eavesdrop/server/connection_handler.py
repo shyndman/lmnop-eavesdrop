@@ -1,9 +1,4 @@
-"""
-WebSocket connection routing and client type dispatch.
-
-Handles the initial handshake phase for all WebSocket connections,
-delegating to appropriate handlers based on client type headers.
-"""
+"""WebSocket setup, health requests, and pre-setup control rejection."""
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -15,13 +10,11 @@ from websockets.exceptions import ConnectionClosed
 
 from eavesdrop.common import get_logger
 from eavesdrop.wire import (
-  ClientType,
   ErrorMessage,
   FlushControlMessage,
   RecordingStartedMessage,
   TranscriptionSetupMessage,
   UtteranceCancelledMessage,
-  WebSocketHeaders,
   deserialize_message,
   serialize_message,
 )
@@ -61,10 +54,7 @@ PRE_SETUP_UTTERANCE_CANCEL_REJECTION = (
 
 class WebSocketConnectionHandler:
   """
-  Routes WebSocket connections based on client type header.
-
-  Handles the initial handshake phase for all WebSocket connections,
-  delegating to appropriate handlers based on the X-Client-Type header.
+  Handle setup and health messages without connection-role headers.
 
   :param client_initializer: Callback to initialize transcriber clients.
   :type client_initializer: ClientInitializer
@@ -89,42 +79,32 @@ class WebSocketConnectionHandler:
     try:
       self._logger.info("handle_connection: New client connected")
 
-      # Check WebSocket headers to determine client type
-      headers = self._request_headers(websocket)
-      client_type = headers.get(WebSocketHeaders.CLIENT_TYPE, ClientType.TRANSCRIBER)
-
       while True:
         raw_msg: str = await websocket.recv(decode=True)
         message = deserialize_message(raw_msg)
 
-        if client_type == ClientType.TRANSCRIBER:
-          if isinstance(message, TranscriptionSetupMessage):
-            client = await self._handle_transcriber_connection(websocket, message)
-            if not client:
-              return None
-            return TranscriberConnection(client=client)
+        if isinstance(message, TranscriptionSetupMessage):
+          client = await self._handle_transcriber_connection(websocket, message)
+          return TranscriberConnection(client=client) if client else None
 
-          if isinstance(message, FlushControlMessage):
-            await self._send_error(websocket, PRE_SETUP_FLUSH_REJECTION)
-            continue
+        if isinstance(message, FlushControlMessage):
+          await self._send_error(websocket, PRE_SETUP_FLUSH_REJECTION)
+          continue
 
-          if isinstance(message, RecordingStartedMessage):
-            await self._send_error(websocket, PRE_SETUP_RECORDING_START_REJECTION)
-            continue
+        if isinstance(message, RecordingStartedMessage):
+          await self._send_error(websocket, PRE_SETUP_RECORDING_START_REJECTION)
+          continue
 
-          if isinstance(message, UtteranceCancelledMessage):
-            await self._send_error(websocket, PRE_SETUP_UTTERANCE_CANCEL_REJECTION)
-            continue
+        if isinstance(message, UtteranceCancelledMessage):
+          await self._send_error(websocket, PRE_SETUP_UTTERANCE_CANCEL_REJECTION)
+          continue
 
-          return None
-
-        if client_type == ClientType.HEALTH_CHECK and isinstance(message, HealthCheckRequest):
+        if isinstance(message, HealthCheckRequest):
           await self._handle_health_check(websocket, message)
-          return None
-
         return None
 
     except ValueError as error:
+      self._logger.exception("Rejected WebSocket setup message")
       await self._send_error_and_close(websocket, f"Setup rejected: {error}")
       return None
 
@@ -149,13 +129,6 @@ class WebSocketConnectionHandler:
     self._logger.info("Health check successful", websocket_id=websocket.id)
     await websocket.close()
 
-  def _request_headers(self, websocket: ServerConnection) -> dict[str, str]:
-    """Extract request headers as a plain string map."""
-    if websocket.request is None:
-      return {}
-
-    return {key: value for key, value in websocket.request.headers.raw_items()}
-
   async def _handle_transcriber_connection(
     self, websocket: ServerConnection, message: TranscriptionSetupMessage
   ) -> "WebSocketStreamingClient | None":
@@ -172,6 +145,7 @@ class WebSocketConnectionHandler:
     try:
       return await self._client_initializer(websocket, message)
     except ValueError as err:
+      self._logger.exception("Rejected transcription setup")
       await self._send_error_and_close(websocket, str(err))
       return None
 

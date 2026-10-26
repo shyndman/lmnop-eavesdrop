@@ -2,8 +2,7 @@ import os
 from typing import ClassVar, Literal, cast
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, model_validator, validate_call
-from pydantic.dataclasses import dataclass
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator, validate_call
 from pydantic.types import FilePath
 
 from eavesdrop.common import get_logger
@@ -13,9 +12,10 @@ from eavesdrop.server.transcription.models import VadParameters
 logger = get_logger("cfg")
 
 
-@dataclass
-class BufferConfig:
-  """Configuration for audio stream buffer behavior."""
+class BufferConfig(BaseModel):
+  """Strict configuration for audio stream buffer behavior."""
+
+  model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", strict=True)
 
   sample_rate: int = Field(default=16000, gt=0)
   """Audio sample rate in Hz."""
@@ -79,19 +79,6 @@ class TranscriptionConfig(BaseModel):
   silence_completion_threshold: float = Field(default=0.8, gt=0.0)
   """Seconds of silence after speech to mark segment as completed."""
 
-  @model_validator(mode="before")
-  @classmethod
-  def reject_derived_vad_fields(cls, values: object) -> object:
-    """Reject an explicit silence duration; completion threshold owns it."""
-    if isinstance(values, dict):
-      settings = cast(dict[str, object], values)
-      vad = settings.get("vad_parameters")
-      if isinstance(vad, dict) and "min_silence_duration_ms" in vad:
-        raise ValueError(
-          "min_silence_duration_ms cannot be specified; use silence_completion_threshold"
-        )
-    return cast(object, values)
-
   @model_validator(mode="after")
   def align_vad_parameters(self) -> "TranscriptionConfig":
     """Align VAD silence duration with completion threshold for consistent behavior."""
@@ -107,7 +94,7 @@ class EavesdropConfig(BaseModel):
   transcription: TranscriptionConfig = Field(default_factory=TranscriptionConfig)
   """Transcription processing configuration."""
 
-  model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
+  model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", strict=True)
 
   def pretty_print(self) -> None:
     """
@@ -168,19 +155,12 @@ def load_config_from_file(config_path: FilePath) -> EavesdropConfig:
   try:
     # Load YAML content
     with open(config_path, "r", encoding="utf-8") as file:
-      config_data = cast(object, yaml.safe_load(file))
+      config_data = cast(JsonValue, yaml.safe_load(file))
 
   except yaml.YAMLError as e:
     raise ValueError(f"Invalid YAML in configuration file: {e}") from e
   except Exception as e:
     raise ValueError(f"Error reading configuration file: {e}") from e
-
-  # Validate configuration structure
-  if config_data is None:
-    raise ValueError("Configuration file is empty")
-
-  if not isinstance(config_data, dict):
-    raise ValueError("Configuration file must contain a YAML dictionary")
 
   # Validate and create config using Pydantic
   config = EavesdropConfig.model_validate(config_data)

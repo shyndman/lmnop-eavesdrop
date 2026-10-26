@@ -15,96 +15,52 @@ from typing import cast
 
 from eavesdrop.client import EavesdropClient
 from eavesdrop.common import get_logger, setup_logging
+from eavesdrop.wire import TranscriptionMessage
 
 
 def _format_segment_time_range(start: float, end: float) -> str:
   return f"({start:.2f}s - {end:.2f}s)"
 
 
-async def test_transcriber(
-  host: str,
-  port: int,
-  audio_device: str = "default",
-) -> int:
-  """Test the transcriber client with a real server."""
-  print("Creating transcriber client...")
-  print(f"  Host: {host}")
-  print(f"  Port: {port}")
-  print(f"  Audio device: {audio_device}")
+def print_transcription(message: TranscriptionMessage) -> None:
+  """Print each timed segment received from the server.
 
-  client: EavesdropClient | None = None
+  :param message: Current transcript update for the recording.
+  """
+  print(f"\n[Recording {message.recording_id}]")
+  for segment in message.segments:
+    time_range = _format_segment_time_range(segment.start, segment.end)
+    print(f"  {time_range} {segment.text}")
 
+
+async def test_transcriber(host: str, port: int, audio_device: str = "default") -> int:
+  """Capture microphone audio and print pushed transcript updates until interrupted.
+
+  :param host: Server hostname.
+  :param port: Server port.
+  :param audio_device: Microphone device to capture.
+  :returns: Zero after normal shutdown.
+  """
+  client = EavesdropClient.transcriber(
+    host=host,
+    port=port,
+    audio_device=audio_device,
+    on_transcription=print_transcription,
+  )
+  recording_id = uuid.uuid4().hex
   try:
-    # Create transcriber client
-    client = EavesdropClient.transcriber(
-      host=host,
-      port=port,
-      audio_device=audio_device,
-    )
-    print("✅ Client created successfully")
-
-    # Test connection
-    print("\nConnecting to server...")
     await client.connect()
-    print("✅ Connected successfully")
-    print(f"   Connection status: {client.is_connected()}")
-
-    # Start streaming
-    recording_id = uuid.uuid4().hex
-    print("\nStarting audio streaming...")
     await client.start_streaming(recording_id)
-    print("✅ Streaming started")
-    print(f"   Streaming status: {client.is_streaming()}")
-
-    # Listen for transcriptions
-    print("\nListening for transcriptions (press Ctrl+C to stop)...")
-    message_count = 0
-
-    async for event in client:
-      if event.family != "transcription":
-        print(f"\n[Client event] {event.family}")
-        continue
-
-      message_count += 1
-      message = event.message
-      print(f"\n[Message {message_count}]")
-      print(f"  Stream: {message.stream}")
-      print(f"  Language: {message.language}")
-      print(f"  Segments: {len(message.segments)}")
-
-      if message.segments:
-        for i, segment in enumerate(message.segments):
-          time_range = _format_segment_time_range(
-            segment.absolute_start_time,
-            segment.absolute_end_time,
-          )
-          print(
-            f"    Segment {i}: '{segment.text}' ",
-            time_range,
-            sep="",
-          )
-
-  except KeyboardInterrupt:
-    print("\n\nInterrupted by user")
-  except Exception as e:
-    print(f"\n❌ Error: {e}")
-    import traceback
-
-    traceback.print_exc()
-    return 1
+    print("Listening for transcriptions (press Ctrl+C to stop)...")
+    await asyncio.Event().wait()
   finally:
-    # Cleanup
-    if client is not None:
-      print("\nCleaning up...")
+    try:
       if client.is_streaming():
         await client.stop_streaming()
-        print("✅ Stopped streaming")
+        await client.flush(recording_id)
+    finally:
+      await client.disconnect()
 
-      if client.is_connected():
-        await client.disconnect()
-        print("✅ Disconnected")
-
-  print("\n🎉 Test completed successfully!")
   return 0
 
 

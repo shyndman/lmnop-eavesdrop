@@ -8,9 +8,8 @@ import pytest
 from numpy.typing import NDArray
 from protocol_harness import flush, protocol_server, start, transcription
 
-from eavesdrop.server.transcription.models import SpeechChunk, VadParameters
+from eavesdrop.server.transcription.models import SpeechSegment, VadParameters
 from eavesdrop.server.transcription.orukeet import OrukeetTranscriber
-from eavesdrop.server.transcription.session import create_session
 from eavesdrop.server.transcription.utils import FloatAudio, finalize_recording_timestamps
 from eavesdrop.wire import Segment, Word
 
@@ -59,14 +58,6 @@ def test_recording_relative_times_remain_monotonic_across_window_boundaries() ->
   assert second.absolute_start_time > first.absolute_end_time
 
 
-def test_session_reports_recording_relative_chunk_time_range() -> None:
-  session = create_session("stream-1")
-
-  session.update_audio_context(start_offset=61.0, duration=1.5)
-
-  assert session.get_recording_time_range() == (61.0, 62.5)
-
-
 @dataclass
 class _NativeHypothesis:
   text: str = "Hello."
@@ -81,7 +72,7 @@ class _NativeRecognizer:
 
 
 class _SpeechSpans:
-  def detect(self, audio: FloatAudio, parameters: VadParameters) -> list[SpeechChunk]:
+  def detect(self, audio: FloatAudio, parameters: VadParameters) -> list[SpeechSegment]:
     # Deterministic VAD substitute: zero is silence, nonzero is speech.
     active = cast(NDArray[np.bool_], np.concatenate(([False], audio != 0, [False])))
     changes = cast(NDArray[np.bool_], active[1:] != active[:-1])

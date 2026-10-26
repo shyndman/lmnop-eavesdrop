@@ -120,8 +120,21 @@ If the rewrite fails, Active Listener emits the shaped transcript without comman
 It logs the error and sends `PipelineFailed`, which the GNOME extension uses to show a failure notification.
 The transcript history stores the emitted text without rewrite model, token, or cost metadata.
 
-The client protocol and event queue use the shared `LiveClientEvent` type.
-Active Listener ignores language detection events without changing the recording state.
+The client pushes original wire `TranscriptionMessage` values through synchronous
+callbacks. Active Listener enqueues those messages and its own lifecycle signals
+in the application queue; there is no client event iterator or duplicate transcript
+event type. Transcription is English-only.
+
+Each recording transcript has at most one timed segment open for revision. With
+VAD disabled it remains incomplete until the explicit force-completing stop flush.
+Finalization owns the finished recording's audio, transcript, tracing observation,
+and finish-time rewrite choice. A new recording waits for the prior server flush,
+but can start while that prior recording is still rewriting. Accepted finalization
+work is drained at shutdown rather than discarded by a later connection change.
+
+Keyboard grabs and Caps Lock tap/hold gestures belong to workstation coordination,
+not recording transcript reduction. A disconnect abort closes and ends the active
+recording observation before any reconnect or subsequent recording begins.
 
 ## Uninstall the user service
 

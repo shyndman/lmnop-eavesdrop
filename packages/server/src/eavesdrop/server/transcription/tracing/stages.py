@@ -6,8 +6,10 @@ from contextlib import AbstractContextManager
 from types import TracebackType
 from typing import TYPE_CHECKING, Self, override
 
-from eavesdrop.server.langfuse_tracing import ServerObservation
-from eavesdrop.server.transcription.models import SpeechChunk
+from langfuse import LangfuseSpan
+from pydantic import JsonValue
+
+from eavesdrop.server.transcription.models import SpeechSegment
 from eavesdrop.server.transcription.tracing.context import TracingContext
 
 if TYPE_CHECKING:
@@ -17,7 +19,7 @@ if TYPE_CHECKING:
 class BaseTracer:
   """Base class for stage-specific tracers that handle timing and logging."""
 
-  def __init__(self, session: TracingContext, stage_name: str):
+  def __init__(self, session: TracingContext, stage_name: str) -> None:
     """Initialize tracer with session and stage name.
 
     :param session: The shared transcription tracing context to update.
@@ -28,8 +30,8 @@ class BaseTracer:
     self.session: TracingContext = session
     self.stage_name: str = stage_name
     self.start_time: float = 0.0
-    self.langfuse_context: AbstractContextManager[ServerObservation | None] | None = None
-    self.langfuse_observation: ServerObservation | None = None
+    self.langfuse_context: AbstractContextManager[LangfuseSpan | None] | None = None
+    self.langfuse_observation: LangfuseSpan | None = None
 
   def __enter__(self) -> Self:
     """Start timing the stage."""
@@ -49,7 +51,7 @@ class BaseTracer:
     # Record timing even on exceptions for debugging purposes
     self.session.stage_timings[self.stage_name] = elapsed if exc_type is None else -1.0
     if self.langfuse_observation is not None:
-      metadata: dict[str, object] = {
+      metadata: dict[str, JsonValue] = {
         "duration_ms": elapsed * 1000,
         "failed": exc_type is not None,
       }
@@ -76,14 +78,14 @@ class VadStageTracer(BaseTracer):
 
   def __call__(
     self,
-    speech_chunks: list[SpeechChunk] | None,
+    speech_segments: list[SpeechSegment] | None,
     sample_rate: int,
     total_samples: int,
   ) -> None:
     """Record VAD results and generate visualization.
 
-    :param speech_chunks: Speech chunks detected by VAD, or None if no VAD.
-    :type speech_chunks: list[SpeechChunk] | None
+    :param speech_segments: VAD-detected speech segments, or None if VAD was disabled.
+    :type speech_segments: list[SpeechSegment] | None
     :param sample_rate: Audio sample rate for time calculations.
     :type sample_rate: int
     :param total_samples: Total number of audio samples processed.
@@ -91,79 +93,43 @@ class VadStageTracer(BaseTracer):
     """
     audio_duration = total_samples / sample_rate
     time_start, time_end = self.session.get_recording_time_range()
-
-    if speech_chunks:
-      speech_duration = sum(
-        (chunk["end"] - chunk["start"]) / sample_rate for chunk in speech_chunks
-      )
-      silence_duration = audio_duration - speech_duration
-      vad_viz = self.session.format_vad_visualization(speech_chunks, sample_rate, total_samples)
-
+    if speech_segments is None:
       self.session.logger.info(
-        "Voice detected!",
-        t_start=time_start,
-        t_end=time_end,
-        chunk_count=len(speech_chunks),
-        total=audio_duration,
-        speech=speech_duration,
-        silence=silence_duration,
-        vad=vad_viz,
+        "VAD not applied", t_start=time_start, t_end=time_end, total=audio_duration
       )
       if self.langfuse_observation is not None:
         _ = self.langfuse_observation.update(
-          output={
-            "speech_chunks": speech_chunks,
-            "speech_chunk_count": len(speech_chunks),
-            "speech_duration_seconds": speech_duration,
-            "silence_duration_seconds": silence_duration,
-            "audio_duration_seconds": audio_duration,
-            "vad_visualization": vad_viz,
-          }
+          output={"audio_duration_seconds": audio_duration, "vad_applied": False}
         )
       return
-
-    if speech_chunks == []:
-      self.session.logger.info(
-        "No voice activity",
-        t_start=time_start,
-        t_end=time_end,
-        total=audio_duration,
-      )
-      if self.langfuse_observation is not None:
-        _ = self.langfuse_observation.update(
-          output={
-            "speech_chunks": [],
-            "speech_chunk_count": 0,
-            "speech_duration_seconds": 0.0,
-            "silence_duration_seconds": audio_duration,
-            "audio_duration_seconds": audio_duration,
-          }
-        )
-      return
-
+    speech_duration = sum(
+      (segment["end"] - segment["start"]) / sample_rate for segment in speech_segments
+    )
+    silence_duration = audio_duration - speech_duration
+    vad_viz = self.session.format_vad_visualization(speech_segments, sample_rate, total_samples)
     self.session.logger.info(
-      "VAD not applied",
+      "Voice detected!" if speech_segments else "No voice activity",
       t_start=time_start,
       t_end=time_end,
+      speech_segment_count=len(speech_segments),
       total=audio_duration,
+      speech=speech_duration,
+      silence=silence_duration,
+      vad=vad_viz,
     )
     if self.langfuse_observation is not None:
       _ = self.langfuse_observation.update(
         output={
-          "speech_chunks": None,
+          "speech_segments": [
+            {"start": segment["start"], "end": segment["end"]} for segment in speech_segments
+          ],
+          "speech_segment_count": len(speech_segments),
+          "speech_duration_seconds": speech_duration,
+          "silence_duration_seconds": silence_duration,
           "audio_duration_seconds": audio_duration,
-          "vad_applied": False,
+          "vad_visualization": vad_viz,
         }
       )
-
-
-class FeatureStageTracer(BaseTracer):
-  """Tracer for feature extraction stage."""
-
-  def __call__(self) -> None:
-    """Record feature extraction completion (no specific data to log)."""
-    if self.langfuse_observation is not None:
-      _ = self.langfuse_observation.update(output={"features_extracted": True})
 
 
 class InferenceStageTracer(BaseTracer):
@@ -197,21 +163,13 @@ class PipelineTracer(BaseTracer):
       else:
         stage_fields[f"stage_{stage_name}"] = "FAILED"
 
-    # Add generation metadata if available
-    extra_fields: dict[str, int | str] = {}
-
     time_range = self.session.format_time_range()
 
     self.session.logger.info(
       "Pipeline completed",
       time_range=time_range,
       **stage_fields,
-      **extra_fields,
     )
-
-  def __call__(self) -> None:
-    """No-op for pipeline tracer - summary is logged in __exit__."""
-    return
 
 
 class SegmentStageTracer(BaseTracer):

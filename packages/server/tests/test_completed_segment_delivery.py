@@ -24,7 +24,7 @@ async def test_force_completion_delivers_all_new_segments_before_windowing_histo
         await flush(socket, "complete", force=False)
         provisional = await transcription(socket, flushed=True)
         spoken = [segment for segment in provisional.segments if segment.text.strip()]
-        assert [segment.text for segment in spoken] == ["A0 revision 1", "A1 revision 1"]
+        assert " ".join(segment.text for segment in spoken) == "A0 revision 1 A1 revision 1"
         assert all(not segment.completed for segment in spoken)
 
       await flush(socket, "complete")
@@ -32,14 +32,13 @@ async def test_force_completion_delivers_all_new_segments_before_windowing_histo
       spoken = [segment for segment in completed.segments if segment.text.strip()]
       assert completed.recording_id == "complete"
       expected_revision = 1 if use_vad else 2
-      assert [segment.text for segment in spoken] == [
-        f"A0 revision {expected_revision}",
-        f"A1 revision {expected_revision}",
-      ]
+      assert " ".join(segment.text for segment in spoken) == (
+        f"A0 revision {expected_revision} A1 revision {expected_revision}"
+      )
       assert all(segment.completed for segment in spoken)
       assert [word.word for segment in spoken for word in segment.words] == ["A0", "A1"]
-      assert [segment.start for segment in spoken] == pytest.approx([0.01, 0.05])
-      assert [segment.end for segment in spoken] == pytest.approx([0.03, 0.08])
+      assert spoken[0].start == pytest.approx(0.01)
+      assert spoken[-1].end == pytest.approx(0.08)
       assert [word.start for segment in spoken for word in segment.words] == pytest.approx(
         [0.01, 0.05]
       )
@@ -52,7 +51,9 @@ async def test_force_completion_delivers_all_new_segments_before_windowing_histo
       retained = [segment for segment in history.segments if segment.text.strip()]
       assert [segment.id for segment in retained] == [spoken[-1].id]
       assert [segment.text for segment in retained] == [spoken[-1].text]
-      assert [word.word for segment in retained for word in segment.words] == ["A1"]
+      assert [word.word for segment in retained for word in segment.words] == (
+        ["A1"] if use_vad else ["A0", "A1"]
+      )
 
 
 @pytest.mark.asyncio

@@ -44,9 +44,8 @@ been removed. No dummy scores are emitted.
 
 Chained CRC64 segment IDs, recording IDs, flush controls, and recording-relative
 timestamps retain their existing semantics. The internal `time_offset`
-compatibility helper is excluded from JSON. The language-detection message type
-remains decodable for legacy compatibility; the Orukeet backend emits
-transcription without a language-detection message.
+helper is excluded from JSON. Transcription is English-only; language-detection
+messages and connection-role headers are not part of the protocol.
 
 ## Live controls
 
@@ -62,7 +61,9 @@ flush does not itself finalize pending segments. Cancellation discards the curre
 utterance, clears its utterance-local transcript history, and suppresses outstanding
 results rather than completing that work.
 
-With VAD enabled, silence completion and the trailing incomplete segment convention
-remain. With VAD disabled, all pending segments stay incomplete until an explicit
-force-completing flush, regardless of silence, elapsed time, or segment position.
-Health-check messages remain available for operational checks.
+Every update contains one incomplete timed segment open for revision, empty when
+there is no pending text. With VAD enabled, silence completion remains. With VAD
+disabled, all recognized portions are combined into one revisable timed segment
+without changing their word timestamps. Nothing completes until an explicit
+force-completing flush, regardless of silence, elapsed time, or portion position.
+Health-check requests remain available as messages, without special headers.

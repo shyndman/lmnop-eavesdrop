@@ -1,955 +1,336 @@
-"""Contract tests for the live client runtime and recording controls."""
+"""Live-client lifecycle contracts over real local WebSockets and fake microphone input."""
 
 import asyncio
-from dataclasses import replace
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from typing import cast
 
+import numpy as np
 import pytest
-from structlog.stdlib import BoundLogger
-from websockets.asyncio.client import ClientConnection
+from websockets.asyncio.server import ServerConnection, serve
 
-from eavesdrop.client.audio import AudioCapture
-from eavesdrop.client.connection import WebSocketConnection
+from eavesdrop.client.audio import Float32Audio, InputStreamLike
 from eavesdrop.client.core import EavesdropClient
-from eavesdrop.client.events import (
-  ConnectedEvent,
-  DisconnectedEvent,
-  LanguageDetectionEvent,
-  ReconnectedEvent,
-  ReconnectingEvent,
-  TranscriptionEvent,
-)
 from eavesdrop.wire import (
-  LanguageDetectionMessage,
+  DisconnectMessage,
+  ErrorMessage,
+  FlushControlMessage,
+  RecordingStartedMessage,
   Segment,
+  ServerReadyMessage,
   TranscriptionMessage,
+  TranscriptionSetupMessage,
+  UtteranceCancelledMessage,
+  Word,
   deserialize_message,
   serialize_message,
 )
 
-RECORDING_ID = "rec-live"
+DEADLINE = 3.0
+RECORDING_A = "recording-a"
+RECORDING_B = "recording-b"
 
 
-class FakeWebSocket:
-  """Deterministic in-memory websocket stand-in used by connect-path tests."""
-
-  def __init__(self) -> None:
-    self.sent_payloads: list[str | bytes] = []
-    self.closed = False
-
-  async def send(self, payload: str | bytes) -> None:
-    self.sent_payloads.append(payload)
-
-  async def close(self) -> None:
-    self.closed = True
-
-  def __aiter__(self) -> "FakeWebSocket":
-    return self
-
-  async def __anext__(self) -> str:
-    raise StopAsyncIteration
+@dataclass
+class CallbackTiming:
+  inputBufferAdcTime: float = 0.0
+  currentTime: float = 0.0
+  outputBufferDacTime: float = 0.0
 
 
-class ScriptedWebSocket(FakeWebSocket):
-  """Websocket double that replays payloads then raises scripted failures."""
+@dataclass
+class CallbackStatus:
+  input_underflow: bool = False
+  input_overflow: bool = False
 
-  def __init__(self, script: list[str | Exception]) -> None:
-    super().__init__()
-    self._script = script
-
-  async def __anext__(self) -> str:
-    if not self._script:
-      await asyncio.sleep(0)
-      raise StopAsyncIteration
-
-    next_item = self._script.pop(0)
-    if isinstance(next_item, Exception):
-      raise next_item
-    return next_item
+  def __bool__(self) -> bool:
+    return self.input_underflow or self.input_overflow
 
 
-class BlockingWebSocket(FakeWebSocket):
-  """Websocket double that stays open until the client closes it."""
+class Microphone:
+  """Substitute only the external input device, leaving capture and sending real."""
 
   def __init__(self) -> None:
-    super().__init__()
-    self._closed_event = asyncio.Event()
+    self.frames: list[Float32Audio] = []
 
-  async def close(self) -> None:
-    await super().close()
-    self._closed_event.set()
+  def InputStream(
+    self,
+    *,
+    device: str | int | None,
+    channels: int,
+    samplerate: int,
+    dtype: np.dtype[np.float32] | type[np.float32],
+    latency: str,
+    blocksize: int,
+    callback: Callable[[Float32Audio, int, CallbackTiming, CallbackStatus], None],
+  ) -> InputStreamLike:
+    microphone = self
 
-  async def __anext__(self) -> str:
-    await self._closed_event.wait()
-    raise StopAsyncIteration
+    class Stream:
+      def start(self) -> None:
+        for frame in microphone.frames:
+          callback(frame, len(frame), CallbackTiming(), CallbackStatus())
 
+      def stop(self) -> None:
+        pass
 
-class RecordingLogger:
-  """Captures client-boundary log records for reconnect assertions."""
+      def close(self) -> None:
+        pass
 
-  def __init__(self) -> None:
-    self.warning_messages: list[str] = []
-    self.info_messages: list[str] = []
-    self.error_messages: list[str] = []
-    self.exception_messages: list[str] = []
-
-  def debug(self, _event: str, **_kwargs: object) -> None:
-    pass
-
-  def warning(self, event: str, **_kwargs: object) -> None:
-    self.warning_messages.append(event)
-
-  def info(self, event: str, **_kwargs: object) -> None:
-    self.info_messages.append(event)
-
-  def error(self, event: str, **_kwargs: object) -> None:
-    self.error_messages.append(event)
-
-  def exception(self, event: str, **_kwargs: object) -> None:
-    self.exception_messages.append(event)
+    return Stream()
 
 
-class RecordingAudioCapture:
-  """Tracks start/stop transitions without touching real audio devices."""
+@dataclass
+class Peer:
+  """Controllable remote endpoint for lifecycle races and failure responses."""
 
-  def __init__(self) -> None:
-    self.start_calls = 0
-    self.stop_calls = 0
-    self.clear_calls = 0
+  socket: ServerConnection
+  session_id: str
+  received: asyncio.Queue[str | bytes] = field(default_factory=asyncio.Queue)
 
-  def start_recording(self) -> None:
-    self.start_calls += 1
+  async def recording_started(self) -> str:
+    raw = await asyncio.wait_for(self.received.get(), DEADLINE)
+    message = deserialize_message(cast(str, raw))
+    match message:
+      case RecordingStartedMessage(recording_id=recording_id):
+        return recording_id
+      case _:
+        raise AssertionError(f"Expected recording boundary, received {message.type}")
 
-  def stop_recording(self) -> None:
-    self.stop_calls += 1
+  async def flush_requested(self) -> FlushControlMessage:
+    raw = await asyncio.wait_for(self.received.get(), DEADLINE)
+    message = deserialize_message(cast(str, raw))
+    match message:
+      case FlushControlMessage():
+        return message
+      case _:
+        raise AssertionError(f"Expected flush, received {message.type}")
 
-  def clear_queue(self) -> None:
-    self.clear_calls += 1
+  async def cancelled(self) -> str | None:
+    raw = await asyncio.wait_for(self.received.get(), DEADLINE)
+    message = deserialize_message(cast(str, raw))
+    match message:
+      case UtteranceCancelledMessage(recording_id=recording_id):
+        return recording_id
+      case _:
+        raise AssertionError(f"Expected cancellation, received {message.type}")
 
-  async def get_audio_data(self, timeout: float = 0.1) -> bytes | None:
-    return None
-
-
-class ScriptedAudioCapture:
-  """Feeds deterministic audio chunks into the client streaming loop."""
-
-  def __init__(self, chunks: list[bytes], client: EavesdropClient) -> None:
-    self._chunks = list(chunks)
-    self._client = client
-
-  def start_recording(self) -> None:
-    return None
-
-  def stop_recording(self) -> None:
-    return None
-
-  def clear_queue(self) -> None:
-    return None
-
-  async def get_audio_data(self, timeout: float = 0.1) -> bytes | None:
-    _ = timeout
-    if self._chunks:
-      return self._chunks.pop(0)
-
-    self._client._streaming = False
-    return None
-
-
-class RecordingConnection:
-  """Typed connection test double for the streaming loop entrypoint."""
-
-  def __init__(self) -> None:
-    self.audio_chunks: list[bytes] = []
-    self.command_log: list[str] = []
-    self.recording_start_ids: list[str] = []
-    self.flush_commands: list[bool] = []
-    self.flush_recording_ids: list[str] = []
-    self.flush_sent = asyncio.Event()
-    self.cancel_recording_ids: list[str] = []
-
-  async def send_recording_started(self, recording_id: str, sample_rate_hz: int) -> None:
-    assert sample_rate_hz == 16000
-    self.recording_start_ids.append(recording_id)
-    self.command_log.append("recording_started")
-
-  async def send_audio_data(self, audio_data: bytes) -> None:
-    self.audio_chunks.append(audio_data)
-    self.command_log.append("audio")
-
-  async def send_flush_control(self, recording_id: str, *, force_complete: bool = True) -> None:
-    self.flush_recording_ids.append(recording_id)
-    self.flush_commands.append(force_complete)
-    self.command_log.append("flush")
-    self.flush_sent.set()
-
-  async def send_utterance_cancelled(self, recording_id: str) -> None:
-    self.cancel_recording_ids.append(recording_id)
-    self.command_log.append("cancel")
-
-  def is_connected(self) -> bool:
-    return True
+  async def transcript(
+    self,
+    recording_id: str,
+    text: str,
+    *,
+    flushed: bool = False,
+  ) -> None:
+    await self.socket.send(
+      serialize_message(
+        TranscriptionMessage(
+          stream=self.session_id,
+          recording_id=recording_id,
+          segments=[
+            Segment(
+              id=1,
+              start=0.0,
+              end=0.5,
+              text=text,
+              completed=flushed,
+              words=[Word(start=0.0, end=0.5, word=text)],
+            )
+          ],
+          flush_complete=True if flushed else None,
+        )
+      )
+    )
 
 
-async def _hold_open(signal: asyncio.Event) -> None:
-  """Keep an async task pending until the test explicitly releases it."""
-
-  await signal.wait()
-
-
-def _segment(text: str) -> Segment:
-  """Build a minimal valid segment payload for message routing assertions."""
-
-  return Segment(
-    id=1,
-    start=0.0,
-    end=0.5,
-    text=text,
-    words=[],
-  )
-
-
-async def _connected_client(
+@asynccontextmanager
+async def connected_client(
   monkeypatch: pytest.MonkeyPatch,
-) -> tuple[EavesdropClient, RecordingConnection]:
-  """Connect through the real receive path while recording outbound controls."""
-  websocket = BlockingWebSocket()
+) -> AsyncIterator[tuple[EavesdropClient, Peer, Microphone, asyncio.Queue[Peer]]]:
+  peers: asyncio.Queue[Peer] = asyncio.Queue()
+  microphone = Microphone()
+  monkeypatch.setattr("eavesdrop.client.audio._load_input_stream", lambda: microphone.InputStream)
 
-  async def connect(_url: str, additional_headers: dict[str, str]) -> BlockingWebSocket:
-    return websocket
+  async def accept(socket: ServerConnection) -> None:
+    setup = deserialize_message(await socket.recv(decode=True))
+    match setup:
+      case TranscriptionSetupMessage(stream=session_id):
+        peer = Peer(socket, session_id)
+      case _:
+        raise AssertionError(f"Expected setup, received {setup.type}")
+    await socket.send(serialize_message(ServerReadyMessage(stream=peer.session_id, backend="test")))
+    peers.put_nowait(peer)
+    async for frame in socket:
+      peer.received.put_nowait(frame)
 
-  monkeypatch.setattr("eavesdrop.client.connection.websockets.connect", connect)
-  client = EavesdropClient.transcriber(audio_device="default")
-  await client.connect()
-  assert client._connection is not None
-  controls = RecordingConnection()
-  monkeypatch.setattr(client._connection, "send_recording_started", controls.send_recording_started)
-  monkeypatch.setattr(client._connection, "send_flush_control", controls.send_flush_control)
-  monkeypatch.setattr(
-    client._connection, "send_utterance_cancelled", controls.send_utterance_cancelled
-  )
-  client._audio_capture = cast(AudioCapture, cast(object, RecordingAudioCapture()))
-
-  async def idle_audio_loop() -> None:
-    return None
-
-  monkeypatch.setattr(client, "_audio_streaming_loop", idle_audio_loop)
-  await client.start_streaming(RECORDING_ID)
-  await client.stop_streaming()
-  controls.recording_start_ids.clear()
-  controls.command_log.clear()
-  await anext(client)
-  return client, controls
-
-
-async def _deliver(
-  client: EavesdropClient, message: TranscriptionMessage | LanguageDetectionMessage
-) -> None:
-  """Pass deterministic wire payloads through the connection's message handler."""
-  assert client._connection is not None
-  scoped_message = replace(message, stream=client._connection.stream_name)
-  await client._connection._process_message(serialize_message(scoped_message))
+  async with serve(accept, "127.0.0.1", 0, close_timeout=DEADLINE) as server:
+    address = cast(tuple[str, int], server.sockets[0].getsockname())
+    client = EavesdropClient.transcriber(host="127.0.0.1", port=address[1], audio_device="test")
+    await client.connect()
+    peer = await asyncio.wait_for(peers.get(), DEADLINE)
+    try:
+      yield client, peer, microphone, peers
+    finally:
+      await client.disconnect()
 
 
 @pytest.mark.asyncio
-async def test_transcriber_factory_options_reach_setup_payload(
-  monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  """Factory options must survive all layers and appear in setup wire payload."""
+async def test_stop_delivers_captured_backlog_before_flush(monkeypatch: pytest.MonkeyPatch) -> None:
+  async with connected_client(monkeypatch) as (client, peer, microphone, _):
+    frames = [np.full((4, 1), value, dtype=np.float32) for value in (0.1, 0.2, 0.3)]
+    microphone.frames = frames
+    await client.start_streaming(RECORDING_A)
+    await client.stop_streaming()
+    pending = asyncio.create_task(client.flush(RECORDING_A))
 
-  fake_ws = FakeWebSocket()
-  captured_headers: dict[str, str] = {}
-
-  async def fake_connect(_url: str, additional_headers: dict[str, str]) -> FakeWebSocket:
-    captured_headers.update(additional_headers)
-    return fake_ws
-
-  monkeypatch.setattr("eavesdrop.client.connection.websockets.connect", fake_connect)
-  monkeypatch.setattr("eavesdrop.client.core.secrets.token_hex", lambda _n: "beef")
-
-  client = EavesdropClient.transcriber(
-    audio_device="default",
-    send_last_n_segments=3,
-    language="en",
-  )
-
-  await client.connect()
-
-  assert captured_headers == {"X-Client-Type": "transcriber"}
-  assert len(fake_ws.sent_payloads) == 1
-
-  serialized_setup = cast(str, fake_ws.sent_payloads[0])
-  assert serialized_setup
-
-  setup_message = deserialize_message(serialized_setup)
-  assert setup_message.type == "setup"
-  assert setup_message.stream == "tbeef"
-  assert setup_message.options.language == "en"
-  assert setup_message.options.send_last_n_segments == 3
-
-  await client.disconnect()
-  assert fake_ws.closed is True
+    assert await peer.recording_started() == RECORDING_A
+    delivered = [await asyncio.wait_for(peer.received.get(), DEADLINE) for _ in frames]
+    assert delivered == [frame.tobytes() for frame in frames]
+    assert (await peer.flush_requested()).recording_id == RECORDING_A
+    await peer.transcript(RECORDING_A, "captured tail", flushed=True)
+    assert (await asyncio.wait_for(pending, DEADLINE)).segments[0].text == "captured tail"
 
 
 @pytest.mark.asyncio
-async def test_connection_serializes_utterance_cancel_control_message() -> None:
-  """Live cancel control must serialize the new wire message discriminator."""
+async def test_next_recording_waits_until_final_transcript_is_pushed(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  async with connected_client(monkeypatch) as (client, peer, _, _):
+    received: list[str] = []
+    client.on_transcription = lambda message: received.append(message.segments[0].text)
+    await client.start_streaming(RECORDING_A)
+    await client.stop_streaming()
+    assert await peer.recording_started() == RECORDING_A
+    pending = asyncio.create_task(client.flush(RECORDING_A))
+    await peer.flush_requested()
+    next_recording = asyncio.create_task(client.start_streaming(RECORDING_B))
 
-  fake_ws = FakeWebSocket()
-  connection = WebSocketConnection(
-    host="localhost",
-    port=9090,
-    stream_name="stream-cancel",
-    on_ready=lambda _backend: None,
-    on_transcription=lambda _text: None,
-    on_error=lambda _message: None,
-  )
-  connection.ws = cast(ClientConnection, cast(object, fake_ws))
-  connection.connected = True
+    with pytest.raises(asyncio.TimeoutError):
+      await asyncio.wait_for(peer.received.get(), 0.02)
+    await peer.transcript(RECORDING_A, "A finished", flushed=True)
+    await asyncio.wait_for(pending, DEADLINE)
+    await asyncio.wait_for(next_recording, DEADLINE)
+    assert await peer.recording_started() == RECORDING_B
+    assert received == ["A finished"]
 
-  await connection.send_utterance_cancelled(RECORDING_ID)
 
-  assert len(fake_ws.sent_payloads) == 1
-  encoded = cast(str, fake_ws.sent_payloads[0])
-  decoded = deserialize_message(encoded)
-  assert decoded.type == "control_utterance_cancelled"
-  assert decoded.stream == "stream-cancel"
-  assert decoded.recording_id == RECORDING_ID
+@pytest.mark.asyncio
+async def test_cancellation_releases_pending_flush_and_allows_next_recording(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  async with connected_client(monkeypatch) as (client, peer, _, _):
+    received: list[str] = []
+    client.on_transcription = lambda message: received.append(message.segments[0].text)
+    await client.start_streaming(RECORDING_A)
+    await client.stop_streaming()
+    await peer.recording_started()
+    pending = asyncio.create_task(client.flush(RECORDING_A))
+    await peer.flush_requested()
+    await client.cancel_utterance(RECORDING_A)
+    assert await peer.cancelled() == RECORDING_A
+    with pytest.raises(RuntimeError, match="cancelled"):
+      await asyncio.wait_for(pending, DEADLINE)
+
+    await asyncio.wait_for(client.start_streaming(RECORDING_B), DEADLINE)
+    assert await peer.recording_started() == RECORDING_B
+    await client.stop_streaming()
+    next_flush = asyncio.create_task(client.flush(RECORDING_B))
+    await peer.flush_requested()
+    await peer.transcript(RECORDING_A, "cancelled", flushed=True)
+    await peer.transcript(RECORDING_B, "B retained", flushed=True)
+    assert (await asyncio.wait_for(next_flush, DEADLINE)).recording_id == RECORDING_B
+    assert received == ["B retained"]
+
+
+@pytest.mark.asyncio
+async def test_flush_requires_fresh_matching_acknowledgement(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  async with connected_client(monkeypatch) as (client, peer, _, _):
+    pushed: asyncio.Queue[TranscriptionMessage] = asyncio.Queue()
+    client.on_transcription = pushed.put_nowait
+    await client.start_streaming(RECORDING_A)
+    await client.stop_streaming()
+    await peer.recording_started()
+    await peer.transcript(RECORDING_A, "earlier ack", flushed=True)
+    await asyncio.wait_for(pushed.get(), DEADLINE)
+
+    pending = asyncio.create_task(client.flush(RECORDING_A, force_complete=False))
+    assert (await peer.flush_requested()).force_complete is False
+    await peer.transcript(RECORDING_B, "wrong recording", flushed=True)
+    await peer.transcript(RECORDING_A, "still tentative")
+    assert (await asyncio.wait_for(pushed.get(), DEADLINE)).segments[0].text == "still tentative"
+    assert not pending.done()
+    await peer.transcript(RECORDING_A, "fresh ack", flushed=True)
+    assert (await asyncio.wait_for(pending, DEADLINE)).segments[0].text == "fresh ack"
+
+
+@pytest.mark.asyncio
+async def test_flush_rejects_concurrency_and_server_failure_does_not_poison_next_request(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  async with connected_client(monkeypatch) as (client, peer, _, _):
+    await client.start_streaming(RECORDING_A)
+    await client.stop_streaming()
+    await peer.recording_started()
+    pending = asyncio.create_task(client.flush(RECORDING_A))
+    await peer.flush_requested()
+    with pytest.raises(RuntimeError, match="already in progress"):
+      await client.flush(RECORDING_A)
+    await peer.socket.send(
+      serialize_message(ErrorMessage(stream=peer.session_id, message="server refused flush"))
+    )
+    with pytest.raises(RuntimeError, match="server refused flush"):
+      await asyncio.wait_for(pending, DEADLINE)
+
+    retry = asyncio.create_task(client.flush(RECORDING_A))
+    await peer.flush_requested()
+    await peer.transcript(RECORDING_A, "retry succeeds", flushed=True)
+    assert (await asyncio.wait_for(retry, DEADLINE)).segments[0].text == "retry succeeds"
+
+
+@pytest.mark.asyncio
+async def test_disconnect_fails_flush_and_reconnection_supports_a_new_recording(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  monkeypatch.setattr("eavesdrop.client.core.RECONNECT_DELAY_SECONDS", 0.0)
+  async with connected_client(monkeypatch) as (client, peer, _, peers):
+    lifecycle: list[str] = []
+    client.on_disconnected = lambda _session, reason: lifecycle.append(f"disconnected:{reason}")
+    client.on_reconnecting = lambda _session, _attempt, _delay: lifecycle.append("reconnecting")
+    reconnected = asyncio.Event()
+
+    def on_reconnected(_session: str) -> None:
+      lifecycle.append("reconnected")
+      reconnected.set()
+
+    client.on_reconnected = on_reconnected
+    await client.start_streaming(RECORDING_A)
+    await client.stop_streaming()
+    await peer.recording_started()
+    pending = asyncio.create_task(client.flush(RECORDING_A))
+    await peer.flush_requested()
+    await peer.socket.send(
+      serialize_message(
+        DisconnectMessage(stream=peer.session_id, message="socket lost during flush")
+      )
+    )
+    await peer.socket.close()
+    with pytest.raises(RuntimeError, match="socket lost during flush"):
+      await asyncio.wait_for(pending, DEADLINE)
+    next_peer = await asyncio.wait_for(peers.get(), DEADLINE)
+    await asyncio.wait_for(reconnected.wait(), DEADLINE)
+    assert lifecycle == ["disconnected:socket lost during flush", "reconnecting", "reconnected"]
+    await client.start_streaming(RECORDING_B)
+    await client.stop_streaming()
+    assert await next_peer.recording_started() == RECORDING_B
+    next_flush = asyncio.create_task(client.flush(RECORDING_B))
+    await next_peer.flush_requested()
+    await next_peer.transcript(RECORDING_B, "after reconnect", flushed=True)
+    assert (await asyncio.wait_for(next_flush, DEADLINE)).recording_id == RECORDING_B
 
 
 def test_transcriber_requires_audio_device_configuration() -> None:
-  """Live capture validation must fail fast for invalid device input."""
-
   with pytest.raises(ValueError, match="audio device"):
     EavesdropClient()
-
-
-@pytest.mark.asyncio
-async def test_live_client_event_types_expose_expected_payloads() -> None:
-  """Live client events must expose stable family names and typed payloads."""
-
-  message = TranscriptionMessage(
-    stream="stream-live",
-    segments=[_segment("ready")],
-    language="en",
-  )
-
-  connected = ConnectedEvent(stream="stream-live")
-  disconnected = DisconnectedEvent(stream="stream-live", reason="socket lost")
-  reconnecting = ReconnectingEvent(stream="stream-live", attempt=2, retry_delay_s=10.0)
-  reconnected = ReconnectedEvent(stream="stream-live")
-  transcription = TranscriptionEvent(stream="stream-live", message=message)
-
-  assert connected.family == "connected"
-  assert disconnected.reason == "socket lost"
-  assert reconnecting.retry_delay_s == 10.0
-  assert reconnected.family == "reconnected"
-  assert transcription.message == message
-
-
-@pytest.mark.asyncio
-async def test_async_iterator_yields_connected_then_transcription_event(
-  monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  """The live async iterator must preserve connect-before-transcription ordering."""
-
-  fake_ws = BlockingWebSocket()
-
-  async def fake_connect(_url: str, additional_headers: dict[str, str]) -> BlockingWebSocket:
-    assert additional_headers == {"X-Client-Type": "transcriber"}
-    return fake_ws
-
-  monkeypatch.setattr("eavesdrop.client.connection.websockets.connect", fake_connect)
-  monkeypatch.setattr("eavesdrop.client.core.secrets.token_hex", lambda _n: "beef")
-
-  client = EavesdropClient.transcriber(audio_device="default")
-  await client.connect()
-
-  collected_events: list[ConnectedEvent | TranscriptionEvent] = []
-
-  async def _collect_two_events() -> None:
-    async for event in client:
-      collected_events.append(cast(ConnectedEvent | TranscriptionEvent, event))
-      if len(collected_events) == 2:
-        break
-
-  collector = asyncio.create_task(_collect_two_events())
-  await _deliver(
-    client,
-    TranscriptionMessage(
-      stream="tbeef",
-      segments=[_segment("hello")],
-      language="en",
-    ),
-  )
-
-  try:
-    await asyncio.wait_for(collector, timeout=0.2)
-  finally:
-    await client.disconnect()
-
-  assert [event.family for event in collected_events] == ["connected", "transcription"]
-  assert collected_events[0].stream == "tbeef"
-  transcription_event = cast(TranscriptionEvent, collected_events[1])
-  assert transcription_event.message.segments[0].text == "hello"
-
-
-@pytest.mark.asyncio
-async def test_async_iterator_yields_language_detection_event(
-  monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  """Auto-detected source language must surface as a live LanguageDetectionEvent."""
-
-  fake_ws = BlockingWebSocket()
-
-  async def fake_connect(_url: str, additional_headers: dict[str, str]) -> BlockingWebSocket:
-    assert additional_headers == {"X-Client-Type": "transcriber"}
-    return fake_ws
-
-  monkeypatch.setattr("eavesdrop.client.connection.websockets.connect", fake_connect)
-  monkeypatch.setattr("eavesdrop.client.core.secrets.token_hex", lambda _n: "beef")
-
-  client = EavesdropClient.transcriber(audio_device="default")
-  await client.connect()
-
-  collected_events: list[ConnectedEvent | LanguageDetectionEvent] = []
-
-  async def _collect_two_events() -> None:
-    async for event in client:
-      collected_events.append(cast(ConnectedEvent | LanguageDetectionEvent, event))
-      if len(collected_events) == 2:
-        break
-
-  collector = asyncio.create_task(_collect_two_events())
-  await _deliver(
-    client, LanguageDetectionMessage(stream="tbeef", language="ja", language_prob=0.97)
-  )
-
-  try:
-    await asyncio.wait_for(collector, timeout=0.2)
-  finally:
-    await client.disconnect()
-
-  assert [event.family for event in collected_events] == ["connected", "language_detection"]
-  detection_event = cast(LanguageDetectionEvent, collected_events[1])
-  assert detection_event.language == "ja"
-  assert detection_event.probability == 0.97
-
-
-@pytest.mark.asyncio
-async def test_live_transcriber_reconnects_with_truthful_events(
-  monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  """Socket loss must emit reconnect events, wait 10s, and log the transition truthfully."""
-
-  first_ws = ScriptedWebSocket([RuntimeError("socket lost")])
-  second_ws = BlockingWebSocket()
-  connect_results = [first_ws, second_ws]
-
-  async def fake_connect(_url: str, additional_headers: dict[str, str]) -> FakeWebSocket:
-    assert additional_headers == {"X-Client-Type": "transcriber"}
-    return connect_results.pop(0)
-
-  original_sleep = asyncio.sleep
-  recorded_sleeps: list[float] = []
-
-  async def fake_sleep(delay: float) -> None:
-    recorded_sleeps.append(delay)
-    await original_sleep(0)
-
-  monkeypatch.setattr("eavesdrop.client.connection.websockets.connect", fake_connect)
-  monkeypatch.setattr("eavesdrop.client.core.asyncio.sleep", fake_sleep)
-  monkeypatch.setattr("eavesdrop.client.core.secrets.token_hex", lambda _n: "beef")
-
-  client = EavesdropClient.transcriber(audio_device="default")
-  logger = RecordingLogger()
-  client._logger = cast(BoundLogger, cast(object, logger))
-
-  await client.connect()
-
-  observed_events: list[str] = []
-
-  async def _collect_reconnect_events() -> None:
-    async for event in client:
-      observed_events.append(event.family)
-      if len(observed_events) == 4:
-        break
-
-  collector = asyncio.create_task(_collect_reconnect_events())
-  try:
-    await asyncio.wait_for(collector, timeout=0.5)
-  finally:
-    await client.disconnect()
-
-  assert observed_events == ["connected", "disconnected", "reconnecting", "reconnected"]
-  assert recorded_sleeps == [10.0]
-  assert logger.warning_messages == [
-    "live transcriber disconnected",
-    "live transcriber reconnect scheduled",
-  ]
-  assert logger.info_messages == ["live transcriber reconnected"]
-
-
-@pytest.mark.asyncio
-async def test_streaming_tracks_dedicated_audio_loop_task(
-  monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  """Streaming must expose one dedicated audio-loop task and clear it after completion."""
-
-  client = EavesdropClient.transcriber(audio_device="default")
-  audio_capture = RecordingAudioCapture()
-  connection = RecordingConnection()
-  client._connected = True
-  client._audio_capture = cast(AudioCapture, cast(object, audio_capture))
-  client._connection = cast(WebSocketConnection, cast(object, connection))
-
-  loop_started = asyncio.Event()
-  allow_exit = asyncio.Event()
-
-  async def fake_audio_streaming_loop() -> None:
-    loop_started.set()
-    await allow_exit.wait()
-
-  monkeypatch.setattr(client, "_audio_streaming_loop", fake_audio_streaming_loop)
-
-  await client.start_streaming(RECORDING_ID)
-  await asyncio.wait_for(loop_started.wait(), timeout=0.2)
-  audio_loop_task = client._audio_loop_task
-
-  assert client.is_streaming() is True
-  assert audio_capture.start_calls == 1
-  assert audio_capture.clear_calls == 1
-  assert audio_loop_task is not None
-  assert audio_loop_task.done() is False
-  assert connection.recording_start_ids == [RECORDING_ID]
-
-  stop_task = asyncio.create_task(client.stop_streaming())
-  await asyncio.sleep(0)
-
-  assert client.is_streaming() is False
-  assert audio_capture.stop_calls == 1
-  assert stop_task.done() is False
-
-  allow_exit.set()
-  await stop_task
-  assert audio_loop_task is not None
-  await audio_loop_task
-  assert client._audio_loop_task is None
-
-
-@pytest.mark.asyncio
-async def test_start_streaming_awaits_prior_loop_and_flush_stays_valid(
-  monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  """Restarting streaming must await the prior loop and still allow flush after stop."""
-
-  client, connection = await _connected_client(monkeypatch)
-  audio_capture = RecordingAudioCapture()
-  client._audio_capture = cast(AudioCapture, cast(object, audio_capture))
-
-  entered_loops = 0
-  concurrent_loops = 0
-  max_concurrent_loops = 0
-  release_current_loop = asyncio.Event()
-  loop_ready = asyncio.Event()
-
-  async def fake_audio_streaming_loop() -> None:
-    nonlocal entered_loops, concurrent_loops, max_concurrent_loops, release_current_loop
-
-    entered_loops += 1
-    concurrent_loops += 1
-    max_concurrent_loops = max(max_concurrent_loops, concurrent_loops)
-    loop_ready.set()
-    try:
-      await release_current_loop.wait()
-    finally:
-      concurrent_loops -= 1
-
-  monkeypatch.setattr(client, "_audio_streaming_loop", fake_audio_streaming_loop)
-
-  await client.start_streaming(RECORDING_ID)
-  await asyncio.wait_for(loop_ready.wait(), timeout=0.2)
-  first_task = client._audio_loop_task
-
-  first_stop = asyncio.create_task(client.stop_streaming())
-  await asyncio.sleep(0)
-
-  loop_ready = asyncio.Event()
-  second_start = asyncio.create_task(client.start_streaming("rec-next"))
-  await asyncio.sleep(0)
-  assert first_stop.done() is False
-  assert second_start.done() is False
-  assert audio_capture.start_calls == 1
-
-  release_current_loop.set()
-  await first_stop
-  assert first_task is not None
-  await first_task
-  release_current_loop = asyncio.Event()
-  await second_start
-  await asyncio.wait_for(loop_ready.wait(), timeout=0.2)
-
-  second_task = client._audio_loop_task
-  assert second_task is not None
-
-  second_stop = asyncio.create_task(client.stop_streaming())
-  await asyncio.sleep(0)
-  assert second_stop.done() is False
-  release_current_loop.set()
-  await second_stop
-  await second_task
-
-  async def _deliver_flush_response() -> None:
-    await connection.flush_sent.wait()
-    await _deliver(
-      client,
-      TranscriptionMessage(
-        stream="stream-live",
-        segments=[_segment("done")],
-        language="en",
-        recording_id="rec-next",
-        flush_complete=True,
-      ),
-    )
-
-  deliver_task = asyncio.create_task(_deliver_flush_response())
-  try:
-    result = await client.flush("rec-next", force_complete=False)
-  finally:
-    await deliver_task
-    await client.disconnect()
-
-  assert entered_loops == 2
-  assert max_concurrent_loops == 1
-  assert audio_capture.start_calls == 2
-  assert audio_capture.clear_calls == 2
-  assert audio_capture.stop_calls == 3  # Two recording stops plus disconnect cleanup.
-  assert client._audio_loop_task is None
-  assert connection.flush_commands == [False]
-  assert connection.flush_recording_ids == ["rec-next"]
-  assert result.flush_complete is True
-
-
-@pytest.mark.asyncio
-async def test_cancel_utterance_waits_for_stream_stop_before_sending_control(
-  monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  """Cancel must wait for the trailing audio loop to finish before sending control."""
-
-  client = EavesdropClient.transcriber(audio_device="default")
-  audio_capture = RecordingAudioCapture()
-  connection = RecordingConnection()
-  client._connected = True
-  client._audio_capture = cast(AudioCapture, cast(object, audio_capture))
-  client._connection = cast(WebSocketConnection, cast(object, connection))
-  client._message_task = asyncio.create_task(_hold_open(asyncio.Event()))
-
-  loop_started = asyncio.Event()
-  release_tail = asyncio.Event()
-
-  async def fake_audio_streaming_loop() -> None:
-    loop_started.set()
-    await release_tail.wait()
-    await connection.send_audio_data(b"tail")
-
-  monkeypatch.setattr(client, "_audio_streaming_loop", fake_audio_streaming_loop)
-
-  await client.start_streaming(RECORDING_ID)
-  await asyncio.wait_for(loop_started.wait(), timeout=0.2)
-
-  cancel_task = asyncio.create_task(client.cancel_utterance(RECORDING_ID))
-  await asyncio.sleep(0)
-
-  assert cancel_task.done() is False
-  assert connection.cancel_recording_ids == []
-  assert audio_capture.stop_calls == 1
-
-  release_tail.set()
-  await cancel_task
-
-  assert client.is_streaming() is False
-  assert connection.audio_chunks == [b"tail"]
-  assert connection.cancel_recording_ids == [RECORDING_ID]
-  assert connection.command_log == ["recording_started", "audio", "cancel"]
-
-  client._message_task.cancel()
-  await asyncio.gather(client._message_task, return_exceptions=True)
-
-
-@pytest.mark.asyncio
-async def test_audio_streaming_loop_delivers_capture_callback_in_send_order() -> None:
-  """Capture callbacks must receive the exact sent bytes after websocket send order."""
-
-  received_chunks: list[bytes] = []
-  client = EavesdropClient.transcriber(
-    audio_device="default",
-    on_capture=received_chunks.append,
-  )
-  connection = RecordingConnection()
-  client._connected = True
-  client._streaming = True
-  client._connection = cast(WebSocketConnection, cast(object, connection))
-  client._audio_capture = cast(
-    AudioCapture,
-    cast(object, ScriptedAudioCapture([b"alpha", b"bravo"], client)),
-  )
-
-  await client._audio_streaming_loop()
-
-  assert connection.audio_chunks == [b"alpha", b"bravo"]
-  assert received_chunks == connection.audio_chunks
-
-
-@pytest.mark.asyncio
-async def test_audio_streaming_loop_skips_capture_callback_when_unset() -> None:
-  """Streaming must remain a no-op for capture delivery when no callback is configured."""
-
-  client = EavesdropClient.transcriber(audio_device="default")
-  connection = RecordingConnection()
-  client._connected = True
-  client._streaming = True
-  client._connection = cast(WebSocketConnection, cast(object, connection))
-  client._audio_capture = cast(
-    AudioCapture,
-    cast(object, ScriptedAudioCapture([b"alpha"], client)),
-  )
-
-  await client._audio_streaming_loop()
-
-  assert connection.audio_chunks == [b"alpha"]
-
-
-@pytest.mark.asyncio
-async def test_next_recording_waits_for_pending_flush_and_preserves_final_event(
-  monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  """B cannot replace A while A's accepted flush response is outstanding."""
-
-  client, connection = await _connected_client(monkeypatch)
-  audio_capture = RecordingAudioCapture()
-  client._current_recording_id = RECORDING_ID
-  client._audio_capture = cast(AudioCapture, cast(object, audio_capture))
-  release_audio = asyncio.Event()
-
-  async def fake_audio_streaming_loop() -> None:
-    await release_audio.wait()
-
-  monkeypatch.setattr(client, "_audio_streaming_loop", fake_audio_streaming_loop)
-  flush_task = asyncio.create_task(client.flush(RECORDING_ID))
-  await connection.flush_sent.wait()
-  start_task = asyncio.create_task(client.start_streaming("rec-next"))
-  await asyncio.sleep(0)
-
-  try:
-    assert start_task.done() is False
-    assert connection.recording_start_ids == []
-    assert audio_capture.start_calls == 0
-
-    assert client._connection is not None
-    final_a = TranscriptionMessage(
-      stream=client._connection.stream_name,
-      segments=[_segment("recording A final")],
-      language="en",
-      recording_id=RECORDING_ID,
-      flush_complete=True,
-    )
-    await _deliver(client, final_a)
-    assert await asyncio.wait_for(flush_task, timeout=0.2) == final_a
-    await asyncio.wait_for(start_task, timeout=0.2)
-
-    assert connection.command_log == ["flush", "recording_started"]
-    assert connection.recording_start_ids == ["rec-next"]
-    event = cast(TranscriptionEvent, await asyncio.wait_for(anext(client), timeout=0.2))
-    assert event.message == final_a
-  finally:
-    for task in (flush_task, start_task):
-      if not task.done():
-        task.cancel()
-    await asyncio.gather(flush_task, start_task, return_exceptions=True)
-    release_audio.set()
-    await client.stop_streaming()
-    await client.disconnect()
-
-
-@pytest.mark.asyncio
-async def test_cancelled_recording_results_do_not_return_before_next_start(
-  monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  """Late cancelled recognition must not reach the iterator or satisfy a flush."""
-  client, connection = await _connected_client(monkeypatch)
-  client._current_recording_id = RECORDING_ID
-  await client.cancel_utterance(RECORDING_ID)
-  await _deliver(
-    client,
-    TranscriptionMessage(
-      stream="stream-live",
-      segments=[_segment("cancelled speech")],
-      language="en",
-      recording_id=RECORDING_ID,
-      flush_complete=True,
-    ),
-  )
-  await _deliver(
-    client, LanguageDetectionMessage(stream="stream-live", language="en", language_prob=0.99)
-  )
-  try:
-    event = await asyncio.wait_for(anext(client), timeout=0.2)
-    assert isinstance(event, LanguageDetectionEvent)
-    with pytest.raises(RuntimeError):
-      await client.flush(RECORDING_ID)
-    assert connection.cancel_recording_ids == [RECORDING_ID]
-    assert connection.flush_commands == []
-  finally:
-    await client.disconnect()
-
-
-@pytest.mark.asyncio
-async def test_transcription_iterator_drops_stale_recording_messages(
-  monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  """Only the current recording's recognition reaches the public iterator."""
-  client, _ = await _connected_client(monkeypatch)
-  client._current_recording_id = RECORDING_ID
-  try:
-    for recording_id, text in [("old-recording", "stale"), (RECORDING_ID, "fresh")]:
-      await _deliver(
-        client,
-        TranscriptionMessage(
-          stream="stream-live",
-          segments=[_segment(text)],
-          language="en",
-          recording_id=recording_id,
-        ),
-      )
-    event = await asyncio.wait_for(anext(client), timeout=0.2)
-    assert isinstance(event, TranscriptionEvent)
-    assert event.message.recording_id == RECORDING_ID
-    assert event.message.segments[0].text == "fresh"
-  finally:
-    await client.disconnect()
-
-
-@pytest.mark.asyncio
-async def test_flush_waits_for_new_flush_complete_message(
-  monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  """Buffered and wrong-recording completions cannot satisfy a new flush."""
-  client, connection = await _connected_client(monkeypatch)
-  client._current_recording_id = RECORDING_ID
-  stale = TranscriptionMessage(
-    stream="stream-live",
-    segments=[_segment("stale")],
-    language="en",
-    recording_id=RECORDING_ID,
-    flush_complete=True,
-  )
-  await _deliver(client, stale)
-  flush_task = asyncio.create_task(client.flush(RECORDING_ID))
-  await connection.flush_sent.wait()
-  try:
-    await _deliver(
-      client,
-      TranscriptionMessage(
-        stream="stream-live",
-        segments=[_segment("wrong")],
-        language="en",
-        recording_id="wrong-recording",
-        flush_complete=True,
-      ),
-    )
-    await asyncio.sleep(0)
-    assert flush_task.done() is False
-    await _deliver(
-      client,
-      TranscriptionMessage(
-        stream="stream-live",
-        segments=[_segment("fresh")],
-        language="en",
-        recording_id=RECORDING_ID,
-        flush_complete=True,
-      ),
-    )
-    result = await asyncio.wait_for(flush_task, timeout=0.2)
-    assert result.segments[0].text == "fresh"
-    assert connection.flush_commands == [True]
-    assert connection.flush_recording_ids == [RECORDING_ID]
-  finally:
-    if not flush_task.done():
-      flush_task.cancel()
-    await asyncio.gather(flush_task, return_exceptions=True)
-    await client.disconnect()
-
-
-@pytest.mark.asyncio
-async def test_flush_rejects_second_local_waiter_before_second_send(
-  monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  """flush() must fail fast locally when another flush call is already pending."""
-
-  client, connection = await _connected_client(monkeypatch)
-  client._current_recording_id = RECORDING_ID
-
-  first_flush = asyncio.create_task(client.flush(RECORDING_ID))
-  await connection.flush_sent.wait()
-
-  with pytest.raises(RuntimeError, match="already in progress"):
-    await client.flush(RECORDING_ID)
-
-  await _deliver(
-    client,
-    TranscriptionMessage(
-      stream="stream-live",
-      segments=[_segment("done")],
-      language="en",
-      recording_id=RECORDING_ID,
-      flush_complete=True,
-    ),
-  )
-
-  try:
-    await first_flush
-  finally:
-    await client.disconnect()
-
-  assert connection.flush_commands == [True]
-
-
-@pytest.mark.asyncio
-async def test_flush_surfaces_server_rejection_message(
-  monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  """flush() must propagate server-side rejection text as a runtime error."""
-
-  client, connection = await _connected_client(monkeypatch)
-
-  flush_task = asyncio.create_task(client.flush(RECORDING_ID, force_complete=True))
-  await connection.flush_sent.wait()
-  client._on_error("server refused flush")
-
-  try:
-    with pytest.raises(RuntimeError, match="server refused flush"):
-      await flush_task
-  finally:
-    await client.disconnect()
-
-  assert connection.flush_commands == [True]
-
-
-@pytest.mark.asyncio
-async def test_flush_surfaces_disconnect_reason_when_socket_drops(
-  monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  """flush() must fail with the disconnect reason if the live socket drops mid-flight."""
-
-  client, connection = await _connected_client(monkeypatch)
-
-  flush_task = asyncio.create_task(client.flush(RECORDING_ID, force_complete=True))
-  await connection.flush_sent.wait()
-  client._on_disconnect("socket lost during flush")
-
-  try:
-    with pytest.raises(RuntimeError, match="socket lost during flush"):
-      await flush_task
-  finally:
-    await client.disconnect()
-
-  assert connection.flush_commands == [True]

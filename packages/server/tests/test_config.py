@@ -6,6 +6,7 @@ import pytest
 
 from eavesdrop.server.config import (
   BufferConfig,
+  EavesdropConfig,
   TranscriptionConfig,
   load_config_from_file,
 )
@@ -154,7 +155,7 @@ transcription:
     """Test error handling for empty config file."""
     fake_filesystem.create_file("/test/empty.yaml", contents="")
 
-    with pytest.raises(ValueError, match="Configuration file is empty"):
+    with pytest.raises(ValueError, match="valid dictionary"):
       load_config_from_file(Path("/test/empty.yaml"))
 
   def test_load_invalid_yaml(self, fake_filesystem):
@@ -182,3 +183,25 @@ transcription:
 
     with pytest.raises(ValueError, match="Extra inputs are not permitted"):
       load_config_from_file(Path("/test/config.yaml"))
+
+
+@pytest.mark.parametrize(
+  ("field", "value"),
+  [("clip_audio", "false"), ("sample_rate", "16000"), ("transcription_interval", "2.0")],
+)
+def test_public_configuration_rejects_coerced_buffer_values(field: str, value: str) -> None:
+  """The public model boundary must reject nested string-to-scalar coercion."""
+  with pytest.raises(ValueError):
+    EavesdropConfig.model_validate({"transcription": {"buffer": {field: value}}})
+
+
+@pytest.mark.parametrize(
+  "setting",
+  ['clip_audio: "false"', 'sample_rate: "16000"', 'transcription_interval: "2.0"'],
+)
+def test_yaml_configuration_rejects_coerced_buffer_values(tmp_path: Path, setting: str) -> None:
+  """File loading must enforce the same strict nested schema as the public model."""
+  path = tmp_path / "invalid-buffer.yaml"
+  path.write_text(f"transcription:\n  buffer:\n    {setting}\n", encoding="utf-8")
+  with pytest.raises(ValueError):
+    load_config_from_file(path)

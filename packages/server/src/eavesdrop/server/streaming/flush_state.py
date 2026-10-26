@@ -37,12 +37,12 @@ class LiveSessionFlushState:
       return self._active_utterance_generation
 
   def current_recording_id(self) -> str | None:
-    """Return the active live recording epoch identifier."""
+    """Return the active recording identifier."""
     with self._lock:
       return self._current_recording_id
 
   def start_recording(self, recording_id: str) -> int:
-    """Reset live-session control state for a newly accepted recording epoch."""
+    """Reset control state for a newly accepted recording identifier."""
     with self._lock:
       self._active_utterance_generation += 1
       self._current_recording_id = recording_id

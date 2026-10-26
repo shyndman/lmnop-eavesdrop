@@ -2,29 +2,36 @@ from __future__ import annotations
 
 import asyncio
 import secrets
-from dataclasses import dataclass, field
 
 from structlog.stdlib import BoundLogger
 
-from active_listener.app.overlay import publish_live_transcription
+from active_listener.app.overlay import update_dbus_transcription
 from active_listener.app.ports import (
   ActiveListenerClient,
   ActiveListenerRewriteClient,
   ActiveListenerTranscriptHistoryStore,
   MediaPlaybackController,
 )
-from active_listener.app.signals import ClientSignal, KeyboardEventSignal, RuntimeSignal
+from active_listener.app.recording_keyboard import RecordingKeyboard
+from active_listener.app.signals import (
+  ClientSignal,
+  ConnectedSignal,
+  DisconnectedSignal,
+  KeyboardEventSignal,
+  ReconnectedSignal,
+  ReconnectingSignal,
+  RuntimeSignal,
+  bind_client_callbacks,
+)
 from active_listener.app.state import (
   AppAction,
   AppActionDecision,
-  ConnectionDecision,
   ForegroundPhase,
   decide_app_action,
-  decide_client_event,
 )
 from active_listener.app.workstation import (
-  SpectrumRuntime,
-  WorkstationEffects,
+  RecordingWorkstation,
+  SpectrumAnalyzer,
   build_noop_spectrum_analyzer,
 )
 from active_listener.config.models import ActiveListenerConfig
@@ -34,60 +41,75 @@ from active_listener.infra.emitter import TextEmitter
 from active_listener.infra.keyboard import KeyboardControlEvent, KeyboardEventKind, KeyboardInput
 from active_listener.infra.langfuse import RecordingTrace, end_recording_observation
 from active_listener.recording.finalizer import RecordingFinalizer
-from active_listener.recording.session import RecordingAudioBuffer, RecordingSession
-from eavesdrop.client import (
-  ConnectedEvent,
-  DisconnectedEvent,
-  LanguageDetectionEvent,
-  LiveClientEvent,
-  ReconnectedEvent,
-  ReconnectingEvent,
-  TranscriptionEvent,
-)
+from active_listener.recording.session import RecordingAudioBuffer, RecordingTranscript
+from eavesdrop.wire import TranscriptionMessage
 
 UNKNOWN_DISCONNECT_REASON = "unknown disconnect reason"
 
 
-@dataclass
 class ActiveListenerService:
-  """Long-running active-listener service instance."""
+  """Coordinate hardware, foreground recording, and transferred finalization.
 
-  config: ActiveListenerConfig
-  keyboard: KeyboardInput
-  client: ActiveListenerClient
-  emitter: TextEmitter
-  logger: BoundLogger
-  rewrite_client: ActiveListenerRewriteClient
-  history_store: ActiveListenerTranscriptHistoryStore
-  dbus_service: AppStateService
-  media_playback_controller: MediaPlaybackController
-  recording_audio_buffer: RecordingAudioBuffer
-  correction_store: ActiveListenerCorrectionStore = field(default_factory=CorrectionStore.default)
-  spectrum_analyzer: SpectrumRuntime = field(default_factory=build_noop_spectrum_analyzer)
-  phase: ForegroundPhase = ForegroundPhase.IDLE
-  disconnect_generation: int = 0
-  _llm_available: bool = field(default=False, init=False)
-  _llm_active: bool = field(default=False, init=False)
-  _trace: RecordingTrace = field(init=False)
-  _workstation: WorkstationEffects = field(init=False)
-  _recording_session: RecordingSession = field(init=False)
-  _recording_finalizer: RecordingFinalizer = field(init=False)
-  _background_tasks: set[asyncio.Task[None]] = field(default_factory=set)
+  Constructor dependencies are initialized workstation resources. Client callbacks
+  enqueue into the owned application queue before connect; run consumes it in order.
+  Finalization owns each finished snapshot independently of later foreground state.
+  """
 
-  def __post_init__(self) -> None:
-    self._trace = RecordingTrace(self.logger)
-    self._workstation = WorkstationEffects(
-      self.media_playback_controller, self.spectrum_analyzer, self.logger
+  def __init__(
+    self,
+    *,
+    config: ActiveListenerConfig,
+    keyboard: KeyboardInput,
+    client: ActiveListenerClient,
+    emitter: TextEmitter,
+    logger: BoundLogger,
+    rewrite_client: ActiveListenerRewriteClient,
+    history_store: ActiveListenerTranscriptHistoryStore,
+    dbus_service: AppStateService,
+    media_playback_controller: MediaPlaybackController,
+    recording_audio_buffer: RecordingAudioBuffer,
+    correction_store: ActiveListenerCorrectionStore | None = None,
+    spectrum_analyzer: SpectrumAnalyzer | None = None,
+    phase: ForegroundPhase = ForegroundPhase.IDLE,
+  ) -> None:
+    self.config: ActiveListenerConfig = config
+    self.keyboard: KeyboardInput = keyboard
+    self.client: ActiveListenerClient = client
+    self.emitter: TextEmitter = emitter
+    self.logger: BoundLogger = logger
+    self.rewrite_client: ActiveListenerRewriteClient = rewrite_client
+    self.history_store: ActiveListenerTranscriptHistoryStore = history_store
+    self.dbus_service: AppStateService = dbus_service
+    self.phase: ForegroundPhase = phase
+    self.correction_store: ActiveListenerCorrectionStore = (
+      correction_store or CorrectionStore.default()
     )
-    self._llm_available = self.config.llm_rewrite is not None
-    self._llm_active = self._llm_available
-    self._recording_session = RecordingSession(
-      keyboard=self.keyboard,
-      client=self.client,
-      logger=self.logger,
-      audio_buffer=self.recording_audio_buffer,
+    self._llm_available: bool = config.llm_rewrite is not None
+    self._llm_active: bool = self._llm_available
+    self._background_tasks: set[asyncio.Task[None]] = set()
+    self._signal_queue: asyncio.Queue[RuntimeSignal] = asyncio.Queue()
+    bind_client_callbacks(client, self._signal_queue)
+    self._initialize_recording(
+      media_playback_controller,
+      spectrum_analyzer or build_noop_spectrum_analyzer(),
+      recording_audio_buffer,
     )
-    self._recording_finalizer = RecordingFinalizer(
+
+  def _initialize_recording(
+    self,
+    media: MediaPlaybackController,
+    spectrum: SpectrumAnalyzer,
+    audio: RecordingAudioBuffer,
+  ) -> None:
+    self._trace: RecordingTrace = RecordingTrace(self.logger)
+    self._workstation: RecordingWorkstation = RecordingWorkstation(media, spectrum, self.logger)
+    self._recording_transcript: RecordingTranscript = RecordingTranscript(
+      client=self.client, logger=self.logger, audio_buffer=audio
+    )
+    self._recording_keyboard: RecordingKeyboard = RecordingKeyboard(
+      self.keyboard, self._recording_transcript, self.logger
+    )
+    self._recording_finalizer: RecordingFinalizer = RecordingFinalizer(
       config=self.config,
       client=self.client,
       emitter=self.emitter,
@@ -95,13 +117,11 @@ class ActiveListenerService:
       rewrite_client=self.rewrite_client,
       history_store=self.history_store,
       dbus_service=self.dbus_service,
-      current_llm_available=self.current_llm_available,
-      current_llm_active=self.current_llm_active,
-      current_disconnect_generation=self._current_disconnect_generation,
       correction_store=self.correction_store,
     )
 
   async def run(self) -> None:
+    """Consume hardware and client callback signals until cancellation, then close."""
     self.logger.info(
       "active-listener ready",
       keyboard_name=self.config.keyboard_name,
@@ -109,368 +129,310 @@ class ActiveListenerService:
       port=self.config.port,
       audio_device=self.config.audio_device,
     )
-
-    signal_queue: asyncio.Queue[RuntimeSignal] = asyncio.Queue()
-    producer_tasks = {
-      asyncio.create_task(self._pump_keyboard_events(signal_queue)),
-      asyncio.create_task(self._pump_client_events(signal_queue)),
-    }
-
+    keyboard_task = asyncio.create_task(self._pump_keyboard_events())
     try:
       while True:
-        signal = await signal_queue.get()
-        if isinstance(signal, KeyboardEventSignal):
-          await self.handle_keyboard_event(signal.event)
-        else:
-          await self.handle_client_event(signal.event)
+        signal = await self._signal_queue.get()
+        match signal:
+          case KeyboardEventSignal(event=event):
+            await self.handle_keyboard_event(event)
+          case _:
+            await self.handle_client_event(signal)
     finally:
-      for task in producer_tasks:
-        _ = task.cancel()
-      if producer_tasks:
-        _ = await asyncio.gather(*producer_tasks, return_exceptions=True)
+      _ = keyboard_task.cancel()
+      _ = await asyncio.gather(keyboard_task, return_exceptions=True)
       await self.close()
 
   async def close(self) -> None:
-    cleanup_errors: list[Exception] = []
-
+    """End owned observations and release workstation resources despite failures."""
+    errors: list[Exception] = []
     try:
-      await self._workstation.close()
-    except Exception as exc:
-      cleanup_errors.append(exc)
-
-    for task in list(self._background_tasks):
-      _ = task.cancel()
-    if self._background_tasks:
-      _ = await asyncio.gather(*self._background_tasks, return_exceptions=True)
-      self._background_tasks.clear()
-
-    try:
-      if self.phase is ForegroundPhase.RECORDING:
+      if self._recording_transcript.is_recording:
+        self.phase = ForegroundPhase.IDLE
+        observation = self._trace.transfer_and_clear_observation()
         try:
-          self.phase = ForegroundPhase.IDLE
-          recording_observation = self._trace.take()
-          try:
-            await self._recording_session.stop_recording()
-          finally:
-            end_recording_observation(
-              recording_observation,
-              logger=self.logger,
-              status_message="recording stopped during shutdown",
-            )
-            await self._workstation.resume_media()
+          await self._stop_capture()
         except Exception as exc:
-          cleanup_errors.append(exc)
-
-      try:
-        await self.client.disconnect()
-      except Exception as exc:
-        cleanup_errors.append(exc)
-
+          self.logger.exception("recording shutdown failed")
+          errors.append(exc)
+        finally:
+          end_recording_observation(
+            observation, logger=self.logger, status_message="recording stopped during shutdown"
+          )
+          await self._workstation.resume_media()
+      # Disconnect fails any outstanding server flush immediately. Already accepted
+      # results remain owned by finalization, which is drained before rewrite closes.
+      for cleanup in (self._workstation.close, self.client.disconnect):
+        try:
+          await cleanup()
+        except Exception as exc:
+          self.logger.exception("listener resource cleanup failed")
+          errors.append(exc)
+      await self.wait_for_background_tasks()
       try:
         await self.rewrite_client.close()
       except Exception as exc:
-        cleanup_errors.append(exc)
+        self.logger.exception("rewrite client cleanup failed")
+        errors.append(exc)
     finally:
       self.keyboard.close()
-
-    if len(cleanup_errors) == 1:
-      raise cleanup_errors[0]
-    if cleanup_errors:
-      raise ExceptionGroup("active-listener close failed", cleanup_errors)
+    if len(errors) == 1:
+      raise errors[0]
+    if errors:
+      raise ExceptionGroup("active-listener close failed", errors)
 
   async def wait_for_background_tasks(self) -> None:
+    """Drain finalization work already accepted from finished recordings."""
     if self._background_tasks:
       _ = await asyncio.gather(*list(self._background_tasks), return_exceptions=True)
 
   def current_llm_available(self) -> bool:
+    """Return whether a rewrite provider is configured."""
     return self._llm_available
 
   def current_llm_active(self) -> bool:
+    """Return the current user-controlled rewrite choice."""
     return self._llm_active
 
   async def set_llm_active(self, active: bool) -> bool:
+    """Set rewriting for recordings that finish after this call.
+
+    :param active: Requested rewrite choice.
+    :return: Effective choice.
+    :raises RuntimeError: If no rewrite provider is configured.
+    """
     if not self._llm_available:
+      self.logger.error("rewrite toggle requested without a configured provider")
       raise RuntimeError("llm unavailable")
-
-    if self._llm_active == active:
-      return self._llm_active
-
     self._llm_active = active
     self.logger.info("llm runtime toggled", active=active)
-    return self._llm_active
+    return active
 
   async def handle_action(self, action: AppAction) -> AppActionDecision:
+    """Apply a public workstation action using the current foreground phase.
+
+    :param action: Start/finish or cancel request.
+    :return: Applied or ignored policy decision.
+    """
     decision = decide_app_action(self.phase, action)
+    match decision:
+      case AppActionDecision.START_RECORDING:
+        await self._start_recording()
+      case AppActionDecision.CANCEL_RECORDING:
+        await self._cancel_recording()
+      case AppActionDecision.FINISH_RECORDING:
+        await self._finish_recording()
+      case AppActionDecision.SUPPRESS_RECONNECTING_START:
+        self.logger.info("recording start suppressed while reconnecting")
+      case AppActionDecision.IGNORE:
+        self.logger.info("recording action ignored", action=action.value)
+    return decision
 
-    if decision is AppActionDecision.IGNORE:
-      if action is AppAction.CANCEL:
-        self.logger.info("cancel ignored while idle")
-      return decision
-
-    if decision is AppActionDecision.SUPPRESS_RECONNECTING_START:
-      self.logger.info("recording start suppressed while reconnecting")
-      return decision
-
-    if decision is AppActionDecision.START_RECORDING:
-      await self._recording_finalizer.wait_for_pending_flushes()
-
-      recording_id = secrets.token_hex(8)
-      correction_load_task = asyncio.create_task(self.correction_store.load_async())
-      self._trace.start(recording_id=recording_id)
-      await asyncio.sleep(0)
+  async def _start_recording(self) -> None:
+    await self._recording_finalizer.wait_for_pending_flushes()
+    recording_id = secrets.token_hex(8)
+    correction_task = asyncio.create_task(self.correction_store.load_async())
+    self._trace.start(recording_id=recording_id)
+    try:
       await self._workstation.start()
-      try:
-        await self._recording_session.start_recording(
-          recording_id,
-          correction_load_task=correction_load_task,
-        )
-        await self.client.start_streaming(recording_id)
-        self.phase = ForegroundPhase.RECORDING
-        await self.dbus_service.set_state(self.phase)
-        self.logger.info("recording started")
-        self._trace.recording_event(
-          name="active-listener-recording-started",
-          metadata={"stream": self._trace.stream, "recording_id": recording_id},
-        )
-        return decision
-      except Exception:
-        recording_observation = self._trace.take()
-        try:
-          if self._recording_session.is_recording:
-            await self._recording_session.stop_recording()
-          else:
-            if not correction_load_task.done():
-              _ = correction_load_task.cancel()
-            _ = await asyncio.gather(correction_load_task, return_exceptions=True)
-          await self._workstation.stop_spectrum()
-        finally:
-          end_recording_observation(
-            recording_observation,
-            logger=self.logger,
-            level="ERROR",
-            status_message="recording start failed",
-          )
-          await self._workstation.resume_media()
-        raise
-
-    if decision is AppActionDecision.CANCEL_RECORDING:
-      recording_id = self._recording_session.active_recording_id
-      if recording_id is None:
-        raise RuntimeError("cancel requested without active recording id")
-
+      await self._recording_keyboard.start()
+      await self._recording_transcript.start_recording(
+        recording_id, correction_load_task=correction_task
+      )
+      await self.client.start_streaming(recording_id)
+      self.phase = ForegroundPhase.RECORDING
+      await self.dbus_service.set_state(self.phase)
+      self.logger.info("recording started")
+      self._trace.recording_event(
+        name="active-listener-recording-started",
+        metadata={
+          "session_id": self._trace.session_id,
+          "recording_id": recording_id,
+        },
+      )
+    except Exception:
+      self.logger.exception("recording start failed")
+      observation = self._trace.transfer_and_clear_observation()
       self.phase = ForegroundPhase.IDLE
-      recording_observation = self._trace.take()
-      observation_level: str | None = None
-      observation_status_message = "recording cancelled"
       try:
+        await self._recording_keyboard.stop()
+        if self._recording_transcript.is_recording:
+          await self._recording_transcript.stop_recording()
+        else:
+          _ = correction_task.cancel()
+          _ = await asyncio.gather(correction_task, return_exceptions=True)
         await self._workstation.stop_spectrum()
-        await self._recording_session.stop_recording()
-        await self.dbus_service.set_state(self.phase)
-        await self.client.cancel_utterance(recording_id)
-        self._recording_session.reset_connection_cursor()
-        self.logger.info("recording cancelled")
-        self._trace.recording_event(
-          recording_observation=recording_observation,
-          name="active-listener-recording-cancelled",
-          metadata={"stream": self._trace.stream, "recording_id": recording_id},
-        )
-        return decision
-      except Exception:
-        observation_level = "ERROR"
-        observation_status_message = "recording cancel failed"
-        raise
       finally:
         end_recording_observation(
-          recording_observation,
-          logger=self.logger,
-          level=observation_level,
-          status_message=observation_status_message,
+          observation, logger=self.logger, level="ERROR", status_message="recording start failed"
         )
         await self._workstation.resume_media()
+      raise
 
-    self.phase = ForegroundPhase.IDLE
-    recording_observation = self._trace.take()
+  async def _stop_capture(self) -> None:
     try:
-      finished_recording = await self._recording_session.finish_recording()
+      await self._recording_keyboard.stop()
+    finally:
+      await self._recording_transcript.stop_recording()
+
+  async def _cancel_recording(self) -> None:
+    recording_id = self._recording_transcript.active_recording_id
+    if recording_id is None:
+      self.logger.error("cancel requested without active recording id")
+      raise RuntimeError("cancel requested without active recording id")
+    self.phase = ForegroundPhase.IDLE
+    observation = self._trace.transfer_and_clear_observation()
+    try:
+      await self._workstation.stop_spectrum()
+      await self._stop_capture()
+      await self.dbus_service.set_state(self.phase)
+      await self.client.cancel_utterance(recording_id)
+      self._recording_transcript.reset_connection_cursor()
+      self._trace.recording_event(
+        recording_observation=observation,
+        name="active-listener-recording-cancelled",
+        metadata={"session_id": self._trace.session_id, "recording_id": recording_id},
+      )
+      self.logger.info("recording cancelled")
+    except Exception:
+      self.logger.exception("recording cancel failed")
+      raise
+    finally:
+      end_recording_observation(
+        observation, logger=self.logger, status_message="recording cancelled"
+      )
+      await self._workstation.resume_media()
+
+  async def _finish_recording(self) -> None:
+    self.phase = ForegroundPhase.IDLE
+    observation = self._trace.transfer_and_clear_observation()
+    try:
+      await self._recording_keyboard.stop()
+      recording = await self._recording_transcript.finish_recording()
       await self._workstation.stop_spectrum()
       await self.dbus_service.set_state(self.phase)
       self._recording_finalizer.reserve_flush()
       try:
-        finalization_task = asyncio.create_task(
+        task = asyncio.create_task(
           self._recording_finalizer.finalize_recording(
-            disconnect_generation=self.disconnect_generation,
-            finished_recording=finished_recording,
-            recording_observation=recording_observation,
+            finished_recording=recording,
+            recording_observation=observation,
+            llm_available=self._llm_available,
+            llm_active=self._llm_active,
           )
         )
-        recording_observation = None
       except Exception:
         self._recording_finalizer.cancel_reserved_flush()
         raise
-      self._background_tasks.add(finalization_task)
-      finalization_task.add_done_callback(self._background_tasks.discard)
+      observation = None
+      self._background_tasks.add(task)
+      task.add_done_callback(self._background_tasks.discard)
       self.logger.info("recording finished", background_finalization=True)
-      return decision
     except Exception:
+      self.logger.exception("recording finish failed")
       end_recording_observation(
-        recording_observation,
-        logger=self.logger,
-        level="ERROR",
-        status_message="recording finish failed",
+        observation, logger=self.logger, level="ERROR", status_message="recording finish failed"
       )
       raise
     finally:
       await self._workstation.resume_media()
 
   async def handle_keyboard_event(self, event: KeyboardControlEvent) -> None:
-    if event.kind is KeyboardEventKind.ESCAPE_DOWN:
-      _ = await self.handle_action(AppAction.CANCEL)
-      return
+    """Translate hardware gestures into recording actions or command intervals.
 
-    if self.phase is not ForegroundPhase.RECORDING:
-      if event.kind is KeyboardEventKind.CAPSLOCK_DOWN:
-        _ = await self.handle_action(AppAction.START_OR_FINISH)
-      return
+    :param event: Normalized keyboard event and receipt timestamp.
+    """
+    match event.kind:
+      case KeyboardEventKind.ESCAPE_DOWN:
+        _ = await self.handle_action(AppAction.CANCEL)
+      case KeyboardEventKind.CAPSLOCK_DOWN:
+        if self.phase is ForegroundPhase.RECORDING:
+          await self._recording_keyboard.capslock_down(event.received_monotonic_s)
+        else:
+          _ = await self.handle_action(AppAction.START_OR_FINISH)
+      case KeyboardEventKind.CAPSLOCK_UP:
+        if self.phase is ForegroundPhase.RECORDING:
+          if await self._recording_keyboard.capslock_up(event.received_monotonic_s):
+            _ = await self.handle_action(AppAction.START_OR_FINISH)
 
-    if event.kind is KeyboardEventKind.CAPSLOCK_DOWN:
-      await self._recording_session.handle_capslock_down(event.received_monotonic_s)
-      return
+  async def handle_client_event(self, event: ClientSignal) -> None:
+    """Apply an app-local lifecycle signal or original wire transcription.
 
-    if event.kind is KeyboardEventKind.CAPSLOCK_UP:
-      should_finish_recording = await self._recording_session.handle_capslock_up(
-        event.received_monotonic_s
-      )
-      if should_finish_recording:
-        _ = await self.handle_action(AppAction.START_OR_FINISH)
-
-  async def handle_client_event(self, event: LiveClientEvent) -> None:
-    if isinstance(event, LanguageDetectionEvent):
-      # Language metadata does not change the recording lifecycle or transcript.
-      return
-
-    if isinstance(event, TranscriptionEvent):
-      self._trace.stream = event.stream
-      await publish_live_transcription(
-        event,
-        phase=self.phase,
-        recording=self._recording_session,
-        dbus=self.dbus_service,
-        logger=self.logger,
-      )
-      return
-
-    self._trace.stream = event.stream
-
-    if isinstance(event, ConnectedEvent | ReconnectedEvent):
-      self._recording_session.reset_connection_cursor()
-
-    decision = decide_client_event(self.phase, event)
-
-    if isinstance(event, ConnectedEvent):
-      self._trace.session_event(
-        session_id=event.stream,
-        name="active-listener-client-connected",
-        metadata={"stream": event.stream},
-      )
-
-    if decision is ConnectionDecision.IGNORE:
-      return
-
-    if decision is ConnectionDecision.CONNECTED:
-      self.phase = ForegroundPhase.IDLE
-      await self.dbus_service.set_state(self.phase)
-      self.logger.info("client connected", stream=event.stream)
-      return
-
-    if decision is ConnectionDecision.RECONNECTING:
-      self.phase = ForegroundPhase.RECONNECTING
-      await self.dbus_service.set_state(self.phase)
-      await self.dbus_service.reconnecting()
-      reconnect_event = event
-      if isinstance(reconnect_event, ReconnectingEvent):
-        self.logger.warning(
-          "client reconnecting",
-          stream=reconnect_event.stream,
-          attempt=reconnect_event.attempt,
-          retry_delay_s=reconnect_event.retry_delay_s,
+    :param event: Signal enqueued by a synchronous client callback.
+    """
+    match event:
+      case TranscriptionMessage():
+        self._trace.session_id = event.stream
+        await update_dbus_transcription(
+          event,
+          phase=self.phase,
+          recording=self._recording_transcript,
+          dbus=self.dbus_service,
+          logger=self.logger,
         )
+      case ConnectedSignal(session_id=session_id):
+        self._trace.session_id = session_id
+        self._recording_transcript.reset_connection_cursor()
         self._trace.session_event(
-          session_id=reconnect_event.stream,
-          name="active-listener-client-reconnecting",
-          metadata={
-            "stream": reconnect_event.stream,
-            "attempt": reconnect_event.attempt,
-            "retry_delay_s": reconnect_event.retry_delay_s,
-          },
+          name="active-listener-client-connected", metadata={"session_id": session_id}
         )
-      return
-
-    if decision is ConnectionDecision.RECONNECTED:
-      self.phase = ForegroundPhase.IDLE
-      await self.dbus_service.set_state(self.phase)
-      await self.dbus_service.reconnected()
-      reconnected_event = event
-      assert isinstance(reconnected_event, ReconnectedEvent)
-      self.logger.info("client reconnected", stream=reconnected_event.stream)
-      self._trace.session_event(
-        session_id=reconnected_event.stream,
-        name="active-listener-client-reconnected",
-        metadata={"stream": reconnected_event.stream},
-      )
-      return
-
-    self.disconnect_generation += 1
-    self.phase = ForegroundPhase.RECONNECTING
-    disconnected_event = event
-    assert isinstance(disconnected_event, DisconnectedEvent)
-    disconnect_reason = disconnected_event.reason or UNKNOWN_DISCONNECT_REASON
-    aborted_recording_id = self._recording_session.active_recording_id
-
-    if decision is ConnectionDecision.ABORT_RECORDING:
-      self.phase = ForegroundPhase.RECONNECTING
-      try:
-        await self._workstation.stop_spectrum()
-        await self._recording_session.stop_recording()
+        if self.phase is ForegroundPhase.STARTING:
+          self.phase = ForegroundPhase.IDLE
+          await self.dbus_service.set_state(self.phase)
+      case ReconnectingSignal(session_id=session_id, attempt=attempt, retry_delay_s=delay):
+        self._trace.session_id = session_id
+        self.phase = ForegroundPhase.RECONNECTING
         await self.dbus_service.set_state(self.phase)
-        await self.dbus_service.recording_aborted(disconnect_reason)
         await self.dbus_service.reconnecting()
         self.logger.warning(
-          "recording aborted by disconnect",
-          stream=disconnected_event.stream,
-          reason=disconnect_reason,
+          "client reconnecting", session_id=session_id, attempt=attempt, retry_delay_s=delay
         )
+      case ReconnectedSignal(session_id=session_id):
+        self._trace.session_id = session_id
+        self._recording_transcript.reset_connection_cursor()
+        self.phase = ForegroundPhase.IDLE
+        await self.dbus_service.set_state(self.phase)
+        await self.dbus_service.reconnected()
+        self._trace.session_event(
+          name="active-listener-client-reconnected", metadata={"session_id": session_id}
+        )
+      case DisconnectedSignal(session_id=session_id, reason=reason):
+        await self._handle_disconnect(session_id, reason or UNKNOWN_DISCONNECT_REASON)
+
+  async def _handle_disconnect(self, session_id: str, reason: str) -> None:
+    self._trace.session_id = session_id
+    was_recording = self._recording_transcript.is_recording
+    recording_id = self._recording_transcript.active_recording_id
+    self.phase = ForegroundPhase.RECONNECTING
+    if was_recording:
+      observation = self._trace.transfer_and_clear_observation()
+      try:
+        await self._workstation.stop_spectrum()
+        await self._stop_capture()
+        await self.dbus_service.set_state(self.phase)
+        await self.dbus_service.recording_aborted(reason)
+        await self.dbus_service.reconnecting()
         self._trace.recording_event(
+          recording_observation=observation,
           name="active-listener-recording-aborted",
-          metadata={
-            "stream": disconnected_event.stream,
-            "recording_id": aborted_recording_id,
-            "reason": disconnect_reason,
-          },
+          metadata={"session_id": session_id, "recording_id": recording_id, "reason": reason},
         )
-        return
       finally:
+        end_recording_observation(
+          observation,
+          logger=self.logger,
+          level="ERROR",
+          status_message="recording aborted by disconnect",
+        )
         await self._workstation.resume_media()
-
-    await self.dbus_service.set_state(self.phase)
-
-    self.logger.warning(
-      "client disconnected",
-      stream=disconnected_event.stream,
-      reason=disconnect_reason,
-    )
+    else:
+      await self.dbus_service.set_state(self.phase)
+    self.logger.warning("client disconnected", session_id=session_id, reason=reason)
     self._trace.session_event(
-      session_id=disconnected_event.stream,
       name="active-listener-client-disconnected",
-      metadata={"stream": disconnected_event.stream, "reason": disconnect_reason},
+      metadata={"session_id": session_id, "reason": reason},
     )
 
-  async def _pump_keyboard_events(self, signal_queue: asyncio.Queue[RuntimeSignal]) -> None:
+  async def _pump_keyboard_events(self) -> None:
     async for event in self.keyboard.events():
-      await signal_queue.put(KeyboardEventSignal(event=event))
-
-  async def _pump_client_events(self, signal_queue: asyncio.Queue[RuntimeSignal]) -> None:
-    async for event in self.client:
-      await signal_queue.put(ClientSignal(event=event))
-
-  def _current_disconnect_generation(self) -> int:
-    return self.disconnect_generation
+      await self._signal_queue.put(KeyboardEventSignal(event=event))

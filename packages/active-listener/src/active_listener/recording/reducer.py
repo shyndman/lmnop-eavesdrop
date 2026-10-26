@@ -102,8 +102,8 @@ class SegmentReduction:
 
   :ivar segments: Newly committed segments explicitly completed by the server.
   :vartype segments: list[Segment]
-  :ivar incomplete_segments: Current revisable segments in window order.
-  :vartype incomplete_segments: list[Segment]
+  :ivar incomplete_segment: The single timed segment still open for revision.
+  :vartype incomplete_segment: Segment | None
   :ivar last_id: Identifier to store for the next reduction.
   :vartype last_id: int | None
   :ivar missing_last_id: True when the previous sentinel was absent.
@@ -111,7 +111,7 @@ class SegmentReduction:
   """
 
   segments: list[Segment]
-  incomplete_segments: list[Segment]
+  incomplete_segment: Segment | None
   last_id: int | None
   missing_last_id: bool
 
@@ -122,18 +122,18 @@ def reduce_new_segments(
 ) -> SegmentReduction:
   """Return newly committed segments from a transcription window.
 
-  Completion is explicit: every incomplete segment remains revisable, regardless
-  of its position in the window.
+  Completion is explicit: the single incomplete timed segment remains revisable
+  until the server completes it, including when VAD is disabled.
 
   :param segments: Window returned by the transcriber.
   :type segments: Sequence[Segment]
   :param last_id: Previously committed segment identifier.
   :type last_id: int | None
-  :returns: Newly completed segments, all provisional segments, and sentinel status.
+  :returns: Newly completed segments, the provisional segment, and sentinel status.
   :rtype: SegmentReduction
   """
 
-  incomplete_segments = [segment for segment in segments if not segment.completed]
+  incomplete_segment = next((segment for segment in segments if not segment.completed), None)
   committed_segments = [segment for segment in segments if segment.completed]
   new_segments = committed_segments
   missing_last_id = False
@@ -149,7 +149,7 @@ def reduce_new_segments(
 
   return SegmentReduction(
     segments=new_segments,
-    incomplete_segments=incomplete_segments,
+    incomplete_segment=incomplete_segment,
     last_id=committed_segments[-1].id if committed_segments else last_id,
     missing_last_id=missing_last_id,
   )
@@ -176,12 +176,12 @@ def apply_segment_reduction(state: RecordingReducerState, reduction: SegmentRedu
         state.last_word_end = word.end_s
     state.seen_segment_ids.add(segment.id)
 
-  state.incomplete_words = [
-    word
-    for segment in reduction.incomplete_segments
-    if segment.id not in state.seen_segment_ids
-    for word in segment_words(segment, is_complete=False)
-  ]
+  incomplete = reduction.incomplete_segment
+  state.incomplete_words = (
+    segment_words(incomplete, is_complete=False)
+    if incomplete is not None and incomplete.id not in state.seen_segment_ids
+    else []
+  )
 
 
 def classify_word(word: TimedWord, timeline: RecordingReducerState) -> bool:

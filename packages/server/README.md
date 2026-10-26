@@ -44,9 +44,13 @@ transcription:
 - `device` accepts `cpu` (default) or `vulkan`. Vulkan requires Linux x86_64 and uses GPU 0; configurable GPU selection via `device_index` is unsupported. Native host inference requires a Vulkan-capable GPU and userspace driver. Container requirements are described below.
 - The client contract remains English-only (`language: en`), without a new language-selection feature or translation.
 - Input audio remains mono float32 at 16 kHz, with original recording offsets preserved.
-- Native segment and individual word timestamps are mandatory output.
+- Timed segment and individual word timestamps are mandatory output.
 
 Start from `config.sample.yaml` when upgrading. Removed options such as `custom_model`, `initial_prompt`, `hotwords`, `beam_size`, `num_workers`, `same_output_threshold`, and `gpu_name` remain unsupported. Clients must not send removed task/model options. The former Python NeMo runtime and its caches are not used; the Vulkan backend uses NeMo-Speech.cpp instead.
+
+Configuration uses the same strict Pydantic schema for public
+`EavesdropConfig.model_validate` calls and YAML loading, including nested buffer
+settings. Quoted booleans or numeric strings are rejected rather than coerced.
 
 ## Live recording lifecycle
 
@@ -66,11 +70,13 @@ Cancellation instead discards the current utterance and its utterance-local
 history and suppresses outstanding results. Recording can restart on the same
 connection. Stale recording identifiers cannot affect the current recording.
 
-With VAD enabled, ordinary silence completion and the trailing incomplete segment
-convention remain. With VAD disabled, **every pending segment stays incomplete
-until an explicit force-completing flush**; elapsed time, silence, new audio,
-and non-trailing segment position cannot finalize it. Disconnect cancels and
-awaits connection-owned work and releases session resources.
+Each transcript update has exactly one incomplete timed segment open for revision
+(an empty trailing segment when no text is pending). With VAD enabled, ordinary
+silence completion remains. With VAD disabled, recognized portions are combined
+into that single revisable segment, preserving every word and its timestamps;
+**nothing completes until an explicit force-completing flush**. A non-forcing
+flush retains the revisable text. Disconnect cancels and awaits connection-owned
+work and releases session resources.
 
 The streaming processor coordinates three focused modules under
 `streaming/processing/`: scheduling selects buffer views and owns interruptible

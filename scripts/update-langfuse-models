@@ -2,13 +2,18 @@
 #
 # /// script
 # requires-python = ">=3.12.3,<3.13"
-# dependencies = ["python-dotenv"]
+# dependencies = [
+#     "pydantic>=2,<3",
+#     "python-dotenv",
+# ]
 # ///
 
 from __future__ import annotations
 
 import argparse
 import json
+import logging
+from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -28,18 +33,41 @@ from langfuse_models.sync import sync_connection, sync_model_definitions
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
-def parse_args() -> argparse.Namespace:
+@dataclass
+class Arguments(argparse.Namespace):
+    """Validated parser output used to authorize synchronization writes.
+
+    :param dry_run: Whether the command must perform reads and planning only.
+    """
+
+    dry_run: bool = False
+
+
+def parse_args() -> Arguments:
+    """Parse the model synchronization command line.
+
+    :return: Arguments whose dry_run flag forbids all HTTP writes.
+    :raises SystemExit: For help or invalid command-line arguments.
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true")
-    return parser.parse_args()
+    return parser.parse_args(namespace=Arguments())
 
 
 def main() -> int:
+    """Synchronize OpenRouter connection and pricing from the provider catalog.
+
+    :return: Zero after printing the JSON plan or applied changes.
+    :raises RuntimeError: If configuration or ownership prevents safe syncing.
+    :raises pydantic.ValidationError: If external catalog/server data is invalid.
+    :raises urllib.error.URLError: If any catalog or Langfuse request fails.
+    """
     args = parse_args()
     _ = load_dotenv(REPO_ROOT / ".env", override=True)
 
     langfuse_base_url = get_langfuse_base_url()
     if not langfuse_base_url:
+        logging.getLogger(__name__).error("Missing LANGFUSE_BASE_URL or LANGFUSE_HOST")
         raise RuntimeError("Missing LANGFUSE_BASE_URL or LANGFUSE_HOST")
 
     headers = build_langfuse_headers()

@@ -90,7 +90,7 @@ class StreamingTranscriptionProcessor:
     generation: int,
     preserve_language: bool = True,
   ) -> None:
-    """Reset processor-local recording state after a new epoch or cancellation.
+    """Reset processor-local recording state after a recording boundary or cancellation.
 
     A recording boundary resets the upstream buffer/session to recording-relative
     zero. Utterance cancellation preserves that recording-relative base while
@@ -214,7 +214,7 @@ class StreamingTranscriptionProcessor:
     await self.output.handle(
       result.segments or [],
       result.audio_duration,
-      result.speech_chunks,
+      result.speech_segments,
       emit_result=pending_flush is None or flush_boundary_reached,
       flush_complete=flush_boundary_reached,
       force_complete=force_complete,

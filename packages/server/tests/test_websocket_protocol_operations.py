@@ -23,7 +23,7 @@ from eavesdrop.wire.messages import HealthCheckRequest
 
 
 @pytest.mark.asyncio
-async def test_health_header_request_closes_normally_and_live_socket_remains_usable(
+async def test_health_request_closes_normally_and_live_socket_remains_usable(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
   """Keep the live protocol usable after a health-check connection closes.
@@ -31,7 +31,7 @@ async def test_health_header_request_closes_normally_and_live_socket_remains_usa
   :param monkeypatch: Restores the deterministic inference loader.
   """
   async with protocol_server(monkeypatch) as server:
-    async with connect(server.uri, additional_headers={"X-Client-Type": "health_check"}) as socket:
+    async with connect(server.uri) as socket:
       await socket.send(serialize_message(HealthCheckRequest()))
       with pytest.raises(ConnectionClosedOK):
         async with asyncio.timeout(DEADLINE):

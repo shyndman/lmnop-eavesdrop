@@ -55,7 +55,7 @@ def test_reduce_new_segments_preserves_last_id_for_empty_input() -> None:
   reduction = reduce_new_segments([], last_id=7)
 
   assert reduction.segments == []
-  assert reduction.incomplete_segments == []
+  assert reduction.incomplete_segment is None
   assert reduction.last_id == 7
   assert reduction.missing_last_id is False
 
@@ -65,7 +65,7 @@ def test_reduce_new_segments_keeps_single_incomplete_segment_provisional() -> No
   reduction = reduce_new_segments([segment], last_id=None)
 
   assert reduction.segments == []
-  assert reduction.incomplete_segments == [segment]
+  assert reduction.incomplete_segment == segment
   assert reduction.last_id is None
   assert reduction.missing_last_id is False
 
@@ -83,10 +83,10 @@ def test_reduce_new_segments_drops_duplicate_window_before_sentinel() -> None:
   second_reduction = reduce_new_segments(second_window, last_id=first_reduction.last_id)
 
   assert [segment.id for segment in first_reduction.segments] == [1, 2]
-  assert first_reduction.incomplete_segments == [_segment(3, "tail", completed=False)]
+  assert first_reduction.incomplete_segment == _segment(3, "tail", completed=False)
   assert first_reduction.last_id == 2
   assert [segment.id for segment in second_reduction.segments] == [3]
-  assert second_reduction.incomplete_segments == [_segment(4, "tail", completed=False)]
+  assert second_reduction.incomplete_segment == _segment(4, "tail", completed=False)
   assert second_reduction.last_id == 3
   assert second_reduction.missing_last_id is False
 
@@ -102,7 +102,7 @@ def test_reduce_new_segments_accepts_only_segments_after_found_sentinel() -> Non
   reduction = reduce_new_segments(window, last_id=4)
 
   assert [segment.id for segment in reduction.segments] == [5, 6]
-  assert reduction.incomplete_segments == [_segment(7, "tail", completed=False)]
+  assert reduction.incomplete_segment == _segment(7, "tail", completed=False)
   assert reduction.last_id == 6
   assert reduction.missing_last_id is False
 
@@ -117,7 +117,7 @@ def test_reduce_new_segments_falls_back_when_sentinel_is_missing() -> None:
   reduction = reduce_new_segments(window, last_id=99)
 
   assert [segment.id for segment in reduction.segments] == [8, 9]
-  assert reduction.incomplete_segments == [_segment(10, "tail", completed=False)]
+  assert reduction.incomplete_segment == _segment(10, "tail", completed=False)
   assert reduction.last_id == 9
   assert reduction.missing_last_id is True
 
@@ -235,8 +235,14 @@ def test_multiple_provisional_revisions_commit_only_on_explicit_completion() -> 
   for first, second in [("draft", "command"), ("revised", "instruction")]:
     reduction = reduce_new_segments(
       [
-        _segment(1, first, start=0.0, end=0.2, completed=False),
-        _segment(2, second, start=0.4, end=0.6, completed=False),
+        _segment(
+          1,
+          f"{first} {second}",
+          start=0.0,
+          end=0.6,
+          completed=False,
+          words=[_word(first, start=0.0, end=0.2), _word(second, start=0.4, end=0.6)],
+        )
       ],
       last_id=state.last_id,
     )
@@ -251,14 +257,19 @@ def test_multiple_provisional_revisions_commit_only_on_explicit_completion() -> 
     ]
 
   completed = [
-    _segment(1, "revised", start=0.0, end=0.2),
-    _segment(2, "instruction", start=0.4, end=0.6),
+    _segment(
+      1,
+      "revised instruction",
+      start=0.0,
+      end=0.6,
+      words=[_word("revised", start=0.0, end=0.2), _word("instruction", start=0.4, end=0.6)],
+    )
   ]
   reduction = reduce_new_segments(completed, last_id=state.last_id)
   apply_segment_reduction(state, reduction)
   state.last_id = reduction.last_id
-  assert state.last_id == 2
-  assert state.seen_segment_ids == {1, 2}
+  assert state.last_id == 1
+  assert state.seen_segment_ids == {1}
   assert state.incomplete_words == []
   assert _overlay_runs(state) == [
     TextRun(text="revised", is_command=False, is_complete=True),

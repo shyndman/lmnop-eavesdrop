@@ -16,7 +16,7 @@ Eavesdrop accepts live audio from a transcriber over WebSocket and returns timed
 
 ### Core Design
 
-The `StreamingTranscriptionProcessor` combines buffered live audio, optional standalone VAD, and Orukeet recognition. Every transcription includes native segment and individual word timestamps on the original recording timeline.
+The `StreamingTranscriptionProcessor` combines buffered live audio, optional standalone VAD, and Orukeet recognition. Every transcription includes timed segments and individual word timestamps on the original recording timeline.
 
 Recording boundaries, flush, and cancellation are explicit controls independent of connection lifetime. A normal recording ends with a force-completing flush whose transcript and acknowledgement are delivered before the next recording is processed. Accepted audio for a subsequent recording waits for that completion.
 
@@ -90,7 +90,7 @@ uv sync
 - **Multiple recordings per connection** - Fresh transcript state and timestamp zero at each recording boundary
 - **Flush** - Prompt processing through accepted audio, with a completion acknowledgement and optional force completion
 - **Cancellation** - Discard the current utterance and suppress outstanding results without reconnecting
-- **Explicit completion with VAD disabled** - All pending segments stay revisable until a force-completing flush; with VAD enabled, normal silence-based completion remains available
+- **Explicit completion with VAD disabled** - One incomplete timed segment holds all pending text and words until a force-completing flush; with VAD enabled, normal silence-based completion remains available
 
 ### Applications
 - **Active Listener** - Desktop application for voice-to-text input using system audio capture and automatic typing

@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from eavesdrop.client import ConnectedEvent, DisconnectedEvent, ReconnectedEvent, ReconnectingEvent
-
 
 class AppAction(StrEnum):
   """Normalized workstation actions consumed by app policy."""
@@ -41,17 +39,6 @@ class StartOrFinishResult(StrEnum):
   IGNORED = "ignored"
 
 
-class ConnectionDecision(StrEnum):
-  """Pure client-event decisions produced from the current foreground phase."""
-
-  CONNECTED = "connected"
-  RECONNECTING = "reconnecting"
-  RECONNECTED = "reconnected"
-  DISCONNECTED = "disconnected"
-  ABORT_RECORDING = "abort_recording"
-  IGNORE = "ignore"
-
-
 def decide_app_action(phase: ForegroundPhase, action: AppAction) -> AppActionDecision:
   """Translate a normalized app action into a foreground policy decision.
 
@@ -77,34 +64,3 @@ def decide_app_action(phase: ForegroundPhase, action: AppAction) -> AppActionDec
     return AppActionDecision.SUPPRESS_RECONNECTING_START
 
   return AppActionDecision.IGNORE
-
-
-def decide_client_event(
-  phase: ForegroundPhase,
-  event: ConnectedEvent | DisconnectedEvent | ReconnectingEvent | ReconnectedEvent,
-) -> ConnectionDecision:
-  """Translate a client lifecycle event into a foreground policy decision.
-
-  :param phase: Current foreground phase.
-  :type phase: ForegroundPhase
-  :param event: Client lifecycle event.
-  :type event: ConnectedEvent | DisconnectedEvent | ReconnectingEvent | ReconnectedEvent
-  :returns: Policy decision for the client event.
-  :rtype: ConnectionDecision
-  """
-
-  if isinstance(event, ConnectedEvent):
-    if phase is ForegroundPhase.STARTING:
-      return ConnectionDecision.CONNECTED
-    return ConnectionDecision.IGNORE
-
-  if isinstance(event, ReconnectedEvent):
-    return ConnectionDecision.RECONNECTED
-
-  if isinstance(event, ReconnectingEvent):
-    return ConnectionDecision.RECONNECTING
-
-  if phase is ForegroundPhase.RECORDING:
-    return ConnectionDecision.ABORT_RECORDING
-
-  return ConnectionDecision.DISCONNECTED

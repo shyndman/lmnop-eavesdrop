@@ -125,14 +125,18 @@ class TranscriptionServer:
       self.transcription_config = eavesdrop_config.transcription
 
     except ValueError as e:
-      self.logger.error("Configuration validation failed", error=str(e), config_path=config_path)
+      self.logger.exception(
+        "Configuration validation failed", error=str(e), config_path=config_path
+      )
       self.logger.error(
         "Please check your configuration file format and values. "
         + "See documentation for valid configuration structure."
       )
       raise
     except Exception as e:
-      self.logger.error("Failed to load configuration file", error=str(e), config_path=config_path)
+      self.logger.exception(
+        "Failed to load configuration file", error=str(e), config_path=config_path
+      )
       self.logger.error("Ensure the configuration file exists and is readable.")
       raise
 

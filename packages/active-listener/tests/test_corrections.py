@@ -79,7 +79,10 @@ def test_correction_store_replaces_existing_value(tmp_path: Path) -> None:
 
 
 def test_apply_corrections_uses_longest_key_first() -> None:
-  assert apply_corrections(
-    "I use pie torch and pie every day.",
-    {"pie": "Pi", "pie torch": "PyTorch"},
-  ) == "I use PyTorch and Pi every day."
+  assert (
+    apply_corrections(
+      "I use pie torch and pie every day.",
+      {"pie": "Pi", "pie torch": "PyTorch"},
+    )
+    == "I use PyTorch and Pi every day."
+  )

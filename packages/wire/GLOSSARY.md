@@ -54,7 +54,7 @@ The start and end times of individual recognized words on the recording timeline
 A segment whose recognized text has been finalized.
 
 **Incomplete segment**:
-A segment whose recognized text remains open to revision.
+The single timed segment whose recognized text remains open to revision.
 _Avoid_: Final segment.
 
 **Segment completion**:
@@ -77,7 +77,7 @@ boundary, with a choice of whether to complete that transcription.
 The position in a recording through which an accepted flush must process audio.
 
 **Force completion**:
-The flush option requesting completion of all pending segments through its boundary.
+The flush option requesting completion of all pending transcription through its boundary.
 
 **Flush completion**:
 The acknowledgement that an accepted flush has been processed and its requested

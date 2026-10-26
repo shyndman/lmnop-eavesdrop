@@ -10,7 +10,7 @@ import json
 from typing import TypedDict, cast
 
 import pytest
-from pydantic import ValidationError
+from pydantic import JsonValue, ValidationError
 
 from eavesdrop.wire import deserialize_message, serialize_message
 from eavesdrop.wire.codec import Message
@@ -19,7 +19,6 @@ from eavesdrop.wire.messages import (
   ErrorMessage,
   FlushControlMessage,
   HealthCheckRequest,
-  LanguageDetectionMessage,
   RecordingStartedMessage,
   ServerReadyMessage,
   TranscriptionMessage,
@@ -46,7 +45,7 @@ class _SegmentPayload(TypedDict):
 
 
 class _TranscriptionWirePayload(TypedDict):
-  segments: list[dict[str, object]]
+  segments: list[_SegmentPayload]
 
 
 def _build_contract_segment() -> Segment:
@@ -77,16 +76,10 @@ def _build_contract_segment() -> Segment:
       stream="stream-a",
       message="stream failed",
     ),
-    LanguageDetectionMessage(
-      timestamp=1_700_000_000.4,
-      stream="stream-a",
-      language="en",
-      language_prob=0.87,
-    ),
     ServerReadyMessage(
       timestamp=1_700_000_000.5,
       stream="stream-a",
-      backend="parakeet",
+      backend="orukeet",
     ),
     DisconnectMessage(
       timestamp=1_700_000_000.6,
@@ -370,7 +363,7 @@ def test_setup_accepts_english_compatibility_hint(language: str | None) -> None:
     ("unknown_option", True),
   ],
 )
-def test_setup_rejects_removed_or_unknown_options(field: str, value: object) -> None:
+def test_setup_rejects_removed_or_unknown_options(field: str, value: str | list[str] | int) -> None:
   """Obsolete decoder knobs fail visibly instead of being silently discarded."""
   payload = json.dumps({"type": "setup", "stream": "legacy", "options": {field: value}})
 
@@ -379,7 +372,7 @@ def test_setup_rejects_removed_or_unknown_options(field: str, value: object) -> 
 
 
 @pytest.mark.parametrize("language", ["ja", "fr", "EN", "auto", "", 1, True])
-def test_setup_rejects_non_english_language(language: object) -> None:
+def test_setup_rejects_non_english_language(language: str | int) -> None:
   """The compatibility language field cannot request detection or another language."""
   payload = json.dumps(
     {"type": "setup", "stream": "invalid-language", "options": {"language": language}}
@@ -400,7 +393,7 @@ def test_segment_serializes_native_timestamps_without_decoder_metadata() -> None
     completed=True,
   )
 
-  assert cast(dict[str, object], json.loads(segment.model_dump_json())) == {
+  assert cast(JsonValue, json.loads(segment.model_dump_json())) == {
     "id": 42,
     "start": 1.25,
     "end": 2.0,
@@ -439,3 +432,11 @@ def test_segment_completion_preserves_chain_ids_and_recording_timestamps() -> No
   assert first.absolute_end_time == 10.5
   assert second.absolute_start_time == 10.5
   assert second.absolute_end_time == 11.0
+
+
+def test_removed_language_detection_discriminator_is_rejected() -> None:
+  """English-only peers cannot emit or accept a language-detection exchange."""
+  with pytest.raises(ValidationError):
+    deserialize_message(
+      '{"type":"language_detection","stream":"english","language":"en","language_prob":1.0}'
+    )

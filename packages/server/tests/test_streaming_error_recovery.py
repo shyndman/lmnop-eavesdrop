@@ -13,6 +13,7 @@ import pytest
 
 from eavesdrop.server.config import BufferConfig, TranscriptionConfig
 from eavesdrop.server.streaming.buffer import AudioStreamBuffer
+from eavesdrop.server.streaming.interfaces import TranscriptionResult
 from eavesdrop.server.streaming.processing.models import AudioChunk, ChunkTranscriptionResult
 from eavesdrop.server.streaming.processor import StreamingTranscriptionProcessor
 from eavesdrop.server.transcription.session import TranscriptionSession, create_session
@@ -27,14 +28,11 @@ class FakeSink:
     self.disconnect_outcomes = []
     self.disconnect_calls = 0
 
-  async def send_result(self, result: object) -> None:
+  async def send_result(self, result: TranscriptionResult) -> None:
     del result
 
   async def send_error(self, error: str) -> None:
     del error
-
-  async def send_language_detection(self, language: str, probability: float) -> None:
-    del language, probability
 
   async def send_server_ready(self, backend: str) -> None:
     del backend
