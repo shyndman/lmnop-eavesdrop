@@ -177,18 +177,6 @@ tasks:
     cmds:
       - uv sync --all-extras --all-groups
 
-  transcribe-file:
-    desc: Transcribe a local audio file (set audio_file=/path/to/audio.wav)
-    deps: [prepare-client-lib]
-    dir: packages/client
-    vars:
-      host: '{{default "localhost" .host}}'
-      port: '{{default "9090" .port}}'
-    requires:
-      vars: [audio_file]
-    cmds:
-      - uv run python -m eavesdrop.client.transcribe_file_cli --audio-file "{{.audio_file}}" --host "{{.host}}" --port {{.port}} {{.CLI_ARGS}}
-
   run-mic-client:
     desc: Start microphone transcription client
     deps: [prepare-client-lib]

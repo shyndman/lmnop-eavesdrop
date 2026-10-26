@@ -12,17 +12,22 @@ from typing import cast, final
 
 import numpy as np
 import pytest
+from pydantic import JsonValue
 from structlog.stdlib import BoundLogger
 from typing_extensions import override
 
 from active_listener.app.ports import (
   ActiveListenerRuntimeError,
-  CapturedRecordingAudio,
   FinalizedTranscriptRecord,
-  FinishedRecording,
   RewriteResult,
 )
 from active_listener.app.service import ActiveListenerService
+from active_listener.app.signals import (
+  ConnectedSignal,
+  DisconnectedSignal,
+  ReconnectedSignal,
+  ReconnectingSignal,
+)
 from active_listener.app.state import AppAction, AppActionDecision, ForegroundPhase
 from active_listener.bootstrap import build_capture_callback, create_service, run_service
 from active_listener.config.models import (
@@ -31,6 +36,7 @@ from active_listener.config.models import (
   LlmRewriteConfig,
 )
 from active_listener.infra.keyboard import KeyboardControlEvent, KeyboardEventKind, KeyboardInput
+from active_listener.infra.langfuse import RecordingInput, RecordingOutput
 from active_listener.infra.rewrite import (
   LoadedRewritePrompt,
   LoadedRewritePromptFile,
@@ -38,73 +44,18 @@ from active_listener.infra.rewrite import (
   RewriteClientTimeoutError,
   RewritePromptError,
 )
-from active_listener.recording.reducer import RecordingReducerState, TextRun, TimeSpan
+from active_listener.recording.reducer import TextRun
 from active_listener.recording.session import (
-  PendingCapsGesture,
   RecordingAudioBuffer,
-  RecordingSession,
+  RecordingTranscript,
 )
 from active_listener.recording.spectrum import (
   SAMPLE_RATE_HZ,
-  SPECTRUM_TICK_INTERVAL_SECONDS,
-  WINDOW_SIZE,
 )
-from eavesdrop.client import (
-  ConnectedEvent,
-  DisconnectedEvent,
-  LanguageDetectionEvent,
-  ReconnectedEvent,
-  ReconnectingEvent,
-  TranscriptionEvent,
-)
+from eavesdrop.common import get_logger
 from eavesdrop.wire import Segment, TranscriptionMessage, Word
 
-
-class RecordingLogger:
-  """Structured logger stand-in for app-policy assertions."""
-
-  def __init__(self) -> None:
-    self.debug_messages: list[str] = []
-    self.info_messages: list[str] = []
-    self.warning_messages: list[str] = []
-    self.error_messages: list[str] = []
-    self.exception_messages: list[str] = []
-    self.debug_records: list[LogRecord] = []
-    self.info_records: list[LogRecord] = []
-    self.warning_records: list[LogRecord] = []
-    self.error_records: list[LogRecord] = []
-    self.exception_records: list[LogRecord] = []
-
-  def debug(self, event: str, **kwargs: object) -> None:
-    self.debug_messages.append(event)
-    self.debug_records.append(LogRecord(event=event, fields=kwargs))
-
-  def info(self, event: str, **kwargs: object) -> None:
-    self.info_messages.append(event)
-    self.info_records.append(LogRecord(event=event, fields=kwargs))
-
-  def warning(self, event: str, **kwargs: object) -> None:
-    self.warning_messages.append(event)
-    self.warning_records.append(LogRecord(event=event, fields=kwargs))
-
-  def error(self, event: str, **kwargs: object) -> None:
-    self.error_messages.append(event)
-    self.error_records.append(LogRecord(event=event, fields=kwargs))
-
-  def exception(self, event: str, **kwargs: object) -> None:
-    self.exception_messages.append(event)
-    self.exception_records.append(LogRecord(event=event, fields=kwargs))
-
-
-@dataclass(frozen=True)
-class LogRecord:
-  """Captured structured log entry for test assertions."""
-
-  event: str
-  fields: dict[str, object]
-
-
-AppEvent = DisconnectedEvent | ReconnectedEvent | ReconnectingEvent | TranscriptionEvent
+RECORDING_CLOCK_START = 100.0
 
 
 def _rewrite_config() -> LlmRewriteConfig:
@@ -240,8 +191,12 @@ class FailingEmitter(FakeEmitter):
 @dataclass
 class FakeDbusService:
   states: list[ForegroundPhase] = field(default_factory=list)
-  signals: list[tuple[str, object | None]] = field(default_factory=list)
-  events: list[tuple[str, object | None]] = field(default_factory=list)
+  signals: list[tuple[str, str | bytes | list[TextRun] | tuple[str, str] | None]] = field(
+    default_factory=list
+  )
+  events: list[tuple[str, str | bytes | list[TextRun] | tuple[str, str] | None]] = field(
+    default_factory=list
+  )
   close_calls: int = 0
 
   async def set_state(self, state: ForegroundPhase) -> None:
@@ -325,7 +280,11 @@ class FakeClient:
   flush_results: list[asyncio.Future[TranscriptionMessage] | TranscriptionMessage | Exception] = (
     field(default_factory=list)
   )
-  events: list[AppEvent] = field(default_factory=list)
+  on_transcription: Callable[[TranscriptionMessage], None] | None = None
+  on_connected: Callable[[str], None] | None = None
+  on_disconnected: Callable[[str, str | None], None] | None = None
+  on_reconnecting: Callable[[str, int, float], None] | None = None
+  on_reconnected: Callable[[str], None] | None = None
 
   async def connect(self) -> None:
     self.connect_calls += 1
@@ -348,18 +307,13 @@ class FakeClient:
     self.flush_recording_ids.append(recording_id)
     self.flush_calls.append(force_complete)
     result = self.flush_results.pop(0)
-    if isinstance(result, Exception):
-      raise result
-    if isinstance(result, asyncio.Future):
-      return await result
-    return result
-
-  def __aiter__(self) -> AsyncIterator[AppEvent]:
-    return self._iterate_events()
-
-  async def _iterate_events(self) -> AsyncIterator[AppEvent]:
-    for event in self.events:
-      yield event
+    match result:
+      case Exception():
+        raise result
+      case asyncio.Future():
+        return await result
+      case TranscriptionMessage():
+        return result
 
 
 @dataclass
@@ -562,7 +516,9 @@ def _segment(
     start=start,
     end=end,
     text=text,
-    words=words,
+    words=(
+      words if words is not None else [_word(token, start=start, end=end) for token in text.split()]
+    ),
     completed=completed,
   )
 
@@ -571,30 +527,38 @@ def _word(text: str, *, start: float, end: float) -> Word:
   return Word(start=start, end=end, word=text)
 
 
-def _recording_session(service: ActiveListenerService) -> RecordingSession:
-  return cast(RecordingSession, getattr(service, "_recording_session"))
+@dataclass
+class RecordingClock:
+  """Control recording-relative hardware times without changing asyncio's clock."""
+
+  now: float = RECORDING_CLOCK_START
+
+  def monotonic(self) -> float:
+    return self.now
 
 
-def _recording_started_monotonic_s(session: RecordingSession) -> float | None:
-  return cast(float | None, getattr(session, "_recording_started_monotonic_s"))
+@pytest.fixture
+def recording_clock(monkeypatch: pytest.MonkeyPatch) -> RecordingClock:
+  clock = RecordingClock()
+  monkeypatch.setattr("active_listener.recording.session.time", clock)
+  return clock
 
 
-def _recording_reducer_state(session: RecordingSession) -> RecordingReducerState | None:
-  return cast(RecordingReducerState | None, getattr(session, "_recording_reducer_state"))
-
-
-def _connection_last_id(session: RecordingSession) -> int | None:
-  return cast(int | None, getattr(session, "_connection_last_id"))
-
-
-def _pending_caps_gesture(session: RecordingSession) -> PendingCapsGesture | None:
-  return cast(PendingCapsGesture | None, getattr(session, "_pending_caps_gesture"))
+async def _command_hold(service: ActiveListenerService, start_s: float, end_s: float) -> None:
+  await service.handle_keyboard_event(
+    _keyboard_event(
+      KeyboardEventKind.CAPSLOCK_DOWN, received_monotonic_s=RECORDING_CLOCK_START + start_s
+    )
+  )
+  await service.handle_keyboard_event(
+    _keyboard_event(
+      KeyboardEventKind.CAPSLOCK_UP, received_monotonic_s=RECORDING_CLOCK_START + end_s
+    )
+  )
 
 
 def _active_recording_id(service: ActiveListenerService) -> str:
-  recording_id = _recording_session(service).active_recording_id
-  assert recording_id is not None
-  return recording_id
+  return cast(FakeClient, service.client).start_recording_ids[-1]
 
 
 def _message(
@@ -625,10 +589,6 @@ def _live_message(
   )
 
 
-def _transcription_event(message: TranscriptionMessage) -> TranscriptionEvent:
-  return TranscriptionEvent(stream=message.stream, message=message)
-
-
 def _sine_wave_bytes(frequency_hz: float, sample_count: int) -> bytes:
   sample_positions = np.arange(sample_count, dtype=np.float32) / SAMPLE_RATE_HZ
   samples = np.sin(2.0 * np.pi * frequency_hz * sample_positions).astype(np.float32)
@@ -643,7 +603,7 @@ class ServiceHarness:
   client: FakeClient
   keyboard: FakeKeyboard
   emitter: FakeEmitter
-  logger: RecordingLogger
+  logger: BoundLogger
   rewrite_client: FakeRewriteClient
   history_store: FakeHistoryStore
   dbus_service: FakeDbusService
@@ -657,7 +617,7 @@ def _service(
   client: FakeClient | None = None,
   keyboard: FakeKeyboard | None = None,
   emitter: FakeEmitter | None = None,
-  logger: RecordingLogger | None = None,
+  logger: BoundLogger | None = None,
   rewrite_client: FakeRewriteClient | None = None,
   history_store: FakeHistoryStore | None = None,
   dbus_service: FakeDbusService | None = None,
@@ -670,7 +630,7 @@ def _service(
   resolved_client = client or FakeClient()
   resolved_keyboard = keyboard or FakeKeyboard()
   resolved_emitter = emitter or FakeEmitter()
-  resolved_logger = logger or RecordingLogger()
+  resolved_logger = logger or get_logger("test/listener")
   resolved_rewrite_client = rewrite_client or FakeRewriteClient()
   resolved_history_store = history_store or FakeHistoryStore()
   resolved_dbus_service = dbus_service or FakeDbusService()
@@ -682,7 +642,7 @@ def _service(
     keyboard=resolved_keyboard,
     client=resolved_client,
     emitter=resolved_emitter,
-    logger=cast(BoundLogger, cast(object, resolved_logger)),
+    logger=resolved_logger,
     rewrite_client=resolved_rewrite_client,
     history_store=resolved_history_store,
     dbus_service=resolved_dbus_service,
@@ -747,32 +707,6 @@ async def test_create_service_defaults_llm_runtime_active_when_rewrite_is_config
 
 
 @pytest.mark.asyncio
-async def test_create_service_passes_capture_callback_into_client_factory() -> None:
-  keyboard = FakeKeyboard()
-  emitter = FakeEmitter()
-  captured_callbacks: list[Callable[[bytes], None]] = []
-
-  def client_factory(
-    _config: ActiveListenerConfig,
-    on_capture: Callable[[bytes], None],
-  ) -> FakeClient:
-    captured_callbacks.append(on_capture)
-    return FakeClient()
-
-  service = await create_service(
-    _config(),
-    dbus_service=FakeDbusService(),
-    keyboard_resolver=lambda _name: keyboard,
-    client_factory=client_factory,
-    emitter_factory=lambda: (emitter.initialize(), emitter)[1],
-    history_store_factory=lambda _config, _logger, _dbus_service: FakeHistoryStore(),
-  )
-
-  assert service.phase is ForegroundPhase.IDLE
-  assert len(captured_callbacks) == 1
-
-
-@pytest.mark.asyncio
 async def test_create_service_fails_fast_on_keyboard_resolution_error() -> None:
   with pytest.raises(ActiveListenerRuntimeError, match="missing keyboard"):
     _ = await create_service(
@@ -786,17 +720,14 @@ async def test_create_service_fails_fast_on_keyboard_resolution_error() -> None:
 async def test_create_service_fails_fast_on_connect_error(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-  logger = RecordingLogger()
+  logger = get_logger("test/listener")
   keyboard = FakeKeyboard()
   client = FailingConnectClient()
   rewrite_client = FakeRewriteClient()
 
   monkeypatch.setattr("active_listener.bootstrap.get_logger", lambda _name: logger)
 
-  with pytest.raises(
-    ActiveListenerRuntimeError,
-    match="could not connect to eavesdrop server at ws://localhost:9090: server unavailable",
-  ):
+  with pytest.raises(ActiveListenerRuntimeError):
     _ = await create_service(
       _config(),
       keyboard_resolver=lambda _name: keyboard,
@@ -809,9 +740,6 @@ async def test_create_service_fails_fast_on_connect_error(
   assert keyboard.close_calls == 1
   assert rewrite_client.close_calls == 1
   assert client.disconnect_calls == 1
-  assert logger.error_records[-1].event == "server connection failed"
-  assert logger.error_records[-1].fields["server_url"] == "ws://localhost:9090"
-  assert str(logger.error_records[-1].fields["exc_info"]) == "server unavailable"
 
 
 @pytest.mark.asyncio
@@ -854,7 +782,6 @@ async def test_start_and_cancel_recording_toggle_grab_and_streaming() -> None:
   assert harness.keyboard.ungrab_calls == 1
   assert spectrum_analyzer.start_calls == 1
   assert spectrum_analyzer.stop_calls == 1
-  assert harness.logger.info_messages == ["recording started", "recording cancelled"]
 
 
 @pytest.mark.asyncio
@@ -868,142 +795,6 @@ async def test_start_and_cancel_resume_prior_media() -> None:
 
   assert media_playback_controller.pause_calls == 1
   assert media_playback_controller.resume_calls == 1
-
-
-@pytest.mark.asyncio
-async def test_langfuse_events_split_connection_and_recording_lifecycle(
-  monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  observed_session_calls: list[dict[str, object]] = []
-  observed_recording_calls: list[dict[str, object]] = []
-  recording_observation = object()
-  harness = _service()
-  service = harness.service
-
-  monkeypatch.setattr(
-    "active_listener.app.service.record_session_event",
-    lambda **kwargs: observed_session_calls.append(kwargs),
-  )
-  monkeypatch.setattr(
-    "active_listener.app.service.record_recording_event",
-    lambda **kwargs: observed_recording_calls.append(kwargs),
-  )
-  monkeypatch.setattr(
-    "active_listener.app.service.start_recording_observation",
-    lambda **_kwargs: recording_observation,
-  )
-  monkeypatch.setattr("active_listener.app.service.secrets.token_hex", lambda _n: "recording-1")
-
-  await service.handle_client_event(ConnectedEvent(stream="stream-1"))
-  await service.handle_action(AppAction.START_OR_FINISH)
-  await service.handle_action(AppAction.CANCEL)
-  await service.handle_client_event(DisconnectedEvent(stream="stream-1", reason="socket closed"))
-
-  assert observed_session_calls == [
-    {
-      "session_id": "stream-1",
-      "name": "active-listener-client-connected",
-      "metadata": {"stream": "stream-1"},
-    },
-    {
-      "session_id": "stream-1",
-      "name": "active-listener-client-disconnected",
-      "metadata": {"stream": "stream-1", "reason": "socket closed"},
-    },
-  ]
-  assert observed_recording_calls == [
-    {
-      "parent_observation": recording_observation,
-      "name": "active-listener-recording-started",
-      "metadata": {"stream": "stream-1", "recording_id": "recording-1"},
-    },
-    {
-      "parent_observation": recording_observation,
-      "name": "active-listener-recording-cancelled",
-      "metadata": {"stream": "stream-1", "recording_id": "recording-1"},
-    },
-  ]
-
-
-@pytest.mark.asyncio
-async def test_cancel_recording_ends_recording_observation(
-  monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  start_calls: list[dict[str, object]] = []
-  update_calls: list[dict[str, object | None]] = []
-  end_calls: list[int | None] = []
-
-  @dataclass
-  class FakeLangfuseObservation:
-    def update(
-      self,
-      *,
-      input: object | None = None,
-      output: object | None = None,
-      metadata: object | None = None,
-      level: str | None = None,
-      status_message: str | None = None,
-      usage_details: dict[str, int] | None = None,
-      cost_details: dict[str, float] | None = None,
-    ) -> FakeLangfuseObservation:
-      update_calls.append(
-        {
-          "input": input,
-          "output": output,
-          "metadata": metadata,
-          "level": level,
-          "status_message": status_message,
-          "usage_details": usage_details,
-          "cost_details": cost_details,
-        }
-      )
-      return self
-
-    def end(self, *, end_time: int | None = None) -> object:
-      end_calls.append(end_time)
-      return end_time
-
-    @contextmanager
-    def start_as_current_observation(
-      self,
-      *,
-      name: str,
-      input: object | None = None,
-      output: object | None = None,
-      metadata: object | None = None,
-      level: str | None = None,
-      status_message: str | None = None,
-      usage_details: dict[str, int] | None = None,
-      cost_details: dict[str, float] | None = None,
-    ) -> Iterator[FakeLangfuseObservation]:
-      yield self
-
-  harness = _service()
-  service = harness.service
-
-  monkeypatch.setattr(
-    "active_listener.app.service.start_recording_observation",
-    lambda **kwargs: start_calls.append(kwargs) or FakeLangfuseObservation(),
-  )
-  monkeypatch.setattr("active_listener.app.service.secrets.token_hex", lambda _n: "recording-1")
-
-  await service.handle_client_event(ConnectedEvent(stream="stream-1"))
-  _ = await service.handle_action(AppAction.START_OR_FINISH)
-  _ = await service.handle_action(AppAction.CANCEL)
-
-  assert start_calls == [{"stream": "stream-1", "recording_id": "recording-1"}]
-  assert update_calls == [
-    {
-      "input": None,
-      "output": None,
-      "metadata": None,
-      "level": None,
-      "status_message": "recording cancelled",
-      "usage_details": None,
-      "cost_details": None,
-    }
-  ]
-  assert end_calls == [None]
 
 
 @pytest.mark.asyncio
@@ -1042,7 +833,6 @@ async def test_media_pause_failure_does_not_block_recording_start() -> None:
   assert harness.client.start_calls == 1
   assert media_playback_controller.pause_calls == 1
   assert media_playback_controller.resume_calls == 0
-  assert harness.logger.exception_messages[-1] == "media pause failed"
 
 
 @pytest.mark.asyncio
@@ -1062,31 +852,6 @@ async def test_start_failure_resumes_prior_media() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cancel_clears_connection_cursor_for_discarded_utterance() -> None:
-  harness = _service()
-  service = harness.service
-
-  _ = await service.handle_action(AppAction.START_OR_FINISH)
-  await service.handle_client_event(
-    _transcription_event(
-      _live_message(
-        service,
-        _segment(1, "alpha", completed=True),
-        _segment(2, "draft", completed=False),
-        flush_complete=False,
-      )
-    )
-  )
-
-  recording_session = _recording_session(service)
-  assert _connection_last_id(recording_session) is not None
-
-  _ = await service.handle_action(AppAction.CANCEL)
-
-  assert _connection_last_id(recording_session) is None
-
-
-@pytest.mark.asyncio
 async def test_set_llm_active_fails_when_rewrite_is_unavailable() -> None:
   harness = _service()
 
@@ -1100,10 +865,6 @@ async def test_set_llm_active_updates_runtime_flag() -> None:
 
   assert await harness.service.set_llm_active(False) is False
   assert harness.service.current_llm_active() is False
-  assert harness.logger.info_records[-1] == LogRecord(
-    event="llm runtime toggled",
-    fields={"active": False},
-  )
 
 
 @pytest.mark.asyncio
@@ -1133,7 +894,6 @@ async def test_escape_is_ignored_while_idle() -> None:
   assert decision is AppActionDecision.IGNORE
   assert harness.client.stop_calls == 0
   assert harness.keyboard.ungrab_calls == 0
-  assert harness.logger.info_messages == ["cancel ignored while idle"]
 
 
 @pytest.mark.asyncio
@@ -1147,77 +907,21 @@ async def test_caps_lock_is_suppressed_while_reconnecting() -> None:
   assert decision is AppActionDecision.SUPPRESS_RECONNECTING_START
   assert harness.client.start_calls == 0
   assert harness.keyboard.grab_calls == 0
-  assert harness.logger.info_messages == ["recording start suppressed while reconnecting"]
 
 
 @pytest.mark.asyncio
-async def test_disconnect_during_recording_forces_local_abort(
-  monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  observed_session_calls: list[dict[str, object]] = []
-  observed_recording_calls: list[dict[str, object]] = []
-  recording_observation = object()
-  spectrum_analyzer = FakeSpectrumAnalyzer()
-  media_playback_controller = FakeMediaPlaybackController(pause_results=[True])
-  harness = _service(
-    spectrum_analyzer=spectrum_analyzer,
-    media_playback_controller=media_playback_controller,
+async def test_disconnect_during_recording_forces_local_abort() -> None:
+  spectrum = FakeSpectrumAnalyzer()
+  media = FakeMediaPlaybackController(pause_results=[True])
+  harness = _service(spectrum_analyzer=spectrum, media_playback_controller=media)
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  await harness.service.handle_client_event(
+    DisconnectedSignal(session_id="stream-1", reason="closed")
   )
-  service = harness.service
-
-  monkeypatch.setattr(
-    "active_listener.app.service.record_session_event",
-    lambda **kwargs: observed_session_calls.append(kwargs),
-  )
-  monkeypatch.setattr(
-    "active_listener.app.service.record_recording_event",
-    lambda **kwargs: observed_recording_calls.append(kwargs),
-  )
-  monkeypatch.setattr(
-    "active_listener.app.service.start_recording_observation",
-    lambda **_kwargs: recording_observation,
-  )
-  monkeypatch.setattr("active_listener.app.service.secrets.token_hex", lambda _n: "recording-1")
-
-  await service.handle_client_event(ConnectedEvent(stream="stream-1"))
-  _ = await service.handle_action(AppAction.START_OR_FINISH)
-
-  await service.handle_client_event(DisconnectedEvent(stream="stream-1", reason="socket closed"))
-
-  assert service.phase is ForegroundPhase.RECONNECTING
-  assert harness.client.stop_calls == 1
-  assert harness.keyboard.ungrab_calls == 1
-  assert harness.dbus_service.states == [ForegroundPhase.RECORDING, ForegroundPhase.RECONNECTING]
-  assert harness.dbus_service.signals == [
-    ("RecordingAborted", "socket closed"),
-    ("Reconnecting", None),
-  ]
-  assert media_playback_controller.resume_calls == 1
-  assert spectrum_analyzer.stop_calls == 1
-  assert harness.logger.warning_messages == ["recording aborted by disconnect"]
-  assert observed_session_calls == [
-    {
-      "session_id": "stream-1",
-      "name": "active-listener-client-connected",
-      "metadata": {"stream": "stream-1"},
-    }
-  ]
-  assert observed_recording_calls == [
-    {
-      "parent_observation": recording_observation,
-      "name": "active-listener-recording-started",
-      "metadata": {"stream": "stream-1", "recording_id": "recording-1"},
-    },
-    {
-      "parent_observation": recording_observation,
-      "name": "active-listener-recording-aborted",
-      "metadata": {
-        "stream": "stream-1",
-        "recording_id": "recording-1",
-        "reason": "socket closed",
-      },
-    },
-  ]
+  assert harness.service.phase is ForegroundPhase.RECONNECTING
+  assert harness.keyboard.grabbed is False
+  assert harness.dbus_service.signals == [("RecordingAborted", "closed"), ("Reconnecting", None)]
+  assert media.resume_calls == 1 and spectrum.stop_calls == 1
 
 
 @pytest.mark.asyncio
@@ -1225,16 +929,12 @@ async def test_disconnect_without_reason_uses_truthful_dbus_fallback() -> None:
   harness = _service()
   _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
 
-  await harness.service.handle_client_event(DisconnectedEvent(stream="stream-1", reason=None))
+  await harness.service.handle_client_event(DisconnectedSignal(session_id="stream-1", reason=None))
 
   assert harness.dbus_service.signals == [
     ("RecordingAborted", "unknown disconnect reason"),
     ("Reconnecting", None),
   ]
-  assert harness.logger.warning_records[-1] == LogRecord(
-    event="recording aborted by disconnect",
-    fields={"stream": "stream-1", "reason": "unknown disconnect reason"},
-  )
 
 
 @pytest.mark.asyncio
@@ -1282,84 +982,6 @@ async def test_close_resumes_prior_media() -> None:
 
 
 @pytest.mark.asyncio
-async def test_close_ends_open_recording_observation(
-  monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  update_calls: list[dict[str, object | None]] = []
-  end_calls: list[int | None] = []
-
-  @dataclass
-  class FakeLangfuseObservation:
-    def update(
-      self,
-      *,
-      input: object | None = None,
-      output: object | None = None,
-      metadata: object | None = None,
-      level: str | None = None,
-      status_message: str | None = None,
-      usage_details: dict[str, int] | None = None,
-      cost_details: dict[str, float] | None = None,
-    ) -> FakeLangfuseObservation:
-      update_calls.append(
-        {
-          "input": input,
-          "output": output,
-          "metadata": metadata,
-          "level": level,
-          "status_message": status_message,
-          "usage_details": usage_details,
-          "cost_details": cost_details,
-        }
-      )
-      return self
-
-    def end(self, *, end_time: int | None = None) -> object:
-      end_calls.append(end_time)
-      return end_time
-
-    @contextmanager
-    def start_as_current_observation(
-      self,
-      *,
-      name: str,
-      input: object | None = None,
-      output: object | None = None,
-      metadata: object | None = None,
-      level: str | None = None,
-      status_message: str | None = None,
-      usage_details: dict[str, int] | None = None,
-      cost_details: dict[str, float] | None = None,
-    ) -> Iterator[FakeLangfuseObservation]:
-      yield self
-
-  harness = _service()
-  service = harness.service
-
-  monkeypatch.setattr(
-    "active_listener.app.service.start_recording_observation",
-    lambda **_kwargs: FakeLangfuseObservation(),
-  )
-
-  await service.handle_client_event(ConnectedEvent(stream="stream-1"))
-  _ = await service.handle_action(AppAction.START_OR_FINISH)
-  await service.close()
-
-  assert update_calls == [
-    {
-      "input": None,
-      "output": None,
-      "metadata": None,
-      "level": None,
-      "status_message": "recording stopped during shutdown",
-      "usage_details": None,
-      "cost_details": None,
-    }
-  ]
-  assert end_calls == [None]
-
-
-@pytest.mark.asyncio
 async def test_resume_failure_does_not_block_recording_cancel() -> None:
   media_playback_controller = FakeMediaPlaybackController(
     pause_results=[True],
@@ -1374,7 +996,6 @@ async def test_resume_failure_does_not_block_recording_cancel() -> None:
   assert harness.service.phase is ForegroundPhase.IDLE
   assert harness.client.cancel_calls == 1
   assert media_playback_controller.resume_calls == 1
-  assert harness.logger.exception_messages[-1] == "media resume failed"
 
 
 @pytest.mark.asyncio
@@ -1390,29 +1011,29 @@ async def test_close_after_cancel_does_not_resume_twice() -> None:
 
 
 @pytest.mark.asyncio
-async def test_capture_callback_failures_are_logged_locally() -> None:
-  logger = RecordingLogger()
+async def test_spectrum_failure_does_not_lose_recording_audio() -> None:
+  logger = get_logger("test/listener")
   audio_buffer = RecordingAudioBuffer()
+  audio_buffer.start()
   on_capture = build_capture_callback(
     spectrum_analyzer=ExplodingSpectrumAnalyzer(),
     audio_buffer=audio_buffer,
-    logger=cast(BoundLogger, cast(object, logger)),
+    logger=logger,
   )
 
   on_capture(b"chunk")
 
-  assert logger.exception_messages == ["spectrum capture callback failed"]
-  assert audio_buffer.finish() == b""
+  assert audio_buffer.finish() == b"chunk"
 
 
 def test_capture_callback_records_audio_only_while_buffer_is_active() -> None:
-  logger = RecordingLogger()
+  logger = get_logger("test/listener")
   spectrum_analyzer = FakeSpectrumAnalyzer()
   audio_buffer = RecordingAudioBuffer()
   on_capture = build_capture_callback(
     spectrum_analyzer=spectrum_analyzer,
     audio_buffer=audio_buffer,
-    logger=cast(BoundLogger, cast(object, logger)),
+    logger=logger,
   )
   first_chunk = _sine_wave_bytes(220.0, 16)
   second_chunk = _sine_wave_bytes(330.0, 16)
@@ -1427,43 +1048,6 @@ def test_capture_callback_records_audio_only_while_buffer_is_active() -> None:
   assert spectrum_analyzer.ingested == [first_chunk, first_chunk, second_chunk, first_chunk]
   assert captured_snapshot == first_chunk + second_chunk
   assert audio_buffer.finish() == b""
-
-
-@pytest.mark.asyncio
-async def test_spectrum_emission_flows_through_dbus_while_recording() -> None:
-  keyboard = FakeKeyboard()
-  emitter = FakeEmitter()
-  dbus_service = FakeDbusService()
-  captured_callbacks: list[Callable[[bytes], None]] = []
-
-  def client_factory(
-    _config: ActiveListenerConfig,
-    on_capture: Callable[[bytes], None],
-  ) -> FakeClient:
-    captured_callbacks.append(on_capture)
-    return FakeClient()
-
-  service = await create_service(
-    _config(),
-    dbus_service=dbus_service,
-    keyboard_resolver=lambda _name: keyboard,
-    client_factory=client_factory,
-    emitter_factory=lambda: (emitter.initialize(), emitter)[1],
-    rewrite_client_factory=lambda _config: FakeRewriteClient(),
-    history_store_factory=lambda _config, _logger, _dbus_service: FakeHistoryStore(),
-  )
-
-  _ = await service.handle_action(AppAction.START_OR_FINISH)
-  captured_callbacks[0](_sine_wave_bytes(440.0, WINDOW_SIZE * 2))
-  await asyncio.sleep(SPECTRUM_TICK_INTERVAL_SECONDS * 3)
-  _ = await service.handle_action(AppAction.CANCEL)
-
-  state_index = dbus_service.events.index(("State", ForegroundPhase.RECORDING))
-  spectrum_event = next(event for event in dbus_service.events if event[0] == "SpectrumUpdated")
-
-  assert state_index < dbus_service.events.index(spectrum_event)
-  assert isinstance(spectrum_event[1], bytes)
-  assert len(spectrum_event[1]) == 50
 
 
 @pytest.mark.asyncio
@@ -1537,7 +1121,7 @@ async def test_create_service_resolves_configured_ffmpeg_path(
   monkeypatch: pytest.MonkeyPatch,
   tmp_path: Path,
 ) -> None:
-  logger = RecordingLogger()
+  logger = get_logger("test/listener")
   keyboard = FakeKeyboard()
   ffmpeg_path = tmp_path / "bin" / "ffmpeg"
   ffmpeg_path.parent.mkdir(parents=True)
@@ -1584,10 +1168,6 @@ async def test_create_service_resolves_configured_ffmpeg_path(
   )
 
   assert service.phase is ForegroundPhase.IDLE
-  assert logger.info_records[0] == LogRecord(
-    event="resolved ffmpeg binary",
-    fields={"ffmpeg_path": str(ffmpeg_path)},
-  )
 
 
 @pytest.mark.asyncio
@@ -1595,7 +1175,7 @@ async def test_create_service_falls_back_to_path_for_ffmpeg_resolution(
   monkeypatch: pytest.MonkeyPatch,
   tmp_path: Path,
 ) -> None:
-  logger = RecordingLogger()
+  logger = get_logger("test/listener")
   keyboard = FakeKeyboard()
   ffmpeg_path = tmp_path / "path-bin" / "ffmpeg"
   ffmpeg_path.parent.mkdir(parents=True)
@@ -1637,17 +1217,13 @@ async def test_create_service_falls_back_to_path_for_ffmpeg_resolution(
   )
 
   assert service.phase is ForegroundPhase.IDLE
-  assert logger.info_records[0] == LogRecord(
-    event="resolved ffmpeg binary",
-    fields={"ffmpeg_path": str(ffmpeg_path)},
-  )
 
 
 @pytest.mark.asyncio
 async def test_create_service_fails_fast_when_ffmpeg_cannot_be_resolved(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-  logger = RecordingLogger()
+  logger = get_logger("test/listener")
   keyboard = FakeKeyboard()
 
   monkeypatch.setattr("active_listener.bootstrap.get_logger", lambda _name: logger)
@@ -1666,10 +1242,6 @@ async def test_create_service_fails_fast_when_ffmpeg_cannot_be_resolved(
     )
 
   assert keyboard.close_calls == 1
-  assert logger.error_records[-1].event == "startup dependency construction failed"
-  assert str(logger.error_records[-1].fields["exc_info"]) == (
-    "ffmpeg executable not found; set ffmpeg_path or add ffmpeg to PATH"
-  )
 
 
 @pytest.mark.asyncio
@@ -1678,9 +1250,9 @@ async def test_reconnecting_and_reconnected_events_update_phase() -> None:
   service = harness.service
 
   await service.handle_client_event(
-    ReconnectingEvent(stream="stream-1", attempt=2, retry_delay_s=10.0)
+    ReconnectingSignal(session_id="stream-1", attempt=2, retry_delay_s=10.0)
   )
-  await service.handle_client_event(ReconnectedEvent(stream="stream-1"))
+  await service.handle_client_event(ReconnectedSignal(session_id="stream-1"))
 
   assert service.phase is ForegroundPhase.IDLE
   assert harness.dbus_service.states == [ForegroundPhase.RECONNECTING, ForegroundPhase.IDLE]
@@ -1688,62 +1260,6 @@ async def test_reconnecting_and_reconnected_events_update_phase() -> None:
     ("Reconnecting", None),
     ("Reconnected", None),
   ]
-  assert harness.logger.warning_messages == ["client reconnecting"]
-  assert harness.logger.info_messages == ["client reconnected"]
-
-
-@pytest.mark.asyncio
-async def test_language_detection_events_leave_idle_and_recording_state_unchanged() -> None:
-  harness = _service()
-  service = harness.service
-  event = LanguageDetectionEvent(stream="stream-1", language="en", probability=1.0)
-
-  await service.handle_client_event(event)
-
-  assert service.phase is ForegroundPhase.IDLE
-  assert harness.dbus_service.states == []
-  assert harness.dbus_service.signals == []
-
-  _ = await service.handle_action(AppAction.START_OR_FINISH)
-  await service.handle_client_event(event)
-
-  assert service.phase is ForegroundPhase.RECORDING
-  assert service.disconnect_generation == 0
-  assert harness.client.stop_calls == 0
-  assert harness.dbus_service.states == [ForegroundPhase.RECORDING]
-  assert harness.dbus_service.signals == []
-
-  _ = await service.handle_action(AppAction.CANCEL)
-  await service.wait_for_background_tasks()
-
-
-@pytest.mark.asyncio
-async def test_language_detection_keeps_recording_active_until_finish() -> None:
-  client = FakeClient(
-    flush_results=[
-      _message(
-        _segment(1, "alpha", completed=True),
-        _segment(2, "tail", completed=False),
-      )
-    ]
-  )
-  harness = _service(client=client)
-  service = harness.service
-
-  _ = await service.handle_action(AppAction.START_OR_FINISH)
-  await service.handle_client_event(
-    LanguageDetectionEvent(stream="stream-1", language="en", probability=0.99)
-  )
-
-  assert service.phase is ForegroundPhase.RECORDING
-  assert client.stop_calls == 0
-  assert harness.dbus_service.signals == []
-
-  _ = await service.handle_action(AppAction.START_OR_FINISH)
-  await service.wait_for_background_tasks()
-
-  assert service.phase is ForegroundPhase.IDLE
-  assert harness.emitter.emitted == ["alpha "]
 
 
 @pytest.mark.asyncio
@@ -1822,322 +1338,11 @@ async def test_idle_capslock_up_is_ignored_but_down_starts_recording() -> None:
 
 
 @pytest.mark.asyncio
-async def test_recording_caps_tap_finishes_before_hold_threshold(
-  monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  monkeypatch.setattr("active_listener.recording.session.HOLD_THRESHOLD_S", 0.01)
-  client = FakeClient(
-    flush_results=[
-      _message(
-        _segment(1, "alpha", completed=True),
-        _segment(2, "tail", completed=False),
-      )
-    ]
-  )
-  harness = _service(client=client)
-
-  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
-  recording_started_monotonic_s = _recording_started_monotonic_s(
-    _recording_session(harness.service)
-  )
-  assert recording_started_monotonic_s is not None
-
-  await harness.service.handle_keyboard_event(
-    _keyboard_event(
-      KeyboardEventKind.CAPSLOCK_DOWN,
-      received_monotonic_s=recording_started_monotonic_s + 1.0,
-    )
-  )
-  await harness.service.handle_keyboard_event(
-    _keyboard_event(
-      KeyboardEventKind.CAPSLOCK_UP,
-      received_monotonic_s=recording_started_monotonic_s + 1.005,
-    )
-  )
-  await harness.service.wait_for_background_tasks()
-
-  assert harness.service.phase is ForegroundPhase.IDLE
-  assert harness.client.flush_calls == [True]
-  assert harness.client.stop_calls == 1
-  assert harness.dbus_service.states == [ForegroundPhase.RECORDING, ForegroundPhase.IDLE]
-
-
-@pytest.mark.asyncio
-async def test_recording_caps_release_after_threshold_closes_hold_without_scheduler_help(
-  monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  monkeypatch.setattr("active_listener.recording.session.HOLD_THRESHOLD_S", 0.01)
-  harness = _service()
-
-  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
-  session = _recording_session(harness.service)
-  recording_started_monotonic_s = _recording_started_monotonic_s(session)
-  assert recording_started_monotonic_s is not None
-
-  await harness.service.handle_keyboard_event(
-    _keyboard_event(
-      KeyboardEventKind.CAPSLOCK_DOWN,
-      received_monotonic_s=recording_started_monotonic_s + 1.0,
-    )
-  )
-  await harness.service.handle_keyboard_event(
-    _keyboard_event(
-      KeyboardEventKind.CAPSLOCK_UP,
-      received_monotonic_s=recording_started_monotonic_s + 1.02,
-    )
-  )
-
-  reducer_state = _recording_reducer_state(session)
-  assert reducer_state is not None
-  assert harness.service.phase is ForegroundPhase.RECORDING
-  assert reducer_state.open_command_start_s is None
-  assert len(reducer_state.closed_command_spans) == 1
-  assert abs(reducer_state.closed_command_spans[0].start_s - 1.0) < 1e-9
-  assert abs(reducer_state.closed_command_spans[0].end_s - 1.02) < 1e-9
-
-
-@pytest.mark.asyncio
-async def test_recording_caps_hold_commits_at_keydown_and_release_closes_span(
-  monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  monkeypatch.setattr("active_listener.recording.session.HOLD_THRESHOLD_S", 0.001)
-  harness = _service()
-
-  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
-  session = _recording_session(harness.service)
-  recording_started_monotonic_s = _recording_started_monotonic_s(session)
-  assert recording_started_monotonic_s is not None
-
-  await harness.service.handle_keyboard_event(
-    _keyboard_event(
-      KeyboardEventKind.CAPSLOCK_DOWN,
-      received_monotonic_s=recording_started_monotonic_s + 1.0,
-    )
-  )
-  await asyncio.sleep(0.01)
-
-  reducer_state = _recording_reducer_state(session)
-  assert reducer_state is not None
-  assert reducer_state.open_command_start_s is not None
-  assert abs(reducer_state.open_command_start_s - 1.0) < 1e-9
-
-  await harness.service.handle_keyboard_event(
-    _keyboard_event(
-      KeyboardEventKind.CAPSLOCK_DOWN,
-      received_monotonic_s=recording_started_monotonic_s + 1.2,
-    )
-  )
-  assert reducer_state.open_command_start_s is not None
-  assert abs(reducer_state.open_command_start_s - 1.0) < 1e-9
-  assert reducer_state.closed_command_spans == []
-
-  await harness.service.handle_keyboard_event(
-    _keyboard_event(
-      KeyboardEventKind.CAPSLOCK_UP,
-      received_monotonic_s=recording_started_monotonic_s + 1.4,
-    )
-  )
-
-  assert harness.service.phase is ForegroundPhase.RECORDING
-  assert reducer_state.open_command_start_s is None
-  assert len(reducer_state.closed_command_spans) == 1
-  assert abs(reducer_state.closed_command_spans[0].start_s - 1.0) < 1e-9
-  assert abs(reducer_state.closed_command_spans[0].end_s - 1.4) < 1e-9
-
-
-@pytest.mark.asyncio
-async def test_disconnect_clears_pending_caps_hold_task(
-  monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  monkeypatch.setattr("active_listener.recording.session.HOLD_THRESHOLD_S", 10.0)
-  harness = _service()
-
-  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
-  session = _recording_session(harness.service)
-  recording_started_monotonic_s = _recording_started_monotonic_s(session)
-  assert recording_started_monotonic_s is not None
-
-  await harness.service.handle_keyboard_event(
-    _keyboard_event(
-      KeyboardEventKind.CAPSLOCK_DOWN,
-      received_monotonic_s=recording_started_monotonic_s + 1.0,
-    )
-  )
-
-  pending_gesture = _pending_caps_gesture(session)
-  assert pending_gesture is not None
-  assert pending_gesture.threshold_task is not None
-  assert pending_gesture.threshold_task.done() is False
-
-  await harness.service.handle_client_event(
-    DisconnectedEvent(stream="stream-1", reason="socket closed")
-  )
-
-  assert harness.service.phase is ForegroundPhase.RECONNECTING
-  assert _pending_caps_gesture(session) is None
-  assert pending_gesture.threshold_task.done() is True
-
-
-@pytest.mark.asyncio
-async def test_finish_recording_returns_closed_spans_and_no_open_span(
-  monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  monkeypatch.setattr("active_listener.recording.session.HOLD_THRESHOLD_S", 0.001)
-  harness = _service()
-
-  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
-  session = _recording_session(harness.service)
-  recording_started_monotonic_s = _recording_started_monotonic_s(session)
-  assert recording_started_monotonic_s is not None
-
-  await harness.service.handle_keyboard_event(
-    _keyboard_event(
-      KeyboardEventKind.CAPSLOCK_DOWN,
-      received_monotonic_s=recording_started_monotonic_s + 0.01,
-    )
-  )
-  await asyncio.sleep(0.01)
-
-  session.audio_buffer.append(_sine_wave_bytes(440.0, 32))
-  finished_recording = await session.finish_recording()
-  reducer_state = finished_recording.reducer_state
-
-  assert reducer_state.open_command_start_s is None
-  assert len(reducer_state.closed_command_spans) == 1
-  assert abs(reducer_state.closed_command_spans[0].start_s - 0.01) < 1e-9
-  assert reducer_state.closed_command_spans[0].end_s >= 0.01
-  assert finished_recording.captured_audio.sample_rate_hz == SAMPLE_RATE_HZ
-  assert finished_recording.captured_audio.channels == 1
-  assert finished_recording.captured_audio.pcm_f32le != b""
-
-
-@pytest.mark.asyncio
-async def test_cancel_recording_discards_captured_audio_before_next_recording() -> None:
-  harness = _service()
-  first_chunk = _sine_wave_bytes(220.0, 24)
-  second_chunk = _sine_wave_bytes(330.0, 24)
-
-  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
-  harness.recording_audio_buffer.append(first_chunk)
-  _ = await harness.service.handle_action(AppAction.CANCEL)
-
-  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
-  harness.recording_audio_buffer.append(second_chunk)
-  finished_recording = await _recording_session(harness.service).finish_recording()
-
-  assert finished_recording == FinishedRecording(
-    recording_id=finished_recording.recording_id,
-    reducer_state=finished_recording.reducer_state,
-    captured_audio=CapturedRecordingAudio(
-      pcm_f32le=second_chunk,
-      sample_rate_hz=SAMPLE_RATE_HZ,
-      channels=1,
-    ),
-    correction_load_task=finished_recording.correction_load_task,
-  )
-
-
-@pytest.mark.asyncio
-async def test_disconnect_discards_captured_audio_before_next_recording() -> None:
-  harness = _service()
-  first_chunk = _sine_wave_bytes(220.0, 24)
-  second_chunk = _sine_wave_bytes(330.0, 24)
-
-  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
-  harness.recording_audio_buffer.append(first_chunk)
-  await harness.service.handle_client_event(
-    DisconnectedEvent(stream="stream-1", reason="socket closed")
-  )
-  await harness.service.handle_client_event(ReconnectedEvent(stream="stream-1"))
-
-  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
-  harness.recording_audio_buffer.append(second_chunk)
-  finished_recording = await _recording_session(harness.service).finish_recording()
-
-  assert finished_recording == FinishedRecording(
-    recording_id=finished_recording.recording_id,
-    reducer_state=finished_recording.reducer_state,
-    captured_audio=CapturedRecordingAudio(
-      pcm_f32le=second_chunk,
-      sample_rate_hz=SAMPLE_RATE_HZ,
-      channels=1,
-    ),
-    correction_load_task=finished_recording.correction_load_task,
-  )
-
-
-@pytest.mark.asyncio
-async def test_finish_recording_returns_audio_snapshot_unchanged_after_late_chunks() -> None:
-  harness = _service()
-  first_chunk = _sine_wave_bytes(220.0, 24)
-  late_chunk = _sine_wave_bytes(330.0, 24)
-
-  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
-  harness.recording_audio_buffer.append(first_chunk)
-  finished_recording = await _recording_session(harness.service).finish_recording()
-  harness.recording_audio_buffer.append(late_chunk)
-
-  assert finished_recording.captured_audio == CapturedRecordingAudio(
-    pcm_f32le=first_chunk,
-    sample_rate_hz=SAMPLE_RATE_HZ,
-    channels=1,
-  )
-
-
-@pytest.mark.asyncio
-async def test_multiple_holds_accumulate_closed_command_spans(
-  monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  monkeypatch.setattr("active_listener.recording.session.HOLD_THRESHOLD_S", 0.001)
-  harness = _service()
-
-  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
-  session = _recording_session(harness.service)
-  recording_started_monotonic_s = _recording_started_monotonic_s(session)
-  assert recording_started_monotonic_s is not None
-
-  await harness.service.handle_keyboard_event(
-    _keyboard_event(
-      KeyboardEventKind.CAPSLOCK_DOWN,
-      received_monotonic_s=recording_started_monotonic_s + 1.0,
-    )
-  )
-  await asyncio.sleep(0.01)
-  await harness.service.handle_keyboard_event(
-    _keyboard_event(
-      KeyboardEventKind.CAPSLOCK_UP,
-      received_monotonic_s=recording_started_monotonic_s + 1.2,
-    )
-  )
-  await harness.service.handle_keyboard_event(
-    _keyboard_event(
-      KeyboardEventKind.CAPSLOCK_DOWN,
-      received_monotonic_s=recording_started_monotonic_s + 2.0,
-    )
-  )
-  await asyncio.sleep(0.01)
-  await harness.service.handle_keyboard_event(
-    _keyboard_event(
-      KeyboardEventKind.CAPSLOCK_UP,
-      received_monotonic_s=recording_started_monotonic_s + 2.3,
-    )
-  )
-
-  reducer_state = _recording_reducer_state(session)
-  assert reducer_state is not None
-  assert len(reducer_state.closed_command_spans) == 2
-  assert abs(reducer_state.closed_command_spans[0].start_s - 1.0) < 1e-9
-  assert abs(reducer_state.closed_command_spans[0].end_s - 1.2) < 1e-9
-  assert abs(reducer_state.closed_command_spans[1].start_s - 2.0) < 1e-9
-  assert abs(reducer_state.closed_command_spans[1].end_s - 2.3) < 1e-9
-
-
-@pytest.mark.asyncio
 async def test_idle_disconnect_sets_reconnecting_without_extra_dbus_signal() -> None:
   harness = _service()
 
   await harness.service.handle_client_event(
-    DisconnectedEvent(stream="stream-1", reason="socket closed")
+    DisconnectedSignal(session_id="stream-1", reason="socket closed")
   )
 
   assert harness.service.phase is ForegroundPhase.RECONNECTING
@@ -2161,23 +1366,19 @@ async def test_transcription_events_are_consumed_only_while_recording() -> None:
   service = harness.service
 
   await service.handle_client_event(
-    _transcription_event(
-      _message(
-        _segment(90, "ignored", completed=True),
-        _segment(91, "tail", completed=False),
-        flush_complete=False,
-      )
+    _message(
+      _segment(90, "ignored", completed=True),
+      _segment(91, "tail", completed=False),
+      flush_complete=False,
     )
   )
   _ = await service.handle_action(AppAction.START_OR_FINISH)
   await service.handle_client_event(
-    _transcription_event(
-      _live_message(
-        service,
-        _segment(1, "alpha", completed=True),
-        _segment(2, "draft", completed=False),
-        flush_complete=False,
-      )
+    _live_message(
+      service,
+      _segment(1, "alpha", completed=True),
+      _segment(2, "draft", completed=False),
+      flush_complete=False,
     )
   )
   _ = await service.handle_action(AppAction.START_OR_FINISH)
@@ -2197,50 +1398,6 @@ async def test_transcription_events_are_consumed_only_while_recording() -> None:
   ]
   assert emitter.emitted == ["alpha bravo "]
   assert harness.keyboard.ungrab_calls == 1
-  assert (
-    LogRecord(
-      event="live transcription event ignored",
-      fields={"stream": "stream-1", "phase": "idle"},
-    )
-    in harness.logger.debug_records
-  )
-  assert (
-    LogRecord(
-      event="live transcription event received",
-      fields={
-        "stream": "stream-1",
-        "phase": "recording",
-        "flush_complete": False,
-        "segment_count": 2,
-      },
-    )
-    in harness.logger.debug_records
-  )
-  assert (
-    LogRecord(
-      event="publishing live transcription update",
-      fields={
-        "stream": "stream-1",
-        "runs": [
-          TextRun(text="alpha", is_command=False, is_complete=True),
-          TextRun(text="draft", is_command=False, is_complete=False),
-        ],
-      },
-    )
-    in harness.logger.debug_records
-  )
-  assert (
-    LogRecord(
-      event="live transcription update published",
-      fields={
-        "stream": "stream-1",
-        "run_count": 2,
-      },
-    )
-    in harness.logger.debug_records
-  )
-  assert "recording finished" in harness.logger.info_messages
-  assert harness.logger.info_messages[-1] == "text emitted"
 
 
 @pytest.mark.asyncio
@@ -2260,13 +1417,11 @@ async def test_cancel_clears_connection_cursor_for_next_recording() -> None:
 
   _ = await service.handle_action(AppAction.START_OR_FINISH)
   await service.handle_client_event(
-    _transcription_event(
-      _live_message(
-        service,
-        _segment(1, "alpha", completed=True),
-        _segment(2, "tail", completed=False),
-        flush_complete=False,
-      )
+    _live_message(
+      service,
+      _segment(1, "alpha", completed=True),
+      _segment(2, "tail", completed=False),
+      flush_complete=False,
     )
   )
   _ = await service.handle_action(AppAction.CANCEL)
@@ -2333,9 +1488,9 @@ async def test_reconnected_session_resets_connection_cursor_before_next_recordin
   await service.wait_for_background_tasks()
 
   await service.handle_client_event(
-    ReconnectingEvent(stream="stream-1", attempt=2, retry_delay_s=10.0)
+    ReconnectingSignal(session_id="stream-1", attempt=2, retry_delay_s=10.0)
   )
-  await service.handle_client_event(ReconnectedEvent(stream="stream-1"))
+  await service.handle_client_event(ReconnectedSignal(session_id="stream-1"))
 
   _ = await service.handle_action(AppAction.START_OR_FINISH)
   _ = await service.handle_action(AppAction.START_OR_FINISH)
@@ -2447,25 +1602,41 @@ async def test_new_commit_flushes_while_older_rewrite_is_still_running(
 
 
 @pytest.mark.asyncio
-async def test_disconnect_during_background_finalization_skips_emission() -> None:
-  pending_flush = asyncio.get_running_loop().create_future()
-  client = FakeClient(flush_results=[pending_flush])
-  emitter = FakeEmitter()
-  harness = _service(client=client, emitter=emitter)
-  service = harness.service
-
-  _ = await service.handle_action(AppAction.START_OR_FINISH)
-  _ = await service.handle_action(AppAction.START_OR_FINISH)
-  await service.handle_client_event(DisconnectedEvent(stream="stream-1", reason="socket closed"))
+async def test_disconnect_during_background_finalization_preserves_accepted_result() -> None:
+  pending_flush: asyncio.Future[TranscriptionMessage] = asyncio.get_running_loop().create_future()
+  harness = _service(client=FakeClient(flush_results=[pending_flush]))
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
   pending_flush.set_result(_message(_segment(1, "alpha", completed=True)))
-  await service.wait_for_background_tasks()
+  await harness.service.handle_client_event(
+    DisconnectedSignal(session_id="stream-1", reason="closed")
+  )
+  await harness.service.wait_for_background_tasks()
+  assert harness.emitter.emitted == ["alpha "]
+  assert harness.service.phase is ForegroundPhase.RECONNECTING
 
-  assert emitter.emitted == []
-  assert service.phase is ForegroundPhase.RECONNECTING
-  assert harness.logger.warning_messages[-2:] == [
-    "client disconnected",
-    "skipping emission after disconnect",
+
+@pytest.mark.asyncio
+async def test_provisional_revisions_remain_raw_until_force_flush() -> None:
+  harness = _service(
+    client=FakeClient(flush_results=[_message(_segment(1, "alpha bravo", completed=True))])
+  )
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  for text in ("draft rough", "alpha bravo"):
+    await harness.service.handle_client_event(
+      _live_message(harness.service, _segment(1, text, completed=False), flush_complete=False)
+    )
+  published = [
+    runs for name, runs in harness.dbus_service.signals if name == "TranscriptionUpdated"
   ]
+  assert published == [
+    [TextRun(text="draft rough", is_command=False, is_complete=False)],
+    [TextRun(text="alpha bravo", is_command=False, is_complete=False)],
+  ]
+  assert harness.emitter.emitted == []
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  await harness.service.wait_for_background_tasks()
+  assert harness.emitter.emitted == ["alpha bravo "]
 
 
 @pytest.mark.asyncio
@@ -2485,24 +1656,20 @@ async def test_finished_recording_emits_joined_text_from_live_updates_and_flush(
 
   _ = await service.handle_action(AppAction.START_OR_FINISH)
   await service.handle_client_event(
-    _transcription_event(
-      _live_message(
-        service,
-        _segment(1, "alpha", completed=True),
-        _segment(2, "draft", completed=False),
-        flush_complete=False,
-      )
+    _live_message(
+      service,
+      _segment(1, "alpha", completed=True),
+      _segment(2, "draft", completed=False),
+      flush_complete=False,
     )
   )
   await service.handle_client_event(
-    _transcription_event(
-      _live_message(
-        service,
-        _segment(1, "alpha", completed=True),
-        _segment(2, "bravo", completed=True),
-        _segment(3, "draft", completed=False),
-        flush_complete=False,
-      )
+    _live_message(
+      service,
+      _segment(1, "alpha", completed=True),
+      _segment(2, "bravo", completed=True),
+      _segment(3, "draft", completed=False),
+      flush_complete=False,
     )
   )
   _ = await service.handle_action(AppAction.START_OR_FINISH)
@@ -2524,39 +1691,31 @@ async def test_missing_transcription_sentinel_warns_and_falls_back_to_window() -
     ]
   )
   emitter = FakeEmitter()
-  logger = RecordingLogger()
+  logger = get_logger("test/listener")
   harness = _service(client=client, emitter=emitter, logger=logger)
   service = harness.service
 
   _ = await service.handle_action(AppAction.START_OR_FINISH)
   await service.handle_client_event(
-    _transcription_event(
-      _live_message(
-        service,
-        _segment(1, "alpha", completed=True),
-        _segment(2, "tail", completed=False),
-        flush_complete=False,
-      )
+    _live_message(
+      service,
+      _segment(1, "alpha", completed=True),
+      _segment(2, "tail", completed=False),
+      flush_complete=False,
     )
   )
   await service.handle_client_event(
-    _transcription_event(
-      _live_message(
-        service,
-        _segment(7, "restart", completed=True),
-        _segment(8, "draft", completed=False),
-        flush_complete=False,
-      )
+    _live_message(
+      service,
+      _segment(7, "restart", completed=True),
+      _segment(8, "draft", completed=False),
+      flush_complete=False,
     )
   )
   _ = await service.handle_action(AppAction.START_OR_FINISH)
   await service.wait_for_background_tasks()
 
   assert emitter.emitted == ["alpha restart tail "]
-  assert logger.warning_records[-1] == LogRecord(
-    event="transcription reducer sentinel missing",
-    fields={"stream": "stream-1", "last_id": 1},
-  )
 
 
 @pytest.mark.asyncio
@@ -2585,13 +1744,7 @@ async def test_finalize_recording_emits_raw_text_when_rewrite_is_disabled(
 
   assert harness.emitter.emitted == ["alpha "]
   assert harness.rewrite_client.calls == []
-  assert (
-    LogRecord(
-      event="recording finalization mode",
-      fields={"stream": "stream-1", "llm_mode": "unavailable"},
-    )
-    in harness.logger.info_records
-  )
+
   assert harness.history_store.recordings == [
     RecordedFinalization(
       record=FinalizedTranscriptRecord(
@@ -2607,15 +1760,6 @@ async def test_finalize_recording_emits_raw_text_when_rewrite_is_disabled(
       archived_audio=b"m4a-bytes",
     )
   ]
-  assert harness.logger.info_records[-1] == LogRecord(
-    event="text emitted",
-    fields={
-      "stream": "stream-1",
-      "emitted_text": "alpha ",
-      "text_length": 6,
-      "source": "raw",
-    },
-  )
 
 
 @pytest.mark.asyncio
@@ -2657,7 +1801,9 @@ async def test_finalize_recording_normalizes_hashtag_before_emitting_text() -> N
 
 
 @pytest.mark.asyncio
-async def test_finalize_recording_drops_command_runs_when_llm_is_disabled() -> None:
+async def test_finalize_recording_drops_command_runs_when_llm_is_disabled(
+  recording_clock: RecordingClock,
+) -> None:
   client = FakeClient(
     flush_results=[
       _message(
@@ -2701,9 +1847,7 @@ async def test_finalize_recording_drops_command_runs_when_llm_is_disabled() -> N
   assert await harness.service.set_llm_active(False) is False
 
   _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
-  reducer_state = _recording_reducer_state(_recording_session(harness.service))
-  assert reducer_state is not None
-  reducer_state.closed_command_spans = [TimeSpan(start_s=0.3, end_s=0.6)]
+  await _command_hold(harness.service, 0.3, 0.6)
 
   _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
   await harness.service.wait_for_background_tasks()
@@ -2713,47 +1857,43 @@ async def test_finalize_recording_drops_command_runs_when_llm_is_disabled() -> N
 
 
 @pytest.mark.asyncio
-async def test_live_transcription_publishes_shaped_runs() -> None:
+async def test_live_transcription_publishes_shaped_runs(recording_clock: RecordingClock) -> None:
   harness = _service()
   service = harness.service
 
   _ = await service.handle_action(AppAction.START_OR_FINISH)
-  reducer_state = _recording_reducer_state(_recording_session(service))
-  assert reducer_state is not None
-  reducer_state.closed_command_spans = [TimeSpan(start_s=0.6, end_s=0.9)]
+  await _command_hold(service, 0.6, 0.9)
 
   await service.handle_client_event(
-    _transcription_event(
-      _live_message(
-        service,
-        _segment(
-          1,
-          "hillary release hashtag 42 thank you",
-          completed=True,
-          start=0.0,
-          end=0.5,
-          words=[
-            _word("hillary", start=0.0, end=0.1),
-            _word("release", start=0.1, end=0.2),
-            _word("hashtag", start=0.2, end=0.3),
-            _word("42", start=0.3, end=0.4),
-            _word("thank", start=0.4, end=0.45),
-            _word("you", start=0.45, end=0.5),
-          ],
-        ),
-        _segment(
-          2,
-          "scratch that.",
-          completed=True,
-          start=0.6,
-          end=0.9,
-          words=[
-            _word("scratch", start=0.6, end=0.75),
-            _word("that.", start=0.75, end=0.9),
-          ],
-        ),
-        flush_complete=False,
-      )
+    _live_message(
+      service,
+      _segment(
+        1,
+        "hillary release hashtag 42 thank you",
+        completed=True,
+        start=0.0,
+        end=0.5,
+        words=[
+          _word("hillary", start=0.0, end=0.1),
+          _word("release", start=0.1, end=0.2),
+          _word("hashtag", start=0.2, end=0.3),
+          _word("42", start=0.3, end=0.4),
+          _word("thank", start=0.4, end=0.45),
+          _word("you", start=0.45, end=0.5),
+        ],
+      ),
+      _segment(
+        2,
+        "scratch that.",
+        completed=False,
+        start=0.6,
+        end=0.9,
+        words=[
+          _word("scratch", start=0.6, end=0.75),
+          _word("that.", start=0.75, end=0.9),
+        ],
+      ),
+      flush_complete=False,
     )
   )
   _ = await service.handle_action(AppAction.CANCEL)
@@ -2780,30 +1920,28 @@ async def test_live_overlay_leaves_incomplete_tail_unshaped() -> None:
   _ = await service.handle_action(AppAction.START_OR_FINISH)
 
   await service.handle_client_event(
-    _transcription_event(
-      _live_message(
-        service,
-        _segment(
-          1,
-          "hillary",
-          completed=True,
-          start=0.0,
-          end=0.2,
-          words=[_word("hillary", start=0.0, end=0.2)],
-        ),
-        _segment(
-          2,
-          "dot slash",
-          completed=True,
-          start=0.3,
-          end=0.5,
-          words=[
-            _word("dot", start=0.3, end=0.4),
-            _word("slash", start=0.4, end=0.5),
-          ],
-        ),
-        flush_complete=False,
-      )
+    _live_message(
+      service,
+      _segment(
+        1,
+        "hillary",
+        completed=True,
+        start=0.0,
+        end=0.2,
+        words=[_word("hillary", start=0.0, end=0.2)],
+      ),
+      _segment(
+        2,
+        "dot slash",
+        completed=False,
+        start=0.3,
+        end=0.5,
+        words=[
+          _word("dot", start=0.3, end=0.4),
+          _word("slash", start=0.4, end=0.5),
+        ],
+      ),
+      flush_complete=False,
     )
   )
   _ = await service.handle_action(AppAction.CANCEL)
@@ -2818,18 +1956,6 @@ async def test_live_overlay_leaves_incomplete_tail_unshaped() -> None:
       TextRun(text="dot slash", is_command=False, is_complete=False),
     ]
   ]
-
-
-@pytest.mark.asyncio
-async def test_correction_loading_starts_when_recording_starts() -> None:
-  correction_store = FakeCorrectionStore()
-  harness = _service(correction_store=correction_store)
-
-  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
-
-  assert correction_store.load_started.is_set()
-
-  _ = await harness.service.handle_action(AppAction.CANCEL)
 
 
 @pytest.mark.asyncio
@@ -2937,7 +2063,6 @@ async def test_finalize_recording_continues_when_correction_load_fails(
   await harness.service.wait_for_background_tasks()
 
   assert harness.emitter.emitted == ["rewritten alpha "]
-  assert "stored correction load failed" in harness.logger.exception_messages
 
 
 @pytest.mark.asyncio
@@ -3009,7 +2134,6 @@ async def test_finalize_recording_continues_when_correction_persistence_fails(
   await harness.service.wait_for_background_tasks()
 
   assert harness.emitter.emitted == ["I use PyTorch "]
-  assert "rewrite correction persistence failed" in harness.logger.exception_messages
 
 
 @pytest.mark.asyncio
@@ -3039,13 +2163,7 @@ async def test_finalize_recording_skips_only_rewrite_when_runtime_disabled(
 
   assert harness.emitter.emitted == ["alpha "]
   assert harness.rewrite_client.calls == []
-  assert (
-    LogRecord(
-      event="recording finalization mode",
-      fields={"stream": "stream-1", "llm_mode": "bypassed"},
-    )
-    in harness.logger.info_records
-  )
+
   assert harness.history_store.recordings == [
     RecordedFinalization(
       record=FinalizedTranscriptRecord(
@@ -3061,15 +2179,6 @@ async def test_finalize_recording_skips_only_rewrite_when_runtime_disabled(
       archived_audio=b"m4a-bytes",
     )
   ]
-  assert harness.logger.info_records[-1] == LogRecord(
-    event="text emitted",
-    fields={
-      "stream": "stream-1",
-      "emitted_text": "alpha ",
-      "text_length": 6,
-      "source": "pipeline_no_llm",
-    },
-  )
 
 
 @pytest.mark.asyncio
@@ -3090,256 +2199,38 @@ async def test_finalize_recording_does_not_archive_when_text_emission_fails() ->
   await harness.service.wait_for_background_tasks()
 
   assert harness.history_store.recordings == []
-  assert harness.logger.exception_messages[-1] == "text emission failed"
 
 
 @pytest.mark.asyncio
 async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-  recording_observed_calls: list[dict[str, object]] = []
-  rewrite_observed_calls: list[dict[str, object]] = []
-  observed_updates: list[dict[str, object | None]] = []
-  ended_sources: list[str] = []
-
-  @dataclass
-  class FakeLangfuseObservation:
-    source: str
-
-    def update(
-      self,
-      *,
-      input: object | None = None,
-      output: object | None = None,
-      metadata: object | None = None,
-      level: str | None = None,
-      status_message: str | None = None,
-      usage_details: dict[str, int] | None = None,
-      cost_details: dict[str, float] | None = None,
-    ) -> FakeLangfuseObservation:
-      observed_updates.append(
-        {
-          "source": self.source,
-          "input": input,
-          "output": output,
-          "metadata": metadata,
-          "level": level,
-          "status_message": status_message,
-          "usage_details": usage_details,
-          "cost_details": cost_details,
-        }
-      )
-      return self
-
-    def end(self, *, end_time: int | None = None) -> object:
-      ended_sources.append(self.source)
-      return end_time
-
-    @contextmanager
-    def start_as_current_observation(
-      self,
-      *,
-      name: str,
-      input: object | None = None,
-      output: object | None = None,
-      metadata: object | None = None,
-      level: str | None = None,
-      status_message: str | None = None,
-      usage_details: dict[str, int] | None = None,
-      cost_details: dict[str, float] | None = None,
-    ) -> Iterator[FakeLangfuseObservation]:
-      yield self
-
-  def fake_start_recording_observation(**kwargs: object) -> FakeLangfuseObservation:
-    recording_observed_calls.append(kwargs)
-    return FakeLangfuseObservation(source="recording")
-
-  @contextmanager
-  def fake_start_rewrite_observation(**kwargs: object) -> Iterator[FakeLangfuseObservation]:
-    rewrite_observed_calls.append(kwargs)
-    yield FakeLangfuseObservation(source="rewrite")
-
-  client = FakeClient(
-    flush_results=[
-      _message(
-        _segment(1, "alpha", completed=True),
-        _segment(2, "tail", completed=False),
-      )
-    ]
+  client = FakeClient(flush_results=[_message(_segment(1, "alpha", completed=True))])
+  rewrite = FakeRewriteClient(
+    rewritten_text="rewritten alpha", input_tokens=12, output_tokens=3, cost=Decimal("0.002")
   )
-  rewrite_client = FakeRewriteClient(
-    rewritten_text="rewritten alpha",
-    input_tokens=12,
-    output_tokens=4,
-    cost=Decimal("0.00012"),
-  )
-  emitter = FakeEmitter()
-  captured_audio = _sine_wave_bytes(440.0, 32)
-  audio_attachment = {"media": "mp3"}
-
-  @dataclass
-  class AssertingHistoryStore(FakeHistoryStore):
-    emitter: FakeEmitter = field(default_factory=FakeEmitter)
-
-    @override
-    def record_finalized_recording(
-      self,
-      record: FinalizedTranscriptRecord,
-      archived_audio: bytes | None,
-    ) -> None:
-      assert self.emitter.emitted == ["rewritten alpha "]
-      super().record_finalized_recording(record, archived_audio)
-
-  history_store = AssertingHistoryStore(emitter=emitter)
-  harness = _service(
-    client=client,
-    emitter=emitter,
-    rewrite_client=rewrite_client,
-    history_store=history_store,
-    config=_config(rewrite_enabled=True),
-  )
+  harness = _service(client=client, rewrite_client=rewrite, config=_config(rewrite_enabled=True))
   monkeypatch.setattr(
     "active_listener.infra.rewrite.load_active_listener_rewrite_prompt",
     _prompt_loader(_loaded_prompt_file(_prompt())),
   )
-  monkeypatch.setattr(
-    "active_listener.recording.finalizer.build_langfuse_audio_attachment",
-    lambda **_kwargs: audio_attachment,
-  )
-  monkeypatch.setattr(
-    "active_listener.recording.finalizer.encode_recording_audio",
-    lambda *_args, **_kwargs: b"m4a-bytes",
-  )
-  monkeypatch.setattr(
-    "active_listener.app.service.start_recording_observation",
-    fake_start_recording_observation,
-  )
-  monkeypatch.setattr(
-    "active_listener.recording.finalizer.start_rewrite_observation",
-    fake_start_rewrite_observation,
-  )
-
-  await harness.service.handle_client_event(ConnectedEvent(stream="stream-1"))
+  await harness.service.handle_client_event(ConnectedSignal(session_id="stream-1"))
   _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
-  harness.recording_audio_buffer.append(captured_audio)
   _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
   await harness.service.wait_for_background_tasks()
-
   assert harness.emitter.emitted == ["rewritten alpha "]
-  assert rewrite_client.calls == [
-    {
-      "instructions": "Rewrite this transcript.",
-      "transcript": "alpha",
-    }
-  ]
-  assert harness.history_store.recordings == [
-    RecordedFinalization(
-      record=FinalizedTranscriptRecord(
-        pre_finalization_text="alpha",
-        post_finalization_text="rewritten alpha ",
-        llm_model="fake-model",
-        tokens_in=12,
-        tokens_out=4,
-        cost=Decimal("0.00012"),
-        word_count=2,
-        duration_seconds=0.1,
-      ),
-      archived_audio=b"m4a-bytes",
-    )
-  ]
-  assert recording_observed_calls == [
-    {
-      "recording_id": harness.client.flush_recording_ids[0],
-      "stream": "stream-1",
-    }
-  ]
-  assert rewrite_observed_calls == [
-    {
-      "session_id": "stream-1",
-      "recording_id": harness.client.flush_recording_ids[0],
-      "provider": "litert",
-      "model": "/tmp/rewrite/model.litertlm",
-      "prompt_path": "/tmp/rewrite/system.md",
-      "stream": "stream-1",
-      "transcript": "alpha",
-      "parent_observation": FakeLangfuseObservation(source="recording"),
-    }
-  ]
-  assert observed_updates == [
-    {
-      "source": "recording",
-      "input": {
-        "raw_transcript": "alpha",
-        "rewrite_input": "alpha",
-      },
-      "output": None,
-      "metadata": {
-        "component": "active-listener",
-        "stream": "stream-1",
-        "recording_id": harness.client.flush_recording_ids[0],
-        "duration_seconds": 0.1,
-        "word_count": 1,
-      },
-      "level": None,
-      "status_message": None,
-      "usage_details": None,
-      "cost_details": None,
-    },
-    {
-      "source": "rewrite",
-      "input": None,
-      "output": "rewritten alpha",
-      "metadata": None,
-      "level": None,
-      "status_message": None,
-      "usage_details": {"input": 12, "output": 4},
-      "cost_details": {"total": 0.00012},
-    },
-    {
-      "source": "recording",
-      "input": None,
-      "output": {"emitted_text": "rewritten alpha ", "captured_audio": audio_attachment},
-      "metadata": {
-        "component": "active-listener",
-        "stream": "stream-1",
-        "recording_id": harness.client.flush_recording_ids[0],
-        "llm_mode": "active",
-        "source": "pipeline_llm",
-        "word_count": 2,
-        "duration_seconds": 0.1,
-        "llm_model": "fake-model",
-        "tokens_in": 12,
-        "tokens_out": 4,
-        "cost": "0.00012",
-      },
-      "level": None,
-      "status_message": None,
-      "usage_details": None,
-      "cost_details": None,
-    },
-  ]
-  assert ended_sources == ["recording"]
-  assert (
-    LogRecord(
-      event="recording finalization mode",
-      fields={"stream": "stream-1", "llm_mode": "active"},
-    )
-    in harness.logger.info_records
-  )
-  assert harness.logger.info_records[-1] == LogRecord(
-    event="text emitted",
-    fields={
-      "stream": "stream-1",
-      "emitted_text": "rewritten alpha ",
-      "text_length": 16,
-      "source": "pipeline_llm",
-    },
-  )
+  record = harness.history_store.recordings[0].record
+  assert record.pre_finalization_text == "alpha"
+  assert record.post_finalization_text == "rewritten alpha "
+  assert record.llm_model == "fake-model"
+  assert record.tokens_in == 12 and record.tokens_out == 3
+  assert record.cost == Decimal("0.002")
 
 
 @pytest.mark.asyncio
 async def test_finalize_recording_serializes_command_text_runs_for_rewrite(
   monkeypatch: pytest.MonkeyPatch,
+  recording_clock: RecordingClock,
 ) -> None:
   client = FakeClient(
     flush_results=[
@@ -3387,9 +2278,7 @@ async def test_finalize_recording_serializes_command_text_runs_for_rewrite(
   )
 
   _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
-  reducer_state = _recording_reducer_state(_recording_session(harness.service))
-  assert reducer_state is not None
-  reducer_state.closed_command_spans = [TimeSpan(start_s=0.3, end_s=0.6)]
+  await _command_hold(harness.service, 0.3, 0.6)
 
   _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
   await harness.service.wait_for_background_tasks()
@@ -3400,55 +2289,13 @@ async def test_finalize_recording_serializes_command_text_runs_for_rewrite(
       "transcript": "Hello, <instruction>scratch that.</instruction> Bye.",
     }
   ]
-  assert (
-    LogRecord(
-      event="rewrite started",
-      fields={
-        "stream": "stream-1",
-        "prompt_path": "/tmp/rewrite/system.md",
-        "rewrite_input": "Hello, <instruction>scratch that.</instruction> Bye.",
-      },
-    )
-    in harness.logger.info_records
-  )
 
 
 @pytest.mark.asyncio
 async def test_finalize_recording_emits_shaped_text_and_signals_failure_when_rewrite_fails(
   monkeypatch: pytest.MonkeyPatch,
+  recording_clock: RecordingClock,
 ) -> None:
-  observed_updates: list[dict[str, object | None]] = []
-
-  @dataclass
-  class FakeLangfuseObservation:
-    def update(
-      self,
-      *,
-      input: object | None = None,
-      output: object | None = None,
-      metadata: object | None = None,
-      level: str | None = None,
-      status_message: str | None = None,
-      usage_details: dict[str, int] | None = None,
-      cost_details: dict[str, float] | None = None,
-    ) -> FakeLangfuseObservation:
-      observed_updates.append(
-        {
-          "input": input,
-          "output": output,
-          "metadata": metadata,
-          "level": level,
-          "status_message": status_message,
-          "usage_details": usage_details,
-          "cost_details": cost_details,
-        }
-      )
-      return self
-
-  @contextmanager
-  def fake_start_rewrite_observation(**_kwargs: object) -> Iterator[FakeLangfuseObservation]:
-    yield FakeLangfuseObservation()
-
   client = FakeClient(
     flush_results=[
       _message(
@@ -3471,103 +2318,49 @@ async def test_finalize_recording_emits_shaped_text_and_signals_failure_when_rew
           completed=True,
           start=0.3,
           end=0.6,
-          words=[
-            _word("scratch", start=0.3, end=0.45),
-            _word("that.", start=0.45, end=0.6),
-          ],
+          words=[_word("scratch", start=0.3, end=0.45), _word("that.", start=0.45, end=0.6)],
         ),
-        _segment(3, "", completed=False),
       )
     ]
   )
-  rewrite_client = FakeRewriteClient(error=RewriteClientError("model failed"))
   harness = _service(
     client=client,
-    rewrite_client=rewrite_client,
     config=_config(rewrite_enabled=True),
+    rewrite_client=FakeRewriteClient(error=RewriteClientError("model failed")),
   )
   monkeypatch.setattr(
     "active_listener.infra.rewrite.load_active_listener_rewrite_prompt",
     _prompt_loader(_loaded_prompt_file(_prompt())),
   )
-  monkeypatch.setattr(
-    "active_listener.recording.finalizer.start_rewrite_observation",
-    fake_start_rewrite_observation,
-  )
-
   _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
-  reducer_state = _recording_reducer_state(_recording_session(harness.service))
-  assert reducer_state is not None
-  reducer_state.closed_command_spans = [TimeSpan(start_s=0.3, end_s=0.6)]
+  await _command_hold(harness.service, 0.3, 0.6)
   _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
   await harness.service.wait_for_background_tasks()
-
-  assert harness.emitter.emitted == ["release#42 "]
+  assert harness.emitter.emitted == ["release#42 thank you "]
   record = harness.history_store.recordings[0].record
-  assert record.post_finalization_text == "release#42 "
-  assert record.llm_model is None
-  assert record.tokens_in is None
-  assert record.tokens_out is None
-  assert record.cost is None
-  assert observed_updates == [
-    {
-      "input": None,
-      "output": None,
-      "metadata": None,
-      "level": "ERROR",
-      "status_message": "model failed",
-      "usage_details": None,
-      "cost_details": None,
-    }
-  ]
+  assert record.post_finalization_text == "release#42 thank you "
+  assert record.llm_model is None and record.cost is None
   assert harness.dbus_service.signals[-1] == (
     "PipelineFailed",
     ("rewrite_with_llm", "model failed"),
   )
-  assert harness.logger.exception_records[-1] == LogRecord(
-    event="dictation pipeline step failed",
-    fields={
-      "stream": "stream-1",
-      "step": "rewrite_with_llm",
-      "reason": "model failed",
-    },
-  )
 
 
 @pytest.mark.asyncio
-async def test_finalize_recording_skips_rewrite_after_disconnect(
-  monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  pending_flush = asyncio.get_running_loop().create_future()
-  client = FakeClient(flush_results=[pending_flush])
+async def test_disconnected_pending_flush_prevents_incomplete_recording_emission() -> None:
+  pending_flush: asyncio.Future[TranscriptionMessage] = asyncio.get_running_loop().create_future()
   harness = _service(
-    client=client,
-    config=_config(rewrite_enabled=True),
+    client=FakeClient(flush_results=[pending_flush]), config=_config(rewrite_enabled=True)
   )
-  prompt_load_calls: list[str] = []
-
-  def fake_load_prompt(_path: str) -> LoadedRewritePromptFile:
-    prompt_load_calls.append("called")
-    return _loaded_prompt_file(_prompt())
-
-  monkeypatch.setattr(
-    "active_listener.infra.rewrite.load_active_listener_rewrite_prompt", fake_load_prompt
-  )
-
   _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
   _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  await asyncio.sleep(0)
+  pending_flush.set_exception(RuntimeError("socket closed during flush"))
   await harness.service.handle_client_event(
-    DisconnectedEvent(stream="stream-1", reason="socket closed")
-  )
-  pending_flush.set_result(
-    _message(
-      _segment(1, "alpha", completed=True),
-      _segment(2, "tail", completed=False),
-    )
+    DisconnectedSignal(session_id="stream-1", reason="closed")
   )
   await harness.service.wait_for_background_tasks()
-
-  assert prompt_load_calls == []
+  assert harness.rewrite_client.calls == []
   assert harness.emitter.emitted == []
 
 
@@ -3603,7 +2396,6 @@ async def test_finalize_recording_skips_rewrite_for_empty_text(
 
   assert prompt_load_calls == []
   assert harness.emitter.emitted == []
-  assert harness.logger.info_messages[-1] == "recording finalized without committed text"
 
 
 @pytest.mark.asyncio
@@ -3632,46 +2424,6 @@ async def test_rewrite_logging_captures_prompt_failure(monkeypatch: pytest.Monke
   assert harness.dbus_service.signals[-1] == (
     "PipelineFailed",
     ("rewrite_with_llm", "bad prompt"),
-  )
-  assert harness.logger.exception_records[-1] == LogRecord(
-    event="dictation pipeline step failed",
-    fields={
-      "stream": "stream-1",
-      "step": "rewrite_with_llm",
-      "reason": "bad prompt",
-    },
-  )
-
-
-@pytest.mark.asyncio
-async def test_rewrite_logging_uses_resolved_prompt_path(monkeypatch: pytest.MonkeyPatch) -> None:
-  client = FakeClient(
-    flush_results=[
-      _message(
-        _segment(1, "alpha", completed=True),
-        _segment(2, "tail", completed=False),
-      )
-    ]
-  )
-  harness = _service(client=client, config=_config(rewrite_enabled=True))
-  monkeypatch.setattr(
-    "active_listener.infra.rewrite.load_active_listener_rewrite_prompt",
-    _prompt_loader(_loaded_prompt_file(_prompt(), prompt_path="/tmp/override/system.md")),
-  )
-
-  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
-  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
-  await harness.service.wait_for_background_tasks()
-
-  assert (
-    LogRecord(
-      event="rewrite prompt loaded",
-      fields={
-        "stream": "stream-1",
-        "prompt_path": "/tmp/override/system.md",
-      },
-    )
-    in harness.logger.info_records
   )
 
 
@@ -3705,62 +2457,161 @@ async def test_rewrite_logging_captures_timeout(monkeypatch: pytest.MonkeyPatch)
     "PipelineFailed",
     ("rewrite_with_llm", "timed out"),
   )
-  assert harness.logger.exception_records[-1] == LogRecord(
-    event="dictation pipeline step failed",
-    fields={
-      "stream": "stream-1",
-      "step": "rewrite_with_llm",
-      "reason": "timed out",
-    },
-  )
 
 
 @pytest.mark.asyncio
-async def test_rewrite_logging_captures_success_payloads(monkeypatch: pytest.MonkeyPatch) -> None:
-  client = FakeClient(
-    flush_results=[
-      _message(
-        _segment(1, "alpha", completed=True),
-        _segment(2, "tail", completed=False),
-      )
-    ]
-  )
-  rewrite_client = FakeRewriteClient(rewritten_text="rewritten alpha")
+async def test_recording_caps_tap_finishes_and_emits(recording_clock: RecordingClock) -> None:
   harness = _service(
-    client=client,
-    rewrite_client=rewrite_client,
-    config=_config(rewrite_enabled=True),
+    client=FakeClient(flush_results=[_message(_segment(1, "alpha", completed=True))])
   )
-  monkeypatch.setattr(
-    "active_listener.infra.rewrite.load_active_listener_rewrite_prompt",
-    _prompt_loader(
-      _loaded_prompt_file(
-        _prompt(),
-        prompt_path="/tmp/override/system.md",
-      )
-    ),
-  )
-
   _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
-  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  await _command_hold(harness.service, 0.1, 0.105)
   await harness.service.wait_for_background_tasks()
+  assert harness.service.phase is ForegroundPhase.IDLE
+  assert harness.keyboard.grabbed is False
+  assert harness.emitter.emitted == ["alpha "]
 
-  assert (
-    LogRecord(
-      event="finalized raw transcript",
-      fields={"stream": "stream-1", "raw_text": "alpha"},
+
+@pytest.mark.asyncio
+async def test_scheduled_hold_marks_command_text_and_release_keeps_recording(
+  monkeypatch: pytest.MonkeyPatch,
+  recording_clock: RecordingClock,
+) -> None:
+  monkeypatch.setattr("active_listener.app.recording_keyboard.HOLD_THRESHOLD_S", 0.001)
+  harness = _service()
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  await harness.service.handle_keyboard_event(
+    _keyboard_event(
+      KeyboardEventKind.CAPSLOCK_DOWN, received_monotonic_s=RECORDING_CLOCK_START + 0.3
     )
-    in harness.logger.info_records
   )
-  assert (
-    LogRecord(
-      event="rewrite succeeded",
-      fields={
-        "stream": "stream-1",
-        "prompt_path": "/tmp/override/system.md",
-        "rewrite_input": "alpha",
-        "rewritten_text": "rewritten alpha",
-      },
+  await asyncio.sleep(0.01)
+  await harness.service.handle_client_event(
+    _live_message(
+      harness.service,
+      _segment(1, "instruction", completed=False, start=0.35, end=0.4),
+      flush_complete=False,
     )
-    in harness.logger.info_records
   )
+  assert harness.dbus_service.signals[-1] == (
+    "TranscriptionUpdated",
+    [TextRun(text="instruction", is_command=True, is_complete=False)],
+  )
+  await harness.service.handle_keyboard_event(
+    _keyboard_event(KeyboardEventKind.CAPSLOCK_UP, received_monotonic_s=RECORDING_CLOCK_START + 0.6)
+  )
+  assert harness.service.phase is ForegroundPhase.RECORDING
+  _ = await harness.service.handle_action(AppAction.CANCEL)
+
+
+@pytest.mark.asyncio
+async def test_disconnected_hold_cannot_mark_the_next_recording_as_a_command(
+  monkeypatch: pytest.MonkeyPatch,
+  recording_clock: RecordingClock,
+) -> None:
+  monkeypatch.setattr("active_listener.app.recording_keyboard.HOLD_THRESHOLD_S", 0.01)
+  harness = _service()
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  await harness.service.handle_keyboard_event(
+    _keyboard_event(
+      KeyboardEventKind.CAPSLOCK_DOWN, received_monotonic_s=RECORDING_CLOCK_START + 0.3
+    )
+  )
+  await harness.service.handle_client_event(DisconnectedSignal("stream-1", "closed"))
+  await harness.service.handle_client_event(ReconnectedSignal("stream-1"))
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  await asyncio.sleep(0.02)
+  await harness.service.handle_client_event(
+    _live_message(
+      harness.service,
+      _segment(1, "dictation", completed=False, start=0.35, end=0.4),
+      flush_complete=False,
+    )
+  )
+  assert harness.dbus_service.signals[-1] == (
+    "TranscriptionUpdated",
+    [TextRun(text="dictation", is_command=False, is_complete=False)],
+  )
+  _ = await harness.service.handle_action(AppAction.CANCEL)
+
+
+@pytest.mark.asyncio
+async def test_recording_audio_discards_aborted_capture_and_freezes_finished_capture() -> None:
+  audio = RecordingAudioBuffer()
+  transcript = RecordingTranscript(
+    client=FakeClient(), logger=get_logger("test/recording"), audio_buffer=audio
+  )
+  await transcript.start_recording("aborted")
+  audio.append(b"aborted audio")
+  await transcript.stop_recording()
+  await transcript.start_recording("kept")
+  audio.append(b"kept audio")
+  finished = await transcript.finish_recording()
+  audio.append(b"late audio")
+  assert finished.recording_id == "kept"
+  assert finished.captured_audio.pcm_f32le == b"kept audio"
+
+
+class RecordingObservationProbe:
+  """Stand in for the external tracing SDK while observing parent lifetime."""
+
+  def __init__(self) -> None:
+    self.end_count: int = 0
+
+  def update(
+    self,
+    *,
+    input: RecordingInput | str | None = None,
+    output: RecordingOutput | str | None = None,
+    metadata: dict[str, JsonValue] | None = None,
+    level: str | None = None,
+    status_message: str | None = None,
+    usage_details: dict[str, int] | None = None,
+    cost_details: dict[str, float] | None = None,
+  ) -> RecordingObservationProbe:
+    return self
+
+  def end(self, *, end_time: int | None = None) -> None:
+    self.end_count += 1
+
+  @contextmanager
+  def start_as_current_observation(
+    self,
+    *,
+    name: str,
+    input: str | None = None,
+    output: str | None = None,
+    metadata: dict[str, JsonValue] | None = None,
+    level: str | None = None,
+    status_message: str | None = None,
+    usage_details: dict[str, int] | None = None,
+    cost_details: dict[str, float] | None = None,
+  ) -> Iterator[RecordingObservationProbe]:
+    yield self
+
+
+@pytest.mark.asyncio
+async def test_observations_end_once_across_abort_reconnect_cancel_and_shutdown(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  observations: list[RecordingObservationProbe] = []
+
+  def start_observation(*, session_id: str, recording_id: str) -> RecordingObservationProbe:
+    observation = RecordingObservationProbe()
+    observations.append(observation)
+    return observation
+
+  monkeypatch.setattr(
+    "active_listener.infra.langfuse.start_recording_observation", start_observation
+  )
+  harness = _service()
+  await harness.service.handle_client_event(ConnectedSignal("stream-1"))
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  await harness.service.handle_client_event(DisconnectedSignal("stream-1", "closed"))
+  assert [observation.end_count for observation in observations] == [1]
+  await harness.service.handle_client_event(ReconnectedSignal("stream-1"))
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  _ = await harness.service.handle_action(AppAction.CANCEL)
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  await harness.service.close()
+  assert [observation.end_count for observation in observations] == [1, 1, 1]

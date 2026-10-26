@@ -18,16 +18,9 @@ Files likely touched: `packages/server/src/eavesdrop/server/streaming/interfaces
 - [ ] 3.1 Integrate Smart Turn into live streaming transcription so any speech-to-silence transition launches evaluation, binds result to same evaluated audio boundary, and includes `smart_turn` only on pause-evaluated `TranscriptionMessage` emissions.
 - [ ] 3.1a Verify live streaming behavior with targeted `packages/server` transcription-output and lifecycle tests covering ordinary updates without `smart_turn`, pause-evaluated updates with `smart_turn`, and resumed-speech re-evaluation; capture pytest output as artifact.
 
-## 4. RTSP integration
-
-Files likely touched: `packages/server/src/eavesdrop/server/rtsp/audio_flow.py`, `packages/server/src/eavesdrop/server/rtsp/subscriber.py`, `packages/server/src/eavesdrop/server/rtsp/cache.py`, plus existing RTSP tests or new targeted tests that exercise fanout and replay behavior.
-
-- [ ] 4.1 Extend RTSP transcription emission to use same Smart Turn trigger and payload contract as live streaming, including `RTSPTranscriptionSink`, `RTSPSubscriberManager`, and `RTSPTranscriptionCache` so RTSP no longer strips result-level metadata.
-- [ ] 4.1a Verify RTSP behavior with targeted `packages/server` RTSP tests covering Smart Turn-enriched pause updates and unchanged ordinary updates; capture pytest output as artifact.
-
 ## 5. Cross-package validation
 
-This task is intentionally last. Do not run it until wire, server, live, and RTSP work is complete.
+This task is intentionally last. Do not run it until wire, server, and live work is complete.
 
 - [ ] 5.1 Run targeted validation for affected packages (`packages/wire`, `packages/client`, `packages/server`) using exact commands documented in `design.md`: package-local `uv run pytest ...` and `uv run basedpyright`, plus `uv run ruff check` only after confirming/package-provisioning `ruff` for the active environment, and collect logs for review.
 - [ ] 5.1a Verify validation artifacts show passing tests, lint, and type checks for all changed packages before implementation is considered complete.

@@ -96,15 +96,16 @@ class AudioStreamBuffer:
     with self.lock:
       max_buffer_samples = self.config.max_buffer_duration * self.config.sample_rate
       if self.frames_np is not None and self.frames_np.shape[0] > max_buffer_samples:
-        # Remove old audio data and advance the buffer/recording-relative start offset.
-        self.buffer_start_time += self.config.cleanup_duration
-        samples_to_remove = int(self.config.cleanup_duration * self.config.sample_rate)
+        # Only reclaim completed audio. Pending recognition remains revisable
+        # until explicit completion (including long no-VAD utterances).
+        completed_samples = max(
+          0, int((self.processed_up_to_time - self.buffer_start_time) * self.config.sample_rate)
+        )
+        samples_to_remove = min(
+          completed_samples, int(self.config.cleanup_duration * self.config.sample_rate)
+        )
+        self.buffer_start_time += samples_to_remove / self.config.sample_rate
         self.frames_np = self.frames_np[samples_to_remove:]
-
-        # Update timestamp offset if it hasn't progressed
-        # This indicates no speech activity has been processed
-        if self.processed_up_to_time < self.buffer_start_time:
-          self.processed_up_to_time = self.buffer_start_time
 
       if self.frames_np is None:
         self.frames_np = frame_np.copy()

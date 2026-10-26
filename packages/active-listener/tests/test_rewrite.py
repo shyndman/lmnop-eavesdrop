@@ -536,9 +536,7 @@ async def test_pydantic_ai_rewrite_client_rejects_empty_output(
 ) -> None:
   monkeypatch.setattr(rewrite_module, "Agent", StubAgent)
   StubAgent.responses.append(
-    StubPydanticAiRunResult(
-      output=StructuredRewriteOutput.model_construct(text="", corrections={})
-    )
+    StubPydanticAiRunResult(output=StructuredRewriteOutput.model_construct(text="", corrections={}))
   )
 
   client = PydanticAiRewriteClient(model="openai:gpt-4.1-mini")

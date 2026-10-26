@@ -1,5 +1,5 @@
 ## 1. Wire Protocol
-- [x] 1.1 Add `RecordingStartedMessage` to `packages/wire`, add optional `recording_id` to live transcription/control messages, update codec union exports, and keep file/RTSP compatibility explicit.
+- [x] 1.1 Add `RecordingStartedMessage` to `packages/wire`, add optional `recording_id` to live transcription/control messages, and update codec union exports.
 - [x] 1.1a Validate wire protocol serialization/deserialization with targeted wire tests and type checking for touched wire files.
 
 ## 2. Client Recording Epoch

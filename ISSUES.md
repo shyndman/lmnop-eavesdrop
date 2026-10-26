@@ -1,43 +1,5 @@
 # Architectural Issues
 
-## High Priority
-
-### `TranscriptionServer` Has Too Many Responsibilities
-
-**Location:** `packages/server/src/eavesdrop/server/server.py` (461 lines)
-
-This class currently handles:
-- WebSocket connection handling (lines 175-293)
-- Client initialization and lifecycle (lines 58-101)
-- Audio frame acquisition (lines 103-122)
-- Debug audio file management (lines 124-173)
-- RTSP stream initialization (lines 391-431)
-- RTSP lifecycle management (lines 433-460)
-
-**Suggested extraction:**
-| New Class | Responsibility |
-|-----------|----------------|
-| `WebSocketConnectionHandler` | Connection routing, client type dispatch |
-| `AudioDebugCapture` | Pre/post buffer debug audio (could wrap sink pattern) |
-| `RTSPStreamCoordinator` | RTSP initialization, lifecycle, subscriber routing |
-
-The current design makes testing difficult  you can't test WebSocket handling without also standing up RTSP infrastructure (or mocking it out).
-
----
-
-## Medium Priority
-
-### Debug Audio as Cross-Cutting Concern
-
-**Location:** `server.py:119-173`, `processor.py:295`
-
-Debug audio capture is scattered:
-- `get_audio_from_websocket()` captures pre-buffer audio
-- `_transcribe_chunk()` captures post-buffer audio
-- `cleanup()` closes file handles
-
-This could be a decorator/wrapper around `TranscriptionSink` that intercepts audio at the appropriate points, making it opt-in without polluting the main code paths.
-
 ### Inconsistent Error Handling Strategy
 
 **Location:** Multiple files
@@ -77,14 +39,6 @@ Future improvement: make configurable via `EavesdropConfig` and inject the model
 **Location:** `packages/server/src/eavesdrop/server/streaming/buffer.py:37-244`
 
 Callers must understand `buffer_start_time` and `processed_up_to_time` invariants. The TODOs on lines 29-34 note missing invariant checks. A higher-level API like `get_next_unprocessed_chunk()` would be safer.
-
-### RTSP Subscriber Silent Disconnect
-
-**Location:** `packages/server/src/eavesdrop/server/rtsp/subscriber.py:94-102`
-
-When a new subscriber connects to an RTSP stream, the old one is disconnected without warning. The kicked client receives no explicit message explaining why they were disconnected.
-
----
 
 ## Architectural Strengths (Preserve These)
 

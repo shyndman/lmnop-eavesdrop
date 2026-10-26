@@ -4,24 +4,21 @@ A real-time English audio transcription system using Orukeet through CPU sherpa-
 
 ## Architecture
 
-Eavesdrop is built around a central, reusable transcription pipeline that's agnostic to audio sources and transcription destinations. The system uses protocol-based adapters to integrate with different transport layers (WebSockets, RTSP streams).
+Eavesdrop accepts live audio from a transcriber over WebSocket and returns timed transcript updates on the same connection. One connection can carry multiple recordings with independent transcript state and recording-relative timelines.
 
 ### Packages
 
-- **[eavesdrop-server](./packages/server/)** - WebSocket server with core transcription pipeline, RTSP stream processing, and client connection management
-- **[eavesdrop-client](./packages/client/)** - Python client library for streaming transcription and RTSP subscription
+- **[eavesdrop-server](./packages/server/)** - Live WebSocket server, recording lifecycle, and core transcription pipeline
+- **[eavesdrop-client](./packages/client/)** - Python client library for live streaming transcription and recording controls
 - **[eavesdrop-wire](./packages/wire/)** - Shared message types and protocol definitions
 - **[eavesdrop-common](./packages/common/)** - Shared utilities, logging, and data structures
 - **[active-listener](./packages/active-listener/)** - Desktop application for voice-to-text input using system audio capture
 
 ### Core Design
 
-The architecture separates audio sources from transcription logic through two key protocols:
+The `StreamingTranscriptionProcessor` combines buffered live audio, optional standalone VAD, and Orukeet recognition. Every transcription includes timed segments and individual word timestamps on the original recording timeline.
 
-- **`AudioSource`** - Defines how audio enters the system (WebSocket, RTSP, etc.)
-- **`TranscriptionSink`** - Defines how results are delivered (WebSocket responses, broadcast to subscribers, etc.)
-
-This allows the same `StreamingTranscriptionProcessor` to handle both real-time client transcription and background RTSP stream processing.
+Recording boundaries, flush, and cancellation are explicit controls independent of connection lifetime. A normal recording ends with a force-completing flush whose transcript and acknowledgement are delivered before the next recording is processed. Accepted audio for a subsequent recording waits for that completion.
 
 For detailed architecture information, see [ARCHITECTURE.md](./ARCHITECTURE.md).
 
@@ -30,7 +27,7 @@ For detailed architecture information, see [ARCHITECTURE.md](./ARCHITECTURE.md).
 ### Server
 
 ```bash
-# From the repository root; Python 3.12, FFmpeg, and libsndfile required.
+# From the repository root; Python 3.12 and libsndfile required.
 uv sync --package eavesdrop-server --extra transcription
 cp packages/server/config.sample.yaml packages/server/config.yaml
 # The sample defaults to CPU; select device: vulkan for a Linux x86_64 Vulkan host.
@@ -88,16 +85,15 @@ uv sync
 - **Host inference** - CPU sherpa-onnx by default, or pinned NeMo-Speech.cpp on Vulkan GPU 0 for Linux x86_64
 - **Voice Activity Detection** - Standalone Silero VAD with configurable speech/silence thresholds
 
-### Connectivity & Streaming
-- **WebSocket protocol** - Simple WebSocket-based API for easy integration
-- **RTSP stream support** - Subscribe to transcription results from IP cameras and audio streams
-- **Multi-client support** - No limits on concurrent connections or connection duration
-- **Historical transcription** - New RTSP subscribers receive recent transcription history
-- **Configurable caching** - Smart cache management based on active listeners
+### Live Recording
+- **WebSocket protocol** - Live audio, setup/readiness, transcript updates, health checks, and errors
+- **Multiple recordings per connection** - Fresh transcript state and timestamp zero at each recording boundary
+- **Flush** - Prompt processing through accepted audio, with a completion acknowledgement and optional force completion
+- **Cancellation** - Discard the current utterance and suppress outstanding results without reconnecting
+- **Explicit completion with VAD disabled** - One incomplete timed segment holds all pending text and words until a force-completing flush; with VAD enabled, normal silence-based completion remains available
 
 ### Applications
 - **Active Listener** - Desktop application for voice-to-text input using system audio capture and automatic typing
-- **Automatic reconnection** - Robust connection handling for RTSP streams
 
 ## Development
 
@@ -114,7 +110,7 @@ uv run --package eavesdrop-server basedpyright
 uv sync --package eavesdrop-server --extra transcription
 ```
 
-Unit tests inject recognizer/VAD fakes; they do not download a checkpoint or establish real-model accuracy or performance. Use the server guide's audio smoke check for runtime validation.
+Deterministic protocol tests substitute recognition at the transcriber interface while exercising live WebSocket orchestration. They do not download a checkpoint or establish real-model accuracy or workstation integration. Use the server guide's recognition smoke check for backend validation; end-to-end validation also requires a live WebSocket run with the active-listener client, including flush, cancellation, a second recording, and cleanup.
 
 ### Development Tools
 

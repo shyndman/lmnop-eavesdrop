@@ -8,12 +8,24 @@ Shared transcription terms are defined in [Wire](../wire/GLOSSARY.md).
 **Recording**:
 One dictation capture from its start through its finish.
 
+**Recording transcript**:
+The completed text and single revisable timed segment belonging to one recording.
+
+**Spectrum analyzer**:
+The analysis that turns captured audio into frequency-intensity bars.
+_Avoid_: Spectrum runtime.
+
+**Command span**:
+A recording-relative interval during which spoken words are rewrite instructions
+rather than dictation text.
+
+
 **Text shaping**:
 Deterministic spelling substitutions, spoken-symbol conversion,
 and stored corrections applied to completed transcript runs.
 
 **Live tail**:
-The unstable trailing transcript text awaiting commitment.
+The unstable, incomplete transcript text awaiting commitment.
 _Avoid_: Final text.
 
 **Rewrite**:

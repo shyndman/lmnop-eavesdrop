@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator
-from contextlib import AbstractContextManager, contextmanager
-from typing import Protocol, cast
+from contextlib import contextmanager
+from typing import NotRequired, TypedDict
 
-from langfuse import get_client, propagate_attributes
+from langfuse import LangfuseSpan, get_client, propagate_attributes
 from langfuse.api.media.types.media_content_type import MediaContentType
 from langfuse.media import LangfuseMedia
+from langfuse.types import SpanLevel
+from pydantic import JsonValue
 from pydantic_ai import Agent
 from structlog.stdlib import BoundLogger
 
@@ -16,71 +18,35 @@ LANGFUSE_SECRET_KEY_ENV_VAR = "LANGFUSE_SECRET_KEY"
 _langfuse_initialized = False
 
 
-class RewriteObservation(Protocol):
-  def update(
-    self,
-    *,
-    input: object | None = None,
-    output: object | None = None,
-    metadata: object | None = None,
-    level: str | None = None,
-    status_message: str | None = None,
-    usage_details: dict[str, int] | None = None,
-    cost_details: dict[str, float] | None = None,
-  ) -> object: ...
+class RecordingInput(TypedDict):
+  """Shaped and unshaped transcript views attached to recording observations."""
+
+  raw_transcript: str
+  rewrite_input: str
 
 
-class RecordingObservation(Protocol):
-  def update(
-    self,
-    *,
-    input: object | None = None,
-    output: object | None = None,
-    metadata: object | None = None,
-    level: str | None = None,
-    status_message: str | None = None,
-    usage_details: dict[str, int] | None = None,
-    cost_details: dict[str, float] | None = None,
-  ) -> object: ...
+class RecordingOutput(TypedDict):
+  """Emitted text and optional archived audio attached to an observation."""
 
-  def end(self, *, end_time: int | None = None) -> object: ...
-
-  def start_as_current_observation(
-    self,
-    *,
-    name: str,
-    input: object | None = None,
-    output: object | None = None,
-    metadata: object | None = None,
-    level: str | None = None,
-    status_message: str | None = None,
-    usage_details: dict[str, int] | None = None,
-    cost_details: dict[str, float] | None = None,
-  ) -> AbstractContextManager[object]: ...
+  emitted_text: str
+  captured_audio: NotRequired[LangfuseMedia]
 
 
 def record_recording_event(
   *,
-  parent_observation: RecordingObservation | None,
+  parent_observation: LangfuseSpan | None,
   name: str,
-  metadata: dict[str, object] | None = None,
+  metadata: dict[str, JsonValue] | None = None,
 ) -> None:
   if parent_observation is None:
     return
 
   with parent_observation.start_as_current_observation(
+    as_type="span",
     name=name,
     metadata=metadata,
   ):
     return
-
-
-def _recording_observation(observation: object) -> RecordingObservation:
-  return cast(RecordingObservation, observation)
-
-
-def _rewrite_observation(observation: object) -> RewriteObservation:
-  return cast(RewriteObservation, observation)
 
 
 def has_langfuse_credentials() -> bool:
@@ -133,7 +99,7 @@ def record_session_event(
   *,
   session_id: str,
   name: str,
-  metadata: dict[str, object] | None = None,
+  metadata: dict[str, JsonValue] | None = None,
 ) -> None:
   if not initialize_langfuse():
     return
@@ -153,17 +119,17 @@ def record_session_event(
 
 def start_recording_observation(
   *,
-  stream: str,
+  session_id: str,
   recording_id: str,
-) -> RecordingObservation | None:
+) -> LangfuseSpan | None:
   if not initialize_langfuse():
     return None
 
   with propagate_attributes(
-    session_id=stream,
+    session_id=session_id,
     metadata={
       "component": "active-listener",
-      "stream": stream,
+      "session_id": session_id,
       "recording_id": recording_id,
     },
     tags=["active-listener", "recording"],
@@ -175,20 +141,20 @@ def start_recording_observation(
       trace_context={"trace_id": recording_trace_id(recording_id)},
       metadata={
         "component": "active-listener",
-        "stream": stream,
+        "session_id": session_id,
         "recording_id": recording_id,
       },
     )
 
-  return _recording_observation(observation)
+  return observation
 
 
 def end_recording_observation(
-  observation: RecordingObservation | None,
+  observation: LangfuseSpan | None,
   *,
   logger: BoundLogger,
-  metadata: object | None = None,
-  level: str | None = None,
+  metadata: dict[str, JsonValue] | None = None,
+  level: SpanLevel | None = None,
   status_message: str | None = None,
 ) -> None:
   if observation is None:
@@ -209,11 +175,11 @@ def end_recording_observation(
 
 
 def update_recording_observation(
-  observation: RecordingObservation | None,
+  observation: LangfuseSpan | None,
   *,
   logger: BoundLogger,
-  metadata: object | None = None,
-  level: str | None = None,
+  metadata: dict[str, JsonValue] | None = None,
+  level: SpanLevel | None = None,
   status_message: str | None = None,
 ) -> None:
   if observation is None:
@@ -238,10 +204,9 @@ def start_rewrite_observation(
   provider: str,
   model: str,
   prompt_path: str,
-  stream: str,
   transcript: str,
-  parent_observation: RecordingObservation | None = None,
-) -> Iterator[RewriteObservation | None]:
+  parent_observation: LangfuseSpan | None = None,
+) -> Iterator[LangfuseSpan | None]:
   if not initialize_langfuse():
     yield None
     return
@@ -250,32 +215,104 @@ def start_rewrite_observation(
     metadata={
       "component": "active-listener",
       "provider": provider,
-      "stream": stream,
+      "session_id": session_id,
     },
     tags=["active-listener", "rewrite", provider],
     session_id=session_id,
   ):
-    observation_metadata = {
+    observation_metadata: dict[str, JsonValue] = {
       "component": "active-listener",
       "provider": provider,
       "model": model,
       "prompt_path": prompt_path,
-      "stream": stream,
+      "session_id": session_id,
     }
 
     if parent_observation is None:
       with get_client().start_as_current_observation(
+        as_type="span",
         name="active-listener-rewrite",
         trace_context={"trace_id": recording_trace_id(recording_id)},
         input=transcript,
         metadata=observation_metadata,
       ) as observation:
-        yield _rewrite_observation(observation)
+        yield observation
       return
 
     with parent_observation.start_as_current_observation(
+      as_type="span",
       name="active-listener-rewrite",
       input=transcript,
       metadata=observation_metadata,
     ) as observation:
-      yield _rewrite_observation(observation)
+      yield observation
+
+
+class RecordingTrace:
+  """Own the foreground observation until it is handed to finalization.
+
+  :param logger: Sink for tracing failures, which never interrupt recording.
+  """
+
+  def __init__(self, logger: BoundLogger) -> None:
+    self.logger: BoundLogger = logger
+    self.session_id: str | None = None
+    self._observation: LangfuseSpan | None = None
+
+  def start(self, *, recording_id: str) -> None:
+    """Start the foreground recording observation for the current server session.
+
+    :param recording_id: Identifier of the recording beginning now.
+    :return: None; failures are logged without interrupting capture.
+    """
+    if self.session_id is None:
+      return
+    try:
+      self._observation = start_recording_observation(
+        session_id=self.session_id, recording_id=recording_id
+      )
+    except Exception:
+      self.logger.exception(
+        "langfuse recording observation start failed",
+        session_id=self.session_id,
+        recording_id=recording_id,
+      )
+
+  def transfer_and_clear_observation(self) -> LangfuseSpan | None:
+    """Transfer the foreground observation and clear the owned reference.
+
+    :return: Previously owned observation, or None after transfer/no tracing.
+    """
+    observation = self._observation
+    self._observation = None
+    return observation
+
+  def session_event(
+    self,
+    *,
+    name: str,
+    metadata: dict[str, JsonValue],
+    session_id: str | None = None,
+  ) -> None:
+    """Publish connection metadata without affecting recording policy."""
+    resolved_session_id = session_id or self.session_id
+    if resolved_session_id is None:
+      return
+    try:
+      record_session_event(session_id=resolved_session_id, name=name, metadata=metadata)
+    except Exception:
+      self.logger.exception("langfuse session event failed", name=name)
+
+  def recording_event(
+    self,
+    *,
+    name: str,
+    metadata: dict[str, JsonValue],
+    recording_observation: LangfuseSpan | None = None,
+  ) -> None:
+    """Publish against the foreground or explicitly transferred observation."""
+    observation = recording_observation if recording_observation is not None else self._observation
+    try:
+      record_recording_event(parent_observation=observation, name=name, metadata=metadata)
+    except Exception:
+      self.logger.exception("langfuse recording event failed", name=name)

@@ -2,6 +2,32 @@
 
 `active-listener` is a user-session dictation service. The supported operator workflow is `systemd --user`, not a custom bootstrap shell script.
 
+## Live transcription
+
+The listener supplies live audio over WebSocket. One connection can carry multiple
+recordings, each with its own identifier, transcript state, and timestamp zero.
+Normal completion stops capture, sends a force-completing flush, and delivers its
+`flush_complete` result before starting the next recording. Accepted audio for a
+later recording queues while the preceding recording finishes.
+
+Every transcription includes native segment and individual word timestamps,
+including offsets across silence. With VAD enabled, silence can complete segments.
+With VAD disabled, all pending segments remain revisable until an explicit
+force-completing flush; more than the trailing segment can be incomplete.
+Cancellation discards the current utterance and suppresses its outstanding results
+without requiring a new connection. Historical listener audio archival remains
+available independently of transcription and retains its FFmpeg dependency.
+
+## Runtime module ownership
+
+`app/service.py` coordinates keyboard and client events sequentially and retains
+recording lifecycle policy, the pending-flush gate, and background finalization.
+`app/workstation.py` owns recording-scoped media pause/resume and spectrum tasks;
+its shutdown cleanup never cancels finalization work. `app/overlay.py` publishes
+live recording transcript updates without handling completed recording emission.
+`infra/langfuse.py` owns best-effort tracing and the foreground recording
+observation, which is transferred exactly once to recording finalization.
+
 ## Install or update the user service
 
 Run from the repo root:
@@ -94,8 +120,21 @@ If the rewrite fails, Active Listener emits the shaped transcript without comman
 It logs the error and sends `PipelineFailed`, which the GNOME extension uses to show a failure notification.
 The transcript history stores the emitted text without rewrite model, token, or cost metadata.
 
-The client protocol and event queue use the shared `LiveClientEvent` type.
-Active Listener ignores language detection events without changing the recording state.
+The client pushes original wire `TranscriptionMessage` values through synchronous
+callbacks. Active Listener enqueues those messages and its own lifecycle signals
+in the application queue; there is no client event iterator or duplicate transcript
+event type. Transcription is English-only.
+
+Each recording transcript has at most one timed segment open for revision. With
+VAD disabled it remains incomplete until the explicit force-completing stop flush.
+Finalization owns the finished recording's audio, transcript, tracing observation,
+and finish-time rewrite choice. A new recording waits for the prior server flush,
+but can start while that prior recording is still rewriting. Accepted finalization
+work is drained at shutdown rather than discarded by a later connection change.
+
+Keyboard grabs and Caps Lock tap/hold gestures belong to workstation coordination,
+not recording transcript reduction. A disconnect abort closes and ends the active
+recording observation before any reconnect or subsequent recording begins.
 
 ## Uninstall the user service
 

@@ -10,7 +10,7 @@ Constraints from prior discussion:
 - It must not appear on every transcription update; only updates tied to a speech-to-silence evaluation may carry it.
 - The payload is raw signal only, not a server-side complete/incomplete verdict.
 - Consumers should see `None` after deserialization when Smart Turn data was omitted on the wire.
-- Triggering is simple and source-agnostic: run after any speech-to-silence transition for live or RTSP streams.
+- Triggering is simple: run after any speech-to-silence transition for live streams.
 
 ## Goals / Non-Goals
 
@@ -18,7 +18,7 @@ Constraints from prior discussion:
 - Extend `TranscriptionMessage` with optional Smart Turn metadata so clients consume one message type for transcript-aware turn-ending decisions.
 - Keep ordinary incremental transcript updates fast and unchanged when no speech-to-silence evaluation occurred.
 - Ensure pause-evaluated transcript updates include Smart Turn data from the same evaluated audio boundary.
-- Support same contract for live and RTSP transcription outputs.
+- Support the live transcription output contract.
 - Preserve existing optional-field wire behavior: omit unavailable Smart Turn data on the wire, hydrate to `None` during deserialization.
 
 **Non-Goals:**
@@ -26,7 +26,7 @@ Constraints from prior discussion:
 - Emitting a separate Smart Turn message type for application logic.
 - Running Smart Turn continuously during unchanged silence.
 - Redesigning segment semantics, flush semantics, or client reducer invariants beyond attaching optional Smart Turn metadata.
-- Solving source-specific gating for RTSP noise or ambient speech; Smart Turn runs after any speech-to-silence transition.
+- Solving extra noise or ambient-speech gating; Smart Turn runs after any speech-to-silence transition.
 
 ## Mental model for implementors
 
@@ -90,12 +90,12 @@ Server should trigger Smart Turn after any detected speech-to-silence transition
 
 Rationale:
 - Matches Smart Turn's documented invocation pattern.
-- Keeps trigger rule simple for both live and RTSP sources.
+- Keeps the trigger rule simple for live audio.
 - Prevents duplicate evaluations for same unchanged pause.
 
 Alternatives considered:
 - Poll repeatedly as silence lengthens: rejected because it adds work without new turn context.
-- Apply extra server-side gating for RTSP: rejected by prior discussion; trigger should be any speech-to-silence transition.
+- Apply extra server-side noise gating: rejected by prior discussion; trigger should be any speech-to-silence transition.
 
 ### 4. Execution stays decoupled; pause-evaluated emission is coupled
 
@@ -123,11 +123,9 @@ Alternatives considered:
 - Add model identifier: rejected because client does not need it.
 - Add derived decision: rejected because user explicitly wanted raw probability only.
 
-### 6. Contract is source-agnostic
+### 6. Contract is live-only
 
-`smart_turn` may appear on any `TranscriptionMessage` regardless of source mode. Implementation should support live and RTSP emissions under same message shape. File-mode support is not required to define the contract and may remain absent until explicitly implemented.
-
-Current gap that implementation must close: RTSP transport is not yet metadata-complete. `StreamingTranscriptionProcessor` emits a shared `TranscriptionResult`, but `RTSPTranscriptionSink.send_result()` currently forwards only `segments` and `language` into `RTSPSubscriberManager.send_transcription()` and `RTSPTranscriptionCache.add_transcription()`. Unlike the live WebSocket sink, RTSP rebuilds `TranscriptionMessage` instances without `flush_complete` or any future result-level metadata. Source-agnostic contract therefore requires widening RTSP sink, subscriber, and cache plumbing to preserve optional result metadata.
+`smart_turn` may appear on live `TranscriptionMessage` updates. Preserve optional result metadata through the live WebSocket sink. Smart Turn remains a raw pause signal and does not change completion: with VAD disabled every segment remains provisional until force-complete flush; with VAD enabled silence may complete segments.
 
 ### 6a. Concrete new types and field names
 
@@ -193,7 +191,7 @@ class TranscriptionConfig(BaseModel):
 
 Why nested config instead of loose top-level fields:
 
-- current config already uses nested config objects (`buffer`, `debug_audio`, `rtsp.cache`)
+- current config already uses nested config objects (`buffer`)
 - all Smart Turn knobs belong together
 - disabling feature becomes a single obvious switch: `transcription.smart_turn.enabled`
 
@@ -205,7 +203,7 @@ This table is authoritative for when `smart_turn` should be present.
 
 | Case | Transcript emitted? | `smart_turn` present? | Notes |
 |---|---|---:|---|
-| ordinary live/RTSP update with segments, no pause evaluation | yes | no | normal existing behavior |
+| ordinary live update with segments, no pause evaluation | yes | no | normal existing behavior |
 | speech-to-silence transition evaluated, ASR update emitted for same boundary | yes | yes | main new feature |
 | chunk produces no transcript segments and is not a flush response | no | n/a | existing early-return behavior |
 | flush-triggered terminal response with no Smart Turn evaluation for that cycle | yes | no | flush semantics unchanged |
@@ -277,7 +275,7 @@ Non-obvious rule: do **not** attach "latest available" Smart Turn result to a tr
     flush_complete: bool | None = None
     ```
 
-  - Add `smart_turn: SmartTurn | None = None` here first so both live and RTSP paths can emit it.
+  - Add `smart_turn: SmartTurn | None = None` here first so live updates can emit it.
 - `packages/wire/src/eavesdrop/wire/codec.py`
   - `serialize_message(message: Message) -> str` uses `TypeAdapter(message_type).dump_json(...)`.
   - Current omission logic is exact and narrow:
@@ -314,7 +312,7 @@ Non-obvious rule: do **not** attach "latest available" Smart Turn result to a tr
     - `emit_result = pending_flush is None or flush_boundary_reached`
     - `flush_complete = flush_boundary_reached`
     - `force_complete = bool(flush_boundary_reached and pending_flush and pending_flush.force_complete)`
-  - `StreamingTranscriptionProcessor._handle_transcription_output(...)` is the single output path for both live and RTSP processors.
+  - `StreamingTranscriptionProcessor._handle_transcription_output(...)` is the live output path.
   - Current early-return behavior matters:
 
     ```python
@@ -325,8 +323,8 @@ Non-obvious rule: do **not** attach "latest available" Smart Turn result to a tr
 
     No message is emitted for empty non-flush chunks.
   - Segment completion behavior:
-    - every non-final segment is forced complete
-    - final segment completion is delegated to `_should_complete_segment_by_silence(...)`
+    - with VAD disabled, every segment remains provisional until force-complete flush
+    - with VAD enabled, silence analysis may complete segments
     - `force_complete=True` converts tentative tail to completed history during flush handling
   - Single-tail invariant for every emitted envelope:
 
@@ -340,7 +338,7 @@ Non-obvious rule: do **not** attach "latest available" Smart Turn result to a tr
 - `packages/server/src/eavesdrop/server/config.py`
   - `TranscriptionConfig.silence_completion_threshold: float = 0.8`
   - `align_vad_parameters()` maps it into `vad_parameters.min_silence_duration_ms`
-  - `EavesdropConfig` currently has only `transcription: TranscriptionConfig` and `rtsp: RTSPConfig`; no Smart Turn config exists yet.
+  - Add Smart Turn settings under `EavesdropConfig.transcription`.
   - Add Smart Turn configuration to `TranscriptionConfig` so `load_config_from_file()` validates it automatically through `EavesdropConfig.model_validate(config_data)`.
 
 ### Live transport path
@@ -348,16 +346,6 @@ Non-obvious rule: do **not** attach "latest available" Smart Turn result to a tr
 - `packages/server/src/eavesdrop/server/streaming/audio_flow.py`
   - `WebSocketTranscriptionSink.send_result()` maps `TranscriptionResult` into `TranscriptionMessage(stream=..., segments=result.segments, language=result.language, flush_complete=result.flush_complete)`.
   - This sink currently ignores `language_probability`; new `smart_turn` must be wired explicitly.
-
-### RTSP transport path
-
-- `packages/server/src/eavesdrop/server/rtsp/audio_flow.py`
-  - `RTSPTranscriptionSink.send_result()` currently takes `TranscriptionResult` but forwards only `segments` and `language`.
-- `packages/server/src/eavesdrop/server/rtsp/subscriber.py`
-  - `RTSPSubscriberManager.send_transcription()` reconstructs `TranscriptionMessage(stream=stream_name, segments=segments, language=language)`.
-- `packages/server/src/eavesdrop/server/rtsp/cache.py`
-  - `RTSPTranscriptionCache.add_transcription()` persists/replays `TranscriptionMessage(stream=..., segments=segments, language=language)`.
-- All three RTSP touchpoints must be widened together or RTSP will silently strip `smart_turn`.
 
 ### Client and consumer touchpoints
 
@@ -377,15 +365,6 @@ Non-obvious rule: do **not** attach "latest available" Smart Turn result to a tr
   - `RecordingSession.ingest_live_transcription_message(message: TranscriptionMessage)` is the live transcript entrypoint.
 - `packages/active-listener/src/active_listener/recording/reducer.py`
   - `reduce_new_segments(...)` consumes `message.segments` and segment IDs only; new optional metadata on `TranscriptionMessage` is additive and does not require cross-message correlation.
-
-### Source modes and file-mode boundary
-
-- `packages/wire/src/eavesdrop/wire/transcription.py`
-  - `TranscriptionSourceMode` currently has exactly `LIVE = "live"` and `FILE = "file"`.
-  - `UserTranscriptionOptions.source_mode` defaults to `LIVE`.
-- `packages/server/src/eavesdrop/server/streaming/client.py`
-  - `WebSocketStreamingClient.start()` branches `FILE` into `_run_file_mode_lifecycle()` and treats every non-`FILE` value as live.
-  - `source_mode` is setup-time routing only; it is not part of `TranscriptionMessage`.
 
 ### Runtime packaging and cache conventions
 
@@ -587,15 +566,12 @@ Follow this order. It keeps breakage small and makes debugging easier.
 3. Add `SmartTurnConfig` and config-file tests.
 4. Add standalone Smart Turn runner/helper with unit tests around preprocessing and ONNX output parsing.
 5. Integrate live streaming path.
-6. Integrate RTSP sink/subscriber/cache path.
 7. Run targeted package validation.
 
 Reason for this order:
 
 - wire first gives stable types for all later steps
 - isolated runner tests catch dependency/model issues before transport complexity enters
-- live path is simpler than RTSP path
-- RTSP should come after internal payload plumbing is already working
 
 ## Testing matrix
 
@@ -629,12 +605,6 @@ Minimum tests expected before implementation is considered done:
 - flush path still works unchanged when `smart_turn` absent
 - stale Smart Turn result is not attached to unrelated update
 
-### RTSP tests
-
-- RTSP live fanout preserves `smart_turn`
-- RTSP cache replay preserves `smart_turn`
-- RTSP ordinary update still omits field when absent
-
 ## Common failure modes
 
 Junior-engineer checklist of likely mistakes:
@@ -650,10 +620,6 @@ Junior-engineer checklist of likely mistakes:
 3. **Change flush semantics accidentally**
    - wrong because client `flush()` waits only on `flush_complete is True`
    - `smart_turn` is additive metadata only
-
-4. **Update live path but forget RTSP cache/subscriber**
-   - wrong because RTSP silently strips metadata today
-   - change all RTSP constructors/replay paths together
 
 5. **Use right-padding instead of left-padding**
    - wrong because upstream Smart Turn keeps newest audio aligned at end
@@ -705,11 +671,7 @@ Junior-engineer checklist of likely mistakes:
 - Caveat: `ruff` is configured in all three package manifests but is not declared in their dependency groups. Implementation work must either rely on workspace-provided `ruff` or formalize package-local provisioning before making `uv run ruff check` a hard requirement.
 
 Rationale:
-- Clients should not need different parsing rules per source.
-- RTSP is a target use case, not a future protocol fork.
-
-Alternatives considered:
-- Live-only wire contract: rejected because it would force future protocol expansion for RTSP.
+- Live clients receive turn metadata in the same canonical transcription payload.
 
 ### 7. Use standalone Smart Turn inference deps, not Pipecat runtime
 
@@ -739,10 +701,8 @@ Alternatives considered:
 
 - [Pause-evaluated update can be delayed if Smart Turn is slower than expected] → Keep Smart Turn execution independent, cap context window, and only wait on pause-evaluated updates.
 - [Smart Turn result can drift from transcript if keyed loosely] → Bind results to exact evaluated audio boundary and only attach matching result to that update.
-- [RTSP streams may trigger many evaluations in noisy environments] → Accept this as part of simple speech-to-silence trigger rule; expose raw probability and let consumers choose policy.
 - [Clients may misread missing `smart_turn` as low confidence] → Document that absence means not evaluated or unavailable, not negative result.
 - [New inference dependency increases server footprint] → Isolate Smart Turn loading/execution behind server-side module boundaries, and update both package manifests/runtime env and Docker/base-image provisioning together.
-- [RTSP silently drops result-level metadata today] → Widen RTSP sink, subscriber, and cache plumbing before claiming parity with live transport.
 - [CPU-only ONNX inference may leave GPU acceleration unused on AMD host] → Accept CPU default initially; official ONNX Runtime ROCm provider guidance is unstable/removed, while Smart Turn upstream advertises fast CPU inference.
 
 ## Migration Plan
@@ -750,9 +710,9 @@ Alternatives considered:
 1. Extend wire models and codec behavior to carry optional `smart_turn` metadata while preserving backward-compatible omission of unavailable fields.
 2. Add server-side Smart Turn inference support and `TranscriptionConfig` fields for enablement/context duration.
 3. Integrate Smart Turn triggering into speech-to-silence transitions and bind results to pause-evaluated transcript emissions at `StreamingTranscriptionProcessor._handle_transcription_output()`.
-4. Update live sink mapping plus RTSP sink/subscriber/cache plumbing so both transports preserve optional result metadata.
-5. Extend client- and server-side tests for wire omission, flush behavior, live updates, and RTSP replay/fanout with and without `smart_turn`.
-6. Roll out with Smart Turn disabled by default if dependency or runtime confidence requires a staged launch; enable per source once behavior is validated.
+4. Update live sink mapping to preserve optional result metadata.
+5. Extend client- and server-side tests for wire omission, flush behavior, and live updates with and without `smart_turn`.
+6. Roll out with Smart Turn disabled by default if dependency or runtime confidence requires a staged launch; enable once behavior is validated.
 
 Rollback strategy: disable Smart Turn emission/configuration and continue sending ordinary `TranscriptionMessage` payloads without the optional field. Existing clients remain compatible because field absence already deserializes to `None`.
 

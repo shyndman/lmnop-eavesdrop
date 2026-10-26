@@ -33,4 +33,4 @@ Active-listener currently treats foreground recording time as if every participa
 - Server package: handle the new recording boundary in live transcriber sessions, reset buffer/session/flush/generation state, and emit recording-relative segment and word timestamps.
 - Active-listener package: keep recording lifecycle, command spans, reducer state, overlay updates, finalization, and captured audio aligned to the canonical recording timebase.
 - Tests: add protocol, server lifecycle, client ordering, active-listener reducer, command classification, cancel/restart, flush, and long-recording regression coverage.
-- Non-goals: changing finite file transcription semantics, changing RTSP subscriber timeline semantics, or applying late timestamp translation in active-listener as the primary fix.
+- Non-goals: applying late timestamp translation in active-listener as the primary fix.

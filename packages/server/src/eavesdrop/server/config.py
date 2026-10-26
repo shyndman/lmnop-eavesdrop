@@ -1,10 +1,8 @@
 import os
-from pathlib import Path
 from typing import ClassVar, Literal, cast
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, model_validator, validate_call
-from pydantic.dataclasses import dataclass
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator, validate_call
 from pydantic.types import FilePath
 
 from eavesdrop.common import get_logger
@@ -14,9 +12,10 @@ from eavesdrop.server.transcription.models import VadParameters
 logger = get_logger("cfg")
 
 
-@dataclass
-class BufferConfig:
-  """Configuration for audio stream buffer behavior."""
+class BufferConfig(BaseModel):
+  """Strict configuration for audio stream buffer behavior."""
+
+  model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", strict=True)
 
   sample_rate: int = Field(default=16000, gt=0)
   """Audio sample rate in Hz."""
@@ -50,43 +49,6 @@ class BufferConfig:
     return self
 
 
-class RTSPCacheConfig(BaseModel):
-  """Configuration for RTSP stream caching behavior based on listener presence."""
-
-  waiting_for_listener_duration: float = Field(
-    default=10800.0, gt=0.0, description="Cache duration in seconds when streams have no listeners"
-  )
-
-  has_listener_cache_duration: float = Field(
-    default=600.0,
-    gt=0.0,
-    description="Cache duration in seconds when streams have active listeners",
-  )
-
-
-class DebugAudioConfig(BaseModel):
-  """Configuration for debug audio recording behavior."""
-
-  pre_buffer: Path | None = Field(
-    default=None, description="Path prefix for pre-buffer audio files. Records audio before buffer."
-  )
-
-  post_buffer: Path | None = Field(
-    default=None,
-    description="Path prefix for post-buffer audio files. Records audio after dequeuing.",
-  )
-
-
-class RTSPConfig(BaseModel):
-  """Configuration for RTSP stream behavior."""
-
-  streams: dict[str, str] = Field(default={}, description="RTSP stream URLs")
-
-  cache: RTSPCacheConfig = Field(
-    default_factory=RTSPCacheConfig, description="RTSP cache configuration"
-  )
-
-
 class TranscriptionConfig(BaseModel):
   """Configuration for transcription processing behavior."""
 
@@ -105,9 +67,6 @@ class TranscriptionConfig(BaseModel):
   language: Literal["en"] = "en"
   """Only English transcription is supported."""
 
-  word_timestamps: bool = True
-  """Whether to include native word boundaries in output."""
-
   buffer: BufferConfig = Field(default_factory=BufferConfig)
   """Audio buffer configuration for streaming transcription."""
 
@@ -120,22 +79,6 @@ class TranscriptionConfig(BaseModel):
   silence_completion_threshold: float = Field(default=0.8, gt=0.0)
   """Seconds of silence after speech to mark segment as completed."""
 
-  debug_audio: DebugAudioConfig | None = None
-  """Debug audio recording configuration. When set, audio is saved at different pipeline stages."""
-
-  @model_validator(mode="before")
-  @classmethod
-  def reject_derived_vad_fields(cls, values: object) -> object:
-    """Reject an explicit silence duration; completion threshold owns it."""
-    if isinstance(values, dict):
-      settings = cast(dict[str, object], values)
-      vad = settings.get("vad_parameters")
-      if isinstance(vad, dict) and "min_silence_duration_ms" in vad:
-        raise ValueError(
-          "min_silence_duration_ms cannot be specified; use silence_completion_threshold"
-        )
-    return cast(object, values)
-
   @model_validator(mode="after")
   def align_vad_parameters(self) -> "TranscriptionConfig":
     """Align VAD silence duration with completion threshold for consistent behavior."""
@@ -146,13 +89,12 @@ class TranscriptionConfig(BaseModel):
 
 
 class EavesdropConfig(BaseModel):
-  """Top-level Eavesdrop configuration with transcription and RTSP settings."""
+  """Top-level configuration for live WebSocket transcription."""
 
   transcription: TranscriptionConfig = Field(default_factory=TranscriptionConfig)
   """Transcription processing configuration."""
 
-  rtsp: RTSPConfig = Field(default_factory=RTSPConfig)
-  """RTSP stream configuration."""
+  model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", strict=True)
 
   def pretty_print(self) -> None:
     """
@@ -171,7 +113,6 @@ class EavesdropConfig(BaseModel):
     logger.info(f"  Model: {self.transcription.model}")
     logger.info(f"  Device: {self.transcription.device}")
     logger.info(f"  Language: {self.transcription.language}")
-    logger.info(f"  Word Timestamps: {self.transcription.word_timestamps}")
     logger.info(f"  Send Last N Segments: {self.transcription.send_last_n_segments}")
     silence_threshold = self.transcription.silence_completion_threshold
     logger.info(f"  Silence Completion Threshold: {silence_threshold}s")
@@ -197,26 +138,6 @@ class EavesdropConfig(BaseModel):
     logger.info(f"  Clip Audio: {self.transcription.buffer.clip_audio}")
     logger.info(f"  Max Stall Duration: {self.transcription.buffer.max_stall_duration}s")
 
-    # Debug audio settings
-    logger.info("DEBUG AUDIO SETTINGS:")
-    if self.transcription.debug_audio:
-      logger.info(f"  Pre-Buffer Path: {self.transcription.debug_audio.pre_buffer}")
-      logger.info(f"  Post-Buffer Path: {self.transcription.debug_audio.post_buffer}")
-    else:
-      logger.info("  Debug Audio: Disabled")
-
-    # RTSP settings - all properties
-    logger.info("RTSP SETTINGS:")
-    if self.rtsp.streams:
-      logger.info(f"  Streams ({len(self.rtsp.streams)}):")
-      for name, url in self.rtsp.streams.items():
-        logger.info(f"    {name}: {url}")
-    else:
-      logger.info("  Streams: None (WebSocket-only mode)")
-
-    logger.info(f"  Cache Waiting Duration: {self.rtsp.cache.waiting_for_listener_duration:.1f}s")
-    logger.info(f"  Cache Listener Duration: {self.rtsp.cache.has_listener_cache_duration:.1f}s")
-
     # System constants
     logger.info("SYSTEM CONSTANTS:")
     logger.info(f"  Cache Path: {CACHE_PATH}")
@@ -234,19 +155,12 @@ def load_config_from_file(config_path: FilePath) -> EavesdropConfig:
   try:
     # Load YAML content
     with open(config_path, "r", encoding="utf-8") as file:
-      config_data = cast(object, yaml.safe_load(file))
+      config_data = cast(JsonValue, yaml.safe_load(file))
 
   except yaml.YAMLError as e:
     raise ValueError(f"Invalid YAML in configuration file: {e}") from e
   except Exception as e:
     raise ValueError(f"Error reading configuration file: {e}") from e
-
-  # Validate configuration structure
-  if config_data is None:
-    raise ValueError("Configuration file is empty")
-
-  if not isinstance(config_data, dict):
-    raise ValueError("Configuration file must contain a YAML dictionary")
 
   # Validate and create config using Pydantic
   config = EavesdropConfig.model_validate(config_data)

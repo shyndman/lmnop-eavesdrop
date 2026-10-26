@@ -44,10 +44,6 @@ class TextRun:
   is_complete: bool
 
 
-class CommandTextWordTimestampError(RuntimeError):
-  """Raised when command-text classification lacks required word timestamps."""
-
-
 @dataclass
 class RecordingReducerState:
   """Per-recording reducer state consumed by app policy.
@@ -56,7 +52,7 @@ class RecordingReducerState:
   :vartype last_id: int | None
   :ivar completed_words: Stable transcript prefix already committed by the server.
   :vartype completed_words: list[TimedWord]
-  :ivar incomplete_words: Words from the current unstable tail only.
+  :ivar incomplete_words: Words from the current revisable segment window.
   :vartype incomplete_words: list[TimedWord]
   :ivar closed_command_spans: Closed command-text spans on the recording timeline.
   :vartype closed_command_spans: list[TimeSpan]
@@ -104,9 +100,9 @@ class TranscriptionUpdate:
 class SegmentReduction:
   """Committed segments extracted from the latest window.
 
-  :ivar segments: Newly committed non-tail segments.
+  :ivar segments: Newly committed segments explicitly completed by the server.
   :vartype segments: list[Segment]
-  :ivar incomplete_segment: Current in-progress tail segment.
+  :ivar incomplete_segment: The single timed segment still open for revision.
   :vartype incomplete_segment: Segment | None
   :ivar last_id: Identifier to store for the next reduction.
   :vartype last_id: int | None
@@ -126,51 +122,35 @@ def reduce_new_segments(
 ) -> SegmentReduction:
   """Return newly committed segments from a transcription window.
 
-  The transcriber keeps the final segment as the in-progress tail, so only the
-  completed prefix is eligible for emission.
+  Completion is explicit: the single incomplete timed segment remains revisable
+  until the server completes it, including when VAD is disabled.
 
   :param segments: Window returned by the transcriber.
   :type segments: Sequence[Segment]
   :param last_id: Previously committed segment identifier.
   :type last_id: int | None
-  :returns: Newly committed non-tail segments and sentinel status.
+  :returns: Newly completed segments, the provisional segment, and sentinel status.
   :rtype: SegmentReduction
   """
 
-  incomplete_segment = segments[-1] if segments else None
-  committed_prefix = list(segments[:-1])
-  if incomplete_segment is None:
-    return SegmentReduction(
-      segments=[],
-      incomplete_segment=None,
-      last_id=last_id,
-      missing_last_id=False,
-    )
-
-  if not committed_prefix:
-    return SegmentReduction(
-      segments=[],
-      incomplete_segment=incomplete_segment,
-      last_id=last_id,
-      missing_last_id=False,
-    )
-
+  incomplete_segment = next((segment for segment in segments if not segment.completed), None)
+  committed_segments = [segment for segment in segments if segment.completed]
+  new_segments = committed_segments
   missing_last_id = False
-  new_segments = committed_prefix
-  if last_id is not None:
+  if last_id is not None and committed_segments:
     sentinel_index = next(
-      (index for index, segment in enumerate(committed_prefix) if segment.id == last_id),
+      (index for index, segment in enumerate(committed_segments) if segment.id == last_id),
       None,
     )
     if sentinel_index is None:
       missing_last_id = True
     else:
-      new_segments = committed_prefix[sentinel_index + 1 :]
+      new_segments = committed_segments[sentinel_index + 1 :]
 
   return SegmentReduction(
     segments=new_segments,
     incomplete_segment=incomplete_segment,
-    last_id=committed_prefix[-1].id,
+    last_id=committed_segments[-1].id if committed_segments else last_id,
     missing_last_id=missing_last_id,
   )
 
@@ -184,12 +164,6 @@ def apply_segment_reduction(state: RecordingReducerState, reduction: SegmentRedu
   :type reduction: SegmentReduction
   """
 
-  if state.has_command_text:
-    _require_word_timestamps(reduction.segments)
-    incomplete_segment = reduction.incomplete_segment
-    if incomplete_segment is not None:
-      _require_word_timestamps([incomplete_segment])
-
   for segment in reduction.segments:
     if segment.id in state.seen_segment_ids:
       continue
@@ -202,12 +176,12 @@ def apply_segment_reduction(state: RecordingReducerState, reduction: SegmentRedu
         state.last_word_end = word.end_s
     state.seen_segment_ids.add(segment.id)
 
-  incomplete_segment = reduction.incomplete_segment
-  if incomplete_segment is None:
-    state.incomplete_words = []
-    return
-
-  state.incomplete_words = segment_words(incomplete_segment, is_complete=False)
+  incomplete = reduction.incomplete_segment
+  state.incomplete_words = (
+    segment_words(incomplete, is_complete=False)
+    if incomplete is not None and incomplete.id not in state.seen_segment_ids
+    else []
+  )
 
 
 def classify_word(word: TimedWord, timeline: RecordingReducerState) -> bool:
@@ -403,29 +377,15 @@ def segment_words(segment: Segment, *, is_complete: bool) -> list[TimedWord]:
   :rtype: list[TimedWord]
   """
 
-  if segment.words is not None:
-    return [
-      TimedWord(
-        text=word.word.strip(),
-        start_s=word.start,
-        end_s=word.end,
-        is_complete=is_complete,
-      )
-      for word in segment.words
-      if word.word.strip()
-    ]
-
-  text = segment.text.strip()
-  if not text:
-    return []
-
   return [
     TimedWord(
-      text=text,
-      start_s=segment.absolute_start_time,
-      end_s=segment.absolute_end_time,
+      text=word.word.strip(),
+      start_s=word.start,
+      end_s=word.end,
       is_complete=is_complete,
     )
+    for word in segment.words
+    if word.word.strip()
   ]
 
 
@@ -473,11 +433,3 @@ def serialize_runs_without_commands(runs: Sequence[TextRun]) -> str:
   """
 
   return " ".join(run.text for run in normalize_runs(runs) if not run.is_command)
-
-
-def _require_word_timestamps(segments: Sequence[Segment]) -> None:
-  for segment in segments:
-    if segment.text.strip() and not segment.words:
-      raise CommandTextWordTimestampError(
-        f"command-text recording requires Segment.words for segment {segment.id}"
-      )

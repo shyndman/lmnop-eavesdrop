@@ -12,7 +12,7 @@ import pytest
 
 from eavesdrop.server.config import TranscriptionConfig
 from eavesdrop.server.transcription import orukeet
-from eavesdrop.server.transcription.models import SpeechChunk, VadParameters
+from eavesdrop.server.transcription.models import SpeechSegment, VadParameters
 from eavesdrop.server.transcription.orukeet import OrukeetTranscriber
 from eavesdrop.server.transcription.session import create_session
 from eavesdrop.server.transcription.utils import FloatAudio
@@ -47,9 +47,9 @@ class Recognizer:
 
 @dataclass
 class Detector:
-  spans: list[SpeechChunk]
+  spans: list[SpeechSegment]
 
-  def detect(self, audio: FloatAudio, parameters: VadParameters) -> list[SpeechChunk]:
+  def detect(self, audio: FloatAudio, parameters: VadParameters) -> list[SpeechSegment]:
     return self.spans
 
 
@@ -159,17 +159,6 @@ def test_missing_detector_and_invalid_audio_are_rejected() -> None:
       absolute_stream_start=0,
       session=create_session("invalid"),
     )
-
-
-def test_word_output_can_be_disabled_without_losing_native_segment_bounds() -> None:
-  segments, _ = OrukeetTranscriber(Recognizer(), None).transcribe(
-    np.ones(16000, dtype=np.float32),
-    config=TranscriptionConfig(use_vad=False, word_timestamps=False),
-    absolute_stream_start=5,
-    session=create_session("no-words"),
-  )
-  assert segments[0].words is None
-  assert (segments[0].start, segments[0].end) == (5.08, 5.24)
 
 
 def test_empty_final_chunk_does_not_decode() -> None:

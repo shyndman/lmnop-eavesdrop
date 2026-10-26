@@ -1,423 +1,141 @@
-# Eavesdrop Server Architecture
+# Eavesdrop Architecture
 
-This document provides a detailed overview of the Eavesdrop server architecture, its core components, and the data flows for its primary modes of operation: WebSocket-based transcription and RTSP stream transcription.
+Eavesdrop has one production audio path: live audio supplied by a transcriber over WebSocket. Transcript updates and control responses return on that connection. A connection can carry multiple recordings; a recording is not a socket lifetime.
 
 ## High-Level Architecture
 
-The Eavesdrop server is designed around a central, reusable transcription pipeline. This core pipeline is agnostic to the source of the audio and the destination of the transcription results. It uses a system of protocol-based adapters (`AudioSource`, `TranscriptionSink`) to integrate with different transport layers, namely WebSockets and RTSP streams.
-
 ```mermaid
-graph TD
-    subgraph "Client Connections"
-        direction LR
-        WS_Transcriber[WebSocket Transcriber Client]
-        RTSP_Subscriber[RTSP Subscriber Client]
-    end
-
-    subgraph "Eavesdrop Server"
-        direction TB
-        subgraph "Transport Layer"
-            WebSocketServer[WebSocket Server]
-            RTSPClientManager[RTSP Client Manager]
-        end
-
-        subgraph "Core Transcription Pipeline"
-            StreamingProcessor[StreamingTranscriptionProcessor]
-            AudioBuffer[AudioStreamBuffer]
-            OrukeetTranscriber[OrukeetTranscriber]
-
-            StreamingProcessor -- Manages --> AudioBuffer
-            StreamingProcessor -- Uses --> OrukeetTranscriber
-        end
-
-        subgraph "Protocol Adapters"
-            direction LR
-            AudioSource[AudioSource Protocol]
-            TranscriptionSink[TranscriptionSink Protocol]
-        end
-
-        WebSocketServer -- Handles --> WS_Transcriber
-        WebSocketServer -- Handles --> RTSP_Subscriber
-
-        RTSPClientManager -- Manages --> RTSPStream["RTSP Stream (ffmpeg)"]
-
-        WS_Transcriber --> WebSocketServer
-        RTSP_Subscriber --> WebSocketServer
-
-        WebSocketServer -- Creates --> WebSocketStreamingClient[WebSocketStreamingClient]
-        RTSPClientManager -- Creates --> RTSPTranscriptionClient[RTSPTranscriptionClient]
-
-        WebSocketStreamingClient -- Feeds Audio Via --> AudioSource
-        RTSPTranscriptionClient -- Feeds Audio Via --> AudioSource
-
-        AudioSource --> AudioBuffer
-
-        StreamingProcessor -- Sends Results Via --> TranscriptionSink
-
-        TranscriptionSink -- Delivers To --> WS_Transcriber
-        TranscriptionSink -- Delivers To --> RTSP_Subscriber
-    end
-
-    %% Rose Pine color scheme
-    style WS_Transcriber fill:#f6c177,stroke:#e0def4,stroke-width:2px,color:#191724
-    style RTSP_Subscriber fill:#f6c177,stroke:#e0def4,stroke-width:2px,color:#191724
-
-    style WebSocketServer fill:#ebbcba,stroke:#e0def4,stroke-width:2px,color:#191724
-    style RTSPClientManager fill:#ebbcba,stroke:#e0def4,stroke-width:2px,color:#191724
-    style RTSPStream fill:#31748f,stroke:#e0def4,stroke-width:2px,color:#e0def4
-
-    style StreamingProcessor fill:#9ccfd8,stroke:#e0def4,stroke-width:2px,color:#191724
-    style AudioBuffer fill:#9ccfd8,stroke:#e0def4,stroke-width:2px,color:#191724
-    style OrukeetTranscriber fill:#9ccfd8,stroke:#e0def4,stroke-width:2px,color:#191724
-
-    style AudioSource fill:#c4a7e7,stroke:#e0def4,stroke-width:2px,color:#191724
-    style TranscriptionSink fill:#c4a7e7,stroke:#e0def4,stroke-width:2px,color:#191724
-
-    style WebSocketStreamingClient fill:#26233a,stroke:#e0def4,stroke-width:1px,color:#e0def4
-    style RTSPTranscriptionClient fill:#26233a,stroke:#e0def4,stroke-width:1px,color:#e0def4
+graph LR
+    Client[Live WebSocket client] --> Server[TranscriptionServer]
+    Server --> Session[WebSocketStreamingClient]
+    Session --> Buffer[AudioStreamBuffer]
+    Buffer --> Processor[StreamingTranscriptionProcessor]
+    Processor --> Recognizer[OrukeetTranscriber]
+    Processor --> Sink[WebSocketTranscriptionSink]
+    Sink --> Client
 ```
 
 ### Core Components
 
--   **TranscriptionServer (`server.py`):** The main application class. It initializes and manages all other components, including the WebSocket server and the RTSP client manager. It acts as the entry point for handling new client connections.
--   **WebSocketServer (`websocket.py`):** A robust wrapper around the `websockets` library that handles incoming WebSocket connections and passes them to the `TranscriptionServer` for processing.
--   **StreamingTranscriptionProcessor (`streaming/processor.py`):** The heart of the transcription engine. It orchestrates the process of taking audio from an `AudioStreamBuffer`, running it through the `OrukeetTranscriber`, and sending the results to a `TranscriptionSink`. It is designed to be completely independent of the audio source or result destination.
--   **AudioStreamBuffer (`streaming/buffer.py`):** A thread-safe buffer that manages incoming audio frames. It handles memory management, cleanup of old audio, and provides chunks of audio to the `StreamingTranscriptionProcessor`.
--   **OrukeetTranscriber (`transcription/orukeet.py`):** Loads the fixed `oruk/orukeet` model through CPU sherpa-onnx (INT8 ONNX) or Vulkan NeMo-Speech.cpp (Q8 GGUF) and exposes `transcribe`. It serializes access to the shared recognizer, runs optional standalone Silero VAD, and converts native word timings into the recording timeline. Model dependencies are loaded lazily so ordinary unit tests remain lightweight.
--   **Configuration (`config.py`):** A set of Pydantic models (`EavesdropConfig`, `TranscriptionConfig`, `RTSPConfig`) that load and validate the server's configuration from a YAML file. This provides strongly-typed and validated access to all settings.
+- **TranscriptionServer (`server.py`)** initializes the recognition runtime and WebSocket server and manages live client connections.
+- **WebSocketServer (`websocket.py`)** wraps `websockets` and hands connections to the server.
+- **WebSocketStreamingClient** owns the live session, coordinates incoming audio and controls, and connects buffering, processing, and response delivery.
+- **AudioStreamBuffer (`streaming/buffer.py`)** retains accepted audio and its recording-relative offsets for rolling recognition and revision.
+- **StreamingTranscriptionProcessor (`streaming/processor.py`)** schedules recognition, updates provisional and completed segments, advances the processed boundary when permitted, and delivers results through a transcription sink.
+- **OrukeetTranscriber (`transcription/orukeet.py`)** loads the fixed recognition model, serializes shared recognizer access, optionally runs standalone Silero VAD, and converts native timing to the recording timeline. Model dependencies load lazily so ordinary unit tests remain lightweight.
+- **Configuration (`config.py`)** validates YAML settings through Pydantic, including recognition backend, live buffering, segmentation, and VAD configuration.
 
-### Recognition Runtime and Timing Contract
+The live connection handles incoming audio and controls. The transcription-sink interface handles response delivery.
+
+### Module Ownership
+
+- `client/core.py` coordinates connection lifetime, capture, serialized recording transitions, and the single outstanding flush request. It pushes the original wire `TranscriptionMessage` directly to the caller. `client/connection.py` handles WebSocket messages and controls; stopping capture drains accepted frames before the next flush.
+- `streaming/processor.py` coordinates scheduling, recognition, output delivery, and flush acknowledgement. Its `streaming/processing/` package separates buffer selection and wakeups (`scheduling.py`), model and native-worker lifetime (`recognition.py`), completion and transcript delivery (`output.py`), and identity-bearing recognition data (`models.py`).
+- `transcription/session.py` owns recording transcript history and its tracing context. `transcription/tracing/context.py` owns shared timing, logging, recording-relative context, and observation creation. Callers use that state directly; `tracing/stages.py` manages stage timing and observation lifetime through `BaseTracer`.
+- The active listener's `app/service.py` coordinates recording actions and finalization. `app/recording_keyboard.py` owns keyboard grabs and gestures; `recording/session.py` owns the recording transcript and captured audio. `app/workstation.py` owns media playback and the spectrum analyzer, `app/overlay.py` sends transcript updates over D-Bus, and `infra/langfuse.py` owns recording observations until transfer to finalization. `recording/finalizer.py` owns accepted snapshots through emission and history storage; `recording/rewrite.py` owns prompt loading, rewriting, and correction persistence. Later foreground changes preserve already accepted finalization work.
+- `scripts/update-langfuse-models` retains the executable interface, `uv` dependency declaration, and repository-root `.env` lookup. `scripts/langfuse_models/` shares typed schemas and HTTP transport across catalog pricing translation and ownership-checked synchronization.
+
+## Recognition Runtime and Timing Contract
 
 The recognizer is Orukeet, using standard PyPI CPU sherpa-onnx with INT8 ONNX or pinned NeMo-Speech.cpp with Q8 GGUF on Vulkan. The optional `transcription` extra supplies sherpa-onnx, huggingface-hub, standalone Silero VAD, and PyTorch/torchaudio needed by Silero. Translation, alternate checkpoints, prompts, hotwords, and language selection are not part of the English-only server or client contract.
 
-`transcription.model` is fixed to `oruk/orukeet`; `transcription.device` accepts `cpu` (default) or `vulkan`. CPU inference downloads the pinned released INT8 encoder/decoder/joiner archive through Hugging Face's standard cache, checks its SHA256, and safely extracts it for reuse. It uses a 16 kHz, 128-feature offline NeMo-transducer recognizer with greedy decoding and the CPU provider. Vulkan uses the pinned NeMo-Speech.cpp runtime and Q8 GGUF model on Linux x86_64, selecting GPU 0. Streaming remains rolling offline chunk re-decoding, not a stateful streaming recognizer.
+`transcription.model` is fixed to `oruk/orukeet`; `transcription.device` accepts `cpu` (default) or `vulkan`. CPU inference downloads the pinned released INT8 encoder/decoder/joiner archive through Hugging Face's standard cache, checks its SHA256, and safely extracts it for reuse. It uses a 16 kHz, 128-feature offline NeMo-transducer recognizer with greedy decoding and the CPU provider. Vulkan uses the pinned NeMo-Speech.cpp runtime and Q8 GGUF model on Linux x86_64, selecting GPU 0. Streaming remains rolling offline chunk re-decoding, not a stateful streaming recognizer. Model assets and inference-related caches persist for reuse independently of recording state.
 
-Standalone Silero VAD remains ONNX CPU and supplies speech intervals as sample offsets into the unfiltered input chunk. Each speech span is transcribed independently. CPU sherpa-onnx supplies native token onsets and durations at 80 ms granularity; `transcription/orukeet_timestamps.py` groups subword tokens into words while preserving punctuation and exact recognized text. Vulkan supplies native word timestamps, converted from milliseconds. For both backends, the adapter adds the span's original offset and the stream chunk's absolute offset once, preserving silent gaps instead of compressing the recording timeline. No proportional word durations or separate forced alignment are invented. Segment completion and buffer advancement continue to use recording-relative boundaries. Setting `word_timestamps: false` suppresses client word details without changing internal timing behavior.
+Standalone Silero VAD remains ONNX CPU and supplies speech intervals as sample offsets into the unfiltered input chunk. Each speech segment is transcribed independently. CPU sherpa-onnx supplies native token onsets and durations at 80 ms granularity; `transcription/orukeet_timestamps.py` groups subword tokens into words while preserving punctuation and exact recognized text. Vulkan supplies native word timestamps, converted from milliseconds. For both backends, the adapter adds the speech segment's original offset and the recording chunk's offset once, preserving leading and internal silent gaps instead of compressing the recording timeline. No proportional word durations or separate forced alignment are invented.
+
+Every transcription includes timed segments and individual word timestamps. Segment completion and buffer advancement use the same recording-relative boundaries. Starting a fresh recording establishes timestamp zero without changing model-cache lifetime.
 
 Deploy directly on the host or use the unified CPU/Vulkan Docker image. The Debian bookworm CPU Torch/audio base, repository-root workspace lockfile, and `/opt/venv` retain CPU PyTorch/torchaudio for standalone Silero VAD. The final image includes `libvulkan1`, `libstdc++6`, and Mesa 25 `mesa-vulkan-drivers` from bookworm-backports. Container run tasks validate `SERVER_CONFIG` (default `packages/server/config.yaml`) as `EavesdropConfig`, mount that same file, and expose `/dev/dri` only for `transcription.device: vulkan`. Vulkan container deployment targets Linux x86_64 Mesa GPUs with the appropriate host kernel driver; it does not use NVIDIA container runtime, privileged mode, or `/dev/kfd`. The persistent task retains `--restart always`. There are no CUDA or ROCm inference variants. See the [server guide](./packages/server/README.md#docker-deployment) for setup and verification limits.
 
-## The Core Abstraction: A Pluggable Pipeline
+## Live Connection and Recording Lifecycle
 
-The architecture is built on a powerful abstraction that separates the audio source and transcription destination from the core transcription logic. This is achieved through two key protocols defined in `streaming/interfaces.py`:
+The server and client exchange setup and readiness messages before streaming live audio. Operational health checks and error responses remain available. The shared wire package defines serialized messages; the Python client exposes the live recording controls. See the [client API guide](./packages/client/docs/api-client.md).
 
-1.  **`AudioSource`**: A protocol that defines how audio is provided to the system. Any class that implements the `read_audio()` async method can act as an audio source.
-2.  **`TranscriptionSink`**: A protocol that defines how transcription results are handled. Any class that implements methods like `send_result()` and `send_error()` can be a destination for transcriptions.
+A recording has its own identifier, transcript state, and recording-relative timeline. Controls retain recording-identifier checks so a delayed control for an earlier recording cannot change a later one.
 
-This design allows the `StreamingTranscriptionProcessor` to operate on these abstract interfaces, making it highly reusable.
-
-```mermaid
-graph LR
-    subgraph "Input (AudioSource)"
-        WebSocketAudioSource[WebSocketAudioSource]
-        RTSPAudioSource[RTSPAudioSource]
-    end
-
-    subgraph "Core Pipeline"
-        AudioStreamBuffer
-        StreamingTranscriptionProcessor
-    end
-
-    subgraph "Output (TranscriptionSink)"
-        WebSocketTranscriptionSink[WebSocketTranscriptionSink]
-        RTSPTranscriptionSink[RTSPTranscriptionSink]
-    end
-
-    WebSocketAudioSource -- Implements --> AudioSource[AudioSource Protocol]
-    RTSPAudioSource -- Implements --> AudioSource
-
-    AudioSource --> AudioStreamBuffer --> StreamingTranscriptionProcessor
-
-    StreamingTranscriptionProcessor --> TranscriptionSink[TranscriptionSink Protocol]
-
-    TranscriptionSink -- Implemented By --> WebSocketTranscriptionSink
-    TranscriptionSink -- Implemented By --> RTSPTranscriptionSink
-
-    %% Rose Pine color scheme
-    style WebSocketAudioSource fill:#ebbcba,stroke:#e0def4,stroke-width:2px,color:#191724
-    style RTSPAudioSource fill:#ebbcba,stroke:#e0def4,stroke-width:2px,color:#191724
-
-    style AudioStreamBuffer fill:#9ccfd8,stroke:#e0def4,stroke-width:2px,color:#191724
-    style StreamingTranscriptionProcessor fill:#9ccfd8,stroke:#e0def4,stroke-width:2px,color:#191724
-
-    style WebSocketTranscriptionSink fill:#ebbcba,stroke:#e0def4,stroke-width:2px,color:#191724
-    style RTSPTranscriptionSink fill:#ebbcba,stroke:#e0def4,stroke-width:2px,color:#191724
-
-    style AudioSource fill:#c4a7e7,stroke:#e0def4,stroke-width:2px,color:#191724
-    style TranscriptionSink fill:#c4a7e7,stroke:#e0def4,stroke-width:2px,color:#191724
-```
-
-## Workflow 1: WebSocket Transcriber
-
-This is the primary mode where a client sends audio data over a WebSocket connection and receives transcription results back on the same connection.
+### Normal Recording Completion
 
 ```mermaid
 sequenceDiagram
     participant Client
-    participant TranscriptionServer
-    participant WebSocketStreamingClient
-    participant StreamingProcessor
-    participant WebSocketAudioSource
-    participant WebSocketTranscriptionSink
-
-    Client->>TranscriptionServer: Connect (WebSocket)
-    TranscriptionServer->>Client: Request Setup Message
-    Client->>TranscriptionServer: TranscriptionSetupMessage
-    TranscriptionServer->>WebSocketStreamingClient: Create(websocket, config)
-    WebSocketStreamingClient->>StreamingProcessor: Create(buffer, sink, config)
-    WebSocketStreamingClient->>WebSocketStreamingClient: Start audio/processing tasks
-
-    loop Audio Streaming
-        Client->>WebSocketAudioSource: Send Audio Frame
-        WebSocketAudioSource->>WebSocketStreamingClient: Add Frames to Buffer
-        StreamingProcessor->>WebSocketStreamingClient: Get Chunk for Processing
-        StreamingProcessor->>StreamingProcessor: Transcribe Audio
-        StreamingProcessor->>WebSocketTranscriptionSink: send_result(segments)
-        WebSocketTranscriptionSink->>Client: Send TranscriptionMessage
-    end
+    participant Session
+    participant Processor
+    Client->>Session: Start recording A
+    Client->>Session: Live audio for A
+    Session->>Processor: Accepted audio for A
+    Processor-->>Client: Timed transcript updates for A
+    Client->>Session: Stop recording A
+    Client->>Session: Flush A with force completion
+    Session->>Processor: Process through accepted flush boundary
+    Processor-->>Client: Final transcript for A
+    Session-->>Client: Flush-complete response for A
+    Client->>Session: Start recording B
+    Session->>Session: Fresh B transcript and timestamp zero
+    Client->>Session: Live audio for B
 ```
 
-**Component Roles:**
+Recording transitions preserve accepted work. Starting B while A's recognition or requested flush remains outstanding must not invalidate A's audio, transcript, recognition, or response. If B's audio is accepted early, it queues until A's final transcript and flush-complete response have been delivered. Only then can B begin processing with fresh recording-local state.
 
--   **`TranscriptionServer`**: Detects the client is a transcriber, validates the setup message, and creates a `WebSocketStreamingClient`.
--   **`WebSocketClientManager`**: Tracks the active `WebSocketStreamingClient`.
--   **`WebSocketStreamingClient`**: A high-level facade that instantiates and connects all the necessary components for a WebSocket session:
-    -   **`WebSocketAudioSource`**: Implements the `AudioSource` protocol. It wraps the `websocket.recv()` call to read incoming audio frames.
-    -   **`AudioStreamBuffer`**: Buffers the audio from the source.
-    -   **`WebSocketTranscriptionSink`**: Implements the `TranscriptionSink` protocol. It sends `TranscriptionMessage` objects back to the client over the WebSocket.
-    -   **`StreamingTranscriptionProcessor`**: The core engine, configured with the WebSocket-specific source and sink.
+### Flush
 
-## Workflow 2: RTSP Stream Processing & Subscribing
+Flush interrupts ordinary interval waiting and requests prompt processing through the audio already accepted at its boundary, including audio shorter than the normal processing minimum. It retains the force-completion option and the existing flush-complete acknowledgement.
 
-This mode involves two distinct parts:
-1.  **Ingestion**: The server connects to an external RTSP stream, ingests the audio, and transcribes it continuously.
-2.  **Subscription**: WebSocket clients can connect to subscribe to the transcription results from one or more of these streams.
+- With `force_complete=True`, pending transcription through the accepted boundary completes and its final transcript is delivered before acknowledgement.
+- With `force_complete=False`, the requested update and acknowledgement are delivered without forcing completion. VAD-enabled automatic completion remains independent of this choice.
+- With no pending audio, including before the first frame or after consumption, the request still completes and acknowledges. It must not leave a pending request spinning or prevent other connections from progressing.
 
-### RTSP Ingestion Flow
+Audio arriving after a flush boundary is not permission to prematurely complete later content. In VAD-disabled operation, subsequent audio remains provisional until a later explicit force-completing request.
 
-```mermaid
-sequenceDiagram
-    participant RTSPClientManager
-    participant RTSPTranscriptionClient
-    participant FFmpeg
-    participant RTSPAudioSource
-    participant StreamingProcessor
-    participant RTSPTranscriptionSink
+### Cancellation and Disconnect
 
-    RTSPClientManager->>RTSPTranscriptionClient: Create & Run(stream_name, url)
-    RTSPTranscriptionClient->>FFmpeg: Start Subprocess (connects to RTSP URL)
-    FFmpeg->>RTSPAudioSource: Pipe Raw Audio (s16le)
-    RTSPAudioSource->>RTSPTranscriptionClient: Add Frames to Buffer
-    StreamingProcessor->>RTSPTranscriptionClient: Get Chunk for Processing
-    StreamingProcessor->>StreamingProcessor: Transcribe Audio
-    StreamingProcessor->>RTSPTranscriptionSink: send_result(segments)
-```
+Cancellation discards the active utterance, clears its utterance-local transcript history, and suppresses outstanding results from that cancelled work. It is not a force-completing flush or a recording transition that preserves accepted work. The client can stop and restart recording on the same connection after cancellation.
 
-### RTSP Subscription Flow
+Disconnect releases connection-owned work. Cancellation and cleanup of owned asynchronous tasks are explicit and awaited; a closed connection must not leave session tasks or resources running or disrupt other live connections.
 
-```mermaid
-sequenceDiagram
-    participant Subscriber
-    participant TranscriptionServer
-    participant RTSPSubscriberManager
-    participant RTSPTranscriptionCache
-    participant RTSPTranscriptionSink
+The client fails a pending flush immediately when its recording is cancelled or its connection closes. That request releases its recording-transition lock, allowing another recording after cancellation. A later request starts with a fresh completion future. Transcript callbacks receive accepted messages directly; no parallel transcript queue retains them.
 
-    Subscriber->>TranscriptionServer: Connect (WebSocket w/ headers)
-    Note over Subscriber, TranscriptionServer: Headers: Client-Type=rtsp-subscriber, Stream-Names=cam1,cam2
-    TranscriptionServer->>RTSPSubscriberManager: subscribe_client(websocket, streams)
-    RTSPSubscriberManager->>RTSPTranscriptionCache: get_recent_messages()
-    RTSPTranscriptionCache-->>RTSPSubscriberManager: Return history
-    RTSPSubscriberManager->>Subscriber: Send Historical TranscriptionMessages
+## Transcription Pipeline and Completion
 
-    loop Live Transcription
-        RTSPTranscriptionSink->>RTSPTranscriptionCache: add_transcription(segments)
-        RTSPTranscriptionSink->>RTSPSubscriberManager: send_transcription(stream, segments)
-        RTSPSubscriberManager->>Subscriber: Send Live TranscriptionMessage
-    end
-```
+The processor repeatedly recognizes buffered live audio and revises one incomplete timed segment. Completed segments are stable. The segment window limits completed history while preserving the full incomplete segment and its revision source audio.
 
-**Component Roles:**
+### VAD Enabled
 
--   **`RTSPClientManager`**: Manages the lifecycle of all RTSP streams defined in the configuration. It creates and runs an `RTSPTranscriptionClient` for each stream.
--   **`RTSPTranscriptionClient`**: A facade similar to its WebSocket counterpart. It manages the `ffmpeg` process and wires together the components for RTSP transcription.
-    -   **`RTSPClient`**: A lower-level class that manages the `ffmpeg` subprocess lifecycle, including automatic reconnection.
-    -   **`RTSPAudioSource`**: Implements the `AudioSource` protocol. It reads raw audio bytes from a queue populated by the `ffmpeg` process and converts them into the numpy arrays expected by the pipeline.
-    -   **`RTSPTranscriptionSink`**: Implements the `TranscriptionSink` protocol. This is a critical fan-out component. When it receives a result, it does two things:
-        1.  Adds the transcription to the `RTSPTranscriptionCache`.
-        2.  Notifies the `RTSPSubscriberManager` to broadcast the result to any connected subscribers.
--   **`RTSPTranscriptionCache`**: A thread-safe, in-memory cache that stores recent transcription segments for each stream. This allows new subscribers to immediately receive a history of recent transcriptions. Its retention policy cleverly changes based on whether a stream has active listeners.
--   **`RTSPSubscriberManager`**: Manages WebSocket clients that are subscribed to RTSP streams. It handles subscription requests, validates stream names, sends historical data from the cache, and broadcasts live results received from the `RTSPTranscriptionSink`.
+Standalone VAD supplies speech and silence metadata. Preserve ordinary silence-based completion and the trailing incomplete-segment invariant for live updates, including a synthetic zero-length incomplete tail where required. `silence_completion_threshold` (default 0.8 seconds) controls silence completion; VAD's `min_silence_duration_ms` is derived from that threshold. Completed segment boundaries permit buffer advancement, and confirmed silence can be skipped without compressing timestamp offsets.
 
-## The Contract: WebSocket vs. RTSP
+### VAD Disabled
 
-The user's primary interest is the contract between the WebSocket and RTSP parts of the application. This "contract" is masterfully defined by the `AudioSource` and `TranscriptionSink` protocols. The core `StreamingTranscriptionProcessor` is completely decoupled from the transport layer, allowing for clean separation of concerns.
+All transcription since the last explicit completion forms one incomplete timed segment. Recognized portions retain their text, words, and original recording-relative word timestamps when combined. Elapsed time, silence, chunk duration, missing VAD metadata, and new audio cannot complete it. A non-force-completing flush acknowledges the update while leaving it incomplete. Only a flush with `force_complete=True` completes pending content through its accepted boundary. Cancellation discards its targeted utterance instead of completing it.
 
-```mermaid
-graph TD
-    subgraph "The Contract"
-        AudioSource["AudioSource (Protocol)<br><i>How audio enters the system</i>"]
-        TranscriptionSink["TranscriptionSink (Protocol)<br><i>How results leave the system</i>"]
-    end
-
-    subgraph "Shared Core"
-        StreamingProcessor[StreamingTranscriptionProcessor]
-    end
-
-    subgraph "WebSocket Implementation"
-        WebSocketAudioSource
-        WebSocketTranscriptionSink
-    end
-
-    subgraph "RTSP Implementation"
-        RTSPAudioSource
-        RTSPTranscriptionSink
-    end
-
-    WebSocketAudioSource -- Implements --> AudioSource
-    RTSPAudioSource -- Implements --> AudioSource
-
-    AudioSource --> StreamingProcessor
-
-    StreamingProcessor --> TranscriptionSink
-
-    TranscriptionSink -- Implemented by --> WebSocketTranscriptionSink
-    TranscriptionSink -- Implemented by --> RTSPTranscriptionSink
-
-    %% Rose Pine color scheme
-    style AudioSource fill:#c4a7e7,stroke:#e0def4,stroke-width:2px,color:#191724
-    style TranscriptionSink fill:#c4a7e7,stroke:#e0def4,stroke-width:2px,color:#191724
-
-    style StreamingProcessor fill:#9ccfd8,stroke:#e0def4,stroke-width:2px,color:#191724
-
-    style WebSocketAudioSource fill:#ebbcba,stroke:#e0def4,stroke-width:2px,color:#191724
-    style WebSocketTranscriptionSink fill:#ebbcba,stroke:#e0def4,stroke-width:2px,color:#191724
-
-    style RTSPAudioSource fill:#31748f,stroke:#e0def4,stroke-width:2px,color:#e0def4
-    style RTSPTranscriptionSink fill:#31748f,stroke:#e0def4,stroke-width:2px,color:#e0def4
-```
-
-### Similarities
-
--   **Core Engine**: Both pathways use the exact same `StreamingTranscriptionProcessor` and `OrukeetTranscriber` for transcription.
--   **Audio Buffering**: Both use `AudioStreamBuffer` to manage the audio being fed to the processor.
--   **Configuration**: Both start from the same `TranscriptionConfig`, although WebSocket clients can provide per-session overrides.
-
-### Differences
-
-The differences lie entirely in the concrete implementations of the `AudioSource` and `TranscriptionSink` protocols.
-
-| Concern | WebSocket (`TRANSCRIBER`) | RTSP (`SUBSCRIBER`) |
-| :--- | :--- | :--- |
-| **Audio Input** | **`WebSocketAudioSource`**: Receives pre-formatted `float32` numpy arrays directly from the `TranscriptionServer`'s `recv()` loop. The connection is **client-to-server**. | **`RTSPAudioSource`**: Receives raw `s16le` byte chunks from an `asyncio.Queue` that is populated by an `ffmpeg` subprocess. It is responsible for converting these bytes to `float32` numpy arrays. The connection is **server-to-stream**. |
-| **Transcription Output** | **`WebSocketTranscriptionSink`**: Sends transcription results directly back to the single client that provided the audio. It's a 1-to-1 relationship. | **`RTSPTranscriptionSink`**: Fans out results to two places: the `RTSPTranscriptionCache` (for history) and the `RTSPSubscriberManager` (for live broadcast). It's a 1-to-many relationship. |
-| **Client Management** | `WebSocketClientManager` tracks each individual transcriber client. | `RTSPClientManager` tracks the ingestion process for each RTSP stream. `RTSPSubscriberManager` tracks the WebSocket clients that are listening to the streams. |
-| **State & History** | The transcription is ephemeral and exists only for the life of the connection. | The transcription is cached via `RTSPTranscriptionCache`, allowing it to persist and be available to new subscribers, even if no one was listening when it was generated. |
-
-### Shared Components
-
-The key shared component is the `StreamingTranscriptionProcessor`. By programming to the `AudioSource` and `TranscriptionSink` interfaces, it remains blissfully unaware of whether it's processing audio from a live client WebSocket or a background `ffmpeg` process. This is the cornerstone of the server's elegant and extensible design.
-
-## Transcription Pipeline Algorithm
-
-The `StreamingTranscriptionProcessor` implements a **silence-based segment completion algorithm** that replaces the previous repetition detection approach. This provides more reliable segment boundaries and prevents buffer management issues.
-
-### Core Algorithm Flow
-
-```mermaid
-graph TD
-    subgraph "Audio Processing"
-        AudioChunk[Audio Chunk 2s intervals]
-        VADAnalysis[VAD Analysis]
-        OrukeetTranscribe[Orukeet Transcription]
-    end
-    
-    subgraph "Segment Completion Logic"  
-        ExplicitRule[All segments except last → Complete]
-        SilenceAnalysis[Last segment: Silence Analysis]
-        CompletionDecision[Completion Decision]
-    end
-    
-    subgraph "Buffer Management"
-        BufferAdvancement[Advance Buffer Pointer]
-        SilenceSkipping[Skip Through Silence]
-    end
-    
-    subgraph "Client Output"
-        InvariantCheck[Ensure Incomplete Tail Segment]
-        SyntheticSegment[Create Synthetic if Needed]
-        SendToClient[Send to Client]
-    end
-    
-    AudioChunk --> VADAnalysis
-    VADAnalysis --> OrukeetTranscribe
-    OrukeetTranscribe --> ExplicitRule
-    ExplicitRule --> SilenceAnalysis
-    SilenceAnalysis --> CompletionDecision
-    CompletionDecision --> BufferAdvancement
-    BufferAdvancement --> SilenceSkipping
-    SilenceSkipping --> InvariantCheck
-    InvariantCheck --> SyntheticSegment
-    SyntheticSegment --> SendToClient
-    
-    %% Rose Pine color scheme
-    style AudioChunk fill:#f6c177,stroke:#e0def4,stroke-width:2px,color:#191724
-    style VADAnalysis fill:#ebbcba,stroke:#e0def4,stroke-width:2px,color:#191724
-    style OrukeetTranscribe fill:#ebbcba,stroke:#e0def4,stroke-width:2px,color:#191724
-    style ExplicitRule fill:#9ccfd8,stroke:#e0def4,stroke-width:2px,color:#191724
-    style SilenceAnalysis fill:#9ccfd8,stroke:#e0def4,stroke-width:2px,color:#191724
-    style CompletionDecision fill:#9ccfd8,stroke:#e0def4,stroke-width:2px,color:#191724
-    style BufferAdvancement fill:#c4a7e7,stroke:#e0def4,stroke-width:2px,color:#191724
-    style SilenceSkipping fill:#c4a7e7,stroke:#e0def4,stroke-width:2px,color:#191724
-    style InvariantCheck fill:#31748f,stroke:#e0def4,stroke-width:2px,color:#e0def4
-    style SyntheticSegment fill:#31748f,stroke:#e0def4,stroke-width:2px,color:#e0def4
-    style SendToClient fill:#31748f,stroke:#e0def4,stroke-width:2px,color:#e0def4
-```
-
-### Algorithm Details
-
-**1. Silence-Based Completion**
-- **Configuration**: Single `silence_completion_threshold` parameter (default: 0.8s) controls completion timing
-- **VAD Integration**: Voice Activity Detection analyzes speech vs silence patterns in real-time  
-- **Automatic Alignment**: VAD's `min_silence_duration_ms` is automatically set from `silence_completion_threshold * 1000`
-
-**2. Dual Completion Rules**
-- **Explicit Rule**: All segments except the last are always marked complete (maintains structural invariant)
-- **Enhanced Rule**: Last segment can complete early if silence analysis detects sufficient quiet period after speech
-
-**3. Buffer Pointer Management**  
-- **Primary Advancement**: Buffer moves forward to the end of completed segments
-- **Silence Skipping**: Additional advancement through confirmed silence periods (when silence > 2x threshold)
-- **Prevents Bloat**: Eliminates buffer growth from unprocessed silence
-
-**4. Client State Machine Invariant**
-- **Always Incomplete Tail**: Ensures there's always an incomplete segment at the end of the segment list
-- **Synthetic Segments**: Creates zero-length incomplete segments when all segments are marked complete
-- **Client Compatibility**: Maintains expected state machine behavior for downstream clients
+Buffer advancement and segment-window handling must preserve uncompleted work for revision and later explicit completion rather than treating a new segment as authority to discard it.
 
 ### Configuration Architecture
 
-**Single Source of Truth**:
 ```yaml
 transcription:
-  silence_completion_threshold: 0.8  # User-configurable
+  silence_completion_threshold: 0.8
   vad_parameters:
-    # min_silence_duration_ms: (set automatically to 800ms)
+    # min_silence_duration_ms is derived automatically as 800 ms
 ```
 
-**Validation Protection**:
-- Users cannot manually set `min_silence_duration_ms` in VAD parameters
-- Clear error messages prevent conflicting silence duration settings  
-- Eliminates logical inconsistencies between VAD segmentation and completion logic
+Users cannot manually set `min_silence_duration_ms` in VAD parameters. Validation rejects conflicting silence-duration settings, keeping VAD segmentation and silence-based completion aligned.
 
-### Tracing and Debugging
+### Operational Tracing
 
-The algorithm includes comprehensive tracing at six key points:
+Structured tracing remains available for pipeline visibility:
 
-1. **Audio Chunk Processing**: Buffer status, timestamp ranges
-2. **VAD Analysis**: Speech/silence timeline with visual representation (`S` = speech, `~` = silence)
-3. **Orukeet Output**: Native word boundaries, text, and recording-relative times
-4. **Completion Decisions**: Why segments were marked complete (positional vs silence analysis)
-5. **Buffer Advancement**: How far the processed boundary moved and why
-6. **Client Output**: Final segment list with completed/incomplete/synthetic flags
+1. **Audio chunk processing:** buffer status and timestamp ranges.
+2. **VAD analysis:** speech/silence timing when VAD ran; explicitly unanalyzed audio otherwise.
+3. **Orukeet output:** native word boundaries, text, and recording-relative times.
+4. **Completion decisions:** reasons for automatic or explicitly requested completion and provisional output.
+5. **Buffer advancement:** how far the processed boundary moved and why.
+6. **Client output:** segment lists with completed, incomplete, and synthetic flags.
 
-**Usage**: `tracing_logger = get_logger("tracing")` provides structured logging for pipeline visibility.
+`tracing_logger = get_logger("tracing")` provides structured logging. Operational logging is independent of audio retention.
+
+## Verification Boundaries
+
+Behavioral regression coverage drives setup, recording boundaries, audio frames, flush, cancellation, and disconnect through real local WebSocket connections. Deterministic recognition substitutes at the existing transcriber interface while the live orchestration, buffering, controls, and serialization remain real.
+
+Protocol scenarios cover two recordings on one connection, held recognition during a transition, recording-relative timing, native word timing across silence, empty flush responsiveness, explicit-only completion with VAD disabled, enabled-VAD silence completion, cancellation suppression, and bounded disconnect cleanup. A responsive second connection is part of starvation and cleanup coverage.
+
+These deterministic tests do not establish recognition quality or workstation integration. Real validation also requires the configured backend through WebSocket with the active-listener client, observing transcription, flush response, cancellation, a second recording, and cleanup. Standalone recognition smoke checks validate the backend but do not replace that end-to-end run.

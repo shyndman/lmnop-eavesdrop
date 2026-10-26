@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-from contextlib import AsyncExitStack
-from dataclasses import dataclass, field
 
 from structlog.stdlib import BoundLogger
 
@@ -17,11 +15,10 @@ from active_listener.app.ports import (
   FinishedRecording,
 )
 from active_listener.infra.corrections import CorrectionMap
-from active_listener.infra.keyboard import KeyboardInput, RecordingGrabRelease
 from active_listener.recording.reducer import (
   RecordingReducerState,
+  SegmentReduction,
   TextRun,
-  TimedWord,
   TimeSpan,
   TranscriptionUpdate,
   apply_segment_reduction,
@@ -33,18 +30,15 @@ from active_listener.recording.spectrum import SAMPLE_RATE_HZ
 from active_listener.recording.text_shaping import shape_runs
 from eavesdrop.wire import TranscriptionMessage
 
-HOLD_THRESHOLD_S = 0.250
 RECORDING_CHANNEL_COUNT = 1
 
 
-def _empty_corrections() -> dict[str, str]:
-  return {}
-
-
-@dataclass
 class RecordingAudioBuffer:
-  _chunks: list[bytes] = field(default_factory=list)
-  _active: bool = False
+  """Retain captured frames only for the currently active recording."""
+
+  def __init__(self) -> None:
+    self._chunks: list[bytes] = []
+    self._active: bool = False
 
   def start(self) -> None:
     self._chunks.clear()
@@ -67,36 +61,30 @@ class RecordingAudioBuffer:
     self._active = False
 
 
-@dataclass
-class PendingCapsGesture:
-  start_s: float
-  threshold_task: asyncio.Task[None] | None
+class RecordingTranscript:
+  """Own one recording's captured audio and revisable transcript, without hardware.
 
+  :param client: Capture/streaming dependency.
+  :param logger: Recording diagnostics.
+  :param audio_buffer: Buffer receiving microphone frames during capture.
+  """
 
-@dataclass
-class RecordingSession:
-  """Own recording state, reducer state, and keyboard-grab resources."""
-
-  keyboard: KeyboardInput
-  client: ActiveListenerClient
-  logger: BoundLogger
-  audio_buffer: RecordingAudioBuffer
-  _connection_last_id: int | None = None
-  _recording_id: str | None = None
-  _recording_reducer_state: RecordingReducerState | None = None
-  _recording_grab_stack: AsyncExitStack | None = None
-  _release_recording_grab: RecordingGrabRelease | None = None
-  _recording_started_monotonic_s: float | None = None
-  _correction_load_task: CorrectionLoadTask | None = None
-  _pending_caps_gesture: PendingCapsGesture | None = None
-  _last_transcription_runs: list[TextRun] = field(default_factory=list)
-  _loaded_corrections: CorrectionMap = field(default_factory=_empty_corrections)
-  _corrections_harvested: bool = False
-  # Overlay cache: shaped completed runs plus the raw runs they were shaped from. Completed
-  # text is byte-stable once committed, so we reshape only when the raw committed runs change
-  # (or corrections load), not on every window that merely revises the incomplete tail.
-  _shaped_completed_runs: list[TextRun] = field(default_factory=list)
-  _shaped_completed_source: list[TextRun] = field(default_factory=list)
+  def __init__(
+    self, *, client: ActiveListenerClient, logger: BoundLogger, audio_buffer: RecordingAudioBuffer
+  ) -> None:
+    self.client: ActiveListenerClient = client
+    self.logger: BoundLogger = logger
+    self.audio_buffer: RecordingAudioBuffer = audio_buffer
+    self._connection_last_id: int | None = None
+    self._recording_id: str | None = None
+    self._recording_reducer_state: RecordingReducerState | None = None
+    self._recording_started_monotonic_s: float | None = None
+    self._correction_load_task: CorrectionLoadTask | None = None
+    self._last_transcription_runs: list[TextRun] = []
+    self._loaded_corrections: CorrectionMap = {}
+    self._corrections_harvested: bool = False
+    self._shaped_completed_runs: list[TextRun] = []
+    self._shaped_completed_source: list[TextRun] = []
 
   @property
   def is_recording(self) -> bool:
@@ -119,18 +107,9 @@ class RecordingSession:
     *,
     correction_load_task: CorrectionLoadTask | None = None,
   ) -> None:
-    if self._recording_grab_stack is not None or self._release_recording_grab is not None:
-      raise ActiveListenerRuntimeError("recording grab entered twice")
-
-    grab_stack = AsyncExitStack()
-    try:
-      release_recording_grab = await grab_stack.enter_async_context(self.keyboard.recording_grab())
-    except Exception:
-      await grab_stack.aclose()
-      raise
-
-    self._recording_grab_stack = grab_stack
-    self._release_recording_grab = release_recording_grab
+    if self.is_recording:
+      self.logger.error("recording transcript started twice")
+      raise ActiveListenerRuntimeError("recording transcript started twice")
     self._recording_id = recording_id
     self._recording_started_monotonic_s = time.monotonic()
     self._correction_load_task = correction_load_task
@@ -143,7 +122,7 @@ class RecordingSession:
     self._shaped_completed_source = []
     self._connection_last_id = None
     self.logger.debug(
-      "recording session started",
+      "recording transcript started",
       recording_id=recording_id,
     )
 
@@ -161,7 +140,7 @@ class RecordingSession:
     )
     await self._exit_recording(close_open_command_span=True, cancel_correction_load=False)
     self.logger.debug(
-      "recording session finished",
+      "recording transcript finished",
       last_id=reducer_state.last_id,
       committed_word_count=len(reducer_state.completed_words),
       closed_command_span_count=len(reducer_state.closed_command_spans),
@@ -174,54 +153,22 @@ class RecordingSession:
       correction_load_task=correction_load_task,
     )
 
-  async def handle_capslock_down(self, received_monotonic_s: float) -> None:
-    reducer_state = self._require_recording_reducer_state()
-    if self._pending_caps_gesture is not None or reducer_state.open_command_start_s is not None:
-      return
+  def open_command_span(self, start_s: float) -> None:
+    """Mark a recording-relative command interval's start.
 
-    start_s = self.recording_elapsed_s(received_monotonic_s)
-    threshold_task = asyncio.create_task(self._commit_pending_caps_hold(start_s))
-    self._pending_caps_gesture = PendingCapsGesture(
-      start_s=start_s,
-      threshold_task=threshold_task,
-    )
-    self.logger.debug("caps gesture pending", start_s=start_s, threshold_s=HOLD_THRESHOLD_S)
+    :param start_s: Start time on the captured recording timeline.
+    """
+    self._require_recording_reducer_state().open_command_start_s = start_s
 
-  async def handle_capslock_up(self, received_monotonic_s: float) -> bool:
-    reducer_state = self._require_recording_reducer_state()
-    pending_gesture = self._pending_caps_gesture
-    if pending_gesture is not None:
-      end_s = self.recording_elapsed_s(received_monotonic_s)
-      hold_duration_s = end_s - pending_gesture.start_s
-      await self._clear_pending_caps_gesture()
-      if hold_duration_s >= HOLD_THRESHOLD_S:
-        reducer_state.closed_command_spans.append(
-          TimeSpan(start_s=pending_gesture.start_s, end_s=end_s)
-        )
-        self.logger.debug(
-          "caps hold resolved on release",
-          start_s=pending_gesture.start_s,
-          end_s=end_s,
-          hold_duration_s=hold_duration_s,
-        )
-        return False
+  def close_command_span(self, end_s: float) -> None:
+    """Close the current command interval, if any.
 
-      self.logger.debug("caps finish tap resolved", start_s=pending_gesture.start_s)
-      return True
-
-    open_command_start_s = reducer_state.open_command_start_s
-    if open_command_start_s is None:
-      return False
-
-    end_s = self.recording_elapsed_s(received_monotonic_s)
-    reducer_state.closed_command_spans.append(TimeSpan(start_s=open_command_start_s, end_s=end_s))
-    reducer_state.open_command_start_s = None
-    self.logger.debug(
-      "caps hold closed",
-      start_s=open_command_start_s,
-      end_s=end_s,
-    )
-    return False
+    :param end_s: End time on the captured recording timeline.
+    """
+    state = self._require_recording_reducer_state()
+    if state.open_command_start_s is not None:
+      state.closed_command_spans.append(TimeSpan(state.open_command_start_s, end_s))
+      state.open_command_start_s = None
 
   def ingest_live_transcription_message(
     self,
@@ -231,7 +178,7 @@ class RecordingSession:
     if message.recording_id != recording_id:
       self.logger.warning(
         "transcription message ignored for inactive recording",
-        stream=message.stream,
+        session_id=message.stream,
         recording_id=message.recording_id,
         active_recording_id=recording_id,
       )
@@ -247,7 +194,7 @@ class RecordingSession:
   ) -> TranscriptionUpdate | None:
     self.logger.debug(
       "reducing transcription window",
-      stream=message.stream,
+      session_id=message.stream,
       prior_last_id=state.last_id,
       segment_count=len(message.segments),
       flush_complete=message.flush_complete is True,
@@ -256,13 +203,13 @@ class RecordingSession:
     if reduction.missing_last_id:
       self.logger.warning(
         "transcription reducer sentinel missing",
-        stream=message.stream,
+        session_id=message.stream,
         last_id=state.last_id,
       )
     apply_segment_reduction(state, reduction)
     word_timings = [
-      _format_word_timing(index, word)
-      for index, word in enumerate([*state.completed_words, *state.incomplete_words])
+      f"{word.text}   {word.start_s:.3f}-{word.end_s:.3f} ({word.end_s - word.start_s:.3f})"
+      for word in [*state.completed_words, *state.incomplete_words]
     ]
     if word_timings:
       self.logger.info(
@@ -271,12 +218,7 @@ class RecordingSession:
       )
     state.last_id = reduction.last_id
     self._connection_last_id = reduction.last_id
-    # Shaping runs live (not just at finalize) so the overlay preview equals the LLM input
-    # for committed text. Only completed runs are shaped: the incomplete tail is unstable
-    # as the transcriber revises it, so shaping it would flicker the preview when spoken
-    # symbols like "dot"/"slash" fuse prematurely. The LLM only ever consumes completed runs,
-    # so the tail never needs shaping. Reshape only when the committed runs actually change;
-    # most windows just churn the tail and reuse the cache.
+    # Shape stable completed runs only; revisions keep the raw incomplete tail.
     self._harvest_corrections()
     completed_source = build_completed_text_runs(state)
     if completed_source != self._shaped_completed_source:
@@ -293,22 +235,29 @@ class RecordingSession:
       self._last_transcription_runs = []
     else:
       self._last_transcription_runs = list(transcription_update.runs)
-    incomplete_segment = reduction.incomplete_segment
+    self._log_reduction(state, message, reduction, transcription_update is not None)
+    return transcription_update
+
+  def _log_reduction(
+    self,
+    state: RecordingReducerState,
+    message: TranscriptionMessage,
+    reduction: SegmentReduction,
+    overlay_update: bool,
+  ) -> None:
+    incomplete = reduction.incomplete_segment
     self.logger.debug(
       "transcription window reduced",
-      stream=message.stream,
+      session_id=message.stream,
       new_last_id=reduction.last_id,
       new_segment_ids=[segment.id for segment in reduction.segments],
-      incomplete_segment_id=None if incomplete_segment is None else incomplete_segment.id,
-      incomplete_segment_text=(
-        None if incomplete_segment is None else incomplete_segment.text.strip()
-      ),
+      incomplete_segment_id=incomplete.id if incomplete is not None else None,
+      incomplete_segment_text=incomplete.text.strip() if incomplete is not None else None,
       committed_segment_count=len(reduction.segments),
       committed_word_count=len(state.completed_words),
       incomplete_word_count=len(state.incomplete_words),
-      overlay_update=transcription_update is not None,
+      overlay_update=overlay_update,
     )
-    return transcription_update
 
   def _harvest_corrections(self) -> None:
     # Non-blocking live path: adopt stored corrections as soon as the load task settles,
@@ -332,18 +281,12 @@ class RecordingSession:
     close_open_command_span: bool,
     cancel_correction_load: bool = True,
   ) -> None:
-    release_recording_grab = self._release_recording_grab
-    grab_stack = self._recording_grab_stack
     reducer_state = self._recording_reducer_state
-
-    if (release_recording_grab is None) != (grab_stack is None):
-      raise ActiveListenerRuntimeError("recording grab ownership is inconsistent")
 
     recording_end_s: float | None = None
     if close_open_command_span and reducer_state is not None:
       recording_end_s = self.recording_elapsed_s(time.monotonic())
 
-    await self._clear_pending_caps_gesture()
     if reducer_state is not None:
       if close_open_command_span and reducer_state.open_command_start_s is not None:
         assert recording_end_s is not None
@@ -353,8 +296,6 @@ class RecordingSession:
       reducer_state.open_command_start_s = None
     self.audio_buffer.discard()
 
-    self._release_recording_grab = None
-    self._recording_grab_stack = None
     self._recording_id = None
     self._recording_reducer_state = None
     self._recording_started_monotonic_s = None
@@ -370,13 +311,6 @@ class RecordingSession:
       if not correction_load_task.done():
         _ = correction_load_task.cancel()
       _ = await asyncio.gather(correction_load_task, return_exceptions=True)
-
-    try:
-      if release_recording_grab is not None:
-        _ = release_recording_grab()
-    finally:
-      if grab_stack is not None:
-        await grab_stack.aclose()
 
     await self.client.stop_streaming()
 
@@ -401,36 +335,3 @@ class RecordingSession:
       int(round((now_monotonic_s - recording_started_monotonic_s) * SAMPLE_RATE_HZ)),
     )
     return elapsed_samples / SAMPLE_RATE_HZ
-
-  async def _commit_pending_caps_hold(self, start_s: float) -> None:
-    try:
-      await asyncio.sleep(HOLD_THRESHOLD_S)
-    except asyncio.CancelledError:
-      return
-
-    pending_gesture = self._pending_caps_gesture
-    reducer_state = self._recording_reducer_state
-    if pending_gesture is None or reducer_state is None or pending_gesture.start_s != start_s:
-      return
-
-    reducer_state.open_command_start_s = start_s
-    self._pending_caps_gesture = None
-    self.logger.debug("caps hold committed", start_s=start_s)
-
-  async def _clear_pending_caps_gesture(self) -> None:
-    pending_gesture = self._pending_caps_gesture
-    self._pending_caps_gesture = None
-    if pending_gesture is None or pending_gesture.threshold_task is None:
-      return
-
-    threshold_task = pending_gesture.threshold_task
-    if threshold_task.done():
-      return
-
-    _ = threshold_task.cancel()
-    _ = await asyncio.gather(threshold_task, return_exceptions=True)
-
-
-def _format_word_timing(_index: int, word: TimedWord) -> str:
-  duration_s = word.end_s - word.start_s
-  return f"{word.text}   {word.start_s:.3f}-{word.end_s:.3f} ({duration_s:.3f})"

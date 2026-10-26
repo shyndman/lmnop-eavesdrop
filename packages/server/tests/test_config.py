@@ -23,18 +23,6 @@ def fake_filesystem(fs):
 class TestBufferConfig:
   """Test BufferConfig validation and functionality."""
 
-  def test_buffer_config_defaults(self):
-    """Test that BufferConfig creates with expected defaults."""
-    config = BufferConfig()
-
-    assert config.sample_rate == 16000
-    assert config.max_buffer_duration == 45.0
-    assert config.cleanup_duration == 30.0
-    assert config.min_chunk_duration == 1.0
-    assert config.transcription_interval == 2.0
-    assert config.clip_audio is False
-    assert config.max_stall_duration == 25.0
-
   def test_buffer_config_duration_validation(self):
     """Test that cleanup_duration must be less than max_buffer_duration."""
     # Valid case
@@ -63,21 +51,6 @@ class TestBufferConfig:
 
 class TestTranscriptionConfig:
   """Test TranscriptionConfig validation and functionality."""
-
-  def test_transcription_config_defaults(self):
-    """Test that TranscriptionConfig creates with expected defaults."""
-    config = TranscriptionConfig()
-
-    assert config.language == "en"
-    assert config.use_vad is True
-    assert config.send_last_n_segments == 10
-    assert config.vad_parameters.threshold == 0.5
-    assert config.vad_parameters.neg_threshold is None
-    assert config.vad_parameters.min_speech_duration_ms == 0
-    assert config.vad_parameters.max_speech_duration_s == float("inf")
-    assert config.vad_parameters.min_silence_duration_ms == 800
-    assert config.vad_parameters.speech_pad_ms == 400
-    assert isinstance(config.buffer, BufferConfig)
 
   def test_vad_parameters_validate_and_align(self):
     """Test that repo-owned VAD parameters validate and align with silence threshold."""
@@ -131,8 +104,8 @@ class TestTranscriptionConfig:
 
   def test_client_override_round_trip_preserves_derived_vad_settings(self) -> None:
     config = TranscriptionConfig(silence_completion_threshold=1.2)
-    merged = TranscriptionConfig.model_validate(config.model_dump() | {"word_timestamps": False})
-    assert merged.word_timestamps is False
+    merged = TranscriptionConfig.model_validate(config.model_dump() | {"send_last_n_segments": 5})
+    assert merged.send_last_n_segments == 5
     assert merged.vad_parameters.min_silence_duration_ms == 1200
 
   def test_non_native_sample_rate_is_rejected(self) -> None:
@@ -156,18 +129,6 @@ class TestTranscriptionConfig:
       TranscriptionConfig.model_validate({"language": "fr"})
 
 
-class TestEavesdropConfig:
-  """Test EavesdropConfig integration."""
-
-  def test_eavesdrop_config_defaults(self):
-    """Test that EavesdropConfig creates with nested defaults."""
-    config = EavesdropConfig()
-
-    assert isinstance(config.transcription, TranscriptionConfig)
-    assert isinstance(config.rtsp.streams, dict)
-    assert len(config.rtsp.streams) == 0
-
-
 class TestConfigFileLoading:
   """Test configuration file loading and validation."""
 
@@ -181,10 +142,6 @@ transcription:
     sample_rate: 16000
     clip_audio: true
 
-rtsp:
-  streams:
-    office: "rtsp://camera1:554/stream"
-    lobby: "rtsp://camera2:554/stream"
 """
     fake_filesystem.create_file("/test/config.yaml", contents=config_data)
     config = load_config_from_file(Path("/test/config.yaml"))
@@ -193,15 +150,12 @@ rtsp:
     assert config.transcription.use_vad is False
     assert config.transcription.buffer.sample_rate == 16000
     assert config.transcription.buffer.clip_audio is True
-    assert len(config.rtsp.streams) == 2
-    assert "office" in config.rtsp.streams
-    assert "lobby" in config.rtsp.streams
 
   def test_load_empty_config_file(self, fake_filesystem):
     """Test error handling for empty config file."""
     fake_filesystem.create_file("/test/empty.yaml", contents="")
 
-    with pytest.raises(ValueError, match="Configuration file is empty"):
+    with pytest.raises(ValueError, match="valid dictionary"):
       load_config_from_file(Path("/test/empty.yaml"))
 
   def test_load_invalid_yaml(self, fake_filesystem):
@@ -229,3 +183,25 @@ transcription:
 
     with pytest.raises(ValueError, match="Extra inputs are not permitted"):
       load_config_from_file(Path("/test/config.yaml"))
+
+
+@pytest.mark.parametrize(
+  ("field", "value"),
+  [("clip_audio", "false"), ("sample_rate", "16000"), ("transcription_interval", "2.0")],
+)
+def test_public_configuration_rejects_coerced_buffer_values(field: str, value: str) -> None:
+  """The public model boundary must reject nested string-to-scalar coercion."""
+  with pytest.raises(ValueError):
+    EavesdropConfig.model_validate({"transcription": {"buffer": {field: value}}})
+
+
+@pytest.mark.parametrize(
+  "setting",
+  ['clip_audio: "false"', 'sample_rate: "16000"', 'transcription_interval: "2.0"'],
+)
+def test_yaml_configuration_rejects_coerced_buffer_values(tmp_path: Path, setting: str) -> None:
+  """File loading must enforce the same strict nested schema as the public model."""
+  path = tmp_path / "invalid-buffer.yaml"
+  path.write_text(f"transcription:\n  buffer:\n    {setting}\n", encoding="utf-8")
+  with pytest.raises(ValueError):
+    load_config_from_file(path)

@@ -10,7 +10,7 @@ import json
 from typing import TypedDict, cast
 
 import pytest
-from pydantic import ValidationError
+from pydantic import JsonValue, ValidationError
 
 from eavesdrop.wire import deserialize_message, serialize_message
 from eavesdrop.wire.codec import Message
@@ -19,17 +19,14 @@ from eavesdrop.wire.messages import (
   ErrorMessage,
   FlushControlMessage,
   HealthCheckRequest,
-  LanguageDetectionMessage,
   RecordingStartedMessage,
   ServerReadyMessage,
-  StreamStatusMessage,
   TranscriptionMessage,
   TranscriptionSetupMessage,
   UtteranceCancelledMessage,
 )
 from eavesdrop.wire.transcription import (
   Segment,
-  TranscriptionSourceMode,
   UserTranscriptionOptions,
   Word,
   compute_segment_chain_id,
@@ -48,7 +45,7 @@ class _SegmentPayload(TypedDict):
 
 
 class _TranscriptionWirePayload(TypedDict):
-  segments: list[dict[str, object]]
+  segments: list[_SegmentPayload]
 
 
 def _build_contract_segment() -> Segment:
@@ -74,27 +71,15 @@ def _build_contract_segment() -> Segment:
       segments=[_build_contract_segment()],
       language="en",
     ),
-    StreamStatusMessage(
-      timestamp=1_700_000_000.2,
-      stream="stream-a",
-      status="online",
-      message="ready",
-    ),
     ErrorMessage(
       timestamp=1_700_000_000.3,
       stream="stream-a",
       message="stream failed",
     ),
-    LanguageDetectionMessage(
-      timestamp=1_700_000_000.4,
-      stream="stream-a",
-      language="en",
-      language_prob=0.87,
-    ),
     ServerReadyMessage(
       timestamp=1_700_000_000.5,
       stream="stream-a",
-      backend="parakeet",
+      backend="orukeet",
     ),
     DisconnectMessage(
       timestamp=1_700_000_000.6,
@@ -123,9 +108,7 @@ def _build_contract_segment() -> Segment:
       timestamp=1_700_000_000.8,
       stream="stream-a",
       options=UserTranscriptionOptions(
-        source_mode=TranscriptionSourceMode.FILE,
         send_last_n_segments=5,
-        word_timestamps=True,
       ),
     ),
   ],
@@ -177,9 +160,7 @@ def test_decode_preserves_control_message_metadata_fields() -> None:
       timestamp=1_700_000_002.0,
       stream="stream-2",
       options=UserTranscriptionOptions(
-        source_mode=TranscriptionSourceMode.LIVE,
         send_last_n_segments=2,
-        word_timestamps=True,
         language="en",
       ),
     )
@@ -191,8 +172,6 @@ def test_decode_preserves_control_message_metadata_fields() -> None:
   assert decoded.timestamp == 1_700_000_002.0
   assert decoded.stream == "stream-2"
   assert decoded.options.send_last_n_segments == 2
-  assert decoded.options.source_mode == TranscriptionSourceMode.LIVE
-  assert decoded.options.word_timestamps is True
   assert decoded.options.language == "en"
 
 
@@ -305,29 +284,41 @@ def test_flush_satisfying_transcription_serializes_flush_complete_true() -> None
   _ = deserialize_message(encoded)
 
 
-def test_transcription_segment_words_none_round_trips_when_omitted() -> None:
+def test_empty_transcription_segment_retains_explicit_empty_words() -> None:
   encoded = serialize_message(
     TranscriptionMessage(
-      timestamp=1_700_000_007.5,
-      stream="stream-no-words",
-      segments=[
-        Segment(
-          id=5150,
-          start=1.0,
-          end=1.0,
-          text="",
-          completed=False,
-        )
-      ],
+      stream="empty",
+      segments=[Segment(id=0, start=0.0, end=0.0, text="", words=[])],
       flush_complete=True,
     )
   )
-
-  assert '"words"' not in encoded
   decoded = deserialize_message(encoded)
-
   assert decoded.type == "transcription"
-  assert decoded.segments[0].words is None
+  assert decoded.segments[0].words == []
+  assert '"words":[]' in encoded
+
+
+class InvalidWordsPayload(TypedDict, total=False):
+  """Describe the absent-or-null words field used by rejection cases."""
+
+  words: None
+
+
+@pytest.mark.parametrize("words", [{}, {"words": None}])
+def test_transcription_rejects_missing_or_null_words(words: InvalidWordsPayload) -> None:
+  """Reject transcription segments without a timed word list.
+
+  :param words: Invalid words field, either absent or explicitly null.
+  """
+  payload = json.dumps(
+    {
+      "type": "transcription",
+      "stream": "invalid",
+      "segments": [{"id": 0, "start": 0.0, "end": 1.0, "text": "speech", **words}],
+    }
+  )
+  with pytest.raises(ValidationError, match="words"):
+    deserialize_message(payload)
 
 
 def test_deserialize_rejects_unknown_discriminator_type() -> None:
@@ -348,46 +339,16 @@ def test_deserialize_rejects_non_string_discriminator_type() -> None:
   assert "type" in str(exc_info.value)
 
 
-def test_setup_options_default_source_mode_to_live_when_field_omitted() -> None:
-  payload = (
-    '{"type":"setup","timestamp":1700000005.0,"stream":"stream-3",'
-    '"options":{"send_last_n_segments":1}}'
-  )
-
-  decoded = deserialize_message(payload)
-
-  assert decoded.type == "setup"
-  assert decoded.options.source_mode == TranscriptionSourceMode.LIVE
-
-
-def test_setup_defaults_enable_native_word_timestamps() -> None:
-  """An omitted options payload uses English and native word timings."""
-  decoded = deserialize_message('{"type":"setup","stream":"default","options":{}}')
-
-  assert decoded.type == "setup"
-  assert decoded.options.word_timestamps is True
-  assert decoded.options.language is None
-
-
 @pytest.mark.parametrize("language", [None, "en"])
-@pytest.mark.parametrize("word_timestamps", [True, False])
-def test_setup_accepts_english_compatibility_hint_and_word_timestamp_toggle(
-  language: str | None, word_timestamps: bool
-) -> None:
-  """Supported options survive JSON validation without changing their meaning."""
-  payload = json.dumps(
-    {
-      "type": "setup",
-      "stream": "english",
-      "options": {"language": language, "word_timestamps": word_timestamps},
-    }
-  )
+def test_setup_accepts_english_compatibility_hint(language: str | None) -> None:
+  """Retain the supported English-only compatibility hint.
 
+  :param language: An absent hint or the supported English language code.
+  """
+  payload = json.dumps({"type": "setup", "stream": "english", "options": {"language": language}})
   decoded = deserialize_message(payload)
-
   assert decoded.type == "setup"
   assert decoded.options.language == language
-  assert decoded.options.word_timestamps is word_timestamps
 
 
 @pytest.mark.parametrize(
@@ -402,7 +363,7 @@ def test_setup_accepts_english_compatibility_hint_and_word_timestamp_toggle(
     ("unknown_option", True),
   ],
 )
-def test_setup_rejects_removed_or_unknown_options(field: str, value: object) -> None:
+def test_setup_rejects_removed_or_unknown_options(field: str, value: str | list[str] | int) -> None:
   """Obsolete decoder knobs fail visibly instead of being silently discarded."""
   payload = json.dumps({"type": "setup", "stream": "legacy", "options": {field: value}})
 
@@ -411,24 +372,13 @@ def test_setup_rejects_removed_or_unknown_options(field: str, value: object) -> 
 
 
 @pytest.mark.parametrize("language", ["ja", "fr", "EN", "auto", "", 1, True])
-def test_setup_rejects_non_english_language(language: object) -> None:
+def test_setup_rejects_non_english_language(language: str | int) -> None:
   """The compatibility language field cannot request detection or another language."""
   payload = json.dumps(
     {"type": "setup", "stream": "invalid-language", "options": {"language": language}}
   )
 
   with pytest.raises(ValidationError, match="language"):
-    _ = deserialize_message(payload)
-
-
-@pytest.mark.parametrize("word_timestamps", [None, "true", "false", 1, 0])
-def test_setup_requires_boolean_word_timestamp_option(word_timestamps: object) -> None:
-  """Null and coercible values are invalid for the native-word output toggle."""
-  payload = json.dumps(
-    {"type": "setup", "stream": "invalid-words", "options": {"word_timestamps": word_timestamps}}
-  )
-
-  with pytest.raises(ValidationError, match="word_timestamps"):
     _ = deserialize_message(payload)
 
 
@@ -443,7 +393,7 @@ def test_segment_serializes_native_timestamps_without_decoder_metadata() -> None
     completed=True,
   )
 
-  assert cast(dict[str, object], json.loads(segment.model_dump_json())) == {
+  assert cast(JsonValue, json.loads(segment.model_dump_json())) == {
     "id": 42,
     "start": 1.25,
     "end": 2.0,
@@ -456,8 +406,20 @@ def test_segment_serializes_native_timestamps_without_decoder_metadata() -> None
 
 def test_segment_completion_preserves_chain_ids_and_recording_timestamps() -> None:
   """Completion keeps the existing chained ID algorithm and recording timeline."""
-  first = Segment(id=0, start=10.0, end=10.5, text="first")
-  second = Segment(id=0, start=10.5, end=11.0, text="second")
+  first = Segment(
+    id=0,
+    start=10.0,
+    end=10.5,
+    text="first",
+    words=[Word(start=10.0, end=10.5, word="first")],
+  )
+  second = Segment(
+    id=0,
+    start=10.5,
+    end=11.0,
+    text="second",
+    words=[Word(start=10.5, end=11.0, word="second")],
+  )
 
   first.mark_completed(None)
   second.mark_completed(first)
@@ -470,3 +432,11 @@ def test_segment_completion_preserves_chain_ids_and_recording_timestamps() -> No
   assert first.absolute_end_time == 10.5
   assert second.absolute_start_time == 10.5
   assert second.absolute_end_time == 11.0
+
+
+def test_removed_language_detection_discriminator_is_rejected() -> None:
+  """English-only peers cannot emit or accept a language-detection exchange."""
+  with pytest.raises(ValidationError):
+    deserialize_message(
+      '{"type":"language_detection","stream":"english","language":"en","language_prob":1.0}'
+    )

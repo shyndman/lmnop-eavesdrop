@@ -23,7 +23,6 @@
 - [x] 2.3 Refactor the live receive path so there is exactly one post-setup `websocket.recv()` owner in live mode. The implementation must not introduce a second socket reader because `websockets` rejects concurrent `recv()` calls.
 - [x] 2.4 In that single live receive path, branch by frame type:
   - binary audio frame -> continue existing audio decoding path,
-  - `b"END_OF_AUDIO"` -> continue existing end-of-stream behavior,
   - text frame -> deserialize with `deserialize_message(...)` and handle `FlushControlMessage`.
 - [x] 2.5 On the first accepted flush:
   - capture `boundary_sample` using the new buffer helper,
@@ -36,8 +35,6 @@
   - leave the original pending flush unchanged.
 - [x] 2.7 Add explicit rejection for `control_flush` in unsupported states:
   - before live transcriber setup completes,
-  - during file-mode transcription,
-  - from RTSP subscriber sessions.
 - [x] 2.8 While a flush is accepted and in flight, suppress intermediate ordinary `TranscriptionMessage` emissions for that session until the single flush-satisfying response is sent.
 - [x] 2.9 Add or extend live-session tests in `packages/server/tests/test_streaming_lifecycle_contracts.py` to prove:
   - a second flush is rejected,
@@ -84,9 +81,9 @@
 
 ## 5. Server response shaping and segment invariants
 
-- [x] 5.1 Update the transcription-output path in `packages/server/src/eavesdrop/server/streaming/processor.py` so `force_complete=true` completes the current tentative tail segment even if silence would not have completed it.
-- [x] 5.2 After force-completing that segment, append a fresh incomplete tail segment so the emitted response still ends with exactly one incomplete tail.
-- [x] 5.3 Preserve ordinary behavior when `force_complete=false`; the change must not force completion in that case.
+- [x] 5.1 Update the transcription-output path so `force_complete=true` completes all provisional segments covered by the flush boundary even if silence would not have completed them.
+- [x] 5.2 After force-completing those segments, append a fresh incomplete tail segment.
+- [x] 5.3 When `force_complete=false`, leave every segment provisional with VAD disabled and retain silence-based completion with VAD enabled.
 - [x] 5.4 Extend `packages/server/tests/test_transcription_output_contracts.py` with flush-specific assertions covering:
   - completed prior tail when `force_complete=true`,
   - preserved incomplete tail when `force_complete=false`,

@@ -16,10 +16,17 @@ logger = get_logger("orukeet/timestamps")
 class Hypothesis(Protocol):
   """Native token or word pieces with waveform-local onset and duration seconds."""
 
-  text: str
-  tokens: list[str]
-  timestamps: list[float]
-  durations: list[float]
+  @property
+  def text(self) -> str: ...
+
+  @property
+  def tokens(self) -> list[str]: ...
+
+  @property
+  def timestamps(self) -> list[float]: ...
+
+  @property
+  def durations(self) -> list[float]: ...
 
 
 def native_segments(hypothesis: Hypothesis, duration: float) -> list[Segment]:

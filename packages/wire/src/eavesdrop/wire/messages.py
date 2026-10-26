@@ -1,33 +1,16 @@
 """
 Pydantic message protocol models for WebSocket communication.
 
-Defines the message structure for communication between the server and WebSocket clients,
-including both transcriber clients and RTSP subscriber clients.
+Defines the message structure for communication between the server and live WebSocket clients.
 """
 
 import time
-from enum import StrEnum
 from typing import Literal
 
 from pydantic import Field
 from pydantic.dataclasses import dataclass
 
-from .transcription import Segment, UserTranscriptionOptions
-
-
-class ClientType(StrEnum):
-  """WebSocket client types."""
-
-  TRANSCRIBER = "transcriber"
-  RTSP_SUBSCRIBER = "rtsp_subscriber"
-  HEALTH_CHECK = "health_check"
-
-
-class WebSocketHeaders(StrEnum):
-  """WebSocket header names for client communication."""
-
-  CLIENT_TYPE = "X-Client-Type"
-  STREAM_NAMES = "X-Stream-Names"
+from eavesdrop.wire.transcription import Segment, UserTranscriptionOptions
 
 
 @dataclass
@@ -39,31 +22,19 @@ class BaseMessage:
 
 @dataclass(kw_only=True)
 class TranscriptionMessage(BaseMessage):
-  """Message containing transcription results sent to subscribers."""
+  """Message containing live transcription results."""
 
   type: Literal["transcription"] = "transcription"
-  stream: str = Field(description="Stream name for RTSP subscribers")
+  stream: str = Field(description="Live stream session identifier")
   segments: list[Segment] = Field(description="List of transcription segments")
-  language: str | None = Field(default=None, description="Detected or specified language code")
+  language: str | None = Field(default=None, description="Configured transcription language code")
   recording_id: str | None = Field(
     default=None,
-    description="Live recording epoch identifier, omitted for file and RTSP paths",
+    description="Live recording identifier",
   )
   flush_complete: bool | None = Field(
     default=None,
     description="True only for the response that satisfies an accepted flush request",
-  )
-
-
-@dataclass(kw_only=True)
-class StreamStatusMessage(BaseMessage):
-  """Message indicating status changes for RTSP streams."""
-
-  type: Literal["stream_status"] = "stream_status"
-  stream: str = Field(description="Name of the stream this status update refers to")
-  status: Literal["online", "offline", "error"] = Field(description="Current status of the stream")
-  message: str | None = Field(
-    default=None, description="Optional descriptive message about the status change"
   )
 
 
@@ -77,16 +48,6 @@ class ErrorMessage(BaseMessage):
     description="Stream name if error is stream-specific, None for connection-level errors",
   )
   message: str = Field(description="Error message description")
-
-
-@dataclass(kw_only=True)
-class LanguageDetectionMessage(BaseMessage):
-  """Message containing language detection results."""
-
-  type: Literal["language_detection"] = "language_detection"
-  stream: str = Field(description="Stream name or client identifier")
-  language: str = Field(description="Detected language code")
-  language_prob: float = Field(description="Confidence score for the detection", ge=0.0, le=1.0)
 
 
 @dataclass(kw_only=True)
@@ -120,14 +81,12 @@ class TranscriptionSetupMessage(BaseMessage):
 
   type: Literal["setup"] = "setup"
   stream: str = Field(description="Stream name or client identifier")
-  options: UserTranscriptionOptions = Field(
-    description="User-specified transcription options, including source_mode routing intent"
-  )
+  options: UserTranscriptionOptions = Field(description="User-specified live transcription options")
 
 
 @dataclass(kw_only=True)
 class RecordingStartedMessage(BaseMessage):
-  """Message declaring the start of a new live recording epoch."""
+  """Message declaring the start of a new live recording."""
 
   type: Literal["control_recording_started"] = "control_recording_started"
   stream: str = Field(description="Stream name or client identifier")
@@ -143,7 +102,7 @@ class FlushControlMessage(BaseMessage):
   stream: str = Field(description="Stream name or client identifier")
   recording_id: str | None = Field(
     default=None,
-    description="Live recording epoch identifier, omitted outside active-listener live mode",
+    description="Live recording identifier, omitted outside active-listener live mode",
   )
   force_complete: bool = Field(
     default=True,
@@ -159,5 +118,5 @@ class UtteranceCancelledMessage(BaseMessage):
   stream: str = Field(description="Stream name or client identifier")
   recording_id: str | None = Field(
     default=None,
-    description="Live recording epoch identifier, omitted outside active-listener live mode",
+    description="Live recording identifier, omitted outside active-listener live mode",
   )

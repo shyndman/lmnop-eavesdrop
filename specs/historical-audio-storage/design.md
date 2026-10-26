@@ -79,7 +79,6 @@ def transcriber(
     port: int = 9090,
     audio_device: str = "default",
     on_capture: Callable[[bytes], None] | None = None,
-    word_timestamps: bool | None = None,
     initial_prompt: str | None = None,
     hotwords: list[str] | None = None,
     send_last_n_segments: int | None = None,
@@ -120,7 +119,7 @@ def build_capture_callback(
 ```
 
 Observed behavior:
-- `build_client(...)` currently enables `word_timestamps=True` and passes `on_capture` through to `EavesdropClient.transcriber(...)`.
+- `build_client(...)` passes `on_capture` through to `EavesdropClient.transcriber(...)`; native word timings are always included in transcription output.
 - `build_capture_callback(...)` currently only calls `spectrum_analyzer.ingest(chunk)` inside a protective `try/except`.
 
 ### 2. Finalization and persistence APIs

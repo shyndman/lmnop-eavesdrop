@@ -93,7 +93,7 @@ def main() -> None:
     logger.error("Smoke input must be a 16 kHz mono WAV", path=str(audio_path))
     raise ValueError("Smoke input must be a 16 kHz mono WAV")
   configured = load_config_from_file(cast(Path, args.config)).transcription
-  config = configured.model_copy(update={"word_timestamps": True, "use_vad": True})
+  config = configured.model_copy(update={"use_vad": True})
   started = time.perf_counter()
   transcriber = OrukeetTranscriber.load(config)
   load_seconds = time.perf_counter() - started

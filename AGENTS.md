@@ -8,7 +8,7 @@ Eavesdrop is a real-time audio transcription system using Orukeet through sherpa
 
 | Package | Description |
 |---------|-------------|
-| `server` | Core transcription server (WebSocket, RTSP, Orukeet integration) |
+| `server` | Live WebSocket transcription server and Orukeet integration |
 | `client` | Python client library for streaming transcription |
 | `wire` | Shared Pydantic message types and protocol definitions |
 | `common` | Shared Python utilities and data structures |
@@ -62,11 +62,12 @@ Do not rely on the package-local `install:extension` script for repository-level
 
 ## Transcription Algorithm
 
-Silence-based segment completion:
-- `silence_completion_threshold` (default 0.8s) controls when segments complete
-- VAD's `min_silence_duration_ms` auto-derived from threshold
-- All segments except last marked complete; last completes on silence detection
-- Always maintains incomplete segment at tail (client state machine invariant)
+- Every transcription carries native segment and individual word timestamps on the recording timeline.
+- With VAD enabled, preserve silence-based completion, the trailing incomplete segment, and the `silence_completion_threshold` (default 0.8s); VAD's `min_silence_duration_ms` is derived from that threshold.
+- With VAD disabled, every pending segment remains incomplete until a flush with `force_complete=True`; ordinary updates, silence, duration, and segment position do not complete it.
+- A non-force-completing flush returns an update and acknowledgement without completing pending segments. Empty flushes must also acknowledge promptly.
+- Recording boundaries reset transcript state and timestamp zero only after the preceding recording's accepted work and requested final transcript/flush response have been delivered. Queue accepted next-recording audio until then.
+- Cancellation discards the active utterance, clears its local transcript history, and suppresses its outstanding results; it is separate from completion.
 
 ## Dependency Management
 

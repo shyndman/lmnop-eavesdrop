@@ -1,18 +1,29 @@
 # Client
 
-Access to live and finite-recording transcription.
+Access to live transcription.
 Shared result terms are defined in [Wire](../wire/GLOSSARY.md).
 
 ## Language
 
+### Transcription access
+
+**Live transcription**:
+Transcription of audio supplied as it is captured.
+
+**Transcription session**:
+A live exchange with the server over one WebSocket connection that can carry
+multiple recordings.
+
+**Audio frame**:
+A block of captured audio samples sent to the server during live transcription.
+
 **Transcriber**:
-A client role that supplies audio for transcription.
+A client that supplies live audio for transcription.
 
-**Subscriber**:
-A client role that receives transcription from named server-managed streams.
+**Audio capture**:
+The acquisition of live audio from the selected microphone or audio device.
 
-**File transcription**:
-Transcription of a finite audio recording into a final result.
+### Transcript presentation
 
 **Segment window**:
 The trailing set of transcript segments requested for result updates.

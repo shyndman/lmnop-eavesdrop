@@ -28,6 +28,8 @@ class LiveSessionFlushState:
     self._current_recording_id: str | None = None
     self._wakeup: asyncio.Event = asyncio.Event()
     self._interrupt: threading.Event = threading.Event()
+    self._completed: asyncio.Event = asyncio.Event()
+    self._completed.set()
 
   def current_generation(self) -> int:
     """Return the current active-utterance generation."""
@@ -35,12 +37,12 @@ class LiveSessionFlushState:
       return self._active_utterance_generation
 
   def current_recording_id(self) -> str | None:
-    """Return the active live recording epoch identifier."""
+    """Return the active recording identifier."""
     with self._lock:
       return self._current_recording_id
 
   def start_recording(self, recording_id: str) -> int:
-    """Reset live-session control state for a newly accepted recording epoch."""
+    """Reset control state for a newly accepted recording identifier."""
     with self._lock:
       self._active_utterance_generation += 1
       self._current_recording_id = recording_id
@@ -87,6 +89,7 @@ class LiveSessionFlushState:
         force_complete=force_complete,
       )
       self._pending_flush = pending_flush
+      self._completed.clear()
       self._wakeup.set()
       self._interrupt.set()
       return pending_flush
@@ -108,6 +111,7 @@ class LiveSessionFlushState:
       self._active_utterance_generation += 1
       self._pending_flush = None
       generation = self._active_utterance_generation
+      self._completed.set()
       self._wakeup.set()
       self._interrupt.set()
       return generation
@@ -123,7 +127,12 @@ class LiveSessionFlushState:
       self._pending_flush = None
       self._wakeup.clear()
       self._interrupt.clear()
+      self._completed.set()
       return previous
+
+  async def wait_until_complete(self) -> None:
+    """Wait until the accepted flush response has been delivered or cancelled."""
+    _ = await self._completed.wait()
 
   @property
   def wakeup(self) -> asyncio.Event:

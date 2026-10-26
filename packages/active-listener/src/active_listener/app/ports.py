@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Protocol
 
 from active_listener.recording.reducer import RecordingReducerState
-from eavesdrop.client import LiveClientEvent
 from eavesdrop.wire import TranscriptionMessage
 
 CorrectionLoadTask = asyncio.Task[dict[str, str]]
@@ -94,7 +93,7 @@ class CapturedRecordingAudio:
 class FinishedRecording:
   """Immutable recording snapshot handed from session teardown to finalization.
 
-  :param recording_id: Foreground recording epoch identifier.
+  :param recording_id: Foreground recording identifier.
   :type recording_id: str
   :param reducer_state: Final reducer state captured at recording finish.
   :type reducer_state: RecordingReducerState
@@ -112,6 +111,12 @@ class FinishedRecording:
 
 class ActiveListenerClient(Protocol):
   """Protocol for the live transcription client dependency."""
+
+  on_transcription: Callable[[TranscriptionMessage], None] | None
+  on_connected: Callable[[str], None] | None
+  on_disconnected: Callable[[str, str | None], None] | None
+  on_reconnecting: Callable[[str, int, float], None] | None
+  on_reconnected: Callable[[str], None] | None
 
   async def connect(self) -> None:
     """Establish the live connection."""
@@ -140,10 +145,6 @@ class ActiveListenerClient(Protocol):
     force_complete: bool = True,
   ) -> TranscriptionMessage:
     """Request a committed transcription flush from the server."""
-    ...
-
-  def __aiter__(self) -> AsyncIterator[LiveClientEvent]:
-    """Iterate ordered live client events."""
     ...
 
 
