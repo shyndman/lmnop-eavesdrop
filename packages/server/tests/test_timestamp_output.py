@@ -99,6 +99,10 @@ class _SpeechSpans:
 async def test_native_words_keep_leading_internal_silence_and_segment_window_offsets(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+  """Preserve native word offsets through silence, completion, and window eviction.
+
+  :param monkeypatch: Restores the native recognizer loader.
+  """
   adapter = OrukeetTranscriber(_NativeRecognizer(), _SpeechSpans())
   async with protocol_server(
     monkeypatch,

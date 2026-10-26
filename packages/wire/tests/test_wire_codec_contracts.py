@@ -305,8 +305,18 @@ def test_empty_transcription_segment_retains_explicit_empty_words() -> None:
   assert '"words":[]' in encoded
 
 
+class InvalidWordsPayload(TypedDict, total=False):
+  """Describe the absent-or-null words field used by rejection cases."""
+
+  words: None
+
+
 @pytest.mark.parametrize("words", [{}, {"words": None}])
-def test_transcription_rejects_missing_or_null_words(words: dict[str, object]) -> None:
+def test_transcription_rejects_missing_or_null_words(words: InvalidWordsPayload) -> None:
+  """Reject transcription segments without a timed word list.
+
+  :param words: Invalid words field, either absent or explicitly null.
+  """
   payload = json.dumps(
     {
       "type": "transcription",
@@ -338,6 +348,10 @@ def test_deserialize_rejects_non_string_discriminator_type() -> None:
 
 @pytest.mark.parametrize("language", [None, "en"])
 def test_setup_accepts_english_compatibility_hint(language: str | None) -> None:
+  """Retain the supported English-only compatibility hint.
+
+  :param language: An absent hint or the supported English language code.
+  """
   payload = json.dumps({"type": "setup", "stream": "english", "options": {"language": language}})
   decoded = deserialize_message(payload)
   assert decoded.type == "setup"

@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from threading import Event
-from typing import cast, override
+from typing import cast
 
 import numpy as np
 import pytest
@@ -14,6 +14,7 @@ from websockets.asyncio.server import serve
 
 from eavesdrop.server.config import BufferConfig, TranscriptionConfig
 from eavesdrop.server.connection_handler import WebSocketConnectionHandler
+from eavesdrop.server.constants import SAMPLE_RATE
 from eavesdrop.server.server import TranscriptionServer
 from eavesdrop.server.streaming.interfaces import Float32Audio
 from eavesdrop.server.streaming.processor import StreamingTranscriptionProcessor
@@ -36,19 +37,22 @@ from eavesdrop.wire import (
 )
 
 DEADLINE = 3.0
+INFERENCE_RELEASE_TIMEOUT = 10.0
 STREAM = "protocol-regression"
 
 
 @dataclass
-class DeterministicTranscriber(OrukeetTranscriber):
-  """Two revisable segments, with an optional externally released recognition pass."""
+class DeterministicTranscriber:
+  """Provide deterministic recognition without initializing a production backend.
+
+  :param hold: Whether the first recognition pass waits for explicit release.
+  """
 
   hold: bool = False
   entered: Event = field(default_factory=Event)
   release: Event = field(default_factory=Event)
   calls: int = 0
 
-  @override
   def transcribe(
     self,
     audio: Float32Audio,
@@ -57,13 +61,22 @@ class DeterministicTranscriber(OrukeetTranscriber):
     absolute_stream_start: float,
     session: TranscriptionSession,
   ) -> tuple[list[Segment], TranscriptionInfo]:
+    """Recognize two timed segments and update the recording context.
+
+    :param audio: Waveform whose sign identifies the recording.
+    :param config: Controls whether deterministic VAD timing is reported.
+    :param absolute_stream_start: Recording-relative start of the waveform.
+    :param session: Recording context updated with the recognized duration.
+    :returns: Timed segments and inference metadata.
+    :raises TimeoutError: If held inference is not released before its deadline.
+    """
     self.calls += 1
     revision = self.calls
     self.entered.set()
     if self.hold and revision == 1:
-      if not self.release.wait(10):
+      if not self.release.wait(INFERENCE_RELEASE_TIMEOUT):
         raise TimeoutError("Test did not release held inference")
-    duration = len(audio) / 16000
+    duration = len(audio) / SAMPLE_RATE
     session.update_audio_context(start_offset=absolute_stream_start, duration=duration)
     label = "A" if audio[0] > 0 else "B"
     tail_label = "B" if audio[-1] < 0 else label
@@ -92,11 +105,21 @@ class DeterministicTranscriber(OrukeetTranscriber):
 
 @dataclass
 class ProtocolServer:
+  """Expose a running protocol endpoint and its controllable recognizer.
+
+  :param uri: WebSocket endpoint for the live server.
+  :param model: Deterministic recognizer used by the server.
+  """
+
   uri: str
   model: DeterministicTranscriber
 
   @asynccontextmanager
   async def connection(self) -> AsyncIterator[ClientConnection]:
+    """Open and configure a live client connection.
+
+    :yields: A socket after its setup acknowledgement is received.
+    """
     async with connect(
       self.uri,
       additional_headers={"X-Client-Type": "transcriber"},
@@ -112,8 +135,8 @@ class ProtocolServer:
         )
       )
       async with asyncio.timeout(DEADLINE):
-        ready = deserialize_message(await socket.recv(decode=True))
-      assert isinstance(ready, ServerReadyMessage)
+        ready = cast(ServerReadyMessage, deserialize_message(await socket.recv(decode=True)))
+      assert ready.type == "server_ready"
       assert ready.stream == STREAM
       yield socket
 
@@ -129,10 +152,26 @@ async def protocol_server(
   hold: bool = False,
   transcriber: OrukeetTranscriber | None = None,
 ) -> AsyncIterator[ProtocolServer]:
+  """Run a real server with deterministic inference.
+
+  :param monkeypatch: Restores the model loader after the server closes.
+  :param use_vad: Whether to expose deterministic VAD results.
+  :param interval: Interval between recognition passes, in seconds.
+  :param minimum: Minimum buffered audio duration, in seconds.
+  :param window: Number of recent segments retained in outgoing updates.
+  :param hold: Whether to block the first recognition pass until released.
+  :param transcriber: Optional recognizer replacing the deterministic fake.
+  :yields: The listening endpoint and its deterministic inference controls.
+  """
   model = DeterministicTranscriber(hold=hold)
 
   def load_model(_processor: StreamingTranscriptionProcessor) -> OrukeetTranscriber:
-    return model if transcriber is None else transcriber
+    """Return the configured recognizer at the production loader boundary.
+
+    :param _processor: Processor requesting its recognizer.
+    :returns: The explicitly supplied recognizer or the standalone test fake.
+    """
+    return cast(OrukeetTranscriber, cast(object, model)) if transcriber is None else transcriber
 
   monkeypatch.setattr(StreamingTranscriptionProcessor, "_load_model", load_model)
   shell = TranscriptionServer()
@@ -155,24 +194,41 @@ async def protocol_server(
 
 
 async def start(socket: ClientConnection, recording_id: str) -> None:
+  """Start a recording.
+
+  :param socket: Configured live connection.
+  :param recording_id: Identifier assigned to the recording.
+  """
   await socket.send(
     serialize_message(
       RecordingStartedMessage(
         stream=STREAM,
         recording_id=recording_id,
-        sample_rate_hz=16000,
+        sample_rate_hz=SAMPLE_RATE,
       )
     )
   )
 
 
 async def audio(socket: ClientConnection, *, seconds: float = 0.1, positive: bool = True) -> None:
+  """Send deterministic audio.
+
+  :param socket: Configured live connection.
+  :param seconds: Duration of audio to send.
+  :param positive: Whether the waveform identifies recording A rather than B.
+  """
   await socket.send(
-    np.full(int(seconds * 16000), 0.5 if positive else -0.5, dtype=np.float32).tobytes()
+    np.full(int(seconds * SAMPLE_RATE), 0.5 if positive else -0.5, dtype=np.float32).tobytes()
   )
 
 
 async def flush(socket: ClientConnection, recording_id: str, *, force: bool = True) -> None:
+  """Request a recording flush.
+
+  :param socket: Configured live connection.
+  :param recording_id: Recording whose pending work is flushed.
+  :param force: Whether tentative segments must be completed.
+  """
   await socket.send(
     serialize_message(
       FlushControlMessage(
@@ -185,6 +241,11 @@ async def flush(socket: ClientConnection, recording_id: str, *, force: bool = Tr
 
 
 async def cancel(socket: ClientConnection, recording_id: str) -> None:
+  """Cancel the current utterance.
+
+  :param socket: Configured live connection.
+  :param recording_id: Recording whose utterance is cancelled.
+  """
   await socket.send(
     serialize_message(
       UtteranceCancelledMessage(
@@ -196,6 +257,12 @@ async def cancel(socket: ClientConnection, recording_id: str) -> None:
 
 
 async def transcription(socket: ClientConnection, *, flushed: bool = False) -> TranscriptionMessage:
+  """Receive the next matching transcription update.
+
+  :param socket: Configured live connection.
+  :param flushed: Whether to wait specifically for a flush acknowledgement.
+  :returns: The next matching transcription for the harness stream.
+  """
   async with asyncio.timeout(DEADLINE):
     while True:
       message = deserialize_message(await socket.recv(decode=True))
@@ -207,6 +274,11 @@ async def transcription(socket: ClientConnection, *, flushed: bool = False) -> T
 
 
 async def error(socket: ClientConnection) -> ErrorMessage:
+  """Receive the next protocol error.
+
+  :param socket: Configured live connection.
+  :returns: The next error response.
+  """
   async with asyncio.timeout(DEADLINE):
     while True:
       message = deserialize_message(await socket.recv(decode=True))
@@ -215,6 +287,10 @@ async def error(socket: ClientConnection) -> ErrorMessage:
 
 
 async def entered(model: DeterministicTranscriber) -> None:
+  """Wait until recognition has entered its deterministic inference pass.
+
+  :param model: Recognizer whose entry signal is awaited.
+  """
   assert await asyncio.to_thread(model.entered.wait, DEADLINE), "Inference never began"
 
 

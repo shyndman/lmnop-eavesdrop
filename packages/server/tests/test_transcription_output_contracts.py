@@ -9,6 +9,10 @@ from protocol_harness import audio, cancel, flush, protocol_server, start, trans
 async def test_no_vad_all_segments_remain_revisable_until_explicit_completion(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+  """Keep every no-VAD segment revisable until explicit forced completion.
+
+  :param monkeypatch: Restores the deterministic inference loader.
+  """
   async with protocol_server(monkeypatch, minimum=0.1, interval=0.05) as server:
     async with server.connection() as socket:
       await start(socket, "revisions")
@@ -71,6 +75,10 @@ async def test_no_vad_all_segments_remain_revisable_until_explicit_completion(
 async def test_enabled_vad_retains_silence_completion_and_incomplete_tail(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+  """Retain VAD silence completion and its tentative trailing segment.
+
+  :param monkeypatch: Restores the deterministic inference loader.
+  """
   async with protocol_server(monkeypatch, use_vad=True, minimum=0.1, interval=0.05) as server:
     async with server.connection() as socket:
       await start(socket, "silence")
@@ -90,6 +98,10 @@ async def test_enabled_vad_retains_silence_completion_and_incomplete_tail(
 async def test_cancellation_clears_previously_completed_utterance_history(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+  """Remove completed utterance history when cancellation starts a new utterance.
+
+  :param monkeypatch: Restores the deterministic inference loader.
+  """
   async with protocol_server(monkeypatch) as server:
     async with server.connection() as socket:
       await start(socket, "same-recording")

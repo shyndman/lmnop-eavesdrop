@@ -134,6 +134,7 @@ class StreamingTranscriptionProcessor:
     self.text: list[str] = []
     self.recording_id: str | None = None
     self._pending_segments: list[Segment] = []
+    self._undelivered_completed_count: int = 0
     self._idle: asyncio.Event = asyncio.Event()
     self._idle.set()
 
@@ -191,6 +192,7 @@ class StreamingTranscriptionProcessor:
     self.recording_id = recording_id
     self.text = []
     self._pending_segments = []
+    self._undelivered_completed_count = 0
     if not preserve_language:
       self.language = self.config.language
 
@@ -203,9 +205,19 @@ class StreamingTranscriptionProcessor:
 
   @property
   def has_pending_segments(self) -> bool:
+    """Report whether provisional transcription awaits completion.
+
+    :returns: Whether the active recording contains pending segments.
+    :rtype: bool
+    """
     return bool(self._pending_segments)
 
   async def wait_until_idle(self) -> None:
+    """Wait until the active recognition pass and result handling finish.
+
+    :returns: None.
+    :rtype: None
+    """
     _ = await self._idle.wait()
 
   async def _transcription_loop(self) -> None:
@@ -718,6 +730,7 @@ class StreamingTranscriptionProcessor:
         if not segment.completed:
           segment.mark_completed(self.session.get_last_completed_segment())
           self.session.add_completed_segment(segment)
+          self._undelivered_completed_count += 1
       else:
         segment.completed = False
         incomplete_segments.append(segment)
@@ -729,12 +742,13 @@ class StreamingTranscriptionProcessor:
     if not result and self.config.use_vad:
       self.buffer.advance_processed_boundary(duration)
 
-    # Prepare segments for client: last N completed + current incomplete
+    # Keep the history window without truncating completions not yet delivered.
     segments_for_client: list[Segment] = []
 
-    # Add the last N completed segments from session
     recent_completed_segments: list[Segment] = list(
-      self.session.most_recent_completed_segments(self.config.send_last_n_segments)
+      self.session.most_recent_completed_segments(
+        max(self.config.send_last_n_segments, self._undelivered_completed_count)
+      )
     )
     segments_for_client.extend(recent_completed_segments)
 
@@ -788,6 +802,7 @@ class StreamingTranscriptionProcessor:
     )
     self.logger.debug("Sending segments to client", segments=segments_for_client)
     await self.sink.send_result(transcription_result)
+    self._undelivered_completed_count = 0
 
   def _update_segments(self, segments: list[Segment], _duration: float) -> None:
     """Process segments and update transcript."""

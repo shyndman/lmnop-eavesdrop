@@ -2472,6 +2472,7 @@ async def test_disconnect_during_background_finalization_skips_emission() -> Non
 
 @pytest.mark.asyncio
 async def test_multiple_provisional_revisions_remain_raw_until_force_flush() -> None:
+  """Publish provisional revisions without emission until forced completion."""
   client = FakeClient(
     flush_results=[
       _message(

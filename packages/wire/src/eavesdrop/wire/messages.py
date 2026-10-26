@@ -44,7 +44,7 @@ class TranscriptionMessage(BaseMessage):
   language: str | None = Field(default=None, description="Detected or specified language code")
   recording_id: str | None = Field(
     default=None,
-    description="Live recording epoch identifier",
+    description="Live recording identifier",
   )
   flush_complete: bool | None = Field(
     default=None,
@@ -126,7 +126,7 @@ class FlushControlMessage(BaseMessage):
   stream: str = Field(description="Stream name or client identifier")
   recording_id: str | None = Field(
     default=None,
-    description="Live recording epoch identifier, omitted outside active-listener live mode",
+    description="Live recording identifier, omitted outside active-listener live mode",
   )
   force_complete: bool = Field(
     default=True,
@@ -142,5 +142,5 @@ class UtteranceCancelledMessage(BaseMessage):
   stream: str = Field(description="Stream name or client identifier")
   recording_id: str | None = Field(
     default=None,
-    description="Live recording epoch identifier, omitted outside active-listener live mode",
+    description="Live recording identifier, omitted outside active-listener live mode",
   )

@@ -1,6 +1,9 @@
 """Connection-owned live WebSocket transcription lifecycle."""
 
 import asyncio
+from collections import deque
+from enum import Enum, auto
+from typing import cast
 
 import numpy as np
 from structlog.stdlib import BoundLogger
@@ -35,6 +38,10 @@ LIVE_AUDIO_BEFORE_RECORDING_START_MESSAGE = (
 LIVE_FLUSH_UNEXPECTED_MESSAGE = "Flush rejected: unsupported live control message"
 
 
+class _IngestionSignal(Enum):
+  RECORDING_READY = auto()
+
+
 class WebSocketStreamingClient:
   """Own one receiver, ordered ingestion, and recognition for a connection."""
 
@@ -44,6 +51,12 @@ class WebSocketStreamingClient:
     stream_name: str,
     transcription_config: TranscriptionConfig,
   ) -> None:
+    """Create the connection-owned transcription lifecycle.
+
+    :param websocket: Connected transport for live audio and controls.
+    :param stream_name: Stream identifier included in outgoing messages.
+    :param transcription_config: Recognition and buffering configuration.
+    """
     self.websocket: ServerConnection = websocket
     self.stream_name: str = stream_name
     self.logger: BoundLogger = get_logger("ws/client", stream=stream_name)
@@ -61,7 +74,11 @@ class WebSocketStreamingClient:
       session=self.session,
       flush_state=self._flush_state,
     )
-    self._frames: asyncio.Queue[str | bytes | None] = asyncio.Queue()
+    self._frames: asyncio.Queue[str | bytes | _IngestionSignal | None] = asyncio.Queue()
+    self._deferred_frames: deque[str | bytes] = deque()
+    self._deferred_recording_ids: set[str] = set()
+    self._ready_frames: deque[str | bytes] = deque()
+    self._boundary_task: asyncio.Task[None] | None = None
     self._tasks: list[asyncio.Task[None]] = []
     self._completion_task: asyncio.Task[None] | None = None
     self._stopped: bool = False
@@ -69,9 +86,17 @@ class WebSocketStreamingClient:
 
   @property
   def completion_task(self) -> asyncio.Task[None] | None:
+    """Return the task that finishes after connection shutdown.
+
+    :returns: Lifecycle task, or ``None`` before startup.
+    """
     return self._completion_task
 
   async def start(self) -> asyncio.Task[None]:
+    """Initialize recognition and start the connection tasks.
+
+    :returns: Task that owns completion and cleanup of the connection.
+    """
     await self.processor.initialize()
     self._tasks = [
       asyncio.create_task(self.processor.start_processing()),
@@ -103,10 +128,14 @@ class WebSocketStreamingClient:
       await self.stop()
 
   async def stop(self) -> None:
+    """Cancel and await all owned tasks, then release recognition resources."""
     if self._stopped:
       return
     self._stopped = True
     self.processor.exit = True
+    if self._boundary_task is not None:
+      _ = self._boundary_task.cancel()
+      _ = await asyncio.gather(self._boundary_task, return_exceptions=True)
     for task in self._tasks:
       if task is not asyncio.current_task() and not task.done():
         _ = task.cancel()
@@ -119,13 +148,29 @@ class WebSocketStreamingClient:
       await self._completion_task
 
   def add_frames(self, frames: Float32Audio) -> None:
+    """Accept ordered audio for the active recording.
+
+    :param frames: Mono float32 samples at the configured sample rate.
+    """
     self.processor.add_audio_frames(frames)
 
   async def _audio_ingestion_loop(self) -> None:
     while True:
-      frame = await self._frames.get()
+      frame = self._ready_frames.popleft() if self._ready_frames else await self._frames.get()
       if frame is None:
         return
+      if frame is _IngestionSignal.RECORDING_READY:
+        self._boundary_task = None
+        self._ready_frames.extend(self._deferred_frames)
+        self._deferred_frames.clear()
+        self._deferred_recording_ids.clear()
+        boundary = cast(str, self._ready_frames.popleft())
+        message = cast(RecordingStartedMessage, deserialize_message(boundary))
+        self._accept_recording_boundary(message)
+        continue
+      if isinstance(frame, bytes) and self._deferred_frames:
+        self._deferred_frames.append(frame)
+        continue
       if isinstance(frame, str):
         await self._handle_live_text_frame(frame)
       elif self._current_recording_id is None:
@@ -141,21 +186,41 @@ class WebSocketStreamingClient:
       return
     if isinstance(message, RecordingStartedMessage):
       if message.sample_rate_hz != self.buffer.config.sample_rate:
+        self.logger.warning(
+          "Recording rejected: sample rate mismatch", sample_rate_hz=message.sample_rate_hz
+        )
         await self.transcription_sink.send_error(
           "control_recording_started sample_rate_hz does not match server buffer sample rate"
         )
         return
       if self._current_recording_id is not None:
-        # A boundary never invalidates accepted A work. The receiver remains
-        # independent and queues B's frames while A's final response is sent.
-        await self._flush_state.wait_until_complete()
-        if self.buffer.available_duration > 0 or self.processor.has_pending_segments:
-          _ = self._flush_state.accept(
-            boundary_sample=self.buffer.get_buffer_end_sample(), force_complete=True
-          )
-          await self._flush_state.wait_until_complete()
-        await self.processor.wait_until_idle()
+        if not self._deferred_frames:
+          pending = self._flush_state.pending()
+          if (
+            pending is None
+            and self.buffer.available_duration == 0
+            and not self.processor.has_pending_segments
+          ):
+            # Nothing remains to drain: accept B before reading later controls,
+            # so stale A controls cannot cancel the already-finished recording.
+            await self.processor.wait_until_idle()
+            self._accept_recording_boundary(message)
+            return
+        self._deferred_recording_ids.add(message.recording_id)
+        self._deferred_frames.append(message_json)
+        pending = self._flush_state.pending()
+        if pending is not None and pending.force_complete:
+          self._schedule_recording_transition()
+        return
       self._accept_recording_boundary(message)
+      return
+    if (
+      self._deferred_frames
+      and isinstance(message, (FlushControlMessage, UtteranceCancelledMessage))
+      and message.recording_id != self._current_recording_id
+      and message.recording_id in self._deferred_recording_ids
+    ):
+      self._deferred_frames.append(message_json)
       return
     if not isinstance(message, (FlushControlMessage, UtteranceCancelledMessage)):
       await self.transcription_sink.send_error(f"{LIVE_FLUSH_UNEXPECTED_MESSAGE}: {message.type}")
@@ -178,12 +243,25 @@ class WebSocketStreamingClient:
         generation=generation,
         preserve_language=False,
       )
+      if self._deferred_frames:
+        self._schedule_recording_transition()
       return
     pending = self._flush_state.accept(
       boundary_sample=self.buffer.get_buffer_end_sample(), force_complete=message.force_complete
     )
     if pending is None:
       await self.transcription_sink.send_error(LIVE_FLUSH_ALREADY_PENDING_MESSAGE)
+    elif message.force_complete and self._deferred_frames:
+      self._schedule_recording_transition()
+
+  def _schedule_recording_transition(self) -> None:
+    if self._boundary_task is None:
+      self._boundary_task = asyncio.create_task(self._await_recording_transition())
+
+  async def _await_recording_transition(self) -> None:
+    await self._flush_state.wait_until_complete()
+    await self.processor.wait_until_idle()
+    self._frames.put_nowait(_IngestionSignal.RECORDING_READY)
 
   def _accept_recording_boundary(self, message: RecordingStartedMessage) -> None:
     generation = self._flush_state.start_recording(message.recording_id)
@@ -197,7 +275,12 @@ class WebSocketStreamingClient:
 
   @property
   def language(self) -> str | None:
+    """Return the language recognized for the active recording.
+
+    :returns: Language code, or ``None`` before recognition identifies it.
+    """
     return self.processor.language
 
   def cleanup(self) -> None:
+    """Log completion of connection resource cleanup."""
     self.logger.info("Cleaned up WebSocket streaming client", stream=self.stream_name)

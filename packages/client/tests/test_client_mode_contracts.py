@@ -730,8 +730,7 @@ async def test_start_streaming_preserves_accepted_message_and_transcription_even
   preserved_message = client._message_queue.get_nowait()
   assert preserved_message.recording_id == "old-recording"
   assert preserved_message.segments[0].text == "accepted"
-  preserved_event = client._event_queue.get_nowait()
-  assert isinstance(preserved_event, TranscriptionEvent)
+  preserved_event = cast(TranscriptionEvent, client._event_queue.get_nowait())
   assert preserved_event.message.recording_id == "old-recording"
   assert preserved_event.message.segments[0].text == "accepted"
   assert client._event_queue.get_nowait() == ConnectedEvent(stream="stream-live")
@@ -788,8 +787,7 @@ async def test_next_recording_waits_for_pending_flush_and_preserves_final_event(
 
     assert connection.command_log == ["flush", "recording_started"]
     assert connection.recording_start_ids == ["rec-next"]
-    event = client._event_queue.get_nowait()
-    assert isinstance(event, TranscriptionEvent)
+    event = cast(TranscriptionEvent, client._event_queue.get_nowait())
     assert event.message == final_a
   finally:
     for task in (flush_task, start_task):

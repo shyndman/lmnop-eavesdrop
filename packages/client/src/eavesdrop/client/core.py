@@ -410,6 +410,7 @@ class EavesdropClient:
       before the flush completes.
     """
     if self._flush_waiting:
+      self._logger.warning("rejecting concurrent flush", recording_id=recording_id)
       raise RuntimeError("flush() already in progress")
     async with self._recording_transition_lock:
       return await self._flush_recording(recording_id, force_complete=force_complete)
@@ -426,6 +427,7 @@ class EavesdropClient:
       raise RuntimeError("flush() requires an active live transcriber connection")
 
     if self._flush_waiting:
+      self._logger.warning("rejecting concurrent flush", recording_id=recording_id)
       raise RuntimeError("flush() already in progress")
 
     if self._current_recording_id != recording_id:

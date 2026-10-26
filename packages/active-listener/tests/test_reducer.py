@@ -228,6 +228,7 @@ def test_classify_recording_words_handles_boundaries_and_open_span_tail() -> Non
 
 
 def test_multiple_provisional_revisions_commit_only_on_explicit_completion() -> None:
+  """Commit revised words only when explicit completion replaces the tentative tail."""
   state = RecordingReducerState(
     closed_command_spans=[TimeSpan(start_s=0.3, end_s=0.8)],
   )
