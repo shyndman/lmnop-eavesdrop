@@ -74,9 +74,6 @@ def fetch_openrouter_connection(
         f"{base_url}{LLM_CONNECTIONS_PATH}?limit=100&page=1",
         headers=headers,
     )
-    if not isinstance(payload, dict):
-        raise TypeError("Langfuse returned a non-object llm-connections payload")
-
     response = cast(LlmConnectionsResponse, payload)
     matches = [
         connection
@@ -104,9 +101,6 @@ def upsert_openrouter_connection(
         method="PUT",
         payload=payload,
     )
-    if not isinstance(response, dict):
-        raise TypeError("Langfuse returned a non-object llm connection upsert response")
-
     return cast(LlmConnection, response)
 
 
@@ -120,9 +114,6 @@ def fetch_all_model_definitions(
             f"{base_url}{MODELS_PATH}?limit=100&page={page}",
             headers=headers,
         )
-        if not isinstance(payload, dict):
-            raise TypeError("Langfuse returned a non-object models payload")
-
         response = cast(PaginatedModelsResponse, payload)
         models.extend(response["data"])
         if page >= response["meta"]["totalPages"]:
@@ -139,9 +130,6 @@ def create_model_definition(
         method="POST",
         payload=payload,
     )
-    if not isinstance(response, dict):
-        raise TypeError("Langfuse returned a non-object model create response")
-
     return cast(ExistingModelDefinition, response)
 
 

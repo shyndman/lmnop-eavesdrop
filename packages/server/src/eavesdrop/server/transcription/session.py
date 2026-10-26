@@ -34,7 +34,7 @@ class TranscriptionSession:
     recording_id: str | None = None,
   ) -> None:
     """Initialize history and the state shared by all stage tracers."""
-    self._tracing = TracingContext(
+    self._tracing: TracingContext = TracingContext(
       connection_start_time=connection_start_time,
       stream_name=stream_name,
       stage_timings={} if stage_timings is None else stage_timings,
@@ -42,7 +42,9 @@ class TranscriptionSession:
       audio_duration=audio_duration,
       recording_id=recording_id,
     )
-    self.completed_segments = [] if completed_segments is None else completed_segments
+    self.completed_segments: list["Segment"] = (
+      [] if completed_segments is None else completed_segments
+    )
 
   @property
   def connection_start_time(self) -> float:

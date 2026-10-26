@@ -1,6 +1,7 @@
 """Contract tests for the live client runtime and recording controls."""
 
 import asyncio
+from dataclasses import replace
 from typing import cast
 
 import pytest
@@ -245,7 +246,7 @@ async def _deliver(
 ) -> None:
   """Pass deterministic wire payloads through the connection's message handler."""
   assert client._connection is not None
-  scoped_message = message.model_copy(update={"stream": client._connection.stream_name})
+  scoped_message = replace(message, stream=client._connection.stream_name)
   await client._connection._process_message(serialize_message(scoped_message))
 
 
