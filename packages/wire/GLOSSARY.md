@@ -39,9 +39,10 @@ and completion states.
 **Pending transcription**:
 Accepted audio and recognized text still awaiting explicit or automatic completion.
 
-**Segment**:
-An identified, timed portion of a transcript, carrying recognized text
-and a completion state.
+**Timed segment**:
+An identified portion of a transcript with recognized text, a completion state,
+and start and end times for the segment and each word on the recording timeline.
+_Avoid_: Native segment.
 
 **Word**:
 Recognized word text with start and end times on the recording timeline.
