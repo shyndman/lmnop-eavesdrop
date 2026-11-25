@@ -126,7 +126,7 @@ def main() -> None:
     json.dumps(
       {
         "load_seconds": load_seconds,
-        "device": config.device,
+        "device": "cpu",
         "runs": results,
         "short_flush": [segment.model_dump() for segment in short_segments],
         "silence_passed": True,

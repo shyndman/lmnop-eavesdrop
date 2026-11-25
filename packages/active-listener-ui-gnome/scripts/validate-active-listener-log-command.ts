@@ -6,7 +6,7 @@ const assert = (condition: boolean, message: string): void => {
   }
 };
 
-const command = buildActiveListenerLogCommand();
+const command = buildActiveListenerLogCommand('kitty');
 const commandText = command.join(' ');
 const shellCommand = command.at(-1) ?? '';
 

@@ -76,8 +76,8 @@ async def test_transcriber(
       if message.segments:
         for i, segment in enumerate(message.segments):
           time_range = _format_segment_time_range(
-            segment.absolute_start_time,
-            segment.absolute_end_time,
+            segment.start,
+            segment.end,
           )
           print(
             f"    Segment {i}: '{segment.text}' ",

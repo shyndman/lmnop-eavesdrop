@@ -3,14 +3,13 @@ from __future__ import annotations
 import asyncio
 import secrets
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Protocol, cast
 
 from structlog.stdlib import BoundLogger
 
 from active_listener.app.ports import (
   ActiveListenerClient,
   ActiveListenerRewriteClient,
-  ActiveListenerTranscriptHistoryStore,
   MediaPlaybackController,
 )
 from active_listener.app.signals import ClientSignal, KeyboardEventSignal, RuntimeSignal
@@ -40,7 +39,6 @@ from active_listener.recording.spectrum import SpectrumAnalyzer
 from eavesdrop.client import (
   ConnectedEvent,
   DisconnectedEvent,
-  LanguageDetectionEvent,
   LiveClientEvent,
   ReconnectedEvent,
   ReconnectingEvent,
@@ -74,7 +72,6 @@ class ActiveListenerService:
   emitter: TextEmitter
   logger: BoundLogger
   rewrite_client: ActiveListenerRewriteClient
-  history_store: ActiveListenerTranscriptHistoryStore
   dbus_service: AppStateService
   media_playback_controller: MediaPlaybackController
   recording_audio_buffer: RecordingAudioBuffer
@@ -107,7 +104,6 @@ class ActiveListenerService:
       emitter=self.emitter,
       logger=self.logger,
       rewrite_client=self.rewrite_client,
-      history_store=self.history_store,
       dbus_service=self.dbus_service,
       current_llm_available=self.current_llm_available,
       current_llm_active=self.current_llm_active,
@@ -129,10 +125,49 @@ class ActiveListenerService:
       asyncio.create_task(self._pump_keyboard_events(signal_queue)),
       asyncio.create_task(self._pump_client_events(signal_queue)),
     }
+    active_producers = set(producer_tasks)
 
     try:
       while True:
-        signal = await signal_queue.get()
+        try:
+          signal = signal_queue.get_nowait()
+        except asyncio.QueueEmpty:
+          if not active_producers:
+            break
+
+          signal_task: asyncio.Task[RuntimeSignal] = asyncio.create_task(signal_queue.get())
+          wait_tasks: set[asyncio.Task[object]] = {
+            cast(asyncio.Task[object], signal_task),
+            *(cast(asyncio.Task[object], task) for task in active_producers),
+          }
+          done, _ = await asyncio.wait(wait_tasks, return_when=asyncio.FIRST_COMPLETED)
+
+          if signal_task in done:
+            signal = await signal_task
+          else:
+            _ = signal_task.cancel()
+            try:
+              _ = await signal_task
+            except asyncio.CancelledError:
+              pass
+
+            for task in list(active_producers):
+              if task in done:
+                active_producers.discard(task)
+                if not task.cancelled():
+                  task_exception = task.exception()
+                  if task_exception is not None:
+                    self.logger.error(
+                      "active-listener producer task failed",
+                      exc_info=task_exception,
+                    )
+                    raise task_exception
+
+            if not signal_queue.empty():
+              continue
+            self.logger.info("active-listener producer task exited")
+            break
+
         if isinstance(signal, KeyboardEventSignal):
           await self.handle_keyboard_event(signal.event)
         else:
@@ -359,10 +394,6 @@ class ActiveListenerService:
         _ = await self.handle_action(AppAction.START_OR_FINISH)
 
   async def handle_client_event(self, event: LiveClientEvent) -> None:
-    if isinstance(event, LanguageDetectionEvent):
-      # Language metadata does not change the recording lifecycle or transcript.
-      return
-
     if isinstance(event, TranscriptionEvent):
       self._current_stream = event.stream
       await self._handle_transcription_event(event)

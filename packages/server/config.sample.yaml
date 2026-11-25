@@ -3,115 +3,62 @@
 # Usage: eavesdrop-server --config /path/to/your/config.yaml
 
 transcription:
-  # Fixed Orukeet model: CPU INT8 ONNX or Vulkan Q8 GGUF, loaded on first use.
+  # Fixed Orukeet CPU INT8 ONNX model, loaded on first use.
   # Other model IDs and local custom checkpoints are not supported.
   model: "oruk/orukeet"
-
-  # cpu (default): sherpa-onnx. vulkan: pinned NeMo-Speech.cpp on Linux x86_64, GPU 0.
-  # Docker supports both: Vulkan needs the host kernel GPU driver and /dev/dri.
-  # Mesa userspace drivers are in the image; standalone Silero VAD stays ONNX CPU.
-  device: "cpu"
 
   # The client contract supports English transcription only (no translation).
   language: "en"
 
-  # Include native word timings: CPU token onsets/durations (80 ms), or Vulkan
-  # native word timestamps converted from milliseconds.
+  # Include native word timings on the recording timeline.
   # Native timings are still used internally when this is false.
   word_timestamps: true
 
-  # Standalone Silero VAD detects speech and silence before transcription.
+  # Standalone sherpa-onnx Silero VAD detects speech and silence before transcription.
   use_vad: true
 
   # Number of most recent transcription segments to send to each client.
   send_last_n_segments: 10
 
   # Duration of silence (in seconds) after speech to automatically mark segments as completed.
-  # Lower values complete segments faster but may cut off slow speech patterns.
-  # Higher values wait longer for speech to continue but may delay completion.
   silence_completion_threshold: 0.8
 
   # Debug audio recording configuration for troubleshooting and analysis.
-  # Records audio at different stages of the processing pipeline.
   debug_audio: null
-    # Uncomment and configure to enable debug audio recording:
-    # pre_buffer: "/tmp/eavesdrop-debug/pre"    # Records raw audio before buffering
-    # post_buffer: "/tmp/eavesdrop-debug/post"  # Records processed audio after dequeuing
 
   # Advanced Voice Activity Detection parameters for fine-tuning speech detection.
-  # Most users should leave these at defaults unless experiencing specific issues.
   vad_parameters:
     # Speech threshold. Probabilities ABOVE this value are considered as speech.
-    # Better to tune for each dataset separately, but 0.5 is good for most datasets.
     threshold: 0.5
-
-    # Negative speech threshold for hysteresis. Values BELOW this are treated as silence.
-    # Values between neg_threshold and threshold keep the previous speech state.
-    neg_threshold: 0.35
 
     # Final speech chunks shorter than this duration are discarded.
     min_speech_duration_ms: 0
 
-    # Maximum duration of speech chunks. Longer chunks are split at silence points
-    # or aggressively split just before this limit to prevent cutting speech.
-    max_speech_duration_s: .inf
+    # Maximum duration of speech chunks before forced splitting.
+    max_speech_duration_s: 15.0
 
     # Silence duration for separating speech chunks is automatically set from
     # silence_completion_threshold above to keep segmentation and completion aligned.
-    # min_silence_duration_ms: (set programmatically)
 
-    # Final speech chunks are padded by this amount on each side.
-    speech_pad_ms: 800
-
-  # Audio buffer management settings that control how audio is processed and stored.
-  # These settings affect memory usage and real-time performance.
+  # Audio buffer management settings.
   buffer:
     # Audio sample rate in Hz. Must be 16000 for Orukeet compatibility.
-    # Do not change unless you know what you're doing.
     sample_rate: 16000
 
     # Maximum duration of audio to keep in buffer before triggering cleanup.
-    # Prevents unbounded memory growth during long sessions.
     max_buffer_duration: 45.0
 
     # Amount of oldest audio to remove during cleanup operations.
-    # Must be less than max_buffer_duration to avoid removing too much.
     cleanup_duration: 30.0
 
     # Minimum duration of audio required before attempting transcription.
-    # Prevents processing very short, likely meaningless audio chunks.
     min_chunk_duration: 1.0
 
     # How frequently to attempt transcription on buffered audio.
-    # Lower values provide faster response but use more processing power.
     transcription_interval: 2.0
 
     # Whether to automatically skip audio when transcription stalls for too long.
-    # Prevents the system from getting stuck on problematic audio sections.
     clip_audio: false
 
     # Maximum time without transcription progress before clipping stalled audio.
-    # Prevents buildup of problematic audio that can't be transcribed.
     max_stall_duration: 25.0
-
-# RTSP stream configuration for processing IP camera and network audio streams.
-# Leave streams empty ({}) to run in WebSocket-only mode.
-rtsp:
-  # Named RTSP stream URLs to process. Each stream runs independently.
-  # Supports various RTSP URL formats including authentication.
-  streams: {}
-    # Example configurations (uncomment and modify as needed):
-    # office: "rtsp://username:password@camera-ip:554/stream1"
-    # lobby: "rtsp://camera-ip:554/main_stream"
-    # kitchen: "rtsp://192.168.1.100:554/cam/realmonitor?channel=1&subtype=0"
-
-  # Caching behavior for transcription results based on whether clients are listening.
-  # Longer cache times when no listeners preserve history for new connections.
-  cache:
-    # How long to cache transcriptions when no clients are listening (seconds).
-    # Longer duration provides more history when clients reconnect.
-    waiting_for_listener_duration: 10800.0
-
-    # How long to cache transcriptions when clients are actively listening (seconds).
-    # Shorter duration saves memory when clients are receiving real-time updates.
-    has_listener_cache_duration: 600.0

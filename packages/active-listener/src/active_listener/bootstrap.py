@@ -10,27 +10,18 @@ from active_listener.app.ports import (
   ActiveListenerClient,
   ActiveListenerRewriteClient,
   ActiveListenerRuntimeError,
-  ActiveListenerTranscriptHistoryStore,
   MediaPlaybackController,
 )
 from active_listener.app.service import ActiveListenerService
 from active_listener.app.state import ForegroundPhase
-from active_listener.config.models import (
-  ActiveListenerConfig,
-  LiteRtRewriteProvider,
-  LlmRewriteConfig,
-)
+from active_listener.config.models import ActiveListenerConfig, LlmRewriteConfig
 from active_listener.infra.audio import resolve_ffmpeg_executable
 from active_listener.infra.dbus import AppStateService, NoopDbusService, SdbusDbusService
 from active_listener.infra.emitter import GnomeShellExtensionTextEmitter, TextEmitter
 from active_listener.infra.keyboard import KeyboardInput, resolve_keyboard
+from active_listener.infra.langfuse import flush_langfuse
 from active_listener.infra.mpris import PlayerctldMediaPlaybackController
-from active_listener.infra.rewrite import (
-  DisabledRewriteClient,
-  LiteRtRewriteClient,
-  PydanticAiRewriteClient,
-)
-from active_listener.infra.transcript_history import SqliteTranscriptHistoryStore
+from active_listener.infra.rewrite import DisabledRewriteClient, PydanticAiRewriteClient
 from active_listener.recording.session import RecordingAudioBuffer
 from active_listener.recording.spectrum import (
   Float32PcmChunk,
@@ -39,8 +30,6 @@ from active_listener.recording.spectrum import (
 )
 from eavesdrop.client import EavesdropClient
 from eavesdrop.common import get_logger
-
-from .infra.langfuse import flush_langfuse
 
 
 class SpectrumCaptureSink(Protocol):
@@ -63,11 +52,6 @@ async def create_service(
   media_playback_controller_factory: Callable[[BoundLogger], MediaPlaybackController] | None = None,
   rewrite_client_factory: Callable[[LlmRewriteConfig | None], ActiveListenerRewriteClient]
   | None = None,
-  history_store_factory: Callable[
-    [ActiveListenerConfig, BoundLogger, AppStateService],
-    ActiveListenerTranscriptHistoryStore,
-  ]
-  | None = None,
 ) -> ActiveListenerService:
   """Construct a fully initialized service instance.
 
@@ -81,10 +65,6 @@ async def create_service(
   :type emitter_factory: Callable[[], TextEmitter] | None
   :param media_playback_controller_factory: Factory for the media playback controller.
   :type media_playback_controller_factory: Callable[[BoundLogger], MediaPlaybackController] | None
-  :param history_store_factory: Factory for the transcript history dependency.
-  :type history_store_factory:
-      Callable[[ActiveListenerConfig, BoundLogger, AppStateService],
-      ActiveListenerTranscriptHistoryStore] | None
   :returns: Ready-to-run service instance.
   :rtype: ActiveListenerService
   :raises ActiveListenerRuntimeError: If startup prerequisites cannot be satisfied.
@@ -98,7 +78,6 @@ async def create_service(
     media_playback_controller_factory or build_media_playback_controller
   )
   resolved_rewrite_client_factory = rewrite_client_factory or build_rewrite_client
-  resolved_history_store_factory = history_store_factory or build_history_store
   spectrum_analyzer = SpectrumAnalyzer(
     publish=lambda bars: publish_spectrum_frame(
       dbus_service=resolved_dbus_service,
@@ -115,7 +94,6 @@ async def create_service(
   client: ActiveListenerClient | None = None
   media_playback_controller: MediaPlaybackController | None = None
   rewrite_client: ActiveListenerRewriteClient | None = None
-  history_store: ActiveListenerTranscriptHistoryStore | None = None
 
   try:
     keyboard = keyboard_resolver(config.keyboard_name)
@@ -124,10 +102,8 @@ async def create_service(
     raise ActiveListenerRuntimeError(str(exc)) from exc
 
   try:
-    if history_store_factory is None:
-      resolved_ffmpeg = resolve_ffmpeg_path(config.ffmpeg_path, logger=logger)
-      logger.info("resolved ffmpeg binary", ffmpeg_path=resolved_ffmpeg)
-    history_store = resolved_history_store_factory(config, logger, resolved_dbus_service)
+    resolved_ffmpeg = resolve_ffmpeg_path(config.ffmpeg_path, logger=logger)
+    logger.info("resolved ffmpeg binary", ffmpeg_path=resolved_ffmpeg)
     emitter = resolved_emitter_factory()
     client = resolved_client_factory(config, on_capture)
     media_playback_controller = resolved_media_playback_controller_factory(logger)
@@ -169,7 +145,6 @@ async def create_service(
     host=config.host,
     port=config.port,
   )
-  assert history_store is not None
   assert media_playback_controller is not None
   service = ActiveListenerService(
     config=config,
@@ -178,7 +153,6 @@ async def create_service(
     emitter=emitter,
     logger=logger,
     rewrite_client=rewrite_client,
-    history_store=history_store,
     dbus_service=resolved_dbus_service,
     media_playback_controller=media_playback_controller,
     recording_audio_buffer=recording_audio_buffer,
@@ -203,11 +177,6 @@ async def run_service(
   media_playback_controller_factory: Callable[[BoundLogger], MediaPlaybackController] | None = None,
   rewrite_client_factory: Callable[[LlmRewriteConfig | None], ActiveListenerRewriteClient]
   | None = None,
-  history_store_factory: Callable[
-    [ActiveListenerConfig, BoundLogger, AppStateService],
-    ActiveListenerTranscriptHistoryStore,
-  ]
-  | None = None,
 ) -> None:
   """Create and run the long-lived active-listener service.
 
@@ -221,10 +190,6 @@ async def run_service(
   :type emitter_factory: Callable[[], TextEmitter] | None
   :param media_playback_controller_factory: Factory for the media playback controller.
   :type media_playback_controller_factory: Callable[[BoundLogger], MediaPlaybackController] | None
-  :param history_store_factory: Factory for the transcript history dependency.
-  :type history_store_factory:
-      Callable[[ActiveListenerConfig, BoundLogger, AppStateService],
-      ActiveListenerTranscriptHistoryStore] | None
   :returns: None
   :rtype: None
   """
@@ -240,7 +205,6 @@ async def run_service(
       emitter_factory=emitter_factory,
       media_playback_controller_factory=media_playback_controller_factory,
       rewrite_client_factory=rewrite_client_factory,
-      history_store_factory=history_store_factory,
     )
   except Exception as exc:
     await emit_fatal_error_if_possible(
@@ -366,35 +330,7 @@ def build_rewrite_client(config: LlmRewriteConfig | None) -> ActiveListenerRewri
   if config is None:
     return DisabledRewriteClient()
 
-  provider = config.provider
-  if isinstance(provider, LiteRtRewriteProvider):
-    return LiteRtRewriteClient(model_path=provider.model_path)
-
-  return PydanticAiRewriteClient(model=provider.model)
-
-
-def build_history_store(
-  config: ActiveListenerConfig,
-  logger: BoundLogger,
-  dbus_service: AppStateService,
-) -> ActiveListenerTranscriptHistoryStore:
-  """Build the local transcript history store.
-
-  :param config: Validated runtime configuration.
-  :type config: ActiveListenerConfig
-  :param logger: Structured logger used for best-effort insert failures.
-  :type logger: BoundLogger
-  :param dbus_service: DBus publisher used for archive-failure notifications.
-  :type dbus_service: AppStateService
-  :returns: SQLite-backed transcript history store.
-  :rtype: ActiveListenerTranscriptHistoryStore
-  """
-  _ = config
-
-  return SqliteTranscriptHistoryStore(
-    logger=logger,
-    dbus_service=dbus_service,
-  )
+  return PydanticAiRewriteClient(model=config.provider.model)
 
 
 def resolve_ffmpeg_path(configured_path: str | None, *, logger: BoundLogger) -> str:

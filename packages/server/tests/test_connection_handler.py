@@ -10,7 +10,6 @@ from websockets.exceptions import ConnectionClosed
 
 from eavesdrop.server.connection_handler import (
   ClientInitializer,
-  SubscriberConnection,
   TranscriberConnection,
   WebSocketConnectionHandler,
 )
@@ -25,7 +24,6 @@ from eavesdrop.wire import (
 from eavesdrop.wire.messages import HealthCheckRequest
 
 if TYPE_CHECKING:
-  from eavesdrop.server.rtsp.subscriber import RTSPSubscriberManager
   from eavesdrop.server.streaming import WebSocketStreamingClient
 
 
@@ -93,20 +91,6 @@ class RaisingClientInitializer:
     raise self.error
 
 
-class FakeSubscriberManager:
-  result: tuple[bool, str | None]
-
-  def __init__(self, result: tuple[bool, str | None] = (True, None)) -> None:
-    self.result = result
-    self.calls: list[tuple[ServerConnection, list[str]]] = []
-
-  async def subscribe_client(
-    self, websocket: ServerConnection, stream_names: list[str]
-  ) -> tuple[bool, str | None]:
-    self.calls.append((websocket, stream_names))
-    return self.result
-
-
 class PublicErrorHandler(WebSocketConnectionHandler):
   async def send_error_and_close(self, websocket: ServerConnection, error_message: str) -> None:
     await self._send_error_and_close(websocket, error_message)
@@ -114,35 +98,6 @@ class PublicErrorHandler(WebSocketConnectionHandler):
 
 def as_server_connection(websocket: FakeWebSocket) -> ServerConnection:
   return cast(ServerConnection, cast(object, websocket))
-
-
-class TestWebSocketConnectionHandler:
-  @pytest.fixture
-  def client_initializer(self) -> RecordingClientInitializer:
-    return RecordingClientInitializer(client=cast("WebSocketStreamingClient", object()))
-
-  @pytest.fixture
-  def subscriber_manager(self) -> FakeSubscriberManager:
-    return FakeSubscriberManager()
-
-  @pytest.fixture
-  def handler(self, client_initializer: RecordingClientInitializer) -> WebSocketConnectionHandler:
-    return WebSocketConnectionHandler(
-      client_initializer=cast(ClientInitializer, client_initializer),
-      subscriber_manager=None,
-    )
-
-  def test_initial_state(self, handler: WebSocketConnectionHandler) -> None:
-    assert handler.subscriber_manager is None
-
-  def test_subscriber_manager_setter(
-    self, handler: WebSocketConnectionHandler, subscriber_manager: FakeSubscriberManager
-  ) -> None:
-    assert handler.subscriber_manager is None
-
-    handler.subscriber_manager = cast("RTSPSubscriberManager", cast(object, subscriber_manager))
-
-    assert handler.subscriber_manager is subscriber_manager
 
 
 class TestHandleTranscriberConnection:
@@ -161,8 +116,7 @@ class TestHandleTranscriberConnection:
   @pytest.fixture
   def handler(self, client_initializer: RecordingClientInitializer) -> WebSocketConnectionHandler:
     return WebSocketConnectionHandler(
-      client_initializer=cast(ClientInitializer, client_initializer),
-      subscriber_manager=None,
+      client_initializer=cast(ClientInitializer, client_initializer)
     )
 
   async def test_handle_transcriber_connection(
@@ -223,10 +177,7 @@ class TestHandleTranscriberConnection:
     monkeypatch: pytest.MonkeyPatch,
   ) -> None:
     initializer = RaisingClientInitializer(ValueError("boom"))
-    handler = WebSocketConnectionHandler(
-      client_initializer=cast(ClientInitializer, initializer),
-      subscriber_manager=None,
-    )
+    handler = WebSocketConnectionHandler(client_initializer=cast(ClientInitializer, initializer))
     mock_message = TranscriptionSetupMessage(stream="test", options=UserTranscriptionOptions())
     monkeypatch.setattr(
       "eavesdrop.server.connection_handler.deserialize_message",
@@ -259,7 +210,6 @@ class TestHandleHealthCheck:
         ClientInitializer,
         RecordingClientInitializer(client=cast("WebSocketStreamingClient", object())),
       ),
-      subscriber_manager=None,
     )
 
   async def test_handle_health_check(
@@ -283,92 +233,6 @@ class TestHandleHealthCheck:
     assert websocket.close_calls == 1
 
 
-class TestHandleSubscriberConnection:
-  @pytest.fixture
-  def websocket(self) -> FakeWebSocket:
-    return FakeWebSocket(
-      headers={
-        WebSocketHeaders.CLIENT_TYPE: ClientType.RTSP_SUBSCRIBER,
-        WebSocketHeaders.STREAM_NAMES: "office,lobby",
-      },
-      id="subscriber-id",
-    )
-
-  @pytest.fixture
-  def client_initializer(self) -> RecordingClientInitializer:
-    return RecordingClientInitializer(client=cast("WebSocketStreamingClient", object()))
-
-  @pytest.fixture
-  def subscriber_manager(self) -> FakeSubscriberManager:
-    return FakeSubscriberManager()
-
-  async def test_handle_subscriber_without_manager(
-    self,
-    websocket: FakeWebSocket,
-    client_initializer: RecordingClientInitializer,
-  ) -> None:
-    handler = WebSocketConnectionHandler(
-      client_initializer=cast(ClientInitializer, client_initializer),
-      subscriber_manager=None,
-    )
-
-    result = await handler.handle_connection(as_server_connection(websocket))
-
-    assert result is None
-    assert len(websocket.sent_messages) == 1
-    assert websocket.close_calls == 1
-
-  async def test_handle_subscriber_with_manager(
-    self,
-    websocket: FakeWebSocket,
-    client_initializer: RecordingClientInitializer,
-    subscriber_manager: FakeSubscriberManager,
-  ) -> None:
-    handler = WebSocketConnectionHandler(
-      client_initializer=cast(ClientInitializer, client_initializer),
-      subscriber_manager=cast("RTSPSubscriberManager", cast(object, subscriber_manager)),
-    )
-
-    result = await handler.handle_connection(as_server_connection(websocket))
-
-    assert isinstance(result, SubscriberConnection)
-    assert subscriber_manager.calls == [(as_server_connection(websocket), ["office", "lobby"])]
-
-  async def test_handle_subscriber_missing_stream_names(
-    self,
-    client_initializer: RecordingClientInitializer,
-    subscriber_manager: FakeSubscriberManager,
-  ) -> None:
-    websocket = FakeWebSocket(headers={WebSocketHeaders.CLIENT_TYPE: ClientType.RTSP_SUBSCRIBER})
-    handler = WebSocketConnectionHandler(
-      client_initializer=cast(ClientInitializer, client_initializer),
-      subscriber_manager=cast("RTSPSubscriberManager", cast(object, subscriber_manager)),
-    )
-
-    result = await handler.handle_connection(as_server_connection(websocket))
-
-    assert result is None
-    assert len(websocket.sent_messages) == 1
-    assert websocket.close_calls == 1
-
-  async def test_handle_subscriber_subscription_failure(
-    self,
-    websocket: FakeWebSocket,
-    client_initializer: RecordingClientInitializer,
-  ) -> None:
-    subscriber_manager = FakeSubscriberManager(result=(False, "Stream not found"))
-    handler = WebSocketConnectionHandler(
-      client_initializer=cast(ClientInitializer, client_initializer),
-      subscriber_manager=cast("RTSPSubscriberManager", cast(object, subscriber_manager)),
-    )
-
-    result = await handler.handle_connection(as_server_connection(websocket))
-
-    assert result is None
-    assert len(websocket.sent_messages) == 1
-    assert websocket.close_calls == 1
-
-
 class TestSendErrorAndClose:
   @pytest.fixture
   def handler(self) -> PublicErrorHandler:
@@ -377,7 +241,6 @@ class TestSendErrorAndClose:
         ClientInitializer,
         RecordingClientInitializer(client=cast("WebSocketStreamingClient", object())),
       ),
-      subscriber_manager=None,
     )
 
   async def test_send_error_and_close_sends_message(

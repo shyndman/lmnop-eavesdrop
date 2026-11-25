@@ -25,19 +25,18 @@ from eavesdrop.server.transcription.session import TranscriptionSession, create_
 class FakeSink:
   disconnect_outcomes: list[Exception | None]
   disconnect_calls: int
+  errors: list[str]
 
   def __init__(self) -> None:
     self.disconnect_outcomes = []
     self.disconnect_calls = 0
+    self.errors = []
 
   async def send_result(self, result: object) -> None:
     del result
 
   async def send_error(self, error: str) -> None:
-    del error
-
-  async def send_language_detection(self, language: str, probability: float) -> None:
-    del language, probability
+    self.errors.append(error)
 
   async def send_server_ready(self, backend: str) -> None:
     del backend
@@ -125,9 +124,9 @@ def processor(
   )
 
 
-async def test_transcription_exception_triggers_recovery_sleep(
+async def test_transcription_exception_sends_error_and_exits_loop(
   processor: ProcessorHarness,
-  monkeypatch: pytest.MonkeyPatch,
+  sink: FakeSink,
 ) -> None:
   chunk = AudioChunk(
     data=np.zeros(1600, dtype=np.float32),
@@ -145,17 +144,9 @@ async def test_transcription_exception_triggers_recovery_sleep(
   processor.set_chunk_provider(provide_chunk)
   processor.set_transcriber_behavior(raise_transcription_error)
 
-  sleep_calls: list[float] = []
+  await asyncio.wait_for(processor.run_transcription_loop(), timeout=0.2)
 
-  async def fake_sleep(delay: float) -> None:
-    sleep_calls.append(delay)
-    processor.exit = True
-
-  monkeypatch.setattr("eavesdrop.server.streaming.processor.asyncio.sleep", fake_sleep)
-
-  await processor.run_transcription_loop()
-
-  assert sleep_calls == [processor.buffer.config.transcription_interval]
+  assert sink.errors == ["Transcription failed: boom"]
 
 
 async def test_stop_processing_remains_callable_after_disconnect_error(

@@ -18,16 +18,14 @@ class SpeechChunk(TypedDict):
 
 
 class VadParameters(BaseModel):
-  """Repo-owned VAD configuration kept import-light for config and tests."""
+  """Repo-owned Silero VAD configuration kept import-light for config and tests."""
 
   model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
 
   threshold: float = Field(default=0.5, ge=0.0, le=1.0)
-  neg_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
   min_speech_duration_ms: int = Field(default=0, ge=0)
-  max_speech_duration_s: float = Field(default=float("inf"), gt=0.0)
-  min_silence_duration_ms: int = Field(default=2000, ge=0, exclude=True)
-  speech_pad_ms: int = Field(default=400, ge=0)
+  max_speech_duration_s: float = Field(default=15.0, gt=0.0, allow_inf_nan=False)
+  min_silence_duration_ms: int = Field(default=800, ge=0, exclude=True)
 
 
 @dataclass
@@ -37,4 +35,4 @@ class TranscriptionInfo:
   language: str = "en"
   duration: float = 0.0
   duration_after_vad: float = 0.0
-  speech_chunks: list[SpeechChunk] = field(default_factory=list)
+  speech_chunks: list[SpeechChunk] | None = field(default=None)

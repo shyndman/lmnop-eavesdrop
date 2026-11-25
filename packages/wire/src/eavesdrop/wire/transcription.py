@@ -4,17 +4,9 @@ Transcription data types for wire protocol communication.
 Contains the core data structures used for transcription results and user configuration.
 """
 
-from enum import StrEnum
 from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field
-
-
-class TranscriptionSourceMode(StrEnum):
-  """Declares how a transcriber session sources audio for server routing decisions."""
-
-  LIVE = "live"
-  FILE = "file"
 
 
 def compute_segment_chain_id(previous_id: int, text: str) -> int:
@@ -64,9 +56,6 @@ class Segment(BaseModel):
   words: list[Word] | None = None
   """Word-level timing breakdown when word timestamps are enabled, None otherwise."""
 
-  time_offset: float = Field(default=0.0, exclude=True)
-  """Internal segment-local offset retained only for Python-side compatibility helpers."""
-
   completed: bool = False
   """Whether the segment transcription has been finalized and assigned a chain ID."""
 
@@ -74,30 +63,6 @@ class Segment(BaseModel):
   def in_progress(self) -> bool:
     """Whether the segment is still being processed and not yet finalized."""
     return not self.completed
-
-  @property
-  def absolute_start_time(self) -> float:
-    """Return the start time in the recording timeline.
-
-    Segments created by current wire-facing pipeline stages now already use recording-
-    relative `start` values, so no offset is added when `start` already appears to be on
-    the recording timeline. For older compatibility where `start` is still window-relative,
-    `time_offset` is added as a fallback.
-    """
-    if self.time_offset > 0 and self.start < self.time_offset:
-      return self.time_offset + self.start
-    return self.start
-
-  @property
-  def absolute_end_time(self) -> float:
-    """Return the end time in the recording timeline.
-
-    Mirrors `absolute_start_time` so callers depending on compatibility helpers continue
-    to receive timeline-correct values after the flattening cutover.
-    """
-    if self.time_offset > 0 and self.end < self.time_offset:
-      return self.time_offset + self.end
-    return self.end
 
   @computed_field
   @property
@@ -132,9 +97,6 @@ class UserTranscriptionOptions(BaseModel):
   """Supported session options for Orukeet's English transcription contract."""
 
   model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", strict=True)
-
-  source_mode: TranscriptionSourceMode = TranscriptionSourceMode.LIVE
-  """Declares live-stream versus finite-file source intent for this session."""
 
   send_last_n_segments: int | None = Field(default=None, gt=0)
   """Number of most recent segments to send to the client."""

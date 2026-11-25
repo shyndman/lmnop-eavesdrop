@@ -50,23 +50,8 @@ class TranscriptionEvent:
   family: Literal["transcription"] = "transcription"
 
 
-@dataclass(frozen=True)
-class LanguageDetectionEvent:
-  """Auto-detected source-language event emitted by the live client iterator."""
-
-  stream: str
-  language: str
-  probability: float
-  family: Literal["language_detection"] = "language_detection"
-
-
 LiveClientEvent: TypeAlias = (
-  ConnectedEvent
-  | DisconnectedEvent
-  | ReconnectingEvent
-  | ReconnectedEvent
-  | TranscriptionEvent
-  | LanguageDetectionEvent
+  ConnectedEvent | DisconnectedEvent | ReconnectingEvent | ReconnectedEvent | TranscriptionEvent
 )
 
 
@@ -76,6 +61,5 @@ __all__ = [
   "ReconnectingEvent",
   "ReconnectedEvent",
   "TranscriptionEvent",
-  "LanguageDetectionEvent",
   "LiveClientEvent",
 ]

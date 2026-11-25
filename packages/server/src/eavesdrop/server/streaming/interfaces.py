@@ -1,15 +1,14 @@
 """
 Protocol interfaces for streaming transcription components.
 
-Defines the contracts for audio input sources and transcription output sinks
-using Python's Protocol system for structural typing.
+Defines the contracts for transcription output sinks using Python's Protocol
+system for structural typing.
 """
 
 from typing import Protocol
 
 import numpy as np
 from numpy.typing import NDArray
-from pydantic import Field
 from pydantic.dataclasses import dataclass
 
 from eavesdrop.wire import Segment
@@ -25,81 +24,28 @@ class TranscriptionResult:
   """List of transcription segments with timing and text information."""
 
   language: str | None = None
-  """Detected or specified language code."""
+  """Specified language code."""
 
   recording_id: str | None = None
-  """Live recording epoch identifier, omitted outside active-listener live mode."""
+  """Live recording epoch identifier."""
 
   flush_complete: bool | None = None
   """True only for the single response that satisfies an accepted flush."""
 
-  language_probability: float | None = Field(default=None, ge=0.0, le=1.0)
-  """Confidence score for language detection."""
-
-
-class AudioSource(Protocol):
-  """
-  Protocol for audio input sources.
-
-  Implementations provide audio data to the streaming transcription system.
-  """
-
-  async def read_audio(self) -> Float32Audio | None:
-    """
-    Read the next chunk of audio data.
-
-    :returns:
-        Audio data as numpy array, or None for end-of-stream.
-    """
-    ...
-
-  def close(self) -> None:
-    """Close the audio source and clean up resources."""
-    ...
-
 
 class TranscriptionSink(Protocol):
-  """
-  Protocol for transcription result outputs.
-
-  Implementations handle the delivery of transcription results to clients.
-  """
+  """Protocol for transcription result outputs."""
 
   async def send_result(self, result: TranscriptionResult) -> None:
-    """
-    Send transcription result to the output destination.
-
-    :param
-        result: The transcription result to send.
-    """
+    """Send transcription result to the output destination."""
     ...
 
   async def send_error(self, error: str) -> None:
-    """
-    Send error message to the output destination.
-
-    :param
-        error: Error message to send.
-    """
-    ...
-
-  async def send_language_detection(self, language: str, probability: float) -> None:
-    """
-    Send language detection result to the output destination.
-
-    :param
-        language: Detected language code.
-        probability: Confidence score for the detection.
-    """
+    """Send error message to the output destination."""
     ...
 
   async def send_server_ready(self, backend: str) -> None:
-    """
-    Send server ready notification to the output destination.
-
-    :param
-        backend: Name of the transcription backend being used.
-    """
+    """Send server ready notification to the output destination."""
     ...
 
   async def disconnect(self) -> None:

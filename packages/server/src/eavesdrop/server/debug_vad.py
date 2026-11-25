@@ -104,11 +104,9 @@ def analyze_with_vad(
   logger.info("Running VAD analysis...")
   logger.info("VAD Parameters:")
   logger.info(f"  threshold: {vad_options.threshold}")
-  logger.info(f"  neg_threshold: {vad_options.neg_threshold}")
   logger.info(f"  min_speech_duration_ms: {vad_options.min_speech_duration_ms}")
   logger.info(f"  max_speech_duration_s: {vad_options.max_speech_duration_s}")
   logger.info(f"  min_silence_duration_ms: {vad_options.min_silence_duration_ms}")
-  logger.info(f"  speech_pad_ms: {vad_options.speech_pad_ms}")
 
   # Run VAD
   if sample_rate != 16000:
@@ -197,16 +195,16 @@ def test_different_vad_settings(audio: Float32Audio, sample_rate: int) -> None:
 
   test_configs = [
     ("Default", VadParameters()),
-    ("More Sensitive", VadParameters(threshold=0.3, neg_threshold=0.25)),
-    ("Less Sensitive", VadParameters(threshold=0.7, neg_threshold=0.45)),
-    ("Very Sensitive", VadParameters(threshold=0.2, neg_threshold=0.15)),
+    ("More Sensitive", VadParameters(threshold=0.3)),
+    ("Less Sensitive", VadParameters(threshold=0.7)),
+    ("Very Sensitive", VadParameters(threshold=0.2)),
     ("Short Silence", VadParameters(min_silence_duration_ms=100)),
     ("No Min Speech", VadParameters(min_speech_duration_ms=0)),
   ]
 
   for name, vad_options in test_configs:
     logger.info(f"\n--- Testing: {name} ---")
-    logger.info(f"threshold={vad_options.threshold}, neg_threshold={vad_options.neg_threshold}")
+    logger.info(f"threshold={vad_options.threshold}")
     logger.info(f"min_speech_duration_ms={vad_options.min_speech_duration_ms}")
     logger.info(f"min_silence_duration_ms={vad_options.min_silence_duration_ms}")
 

@@ -18,7 +18,6 @@ from typing_extensions import override
 from active_listener.app.ports import (
   ActiveListenerRuntimeError,
   CapturedRecordingAudio,
-  FinalizedTranscriptRecord,
   FinishedRecording,
   RewriteResult,
 )
@@ -27,8 +26,8 @@ from active_listener.app.state import AppAction, AppActionDecision, ForegroundPh
 from active_listener.bootstrap import build_capture_callback, create_service, run_service
 from active_listener.config.models import (
   ActiveListenerConfig,
-  LiteRtRewriteProvider,
   LlmRewriteConfig,
+  PydanticAiRewriteProvider,
 )
 from active_listener.infra.keyboard import KeyboardControlEvent, KeyboardEventKind, KeyboardInput
 from active_listener.infra.rewrite import (
@@ -52,7 +51,6 @@ from active_listener.recording.spectrum import (
 from eavesdrop.client import (
   ConnectedEvent,
   DisconnectedEvent,
-  LanguageDetectionEvent,
   ReconnectedEvent,
   ReconnectingEvent,
   TranscriptionEvent,
@@ -110,9 +108,9 @@ AppEvent = DisconnectedEvent | ReconnectedEvent | ReconnectingEvent | Transcript
 def _rewrite_config() -> LlmRewriteConfig:
   return LlmRewriteConfig(
     prompt_path="/tmp/rewrite/system.md",
-    provider=LiteRtRewriteProvider(
-      type="litert",
-      model_path="/tmp/rewrite/model.litertlm",
+    provider=PydanticAiRewriteProvider(
+      type="pydantic_ai",
+      model="google-gla:gemini-3.1-flash-lite",
     ),
   )
 
@@ -507,24 +505,6 @@ class BlockingFirstRewriteClient(FakeRewriteClient):
 
 
 @dataclass
-class FakeHistoryStore:
-  recordings: list[RecordedFinalization] = field(default_factory=list)
-
-  def record_finalized_recording(
-    self,
-    record: FinalizedTranscriptRecord,
-    archived_audio: bytes | None,
-  ) -> None:
-    self.recordings.append(RecordedFinalization(record=record, archived_audio=archived_audio))
-
-
-@dataclass(frozen=True)
-class RecordedFinalization:
-  record: FinalizedTranscriptRecord
-  archived_audio: bytes | None
-
-
-@dataclass
 class FakeCorrectionStore:
   path: Path = Path("/tmp/active-listener.corrections.jsonc")
   loaded_corrections: dict[str, str] = field(default_factory=dict)
@@ -645,7 +625,6 @@ class ServiceHarness:
   emitter: FakeEmitter
   logger: RecordingLogger
   rewrite_client: FakeRewriteClient
-  history_store: FakeHistoryStore
   dbus_service: FakeDbusService
   media_playback_controller: FakeMediaPlaybackController
   recording_audio_buffer: RecordingAudioBuffer
@@ -659,7 +638,6 @@ def _service(
   emitter: FakeEmitter | None = None,
   logger: RecordingLogger | None = None,
   rewrite_client: FakeRewriteClient | None = None,
-  history_store: FakeHistoryStore | None = None,
   dbus_service: FakeDbusService | None = None,
   media_playback_controller: FakeMediaPlaybackController | None = None,
   config: ActiveListenerConfig | None = None,
@@ -672,7 +650,6 @@ def _service(
   resolved_emitter = emitter or FakeEmitter()
   resolved_logger = logger or RecordingLogger()
   resolved_rewrite_client = rewrite_client or FakeRewriteClient()
-  resolved_history_store = history_store or FakeHistoryStore()
   resolved_dbus_service = dbus_service or FakeDbusService()
   resolved_media_playback_controller = media_playback_controller or FakeMediaPlaybackController()
   resolved_recording_audio_buffer = recording_audio_buffer or RecordingAudioBuffer()
@@ -684,7 +661,6 @@ def _service(
     emitter=resolved_emitter,
     logger=cast(BoundLogger, cast(object, resolved_logger)),
     rewrite_client=resolved_rewrite_client,
-    history_store=resolved_history_store,
     dbus_service=resolved_dbus_service,
     media_playback_controller=resolved_media_playback_controller,
     recording_audio_buffer=resolved_recording_audio_buffer,
@@ -698,7 +674,6 @@ def _service(
     resolved_emitter,
     resolved_logger,
     resolved_rewrite_client,
-    resolved_history_store,
     resolved_dbus_service,
     resolved_media_playback_controller,
     resolved_recording_audio_buffer,
@@ -719,7 +694,6 @@ async def test_create_service_connects_client_and_initializes_emitter() -> None:
     keyboard_resolver=lambda _name: keyboard,
     client_factory=lambda _config, _on_capture: client,
     emitter_factory=lambda: (emitter.initialize(), emitter)[1],
-    history_store_factory=lambda _config, _logger, _dbus_service: FakeHistoryStore(),
   )
 
   assert service.phase is ForegroundPhase.IDLE
@@ -739,7 +713,6 @@ async def test_create_service_defaults_llm_runtime_active_when_rewrite_is_config
     client_factory=lambda _config, _on_capture: FakeClient(),
     emitter_factory=lambda: FakeEmitter(),
     rewrite_client_factory=lambda _config: FakeRewriteClient(),
-    history_store_factory=lambda _config, _logger, _dbus_service: FakeHistoryStore(),
   )
 
   assert service.current_llm_available() is True
@@ -765,7 +738,6 @@ async def test_create_service_passes_capture_callback_into_client_factory() -> N
     keyboard_resolver=lambda _name: keyboard,
     client_factory=client_factory,
     emitter_factory=lambda: (emitter.initialize(), emitter)[1],
-    history_store_factory=lambda _config, _logger, _dbus_service: FakeHistoryStore(),
   )
 
   assert service.phase is ForegroundPhase.IDLE
@@ -778,7 +750,6 @@ async def test_create_service_fails_fast_on_keyboard_resolution_error() -> None:
     _ = await create_service(
       _config(),
       keyboard_resolver=lambda _name: (_ for _ in ()).throw(RuntimeError("missing keyboard")),
-      history_store_factory=lambda _config, _logger, _dbus_service: FakeHistoryStore(),
     )
 
 
@@ -803,7 +774,6 @@ async def test_create_service_fails_fast_on_connect_error(
       client_factory=lambda _config, _on_capture: client,
       emitter_factory=lambda: FakeEmitter(),
       rewrite_client_factory=lambda _config: rewrite_client,
-      history_store_factory=lambda _config, _logger, _dbus_service: FakeHistoryStore(),
     )
 
   assert keyboard.close_calls == 1
@@ -826,7 +796,6 @@ async def test_create_service_fails_fast_when_rewrite_client_cannot_initialize()
       client_factory=lambda _config, _on_capture: client,
       emitter_factory=lambda: FakeEmitter(),
       rewrite_client_factory=lambda _config: (_ for _ in ()).throw(RewriteClientError("bad model")),
-      history_store_factory=lambda _config, _logger, _dbus_service: FakeHistoryStore(),
     )
 
   assert keyboard.close_calls == 1
@@ -1450,7 +1419,6 @@ async def test_spectrum_emission_flows_through_dbus_while_recording() -> None:
     client_factory=client_factory,
     emitter_factory=lambda: (emitter.initialize(), emitter)[1],
     rewrite_client_factory=lambda _config: FakeRewriteClient(),
-    history_store_factory=lambda _config, _logger, _dbus_service: FakeHistoryStore(),
   )
 
   _ = await service.handle_action(AppAction.START_OR_FINISH)
@@ -1497,7 +1465,6 @@ async def test_run_service_emits_fatal_error_once_on_startup_failure() -> None:
       client_factory=lambda _config, _on_capture: FakeClient(),
       emitter_factory=lambda: FakeEmitter(),
       rewrite_client_factory=lambda _config: FakeRewriteClient(),
-      history_store_factory=lambda _config, _logger, _dbus_service: FakeHistoryStore(),
     )
 
   assert dbus_service.states == []
@@ -1524,7 +1491,6 @@ async def test_run_service_emits_fatal_error_once_on_runtime_failure() -> None:
       client_factory=lambda _config, _on_capture: client,
       emitter_factory=lambda: FakeEmitter(),
       rewrite_client_factory=lambda _config: FakeRewriteClient(),
-      history_store_factory=lambda _config, _logger, _dbus_service: FakeHistoryStore(),
     )
 
   assert dbus_service.states == [ForegroundPhase.IDLE, ForegroundPhase.RECORDING]
@@ -1544,29 +1510,7 @@ async def test_create_service_resolves_configured_ffmpeg_path(
   _ = ffmpeg_path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
   ffmpeg_path.chmod(0o755)
 
-  class CapturingHistoryStore:
-    def __init__(
-      self,
-      *,
-      logger: BoundLogger,
-      dbus_service: FakeDbusService,
-    ) -> None:
-      _ = logger
-      _ = dbus_service
-
-    def record_finalized_recording(
-      self,
-      record: FinalizedTranscriptRecord,
-      archived_audio: bytes | None,
-    ) -> None:
-      _ = record
-      _ = archived_audio
-
   monkeypatch.setattr("active_listener.bootstrap.get_logger", lambda _name: logger)
-  monkeypatch.setattr(
-    "active_listener.bootstrap.SqliteTranscriptHistoryStore",
-    CapturingHistoryStore,
-  )
 
   service = await create_service(
     ActiveListenerConfig(
@@ -1602,30 +1546,8 @@ async def test_create_service_falls_back_to_path_for_ffmpeg_resolution(
   _ = ffmpeg_path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
   ffmpeg_path.chmod(0o755)
 
-  class CapturingHistoryStore:
-    def __init__(
-      self,
-      *,
-      logger: BoundLogger,
-      dbus_service: FakeDbusService,
-    ) -> None:
-      _ = logger
-      _ = dbus_service
-
-    def record_finalized_recording(
-      self,
-      record: FinalizedTranscriptRecord,
-      archived_audio: bytes | None,
-    ) -> None:
-      _ = record
-      _ = archived_audio
-
   monkeypatch.setattr("active_listener.bootstrap.get_logger", lambda _name: logger)
   monkeypatch.setattr("active_listener.infra.audio.shutil.which", lambda _name: str(ffmpeg_path))
-  monkeypatch.setattr(
-    "active_listener.bootstrap.SqliteTranscriptHistoryStore",
-    CapturingHistoryStore,
-  )
 
   service = await create_service(
     _config(),
@@ -1690,60 +1612,6 @@ async def test_reconnecting_and_reconnected_events_update_phase() -> None:
   ]
   assert harness.logger.warning_messages == ["client reconnecting"]
   assert harness.logger.info_messages == ["client reconnected"]
-
-
-@pytest.mark.asyncio
-async def test_language_detection_events_leave_idle_and_recording_state_unchanged() -> None:
-  harness = _service()
-  service = harness.service
-  event = LanguageDetectionEvent(stream="stream-1", language="en", probability=1.0)
-
-  await service.handle_client_event(event)
-
-  assert service.phase is ForegroundPhase.IDLE
-  assert harness.dbus_service.states == []
-  assert harness.dbus_service.signals == []
-
-  _ = await service.handle_action(AppAction.START_OR_FINISH)
-  await service.handle_client_event(event)
-
-  assert service.phase is ForegroundPhase.RECORDING
-  assert service.disconnect_generation == 0
-  assert harness.client.stop_calls == 0
-  assert harness.dbus_service.states == [ForegroundPhase.RECORDING]
-  assert harness.dbus_service.signals == []
-
-  _ = await service.handle_action(AppAction.CANCEL)
-  await service.wait_for_background_tasks()
-
-
-@pytest.mark.asyncio
-async def test_language_detection_keeps_recording_active_until_finish() -> None:
-  client = FakeClient(
-    flush_results=[
-      _message(
-        _segment(1, "alpha", completed=True),
-        _segment(2, "tail", completed=False),
-      )
-    ]
-  )
-  harness = _service(client=client)
-  service = harness.service
-
-  _ = await service.handle_action(AppAction.START_OR_FINISH)
-  await service.handle_client_event(
-    LanguageDetectionEvent(stream="stream-1", language="en", probability=0.99)
-  )
-
-  assert service.phase is ForegroundPhase.RECORDING
-  assert client.stop_calls == 0
-  assert harness.dbus_service.signals == []
-
-  _ = await service.handle_action(AppAction.START_OR_FINISH)
-  await service.wait_for_background_tasks()
-
-  assert service.phase is ForegroundPhase.IDLE
-  assert harness.emitter.emitted == ["alpha "]
 
 
 @pytest.mark.asyncio
@@ -2592,21 +2460,6 @@ async def test_finalize_recording_emits_raw_text_when_rewrite_is_disabled(
     )
     in harness.logger.info_records
   )
-  assert harness.history_store.recordings == [
-    RecordedFinalization(
-      record=FinalizedTranscriptRecord(
-        pre_finalization_text="alpha",
-        post_finalization_text="alpha ",
-        llm_model=None,
-        tokens_in=None,
-        tokens_out=None,
-        cost=None,
-        word_count=1,
-        duration_seconds=0.1,
-      ),
-      archived_audio=b"m4a-bytes",
-    )
-  ]
   assert harness.logger.info_records[-1] == LogRecord(
     event="text emitted",
     fields={
@@ -3046,21 +2899,6 @@ async def test_finalize_recording_skips_only_rewrite_when_runtime_disabled(
     )
     in harness.logger.info_records
   )
-  assert harness.history_store.recordings == [
-    RecordedFinalization(
-      record=FinalizedTranscriptRecord(
-        pre_finalization_text="alpha",
-        post_finalization_text="alpha ",
-        llm_model=None,
-        tokens_in=None,
-        tokens_out=None,
-        cost=None,
-        word_count=1,
-        duration_seconds=0.1,
-      ),
-      archived_audio=b"m4a-bytes",
-    )
-  ]
   assert harness.logger.info_records[-1] == LogRecord(
     event="text emitted",
     fields={
@@ -3089,7 +2927,6 @@ async def test_finalize_recording_does_not_archive_when_text_emission_fails() ->
   _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
   await harness.service.wait_for_background_tasks()
 
-  assert harness.history_store.recordings == []
   assert harness.logger.exception_messages[-1] == "text emission failed"
 
 
@@ -3177,25 +3014,14 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
   captured_audio = _sine_wave_bytes(440.0, 32)
   audio_attachment = {"media": "mp3"}
 
-  @dataclass
-  class AssertingHistoryStore(FakeHistoryStore):
-    emitter: FakeEmitter = field(default_factory=FakeEmitter)
+  def encode_after_emit(*_args: object, **_kwargs: object) -> bytes:
+    assert emitter.emitted == ["rewritten alpha "]
+    return b"m4a-bytes"
 
-    @override
-    def record_finalized_recording(
-      self,
-      record: FinalizedTranscriptRecord,
-      archived_audio: bytes | None,
-    ) -> None:
-      assert self.emitter.emitted == ["rewritten alpha "]
-      super().record_finalized_recording(record, archived_audio)
-
-  history_store = AssertingHistoryStore(emitter=emitter)
   harness = _service(
     client=client,
     emitter=emitter,
     rewrite_client=rewrite_client,
-    history_store=history_store,
     config=_config(rewrite_enabled=True),
   )
   monkeypatch.setattr(
@@ -3208,7 +3034,7 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
   )
   monkeypatch.setattr(
     "active_listener.recording.finalizer.encode_recording_audio",
-    lambda *_args, **_kwargs: b"m4a-bytes",
+    encode_after_emit,
   )
   monkeypatch.setattr(
     "active_listener.app.service.start_recording_observation",
@@ -3232,21 +3058,6 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
       "transcript": "alpha",
     }
   ]
-  assert harness.history_store.recordings == [
-    RecordedFinalization(
-      record=FinalizedTranscriptRecord(
-        pre_finalization_text="alpha",
-        post_finalization_text="rewritten alpha ",
-        llm_model="fake-model",
-        tokens_in=12,
-        tokens_out=4,
-        cost=Decimal("0.00012"),
-        word_count=2,
-        duration_seconds=0.1,
-      ),
-      archived_audio=b"m4a-bytes",
-    )
-  ]
   assert recording_observed_calls == [
     {
       "recording_id": harness.client.flush_recording_ids[0],
@@ -3257,8 +3068,8 @@ async def test_finalize_recording_rewrites_text_when_rewrite_succeeds(
     {
       "session_id": "stream-1",
       "recording_id": harness.client.flush_recording_ids[0],
-      "provider": "litert",
-      "model": "/tmp/rewrite/model.litertlm",
+      "provider": "pydantic_ai",
+      "model": "google-gla:gemini-3.1-flash-lite",
       "prompt_path": "/tmp/rewrite/system.md",
       "stream": "stream-1",
       "transcript": "alpha",
@@ -3502,13 +3313,7 @@ async def test_finalize_recording_emits_shaped_text_and_signals_failure_when_rew
   _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
   await harness.service.wait_for_background_tasks()
 
-  assert harness.emitter.emitted == ["release#42 "]
-  record = harness.history_store.recordings[0].record
-  assert record.post_finalization_text == "release#42 "
-  assert record.llm_model is None
-  assert record.tokens_in is None
-  assert record.tokens_out is None
-  assert record.cost is None
+  assert harness.emitter.emitted == ["release#42 thank you "]
   assert observed_updates == [
     {
       "input": None,
@@ -3764,3 +3569,29 @@ async def test_rewrite_logging_captures_success_payloads(monkeypatch: pytest.Mon
     )
     in harness.logger.info_records
   )
+
+
+@pytest.mark.asyncio
+async def test_run_propagates_producer_task_exception() -> None:
+  class FailingEventsKeyboard(FakeKeyboard):
+    @override
+    async def events(self) -> AsyncIterator[KeyboardControlEvent]:
+      await asyncio.sleep(0)
+      if not self.grabbed:
+        raise RuntimeError("evdev lost")
+      yield _keyboard_event(KeyboardEventKind.CAPSLOCK_DOWN)
+
+  class WaitingClient(FakeClient):
+    @override
+    async def _iterate_events(self) -> AsyncIterator[AppEvent]:
+      _ = await asyncio.Future()
+      for event in self.events:
+        yield event
+
+  harness = _service(keyboard=FailingEventsKeyboard(), client=WaitingClient())
+
+  with pytest.raises(RuntimeError, match="evdev lost"):
+    await asyncio.wait_for(harness.service.run(), timeout=0.5)
+
+  assert harness.client.disconnect_calls == 1
+  assert harness.keyboard.close_calls == 1

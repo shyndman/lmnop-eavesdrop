@@ -422,8 +422,8 @@ def segment_words(segment: Segment, *, is_complete: bool) -> list[TimedWord]:
   return [
     TimedWord(
       text=text,
-      start_s=segment.absolute_start_time,
-      end_s=segment.absolute_end_time,
+      start_s=segment.start,
+      end_s=segment.end,
       is_complete=is_complete,
     )
   ]

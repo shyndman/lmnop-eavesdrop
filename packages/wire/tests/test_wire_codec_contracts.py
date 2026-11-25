@@ -19,17 +19,14 @@ from eavesdrop.wire.messages import (
   ErrorMessage,
   FlushControlMessage,
   HealthCheckRequest,
-  LanguageDetectionMessage,
   RecordingStartedMessage,
   ServerReadyMessage,
-  StreamStatusMessage,
   TranscriptionMessage,
   TranscriptionSetupMessage,
   UtteranceCancelledMessage,
 )
 from eavesdrop.wire.transcription import (
   Segment,
-  TranscriptionSourceMode,
   UserTranscriptionOptions,
   Word,
   compute_segment_chain_id,
@@ -60,7 +57,6 @@ def _build_contract_segment() -> Segment:
     end=3.75,
     text="contract fixture",
     words=[Word(start=1.25, end=1.6, word="contract")],
-    time_offset=32.0,
     completed=True,
   )
 
@@ -74,27 +70,15 @@ def _build_contract_segment() -> Segment:
       segments=[_build_contract_segment()],
       language="en",
     ),
-    StreamStatusMessage(
-      timestamp=1_700_000_000.2,
-      stream="stream-a",
-      status="online",
-      message="ready",
-    ),
     ErrorMessage(
       timestamp=1_700_000_000.3,
       stream="stream-a",
       message="stream failed",
     ),
-    LanguageDetectionMessage(
-      timestamp=1_700_000_000.4,
-      stream="stream-a",
-      language="en",
-      language_prob=0.87,
-    ),
     ServerReadyMessage(
       timestamp=1_700_000_000.5,
       stream="stream-a",
-      backend="parakeet",
+      backend="orukeet_tdt",
     ),
     DisconnectMessage(
       timestamp=1_700_000_000.6,
@@ -123,7 +107,6 @@ def _build_contract_segment() -> Segment:
       timestamp=1_700_000_000.8,
       stream="stream-a",
       options=UserTranscriptionOptions(
-        source_mode=TranscriptionSourceMode.FILE,
         send_last_n_segments=5,
         word_timestamps=True,
       ),
@@ -165,7 +148,6 @@ def test_decode_preserves_transcription_metadata_fields() -> None:
   assert decoded.flush_complete is True
   assert decoded.segments[0].id == 4242
   assert decoded.segments[0].text == "contract fixture"
-  assert decoded.segments[0].time_offset == 0.0
   assert decoded.segments[0].completed is True
   assert decoded.segments[0].words is not None
   assert decoded.segments[0].words[0].word == "contract"
@@ -177,7 +159,6 @@ def test_decode_preserves_control_message_metadata_fields() -> None:
       timestamp=1_700_000_002.0,
       stream="stream-2",
       options=UserTranscriptionOptions(
-        source_mode=TranscriptionSourceMode.LIVE,
         send_last_n_segments=2,
         word_timestamps=True,
         language="en",
@@ -191,7 +172,6 @@ def test_decode_preserves_control_message_metadata_fields() -> None:
   assert decoded.timestamp == 1_700_000_002.0
   assert decoded.stream == "stream-2"
   assert decoded.options.send_last_n_segments == 2
-  assert decoded.options.source_mode == TranscriptionSourceMode.LIVE
   assert decoded.options.word_timestamps is True
   assert decoded.options.language == "en"
 
@@ -273,7 +253,6 @@ def test_wire_payload_records_and_words_use_same_recording_timeline() -> None:
               word="first",
             )
           ],
-          time_offset=5.0,
           completed=True,
         )
       ],
@@ -348,18 +327,6 @@ def test_deserialize_rejects_non_string_discriminator_type() -> None:
   assert "type" in str(exc_info.value)
 
 
-def test_setup_options_default_source_mode_to_live_when_field_omitted() -> None:
-  payload = (
-    '{"type":"setup","timestamp":1700000005.0,"stream":"stream-3",'
-    '"options":{"send_last_n_segments":1}}'
-  )
-
-  decoded = deserialize_message(payload)
-
-  assert decoded.type == "setup"
-  assert decoded.options.source_mode == TranscriptionSourceMode.LIVE
-
-
 def test_setup_defaults_enable_native_word_timestamps() -> None:
   """An omitted options payload uses English and native word timings."""
   decoded = deserialize_message('{"type":"setup","stream":"default","options":{}}')
@@ -399,6 +366,8 @@ def test_setup_accepts_english_compatibility_hint_and_word_timestamp_toggle(
     ("model", "other-model"),
     ("task", "translate"),
     ("task", "transcribe"),
+    ("source_mode", "live"),
+    ("source_mode", "file"),
     ("unknown_option", True),
   ],
 )
@@ -466,7 +435,7 @@ def test_segment_completion_preserves_chain_ids_and_recording_timestamps() -> No
   assert second.id == compute_segment_chain_id(first.id, "second")
   assert first.completed is True
   assert second.completed is True
-  assert first.absolute_start_time == 10.0
-  assert first.absolute_end_time == 10.5
-  assert second.absolute_start_time == 10.5
-  assert second.absolute_end_time == 11.0
+  assert first.start == 10.0
+  assert first.end == 10.5
+  assert second.start == 10.5
+  assert second.end == 11.0

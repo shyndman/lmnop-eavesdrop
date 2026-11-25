@@ -67,7 +67,7 @@ def test_start_rewrite_observation_pins_trace_context(
   with langfuse_module.start_rewrite_observation(
     session_id="session-1",
     recording_id="recording-1",
-    provider="litert",
+    provider="pydantic_ai",
     model="model-1",
     prompt_path="/tmp/rewrite/system.md",
     stream="stream-1",
@@ -80,10 +80,10 @@ def test_start_rewrite_observation_pins_trace_context(
     {
       "metadata": {
         "component": "active-listener",
-        "provider": "litert",
+        "provider": "pydantic_ai",
         "stream": "stream-1",
       },
-      "tags": ["active-listener", "rewrite", "litert"],
+      "tags": ["active-listener", "rewrite", "pydantic_ai"],
       "session_id": "session-1",
     }
   ]
@@ -94,7 +94,7 @@ def test_start_rewrite_observation_pins_trace_context(
       "input": "alpha",
       "metadata": {
         "component": "active-listener",
-        "provider": "litert",
+        "provider": "pydantic_ai",
         "model": "model-1",
         "prompt_path": "/tmp/rewrite/system.md",
         "stream": "stream-1",
@@ -188,7 +188,7 @@ def test_start_rewrite_observation_nests_under_parent_recording_observation(
   with langfuse_module.start_rewrite_observation(
     session_id="session-1",
     recording_id="recording-1",
-    provider="litert",
+    provider="pydantic_ai",
     model="model-1",
     prompt_path="/tmp/rewrite/system.md",
     stream="stream-1",
@@ -203,10 +203,10 @@ def test_start_rewrite_observation_nests_under_parent_recording_observation(
     {
       "metadata": {
         "component": "active-listener",
-        "provider": "litert",
+        "provider": "pydantic_ai",
         "stream": "stream-1",
       },
-      "tags": ["active-listener", "rewrite", "litert"],
+      "tags": ["active-listener", "rewrite", "pydantic_ai"],
       "session_id": "session-1",
     }
   ]
@@ -216,7 +216,7 @@ def test_start_rewrite_observation_nests_under_parent_recording_observation(
       "input": "alpha",
       "metadata": {
         "component": "active-listener",
-        "provider": "litert",
+        "provider": "pydantic_ai",
         "model": "model-1",
         "prompt_path": "/tmp/rewrite/system.md",
         "stream": "stream-1",

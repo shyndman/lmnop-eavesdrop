@@ -1,0 +1,15 @@
+[Unit]
+Description=Eavesdrop local speech-to-text transcription server
+After=network.target
+StartLimitIntervalSec=1800
+StartLimitBurst=60
+
+[Service]
+Type=simple
+WorkingDirectory=@REPO_ROOT@
+ExecStart=/bin/bash -c 'set -e; ENV=$(timeout 2 cat @REPO_ROOT@/.env); set -a; eval "$ENV"; exec @UV_BIN@ run --no-sync --package eavesdrop-server eavesdrop-server --config @CONFIG_PATH@'
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

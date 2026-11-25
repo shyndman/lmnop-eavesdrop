@@ -14,8 +14,8 @@ from active_listener.app.state import ForegroundPhase
 from active_listener.cli import ActiveListenerCommand, build_app_state_service, env_int, require_env
 from active_listener.config.models import (
   ActiveListenerConfig,
-  LiteRtRewriteProvider,
   LlmRewriteConfig,
+  PydanticAiRewriteProvider,
 )
 from active_listener.infra.dbus import (
   DbusDuplicateInstanceError,
@@ -100,8 +100,8 @@ def _write_config(
     "llm_rewrite:\n"
     '  prompt_path: "prompts/rewrite_prompt.md"\n'
     "  provider:\n"
-    "    type: litert\n"
-    '    model_path: "models/rewrite.litertlm"\n'
+    "    type: pydantic_ai\n"
+    '    model: "google-gla:gemini-3.1-flash-lite"\n'
   )
   _ = path.write_text(
     "\n".join(
@@ -204,9 +204,9 @@ async def test_command_run_uses_config_file_values(
         audio_device="config-device",
         llm_rewrite=LlmRewriteConfig(
           prompt_path=str(config_path.parent / "prompts" / "rewrite_prompt.md"),
-          provider=LiteRtRewriteProvider(
-            type="litert",
-            model_path=str(config_path.parent / "models" / "rewrite.litertlm"),
+          provider=PydanticAiRewriteProvider(
+            type="pydantic_ai",
+            model="google-gla:gemini-3.1-flash-lite",
           ),
         ),
       ),
@@ -246,9 +246,9 @@ async def test_command_run_uses_default_xdg_config_path_when_flag_is_not_set(
   assert captured[0].port == 9191
   assert captured[0].llm_rewrite == LlmRewriteConfig(
     prompt_path=str(config_path.parent / "prompts" / "rewrite_prompt.md"),
-    provider=LiteRtRewriteProvider(
-      type="litert",
-      model_path=str(config_path.parent / "models" / "rewrite.litertlm"),
+    provider=PydanticAiRewriteProvider(
+      type="pydantic_ai",
+      model="google-gla:gemini-3.1-flash-lite",
     ),
   )
 
@@ -395,8 +395,8 @@ async def test_command_run_rejects_removed_rewrite_fields(
       "llm_rewrite:\n"
       '  prompt_path: "prompts/rewrite_prompt.md"\n'
       "  provider:\n"
-      "    type: litert\n"
-      '    model_path: "models/rewrite.litertlm"\n'
+      "    type: pydantic_ai\n"
+      '    model: "google-gla:gemini-3.1-flash-lite"\n'
       '    base_url: "http://localhost:11434/v1"\n'
       "    timeout_s: 30\n"
     ),

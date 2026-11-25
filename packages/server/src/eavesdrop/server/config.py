@@ -50,20 +50,6 @@ class BufferConfig:
     return self
 
 
-class RTSPCacheConfig(BaseModel):
-  """Configuration for RTSP stream caching behavior based on listener presence."""
-
-  waiting_for_listener_duration: float = Field(
-    default=10800.0, gt=0.0, description="Cache duration in seconds when streams have no listeners"
-  )
-
-  has_listener_cache_duration: float = Field(
-    default=600.0,
-    gt=0.0,
-    description="Cache duration in seconds when streams have active listeners",
-  )
-
-
 class DebugAudioConfig(BaseModel):
   """Configuration for debug audio recording behavior."""
 
@@ -77,30 +63,16 @@ class DebugAudioConfig(BaseModel):
   )
 
 
-class RTSPConfig(BaseModel):
-  """Configuration for RTSP stream behavior."""
-
-  streams: dict[str, str] = Field(default={}, description="RTSP stream URLs")
-
-  cache: RTSPCacheConfig = Field(
-    default_factory=RTSPCacheConfig, description="RTSP cache configuration"
-  )
-
-
 class TranscriptionConfig(BaseModel):
   """Configuration for transcription processing behavior."""
 
-  # Transcription behavior
   send_last_n_segments: int = Field(default=10, gt=0)
   """Number of most recent segments to send to the client."""
 
   model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", strict=True)
 
   model: Literal["oruk/orukeet"] = "oruk/orukeet"
-  """Fixed Orukeet model with CPU INT8 ONNX or Vulkan Q8 GGUF assets."""
-
-  device: Literal["cpu", "vulkan"] = "cpu"
-  """CPU INT8 ONNX or Vulkan Q8 GGUF inference."""
+  """Fixed Orukeet model with CPU INT8 ONNX assets."""
 
   language: Literal["en"] = "en"
   """Only English transcription is supported."""
@@ -146,58 +118,39 @@ class TranscriptionConfig(BaseModel):
 
 
 class EavesdropConfig(BaseModel):
-  """Top-level Eavesdrop configuration with transcription and RTSP settings."""
+  """Top-level Eavesdrop configuration."""
+
+  model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", strict=True)
 
   transcription: TranscriptionConfig = Field(default_factory=TranscriptionConfig)
   """Transcription processing configuration."""
 
-  rtsp: RTSPConfig = Field(default_factory=RTSPConfig)
-  """RTSP stream configuration."""
-
-  def pretty_print(self) -> None:
-    """
-    Pretty print the complete configuration at INFO level.
-
-    This method logs every single configuration property to provide full visibility
-    into the active configuration, including defaults. This is essential for
-    debugging configuration issues and verifying that settings are applied correctly.
-    """
-    logger.info("=" * 60)
-    logger.info("EAVESDROP CONFIGURATION")
-    logger.info("=" * 60)
-
-    # Transcription settings - all properties
+  def _log_transcription_settings(self) -> None:
+    t = self.transcription
+    vad = t.vad_parameters
     logger.info("TRANSCRIPTION SETTINGS:")
-    logger.info(f"  Model: {self.transcription.model}")
-    logger.info(f"  Device: {self.transcription.device}")
-    logger.info(f"  Language: {self.transcription.language}")
-    logger.info(f"  Word Timestamps: {self.transcription.word_timestamps}")
-    logger.info(f"  Send Last N Segments: {self.transcription.send_last_n_segments}")
-    silence_threshold = self.transcription.silence_completion_threshold
-    logger.info(f"  Silence Completion Threshold: {silence_threshold}s")
-    logger.info(f"  Use VAD: {self.transcription.use_vad}")
-
-    # VAD parameters - all properties
+    logger.info(f"  Model: {t.model}")
+    logger.info(f"  Language: {t.language}")
+    logger.info(f"  Word Timestamps: {t.word_timestamps}")
+    logger.info(f"  Send Last N Segments: {t.send_last_n_segments}")
+    logger.info(f"  Silence Completion Threshold: {t.silence_completion_threshold}s")
+    logger.info(f"  Use VAD: {t.use_vad}")
     logger.info("  VAD PARAMETERS:")
-    vad = self.transcription.vad_parameters
     logger.info(f"    Threshold: {vad.threshold}")
-    logger.info(f"    Neg Threshold: {vad.neg_threshold}")
     logger.info(f"    Min Speech Duration: {vad.min_speech_duration_ms}ms")
     logger.info(f"    Max Speech Duration: {vad.max_speech_duration_s}s")
     logger.info(f"    Min Silence Duration: {vad.min_silence_duration_ms}ms")
-    logger.info(f"    Speech Pad: {vad.speech_pad_ms}ms")
 
-    # Buffer settings - all properties
+  def _log_buffer_and_debug_settings(self) -> None:
+    buf = self.transcription.buffer
     logger.info("BUFFER SETTINGS:")
-    logger.info(f"  Sample Rate: {self.transcription.buffer.sample_rate}")
-    logger.info(f"  Max Buffer Duration: {self.transcription.buffer.max_buffer_duration}s")
-    logger.info(f"  Cleanup Duration: {self.transcription.buffer.cleanup_duration}s")
-    logger.info(f"  Min Chunk Duration: {self.transcription.buffer.min_chunk_duration}s")
-    logger.info(f"  Transcription Interval: {self.transcription.buffer.transcription_interval}s")
-    logger.info(f"  Clip Audio: {self.transcription.buffer.clip_audio}")
-    logger.info(f"  Max Stall Duration: {self.transcription.buffer.max_stall_duration}s")
-
-    # Debug audio settings
+    logger.info(f"  Sample Rate: {buf.sample_rate}")
+    logger.info(f"  Max Buffer Duration: {buf.max_buffer_duration}s")
+    logger.info(f"  Cleanup Duration: {buf.cleanup_duration}s")
+    logger.info(f"  Min Chunk Duration: {buf.min_chunk_duration}s")
+    logger.info(f"  Transcription Interval: {buf.transcription_interval}s")
+    logger.info(f"  Clip Audio: {buf.clip_audio}")
+    logger.info(f"  Max Stall Duration: {buf.max_stall_duration}s")
     logger.info("DEBUG AUDIO SETTINGS:")
     if self.transcription.debug_audio:
       logger.info(f"  Pre-Buffer Path: {self.transcription.debug_audio.pre_buffer}")
@@ -205,55 +158,40 @@ class EavesdropConfig(BaseModel):
     else:
       logger.info("  Debug Audio: Disabled")
 
-    # RTSP settings - all properties
-    logger.info("RTSP SETTINGS:")
-    if self.rtsp.streams:
-      logger.info(f"  Streams ({len(self.rtsp.streams)}):")
-      for name, url in self.rtsp.streams.items():
-        logger.info(f"    {name}: {url}")
-    else:
-      logger.info("  Streams: None (WebSocket-only mode)")
-
-    logger.info(f"  Cache Waiting Duration: {self.rtsp.cache.waiting_for_listener_duration:.1f}s")
-    logger.info(f"  Cache Listener Duration: {self.rtsp.cache.has_listener_cache_duration:.1f}s")
-
-    # System constants
+  def pretty_print(self) -> None:
+    """Pretty print the complete configuration at INFO level."""
+    logger.info("=" * 60)
+    logger.info("EAVESDROP CONFIGURATION")
+    logger.info("=" * 60)
+    self._log_transcription_settings()
+    self._log_buffer_and_debug_settings()
     logger.info("SYSTEM CONSTANTS:")
     logger.info(f"  Cache Path: {CACHE_PATH}")
     logger.info(f"  Single Model: {SINGLE_MODEL}")
-
     logger.info("=" * 60)
 
 
 @validate_call
 def load_config_from_file(config_path: FilePath) -> EavesdropConfig:
   """Load and validate Eavesdrop configuration from YAML file."""
-
   logger.info("Loading Eavesdrop configuration", path=str(config_path))
 
   try:
-    # Load YAML content
     with open(config_path, "r", encoding="utf-8") as file:
       config_data = cast(object, yaml.safe_load(file))
-
   except yaml.YAMLError as e:
     raise ValueError(f"Invalid YAML in configuration file: {e}") from e
   except Exception as e:
     raise ValueError(f"Error reading configuration file: {e}") from e
 
-  # Validate configuration structure
   if config_data is None:
     raise ValueError("Configuration file is empty")
 
   if not isinstance(config_data, dict):
     raise ValueError("Configuration file must contain a YAML dictionary")
 
-  # Validate and create config using Pydantic
   config = EavesdropConfig.model_validate(config_data)
-
-  # Pretty print the config
   config.pretty_print()
-
   return config
 
 

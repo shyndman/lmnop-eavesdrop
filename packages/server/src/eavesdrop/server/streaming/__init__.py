@@ -1,42 +1,26 @@
-"""
-Streaming audio transcription abstractions.
-
-This module provides reusable abstractions for streaming audio transcription
-that can be used by various input sources (WebSocket, RTSP, etc.).
-"""
+"""Streaming audio transcription abstractions."""
 
 from typing import TYPE_CHECKING
 
 from eavesdrop.server.config import TranscriptionConfig
 from eavesdrop.server.streaming.buffer import AudioStreamBuffer
 from eavesdrop.server.streaming.interfaces import (
-  AudioSource,
   TranscriptionResult,
   TranscriptionSink,
 )
 
 if TYPE_CHECKING:
-  from eavesdrop.server.streaming.audio_flow import (
-    WebSocketAudioSource,
-    WebSocketTranscriptionSink,
-  )
+  from eavesdrop.server.streaming.audio_flow import WebSocketTranscriptionSink
   from eavesdrop.server.streaming.client import WebSocketStreamingClient
   from eavesdrop.server.streaming.debug_capture import AudioDebugCapture
   from eavesdrop.server.streaming.processor import StreamingTranscriptionProcessor
 
 
 def __getattr__(name: str) -> object:
-  if name in {"WebSocketAudioSource", "WebSocketTranscriptionSink"}:
-    from eavesdrop.server.streaming.audio_flow import (
-      WebSocketAudioSource,
-      WebSocketTranscriptionSink,
-    )
+  if name == "WebSocketTranscriptionSink":
+    from eavesdrop.server.streaming.audio_flow import WebSocketTranscriptionSink
 
-    exports = {
-      "WebSocketAudioSource": WebSocketAudioSource,
-      "WebSocketTranscriptionSink": WebSocketTranscriptionSink,
-    }
-    return exports[name]
+    return WebSocketTranscriptionSink
 
   if name == "WebSocketStreamingClient":
     from eavesdrop.server.streaming.client import WebSocketStreamingClient
@@ -59,12 +43,10 @@ def __getattr__(name: str) -> object:
 __all__ = [
   "AudioDebugCapture",
   "AudioStreamBuffer",
-  "AudioSource",
   "TranscriptionResult",
   "TranscriptionSink",
   "StreamingTranscriptionProcessor",
   "TranscriptionConfig",
-  "WebSocketAudioSource",
   "WebSocketTranscriptionSink",
   "WebSocketStreamingClient",
 ]

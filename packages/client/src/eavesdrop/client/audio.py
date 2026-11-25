@@ -67,14 +67,11 @@ class AudioCapture:
     if status:
       self.on_error(f"Audio status: {status}")
 
-    if self.recording:
-      # Convert to float32 and queue for transmission
-      audio_data = indata.copy().astype(DTYPE)
-      if self._callback_loop is not None:
-        _ = self._callback_loop.call_soon_threadsafe(
-          self.audio_queue.put_nowait,
-          audio_data.tobytes(),
-        )
+    if self.recording and self._callback_loop is not None:
+      _ = self._callback_loop.call_soon_threadsafe(
+        self.audio_queue.put_nowait,
+        indata.tobytes(),
+      )
 
   def start_recording(self):
     """Start audio capture from microphone."""

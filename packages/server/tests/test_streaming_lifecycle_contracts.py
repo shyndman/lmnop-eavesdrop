@@ -10,7 +10,7 @@ These tests pin orchestration guarantees around completion handling:
 """
 
 import asyncio
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Protocol, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -28,33 +28,24 @@ from eavesdrop.server.connection_handler import (
   PRE_SETUP_UTTERANCE_CANCEL_REJECTION,
   WebSocketConnectionHandler,
 )
-from eavesdrop.server.server import (
-  RTSP_FLUSH_REJECTION,
-  RTSP_RECORDING_START_REJECTION,
-  RTSP_UTTERANCE_CANCEL_REJECTION,
-  TranscriptionServer,
-)
-from eavesdrop.server.streaming.audio_flow import WebSocketAudioSource
+from eavesdrop.server.streaming.audio_flow import WebSocketTranscriptionSink
 from eavesdrop.server.streaming.buffer import AudioStreamBuffer
 from eavesdrop.server.streaming.client import (
   LIVE_FLUSH_ALREADY_PENDING_MESSAGE,
-  LIVE_FLUSH_FILE_MODE_MESSAGE,
   LIVE_RECORDING_ID_MISMATCH_MESSAGE,
-  LIVE_RECORDING_START_FILE_MODE_MESSAGE,
   LIVE_RECORDING_START_REQUIRED_MESSAGE,
-  LIVE_UTTERANCE_CANCEL_FILE_MODE_MESSAGE,
+  StreamingProcessorLike,
   WebSocketStreamingClient,
 )
 from eavesdrop.server.streaming.flush_state import LiveSessionFlushState
 from eavesdrop.server.streaming.interfaces import TranscriptionResult
-from eavesdrop.server.streaming.processor import AudioChunk, StreamingTranscriptionProcessor
+from eavesdrop.server.streaming.processor import StreamingTranscriptionProcessor
 from eavesdrop.server.transcription.session import create_session
 from eavesdrop.wire import (
   FlushControlMessage,
   RecordingStartedMessage,
   Segment,
   TranscriptionSetupMessage,
-  TranscriptionSourceMode,
   UserTranscriptionOptions,
   UtteranceCancelledMessage,
   deserialize_message,
@@ -76,23 +67,10 @@ class _AsyncMockAssertions(Protocol):
   def assert_not_awaited(self) -> None: ...
 
 
-class _MagicMockAssertions(Protocol):
-  def __call__(self, *args: object, **kwargs: object) -> object: ...
-
-  def assert_called_once(self) -> None: ...
-
-
 def _async_mock(*, side_effect: object = None, return_value: object = None) -> _AsyncMockAssertions:
   return cast(
     _AsyncMockAssertions,
     AsyncMock(side_effect=side_effect, return_value=return_value),
-  )
-
-
-def _magic_mock(*, side_effect: object = None, return_value: object = None) -> _MagicMockAssertions:
-  return cast(
-    _MagicMockAssertions,
-    MagicMock(side_effect=side_effect, return_value=return_value),
   )
 
 
@@ -150,15 +128,36 @@ class _SinkDouble:
 
 
 @dataclass
-class _AudioSourceDouble:
-  close: _MagicMockAssertions
-
-
-@dataclass
 class _ProcessorDouble:
-  initialize: _AsyncMockAssertions = field(default_factory=_async_mock)
-  stop_processing: _AsyncMockAssertions = field(default_factory=_async_mock)
-  start_processing: Callable[[], Awaitable[None]] = field(default=lambda: _completed())
+  initialize_calls: int = 0
+  stop_calls: int = 0
+  on_start: Callable[[], Awaitable[None]] = field(default=lambda: _completed())
+  on_stop: Callable[[], Awaitable[None]] | None = None
+  reset_calls: list[tuple[str | None, int, bool]] = field(default_factory=list)
+  language: str | None = "en"
+
+  async def initialize(self) -> None:
+    self.initialize_calls += 1
+
+  async def start_processing(self) -> None:
+    await self.on_start()
+
+  async def stop_processing(self) -> None:
+    self.stop_calls += 1
+    if self.on_stop is not None:
+      await self.on_stop()
+
+  def add_audio_frames(self, frames: Float32Audio) -> None:
+    del frames
+
+  def reset_live_recording(
+    self,
+    *,
+    recording_id: str | None,
+    generation: int,
+    preserve_language: bool = True,
+  ) -> None:
+    self.reset_calls.append((recording_id, generation, preserve_language))
 
 
 async def _completed() -> None:
@@ -174,10 +173,6 @@ class _NoopSink:
 
   async def send_error(self, error: str) -> None:
     del error
-    return
-
-  async def send_language_detection(self, language: str, probability: float) -> None:
-    del language, probability
     return
 
   async def send_server_ready(self, backend: str) -> None:
@@ -201,10 +196,6 @@ def _as_server_connection(websocket: _SequentialRecvWebSocket) -> ServerConnecti
   return cast(ServerConnection, cast(object, websocket))
 
 
-def _assert_awaited_once(mock: object) -> None:
-  cast(_AsyncMockAssertions, mock).assert_awaited_once()
-
-
 def _assert_awaited_once_with(mock: object, *args: object) -> None:
   cast(_AsyncMockAssertions, mock).assert_awaited_once_with(*args)
 
@@ -213,44 +204,23 @@ def _assert_not_awaited(mock: object) -> None:
   cast(_AsyncMockAssertions, mock).assert_not_awaited()
 
 
-def _assert_called_once(mock: object) -> None:
-  cast(_MagicMockAssertions, mock).assert_called_once()
-
-
-def _set_attr(target: object, name: str, value: object) -> None:
-  setattr(target, name, value)
-
-
-def _get_bool_attr(target: object, name: str) -> bool:
-  return cast(bool, getattr(target, name))
-
-
-def _get_task_attr(target: object, name: str) -> asyncio.Task[None]:
-  return cast(asyncio.Task[None], getattr(target, name))
-
-
-def _get_flush_state(client: WebSocketStreamingClient) -> LiveSessionFlushState:
-  return cast(LiveSessionFlushState, getattr(client, "_flush_state"))
-
-
-def _build_client(*, processor: object, audio_source: object) -> WebSocketStreamingClient:
+def _build_client(*, processor: StreamingProcessorLike) -> WebSocketStreamingClient:
   """Create a minimally wired client instance for lifecycle orchestration tests."""
   client = WebSocketStreamingClient.__new__(WebSocketStreamingClient)
   client.websocket = MagicMock()
   client.stream_name = "stream-1"
-  client.source_mode = TranscriptionSourceMode.LIVE
   client.logger = MagicMock()
   client.session = MagicMock()
   client.buffer = MagicMock()
-  client.transcription_sink = MagicMock()
-  client.processor = cast(StreamingTranscriptionProcessor, processor)
-  client.audio_source = cast(WebSocketAudioSource, audio_source)
-  _set_attr(client, "_flush_state", LiveSessionFlushState())
-  _set_attr(client, "_processing_task", None)
-  _set_attr(client, "_audio_task", None)
-  _set_attr(client, "_completion_task", None)
-  _set_attr(client, "_exit", False)
-  _set_attr(client, "_stopped", False)
+  client.transcription_sink = cast(WebSocketTranscriptionSink, MagicMock())
+  client.processor = processor
+  client._flush_state = LiveSessionFlushState()
+  client._processing_task = None
+  client._audio_task = None
+  client._completion_task = None
+  client._exit = False
+  client._stopped = False
+  client._current_recording_id = None
   return client
 
 
@@ -270,155 +240,75 @@ def _build_processor(
   )
 
 
-def _add_frames(buffer: AudioStreamBuffer, frames: Float32Audio) -> None:
-  cast(Callable[[Float32Audio], None], buffer.add_frames)(frames)
-
-
-def _get_chunk(buffer: AudioStreamBuffer) -> tuple[Float32Audio, float, float]:
-  return buffer.get_chunk_for_processing()
-
-
-def _set_processor_wait_for_flush_wakeup(
-  processor: StreamingTranscriptionProcessor,
-  mock: AsyncMock,
-) -> None:
-  _set_attr(processor, "_wait_for_flush_wakeup", mock)
-
-
-def _processor_get_next_audio_chunk(
-  processor: StreamingTranscriptionProcessor,
-) -> Coroutine[object, object, AudioChunk | None]:
-  return cast(
-    Callable[[], Coroutine[object, object, AudioChunk | None]],
-    getattr(processor, "_get_next_audio_chunk"),
-  )()
-
-
-def _processor_wait_for_next_interval(
-  processor: StreamingTranscriptionProcessor,
-  start_time: float,
-) -> Coroutine[object, object, None]:
-  wait_for_next_interval = cast(
-    Callable[[float], Coroutine[object, object, None]],
-    getattr(processor, "_wait_for_next_interval"),
-  )
-  return wait_for_next_interval(start_time)
-
-
-def _client_wait_for_completion(client: WebSocketStreamingClient) -> Awaitable[None]:
-  return cast(
-    Callable[[], Coroutine[object, object, None]], getattr(client, "_wait_for_completion")
-  )()
-
-
-def _client_handle_live_text_frame(
-  client: WebSocketStreamingClient, payload: str
-) -> Awaitable[None]:
-  return cast(
-    Callable[[str], Coroutine[object, object, None]],
-    getattr(client, "_handle_live_text_frame"),
-  )(payload)
-
-
-def _client_handle_file_text_frame(
-  client: WebSocketStreamingClient, payload: str
-) -> Awaitable[None]:
-  return cast(
-    Callable[[str], Coroutine[object, object, None]],
-    getattr(client, "_handle_file_text_frame"),
-  )(payload)
-
-
-def _server_reject_subscriber_control_frame(
-  server: TranscriptionServer,
-  websocket: _SequentialRecvWebSocket,
-  payload: str,
-) -> Coroutine[object, object, None]:
-  reject_frame = cast(
-    Callable[[ServerConnection, str], Coroutine[object, object, None]],
-    getattr(server, "_reject_subscriber_control_frame"),
-  )
-  return reject_frame(_as_server_connection(websocket), payload)
-
-
 async def test_ingestion_eof_completes_and_tears_down_cleanly() -> None:
   """EOF from audio ingestion must complete orchestration and stop the client exactly once."""
   processing_cancelled = asyncio.Event()
 
-  processor = _ProcessorDouble()
-
   async def _start_processing() -> None:
     await _run_until_cancelled(processing_cancelled)
 
-  processor.start_processing = _start_processing
-  audio_source = _AudioSourceDouble(close=MagicMock())
+  processor = _ProcessorDouble(on_start=_start_processing)
 
-  client = _build_client(processor=processor, audio_source=audio_source)
+  client = _build_client(processor=processor)
   client.websocket.recv = AsyncMock(return_value=b"END_OF_AUDIO")
 
   completion_task = await client.start()
   await asyncio.wait_for(completion_task, timeout=0.5)
 
   assert processing_cancelled.is_set()
-  _assert_awaited_once(processor.initialize)
-  _assert_awaited_once(processor.stop_processing)
-  _assert_called_once(audio_source.close)
-  assert _get_bool_attr(client, "_exit") is True
+  assert processor.initialize_calls == 1
+  assert processor.stop_calls == 1
+  assert client._exit is True
 
 
-async def test_completion_cancels_pending_task_before_stop() -> None:
+async def test_completion_cancels_pending_task_before_stop(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
   """Completion wait must cancel the still-running task before invoking stop orchestration."""
   pending_cancelled = asyncio.Event()
 
   processor = _ProcessorDouble()
-  audio_source = _AudioSourceDouble(close=MagicMock())
 
-  client = _build_client(processor=processor, audio_source=audio_source)
-  _set_attr(client, "_audio_task", asyncio.create_task(asyncio.sleep(0)))
-  _set_attr(
-    client, "_processing_task", asyncio.create_task(_run_until_cancelled(pending_cancelled))
-  )
+  client = _build_client(processor=processor)
+  client._audio_task = asyncio.create_task(asyncio.sleep(0))
+  client._processing_task = asyncio.create_task(_run_until_cancelled(pending_cancelled))
 
   async def _stop_guard() -> None:
     assert pending_cancelled.is_set()
 
-  client.stop = AsyncMock(side_effect=_stop_guard)
+  stop_mock = AsyncMock(side_effect=_stop_guard)
+  monkeypatch.setattr(client, "stop", stop_mock)
 
-  await asyncio.wait_for(_client_wait_for_completion(client), timeout=0.5)
+  await asyncio.wait_for(client._wait_for_completion(), timeout=0.5)
 
-  assert _get_task_attr(client, "_processing_task").cancelled()
-  _assert_awaited_once(client.stop)
+  assert client._processing_task.cancelled()
+  stop_mock.assert_awaited_once()
 
 
-async def test_completion_path_runs_disconnect_before_source_close() -> None:
-  """Completion-triggered stop must disconnect processor output before closing audio source."""
+async def test_completion_path_runs_stop_processing_and_disconnect() -> None:
+  """Completion-triggered stop must call stop_processing which disconnects the sink."""
   events: list[str] = []
 
   async def _disconnect() -> None:
     events.append("disconnect")
 
   sink = _SinkDouble(disconnect=_async_mock(side_effect=_disconnect), send_error=_async_mock())
-  processor = _ProcessorDouble()
 
   async def _stop_processing() -> None:
     events.append("stop_processing")
     await sink.disconnect()
 
-  processor.stop_processing = _async_mock(side_effect=_stop_processing)
-  audio_source = _AudioSourceDouble(
-    close=_magic_mock(side_effect=lambda: events.append("audio_close"))
-  )
+  processor = _ProcessorDouble(on_stop=_stop_processing)
 
-  client = _build_client(processor=processor, audio_source=audio_source)
-  _set_attr(client, "transcription_sink", sink)
-  _set_attr(client, "_audio_task", asyncio.create_task(asyncio.sleep(0)))
-  _set_attr(client, "_processing_task", asyncio.create_task(asyncio.sleep(3600)))
+  client = _build_client(processor=processor)
+  client.transcription_sink = cast(WebSocketTranscriptionSink, cast(object, sink))
+  client._audio_task = asyncio.create_task(asyncio.sleep(0))
+  client._processing_task = asyncio.create_task(asyncio.sleep(3600))
 
-  await asyncio.wait_for(_client_wait_for_completion(client), timeout=0.5)
+  await asyncio.wait_for(client._wait_for_completion(), timeout=0.5)
 
-  assert events == ["stop_processing", "disconnect", "audio_close"]
-  _assert_awaited_once(processor.stop_processing)
-  _assert_called_once(audio_source.close)
+  assert events == ["stop_processing", "disconnect"]
+  assert processor.stop_calls == 1
 
 
 async def test_stop_during_active_processing_is_bounded() -> None:
@@ -427,23 +317,19 @@ async def test_stop_during_active_processing_is_bounded() -> None:
   audio_cancelled = asyncio.Event()
 
   processor = _ProcessorDouble()
-  audio_source = _AudioSourceDouble(close=MagicMock())
 
-  client = _build_client(processor=processor, audio_source=audio_source)
-  _set_attr(
-    client, "_processing_task", asyncio.create_task(_run_until_cancelled(processing_cancelled))
-  )
-  _set_attr(client, "_audio_task", asyncio.create_task(_run_until_cancelled(audio_cancelled)))
+  client = _build_client(processor=processor)
+  client._processing_task = asyncio.create_task(_run_until_cancelled(processing_cancelled))
+  client._audio_task = asyncio.create_task(_run_until_cancelled(audio_cancelled))
 
   await asyncio.sleep(0)
   await asyncio.wait_for(client.stop(), timeout=0.5)
 
   assert processing_cancelled.is_set()
   assert audio_cancelled.is_set()
-  assert _get_task_attr(client, "_processing_task").cancelled()
-  assert _get_task_attr(client, "_audio_task").cancelled()
-  _assert_awaited_once(processor.stop_processing)
-  _assert_called_once(audio_source.close)
+  assert client._processing_task.cancelled()
+  assert client._audio_task.cancelled()
+  assert processor.stop_calls == 1
 
 
 @pytest.mark.asyncio
@@ -453,10 +339,10 @@ async def test_pending_flush_interrupts_minimum_chunk_wait() -> None:
   buffer = AudioStreamBuffer(
     BufferConfig(sample_rate=16000, min_chunk_duration=0.5, transcription_interval=0.5)
   )
-  _add_frames(buffer, np.zeros(1600, dtype=np.float32))
+  buffer.add_frames(np.zeros(1600, dtype=np.float32))
   processor = _build_processor(buffer=buffer, flush_state=flush_state)
 
-  wait_task = asyncio.create_task(_processor_get_next_audio_chunk(processor))
+  wait_task = asyncio.create_task(processor._get_next_audio_chunk())
   await asyncio.sleep(0)
 
   accepted = flush_state.accept(
@@ -472,19 +358,21 @@ async def test_pending_flush_interrupts_minimum_chunk_wait() -> None:
 
 
 @pytest.mark.asyncio
-async def test_minimum_chunk_wait_logs_once_per_processor() -> None:
+async def test_minimum_chunk_wait_logs_once_per_processor(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
   """Repeated below-threshold polling must not spam the minimum-wait info log."""
   buffer = AudioStreamBuffer(
     BufferConfig(sample_rate=16000, min_chunk_duration=0.5, transcription_interval=0.5)
   )
-  _add_frames(buffer, np.zeros(1600, dtype=np.float32))
+  buffer.add_frames(np.zeros(1600, dtype=np.float32))
   processor = _build_processor(buffer=buffer, flush_state=LiveSessionFlushState())
   logger = _LoggerDouble()
-  _set_attr(processor, "logger", logger)
-  _set_processor_wait_for_flush_wakeup(processor, AsyncMock(return_value=True))
+  monkeypatch.setattr(processor, "logger", logger)
+  monkeypatch.setattr(processor, "_wait_for_live_control_wakeup", AsyncMock(return_value=True))
 
-  _ = await _processor_get_next_audio_chunk(processor)
-  _ = await _processor_get_next_audio_chunk(processor)
+  _ = await processor._get_next_audio_chunk()
+  _ = await processor._get_next_audio_chunk()
 
   minimum_wait_logs = [
     call
@@ -504,7 +392,7 @@ async def test_pending_flush_interrupts_interval_wait() -> None:
   )
   processor = _build_processor(buffer=buffer, flush_state=flush_state)
 
-  wait_task = asyncio.create_task(_processor_wait_for_next_interval(processor, 0.0))
+  wait_task = asyncio.create_task(processor._wait_for_next_interval(0.0))
   await asyncio.sleep(0)
 
   accepted = flush_state.accept(boundary_sample=0, force_complete=False)
@@ -520,13 +408,10 @@ async def test_second_live_flush_is_rejected_and_original_flush_stays_pending() 
   client.logger = MagicMock()
   client.buffer = MagicMock()
   client.buffer.get_buffer_end_sample = MagicMock(side_effect=[3200, 6400])
-  _set_attr(
-    client,
-    "transcription_sink",
-    _SinkDouble(disconnect=AsyncMock(), send_error=AsyncMock()),
-  )
-  _set_attr(client, "_flush_state", LiveSessionFlushState())
-  _set_attr(client, "_current_recording_id", "rec-1")
+  sink = _SinkDouble(disconnect=AsyncMock(), send_error=AsyncMock())
+  client.transcription_sink = cast(WebSocketTranscriptionSink, cast(object, sink))
+  client._flush_state = LiveSessionFlushState()
+  client._current_recording_id = "rec-1"
 
   first_flush = serialize_message(
     FlushControlMessage(stream="stream-1", recording_id="rec-1", force_complete=False)
@@ -535,15 +420,13 @@ async def test_second_live_flush_is_rejected_and_original_flush_stays_pending() 
     FlushControlMessage(stream="stream-1", recording_id="rec-1", force_complete=True)
   )
 
-  await _client_handle_live_text_frame(client, first_flush)
-  pending_flush = _get_flush_state(client).pending()
-  await _client_handle_live_text_frame(client, second_flush)
+  await client._handle_live_text_frame(first_flush)
+  pending_flush = client._flush_state.pending()
+  await client._handle_live_text_frame(second_flush)
 
   assert pending_flush is not None
-  assert _get_flush_state(client).pending() == pending_flush
-  _assert_awaited_once_with(
-    client.transcription_sink.send_error, LIVE_FLUSH_ALREADY_PENDING_MESSAGE
-  )
+  assert client._flush_state.pending() == pending_flush
+  _assert_awaited_once_with(sink.send_error, LIVE_FLUSH_ALREADY_PENDING_MESSAGE)
 
 
 @pytest.mark.asyncio
@@ -554,14 +437,12 @@ async def test_recording_boundary_resets_live_buffer_session_and_flush_state() -
   client.buffer = AudioStreamBuffer(BufferConfig(sample_rate=10, min_chunk_duration=1.0))
   client.session = create_session("stream-1")
   client.session.update_audio_context(3.0, 0.4)
-  _set_attr(
-    client,
-    "transcription_sink",
-    _SinkDouble(disconnect=AsyncMock(), send_error=AsyncMock()),
-  )
-  _set_attr(client, "_flush_state", LiveSessionFlushState())
-  _set_attr(client, "processor", MagicMock())
-  _set_attr(client, "_current_recording_id", None)
+  sink = _SinkDouble(disconnect=AsyncMock(), send_error=AsyncMock())
+  client.transcription_sink = cast(WebSocketTranscriptionSink, cast(object, sink))
+  client._flush_state = LiveSessionFlushState()
+  processor_double = _ProcessorDouble()
+  client.processor = processor_double
+  client._current_recording_id = None
 
   client.session.add_completed_segment(
     Segment(
@@ -573,17 +454,16 @@ async def test_recording_boundary_resets_live_buffer_session_and_flush_state() -
       completed=True,
     )
   )
-  _add_frames(client.buffer, np.ones(8, dtype=np.float32))
+  client.buffer.add_frames(np.ones(8, dtype=np.float32))
   client.buffer.advance_processed_boundary(0.3)
-  pending_flush = _get_flush_state(client).accept(
+  pending_flush = client._flush_state.accept(
     boundary_sample=client.buffer.get_buffer_end_sample(),
     force_complete=True,
   )
 
   assert pending_flush is not None
 
-  await _client_handle_live_text_frame(
-    client,
+  await client._handle_live_text_frame(
     serialize_message(
       RecordingStartedMessage(
         stream="stream-1",
@@ -600,64 +480,45 @@ async def test_recording_boundary_resets_live_buffer_session_and_flush_state() -
   assert client.session.completed_segments == []
   assert client.session.audio_start_offset == 0.0
   assert client.session.audio_duration == 0.0
-  assert _get_flush_state(client).pending() is None
-  assert _get_flush_state(client).current_generation() == 1
-  cast(MagicMock, client.processor.reset_live_recording).assert_called_once_with(
-    recording_id="rec-2",
-    generation=1,
-    preserve_language=False,
-  )
+  assert client._flush_state.pending() is None
+  assert client._flush_state.current_generation() == 1
+  assert processor_double.reset_calls == [("rec-2", 1, False)]
 
 
 @pytest.mark.asyncio
 async def test_live_controls_require_recording_boundary_before_epoch_exists() -> None:
   """Flush and cancel controls must be rejected until a recording boundary is established."""
   client = WebSocketStreamingClient.__new__(WebSocketStreamingClient)
-  _set_attr(
-    client,
-    "transcription_sink",
-    _SinkDouble(disconnect=AsyncMock(), send_error=AsyncMock()),
-  )
-  _set_attr(client, "_flush_state", LiveSessionFlushState())
-  _set_attr(client, "_current_recording_id", None)
+  sink = _SinkDouble(disconnect=AsyncMock(), send_error=AsyncMock())
+  client.transcription_sink = cast(WebSocketTranscriptionSink, cast(object, sink))
+  client._flush_state = LiveSessionFlushState()
+  client._current_recording_id = None
 
-  await _client_handle_live_text_frame(
-    client,
+  await client._handle_live_text_frame(
     serialize_message(FlushControlMessage(stream="stream-1", recording_id="rec-1")),
   )
-  await _client_handle_live_text_frame(
-    client,
+  await client._handle_live_text_frame(
     serialize_message(UtteranceCancelledMessage(stream="stream-1", recording_id="rec-1")),
   )
 
-  send_error = cast(_AsyncMockAssertions, client.transcription_sink.send_error)
-  assert send_error.await_count == 2
-  cast(AsyncMock, client.transcription_sink.send_error).assert_any_await(
-    LIVE_RECORDING_START_REQUIRED_MESSAGE
-  )
+  assert sink.send_error.await_count == 2
+  cast(AsyncMock, sink.send_error).assert_any_await(LIVE_RECORDING_START_REQUIRED_MESSAGE)
 
 
 @pytest.mark.asyncio
 async def test_live_controls_reject_mismatched_recording_id() -> None:
   """Live controls must stay scoped to the active recording epoch."""
   client = WebSocketStreamingClient.__new__(WebSocketStreamingClient)
-  _set_attr(
-    client,
-    "transcription_sink",
-    _SinkDouble(disconnect=AsyncMock(), send_error=AsyncMock()),
-  )
-  _set_attr(client, "_flush_state", LiveSessionFlushState())
-  _set_attr(client, "_current_recording_id", "rec-active")
+  sink = _SinkDouble(disconnect=AsyncMock(), send_error=AsyncMock())
+  client.transcription_sink = cast(WebSocketTranscriptionSink, cast(object, sink))
+  client._flush_state = LiveSessionFlushState()
+  client._current_recording_id = "rec-active"
 
-  await _client_handle_live_text_frame(
-    client,
+  await client._handle_live_text_frame(
     serialize_message(FlushControlMessage(stream="stream-1", recording_id="rec-stale")),
   )
 
-  _assert_awaited_once_with(
-    client.transcription_sink.send_error,
-    LIVE_RECORDING_ID_MISMATCH_MESSAGE,
-  )
+  _assert_awaited_once_with(sink.send_error, LIVE_RECORDING_ID_MISMATCH_MESSAGE)
 
 
 @pytest.mark.asyncio
@@ -677,26 +538,23 @@ async def test_live_utterance_cancel_discards_tail_without_merging_future_audio(
       completed=True,
     )
   )
-  _set_attr(
-    client,
-    "transcription_sink",
-    _SinkDouble(disconnect=AsyncMock(), send_error=AsyncMock()),
-  )
-  _set_attr(client, "_flush_state", LiveSessionFlushState())
-  _set_attr(client, "_current_recording_id", "rec-1")
-  _set_attr(client, "processor", MagicMock())
+  sink = _SinkDouble(disconnect=AsyncMock(), send_error=AsyncMock())
+  client.transcription_sink = cast(WebSocketTranscriptionSink, cast(object, sink))
+  client._flush_state = LiveSessionFlushState()
+  client._current_recording_id = "rec-1"
+  processor_double = _ProcessorDouble()
+  client.processor = processor_double
 
-  _add_frames(client.buffer, np.ones(8, dtype=np.float32))
+  client.buffer.add_frames(np.ones(8, dtype=np.float32))
   client.buffer.advance_processed_boundary(0.3)
-  pending_flush = _get_flush_state(client).accept(
+  pending_flush = client._flush_state.accept(
     boundary_sample=client.buffer.get_buffer_end_sample(),
     force_complete=True,
   )
 
   assert pending_flush is not None
 
-  await _client_handle_live_text_frame(
-    client,
+  await client._handle_live_text_frame(
     serialize_message(UtteranceCancelledMessage(stream="stream-1", recording_id="rec-1")),
   )
 
@@ -705,21 +563,17 @@ async def test_live_utterance_cancel_discards_tail_without_merging_future_audio(
   assert client.buffer.available_duration == 0.0
   assert client.buffer.total_duration == 0.0
   assert client.session.completed_segments == []
-  assert _get_flush_state(client).pending() is None
-  assert _get_flush_state(client).current_generation() == 1
-  cast(MagicMock, client.processor.reset_live_recording).assert_called_once_with(
-    recording_id="rec-1",
-    generation=1,
-    preserve_language=False,
-  )
+  assert client._flush_state.pending() is None
+  assert client._flush_state.current_generation() == 1
+  assert processor_double.reset_calls == [("rec-1", 1, False)]
 
-  _add_frames(client.buffer, np.full(4, 0.5, dtype=np.float32))
-  chunk, duration, start_time = _get_chunk(client.buffer)
+  client.buffer.add_frames(np.full(4, 0.5, dtype=np.float32))
+  chunk, duration, start_time = client.buffer.get_chunk_for_processing()
 
   assert chunk.shape[0] == 4
   assert abs(duration - 0.4) < 1e-9
   assert abs(start_time - 0.3) < 1e-9
-  _assert_not_awaited(client.transcription_sink.send_error)
+  _assert_not_awaited(sink.send_error)
 
 
 @pytest.mark.asyncio
@@ -768,92 +622,28 @@ async def test_pre_setup_live_controls_are_rejected_without_closing_connection(
   assert rejection_message.message == expected_rejection
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-  ("message", "expected_rejection"),
-  [
-    (
-      RecordingStartedMessage(stream="stream-1", recording_id="rec-1", sample_rate_hz=16000),
-      LIVE_RECORDING_START_FILE_MODE_MESSAGE,
-    ),
-    (FlushControlMessage(stream="stream-1"), LIVE_FLUSH_FILE_MODE_MESSAGE),
-    (
-      UtteranceCancelledMessage(stream="stream-1"),
-      LIVE_UTTERANCE_CANCEL_FILE_MODE_MESSAGE,
-    ),
-  ],
-)
-async def test_file_mode_live_controls_are_rejected_without_tearing_down_session(
-  message: RecordingStartedMessage | FlushControlMessage | UtteranceCancelledMessage,
-  expected_rejection: str,
-) -> None:
-  """File-mode uploads must reject live control frames and keep ingest alive."""
-  client = WebSocketStreamingClient.__new__(WebSocketStreamingClient)
-  _set_attr(
-    client,
-    "transcription_sink",
-    _SinkDouble(disconnect=AsyncMock(), send_error=AsyncMock()),
-  )
-
-  await _client_handle_file_text_frame(client, serialize_message(message))
-
-  _assert_awaited_once_with(client.transcription_sink.send_error, expected_rejection)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-  ("message", "expected_rejection"),
-  [
-    (
-      RecordingStartedMessage(stream="cam-a", recording_id="rec-1", sample_rate_hz=16000),
-      RTSP_RECORDING_START_REJECTION,
-    ),
-    (FlushControlMessage(stream="cam-a"), RTSP_FLUSH_REJECTION),
-    (
-      UtteranceCancelledMessage(stream="cam-a"),
-      RTSP_UTTERANCE_CANCEL_REJECTION,
-    ),
-  ],
-)
-async def test_subscriber_live_controls_are_rejected_without_closing_connection(
-  message: RecordingStartedMessage | FlushControlMessage | UtteranceCancelledMessage,
-  expected_rejection: str,
-) -> None:
-  """RTSP subscriber sessions must reject live controls and keep the socket open."""
-  websocket = _SequentialRecvWebSocket([])
-  server = TranscriptionServer()
-
-  await _server_reject_subscriber_control_frame(server, websocket, serialize_message(message))
-
-  assert websocket.close.await_count == 0
-  assert len(websocket.sent_payloads) == 1
-  rejection_message = deserialize_message(websocket.sent_payloads[0])
-  assert rejection_message.type == "error"
-  assert rejection_message.message == expected_rejection
-
-
 def test_recording_boundary_resets_chunk_start_to_zero_for_next_recording() -> None:
   """Each accepted recording boundary must restart chunk timestamps from recording sample zero."""
   client = WebSocketStreamingClient.__new__(WebSocketStreamingClient)
   client.logger = MagicMock()
   client.buffer = AudioStreamBuffer(BufferConfig(sample_rate=10, min_chunk_duration=1.0))
   client.session = create_session("stream-1")
-  _set_attr(client, "_flush_state", LiveSessionFlushState())
-  _set_attr(client, "processor", MagicMock())
-  _set_attr(client, "_current_recording_id", None)
+  client._flush_state = LiveSessionFlushState()
+  client.processor = cast(StreamingProcessorLike, MagicMock())
+  client._current_recording_id = None
 
   client._accept_recording_boundary(
     RecordingStartedMessage(stream="stream-1", recording_id="rec-1", sample_rate_hz=10)
   )
-  _add_frames(client.buffer, np.ones(4, dtype=np.float32))
-  _, _, first_start = _get_chunk(client.buffer)
+  client.buffer.add_frames(np.ones(4, dtype=np.float32))
+  _, _, first_start = client.buffer.get_chunk_for_processing()
   client.buffer.advance_processed_boundary(0.4)
 
   client._accept_recording_boundary(
     RecordingStartedMessage(stream="stream-1", recording_id="rec-2", sample_rate_hz=10)
   )
-  _add_frames(client.buffer, np.ones(4, dtype=np.float32))
-  _, _, second_start = _get_chunk(client.buffer)
+  client.buffer.add_frames(np.ones(4, dtype=np.float32))
+  _, _, second_start = client.buffer.get_chunk_for_processing()
 
   assert first_start == 0.0
   assert second_start == 0.0

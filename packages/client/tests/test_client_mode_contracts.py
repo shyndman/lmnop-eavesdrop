@@ -5,7 +5,6 @@ configuration cannot silently drift across connection setup and streaming contro
 """
 
 import asyncio
-import json
 from typing import cast
 
 import pytest
@@ -18,14 +17,12 @@ from eavesdrop.client.core import EavesdropClient
 from eavesdrop.client.events import (
   ConnectedEvent,
   DisconnectedEvent,
-  LanguageDetectionEvent,
   ReconnectedEvent,
   ReconnectingEvent,
   TranscriptionEvent,
 )
 from eavesdrop.wire import (
   ClientType,
-  LanguageDetectionMessage,
   Segment,
   TranscriptionMessage,
   deserialize_message,
@@ -257,41 +254,6 @@ async def test_transcriber_factory_options_reach_setup_payload(
 
 
 @pytest.mark.asyncio
-async def test_subscriber_connect_sends_stream_subscription_header(
-  monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  """Subscriber mode must route stream subscriptions via websocket headers only."""
-
-  fake_ws = FakeWebSocket()
-  captured_headers: dict[str, str] = {}
-
-  async def fake_connect(_url: str, additional_headers: dict[str, str]) -> FakeWebSocket:
-    captured_headers.update(additional_headers)
-    return fake_ws
-
-  monkeypatch.setattr("eavesdrop.client.connection.websockets.connect", fake_connect)
-
-  connection = WebSocketConnection(
-    host="localhost",
-    port=9090,
-    stream_name="s-test",
-    on_ready=lambda _backend: None,
-    on_transcription=lambda _text: None,
-    on_error=lambda _message: None,
-    client_type=ClientType.RTSP_SUBSCRIBER,
-    stream_names=["cam-a", "cam-b"],
-  )
-
-  await connection.connect()
-
-  assert captured_headers == {
-    "X-Client-Type": "rtsp_subscriber",
-    "X-Stream-Names": "cam-a,cam-b",
-  }
-  assert fake_ws.sent_payloads == []
-
-
-@pytest.mark.asyncio
 async def test_connection_serializes_utterance_cancel_control_message() -> None:
   """Live cancel control must serialize the new wire message discriminator."""
 
@@ -315,51 +277,6 @@ async def test_connection_serializes_utterance_cancel_control_message() -> None:
   assert decoded.type == "control_utterance_cancelled"
   assert decoded.stream == "stream-cancel"
   assert decoded.recording_id == RECORDING_ID
-
-
-@pytest.mark.asyncio
-async def test_subscriber_routes_only_messages_for_subscribed_streams() -> None:
-  """Subscriber routing must emit callbacks only for configured stream names."""
-
-  received_messages: list[TranscriptionMessage] = []
-  received_text: list[str] = []
-  received_errors: list[str] = []
-
-  connection = WebSocketConnection(
-    host="localhost",
-    port=9090,
-    stream_name="subscriber-session",
-    on_ready=lambda _backend: None,
-    on_transcription=received_text.append,
-    on_error=received_errors.append,
-    client_type=ClientType.RTSP_SUBSCRIBER,
-    stream_names=["cam-a"],
-    on_transcription_message=received_messages.append,
-  )
-
-  subscribed_payload = json.dumps(
-    {
-      "type": "transcription",
-      "stream": "cam-a",
-      "segments": [_segment(" target ").model_dump()],
-      "language": "en",
-    }
-  )
-  unsubscribed_payload = json.dumps(
-    {
-      "type": "transcription",
-      "stream": "cam-b",
-      "segments": [_segment("ignored").model_dump()],
-      "language": "en",
-    }
-  )
-
-  await connection._process_message(subscribed_payload)
-  await connection._process_message(unsubscribed_payload)
-
-  assert [message.stream for message in received_messages] == ["cam-a"]
-  assert received_text == ["[cam-a] target"]
-  assert received_errors == []
 
 
 def test_transcriber_mode_requires_audio_device_configuration() -> None:
@@ -436,48 +353,6 @@ async def test_async_iterator_yields_connected_then_transcription_event(
   assert collected_events[0].stream == "tbeef"
   transcription_event = cast(TranscriptionEvent, collected_events[1])
   assert transcription_event.message.segments[0].text == "hello"
-
-
-@pytest.mark.asyncio
-async def test_async_iterator_yields_language_detection_event(
-  monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  """Auto-detected source language must surface as a live LanguageDetectionEvent."""
-
-  fake_ws = BlockingWebSocket()
-
-  async def fake_connect(_url: str, additional_headers: dict[str, str]) -> BlockingWebSocket:
-    assert additional_headers == {"X-Client-Type": "transcriber"}
-    return fake_ws
-
-  monkeypatch.setattr("eavesdrop.client.connection.websockets.connect", fake_connect)
-  monkeypatch.setattr("eavesdrop.client.core.secrets.token_hex", lambda _n: "beef")
-
-  client = EavesdropClient.transcriber(audio_device="default")
-  await client.connect()
-
-  collected_events: list[ConnectedEvent | LanguageDetectionEvent] = []
-
-  async def _collect_two_events() -> None:
-    async for event in client:
-      collected_events.append(cast(ConnectedEvent | LanguageDetectionEvent, event))
-      if len(collected_events) == 2:
-        break
-
-  collector = asyncio.create_task(_collect_two_events())
-  client._on_language_detection(
-    LanguageDetectionMessage(stream="tbeef", language="ja", language_prob=0.97)
-  )
-
-  try:
-    await asyncio.wait_for(collector, timeout=0.2)
-  finally:
-    await client.disconnect()
-
-  assert [event.family for event in collected_events] == ["connected", "language_detection"]
-  detection_event = cast(LanguageDetectionEvent, collected_events[1])
-  assert detection_event.language == "ja"
-  assert detection_event.probability == 0.97
 
 
 @pytest.mark.asyncio
@@ -829,7 +704,7 @@ async def test_start_streaming_drains_stale_message_and_transcription_event_queu
 
 
 def test_on_transcription_message_drops_stale_recording_messages() -> None:
-  """Live transcriber callbacks must filter stale recording epochs before queueing."""
+  """Live transcriber callbacks must filter stale recording epochs and avoid unbounded queuing."""
 
   client = EavesdropClient.transcriber(audio_device="default")
   client._current_recording_id = RECORDING_ID
@@ -852,12 +727,32 @@ def test_on_transcription_message_drops_stale_recording_messages() -> None:
     )
   )
 
-  assert client._message_queue.qsize() == 1
-  queued_message = client._message_queue.get_nowait()
-  assert queued_message.recording_id == RECORDING_ID
+  assert client._message_queue.empty() is True
   queued_event = client._event_queue.get_nowait()
   assert isinstance(queued_event, TranscriptionEvent)
   assert queued_event.message.recording_id == RECORDING_ID
+
+
+def test_on_transcription_message_enqueues_for_flush_only_when_waiting() -> None:
+  """Flush waiter queue must receive messages only while flush() is actively waiting."""
+
+  client = EavesdropClient.transcriber(audio_device="default")
+  client._current_recording_id = RECORDING_ID
+  client._flush_waiting = True
+
+  client._on_transcription_message(
+    TranscriptionMessage(
+      stream="stream-live",
+      segments=[_segment("flushed")],
+      language="en",
+      recording_id=RECORDING_ID,
+      flush_complete=True,
+    )
+  )
+
+  assert client._message_queue.qsize() == 1
+  queued_message = client._message_queue.get_nowait()
+  assert queued_message.recording_id == RECORDING_ID
 
 
 @pytest.mark.asyncio

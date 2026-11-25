@@ -46,34 +46,6 @@ class RewriteResult:
 
 
 @dataclass(frozen=True)
-class FinalizedTranscriptRecord:
-  """Persistable transcript payload produced after successful emission.
-
-  :param pre_finalization_text: Transcript text before the local finalization pipeline.
-  :type pre_finalization_text: str
-  :param post_finalization_text: Transcript text emitted to the target application.
-  :type post_finalization_text: str
-  :param llm_model: Model identifier used during rewrite, when present.
-  :type llm_model: str | None
-  :param tokens_in: Prompt token count reported by the rewrite provider.
-  :type tokens_in: int | None
-  :param tokens_out: Completion token count reported by the rewrite provider.
-  :type tokens_out: int | None
-  :param cost: Provider-reported request cost.
-  :type cost: Decimal | None
-  """
-
-  pre_finalization_text: str
-  post_finalization_text: str
-  llm_model: str | None
-  tokens_in: int | None
-  tokens_out: int | None
-  cost: Decimal | None
-  word_count: int
-  duration_seconds: float | None
-
-
-@dataclass(frozen=True)
 class CapturedRecordingAudio:
   """Immutable raw audio snapshot captured for one finished recording.
 
@@ -156,16 +128,6 @@ class ActiveListenerRewriteClient(Protocol):
   ) -> RewriteResult: ...
 
   async def close(self) -> None: ...
-
-
-class ActiveListenerTranscriptHistoryStore(Protocol):
-  """Persistence boundary for successfully emitted transcript records."""
-
-  def record_finalized_recording(
-    self,
-    record: FinalizedTranscriptRecord,
-    archived_audio: bytes | None,
-  ) -> None: ...
 
 
 class MediaPlaybackController(Protocol):

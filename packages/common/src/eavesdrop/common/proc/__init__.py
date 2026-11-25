@@ -1,5 +1,5 @@
-from .float import FloatPrecisionProcessor
-from .logger_filter import LoggerFilterProcessor
+from eavesdrop.common.proc.float import FloatPrecisionProcessor
+from eavesdrop.common.proc.logger_filter import LoggerFilterProcessor
 
 __all__ = [
   "FloatPrecisionProcessor",

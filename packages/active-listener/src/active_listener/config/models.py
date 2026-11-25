@@ -1,15 +1,8 @@
 from __future__ import annotations
 
-from typing import Annotated, ClassVar, Literal
+from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
-
-
-class LiteRtRewriteProvider(BaseModel):
-  model_config: ClassVar[ConfigDict] = ConfigDict(strict=True, extra="forbid")
-
-  type: Literal["litert"]
-  model_path: str = Field(min_length=1)
 
 
 class PydanticAiRewriteProvider(BaseModel):
@@ -19,10 +12,7 @@ class PydanticAiRewriteProvider(BaseModel):
   model: str = Field(min_length=1)
 
 
-RewriteProvider = Annotated[
-  LiteRtRewriteProvider | PydanticAiRewriteProvider,
-  Field(discriminator="type"),
-]
+RewriteProvider = PydanticAiRewriteProvider
 
 
 class LlmRewriteConfig(BaseModel):

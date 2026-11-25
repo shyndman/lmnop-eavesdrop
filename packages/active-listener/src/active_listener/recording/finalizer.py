@@ -12,16 +12,10 @@ import active_listener.infra.rewrite as rewrite_module
 from active_listener.app.ports import (
   ActiveListenerClient,
   ActiveListenerRewriteClient,
-  ActiveListenerTranscriptHistoryStore,
-  FinalizedTranscriptRecord,
   FinishedRecording,
   RewriteResult,
 )
-from active_listener.config.models import (
-  ActiveListenerConfig,
-  LiteRtRewriteProvider,
-  LlmRewriteConfig,
-)
+from active_listener.config.models import ActiveListenerConfig, LlmRewriteConfig
 from active_listener.infra.audio import encode_recording_audio
 from active_listener.infra.corrections import (
   ActiveListenerCorrectionStore,
@@ -30,6 +24,13 @@ from active_listener.infra.corrections import (
 )
 from active_listener.infra.dbus import AppStateService
 from active_listener.infra.emitter import TextEmitter
+from active_listener.infra.langfuse import (
+  RecordingObservation,
+  build_langfuse_audio_attachment,
+  end_recording_observation,
+  start_rewrite_observation,
+  update_recording_observation,
+)
 from active_listener.recording.reducer import (
   apply_segment_reduction,
   build_completed_text_runs,
@@ -39,14 +40,6 @@ from active_listener.recording.reducer import (
   serialize_runs_without_commands,
 )
 from active_listener.recording.text_shaping import shape_runs
-
-from ..infra.langfuse import (
-  RecordingObservation,
-  build_langfuse_audio_attachment,
-  end_recording_observation,
-  start_rewrite_observation,
-  update_recording_observation,
-)
 
 LlmAvailabilityReader = Callable[[], bool]
 LlmActiveReader = Callable[[], bool]
@@ -62,7 +55,6 @@ class RecordingFinalizer:
   emitter: TextEmitter
   logger: BoundLogger
   rewrite_client: ActiveListenerRewriteClient
-  history_store: ActiveListenerTranscriptHistoryStore
   dbus_service: AppStateService
   current_llm_available: LlmAvailabilityReader
   current_llm_active: LlmActiveReader
@@ -208,7 +200,7 @@ class RecordingFinalizer:
         emitted_text_source = _emitted_text_source(llm_mode)
 
         try:
-          self.emitter.emit_text(final_text)
+          await asyncio.to_thread(self.emitter.emit_text, final_text)
         except Exception:
           update_recording_observation(
             recording_observation,
@@ -227,26 +219,16 @@ class RecordingFinalizer:
           text_length=len(final_text),
           source=emitted_text_source,
         )
-        finalized_record = FinalizedTranscriptRecord(
-          pre_finalization_text=raw_text,
-          post_finalization_text=final_text,
-          llm_model=(rewrite_result.model if rewrite_result is not None else None),
-          tokens_in=(rewrite_result.input_tokens if rewrite_result is not None else None),
-          tokens_out=(rewrite_result.output_tokens if rewrite_result is not None else None),
-          cost=(rewrite_result.cost if rewrite_result is not None else None),
-          word_count=_count_words(final_text),
-          duration_seconds=reducer_state.duration_seconds,
-        )
         archived_audio: bytes | None = None
         try:
-          archived_audio = encode_recording_audio(
+          archived_audio = await asyncio.to_thread(
+            encode_recording_audio,
             finished_recording.captured_audio,
             ffmpeg_path=self.config.ffmpeg_path,
           )
         except Exception as exc:
           self.logger.exception("recording audio encode failed", stream=message.stream)
           await self.dbus_service.audio_archive_failed(str(exc))
-        self.history_store.record_finalized_recording(finalized_record, archived_audio)
         audio_attachment = build_langfuse_audio_attachment(audio_bytes=archived_audio)
         if recording_observation is not None:
           output_payload: dict[str, object] = {"emitted_text": final_text}
@@ -260,13 +242,15 @@ class RecordingFinalizer:
               "recording_id": finished_recording.recording_id,
               "llm_mode": llm_mode,
               "source": emitted_text_source,
-              "word_count": finalized_record.word_count,
-              "duration_seconds": finalized_record.duration_seconds,
-              "llm_model": finalized_record.llm_model,
-              "tokens_in": finalized_record.tokens_in,
-              "tokens_out": finalized_record.tokens_out,
+              "word_count": _count_words(final_text),
+              "duration_seconds": reducer_state.duration_seconds,
+              "llm_model": rewrite_result.model if rewrite_result is not None else None,
+              "tokens_in": rewrite_result.input_tokens if rewrite_result is not None else None,
+              "tokens_out": rewrite_result.output_tokens if rewrite_result is not None else None,
               "cost": (
-                format(finalized_record.cost, "f") if finalized_record.cost is not None else None
+                format(rewrite_result.cost, "f")
+                if rewrite_result is not None and rewrite_result.cost is not None
+                else None
               ),
             },
           )
@@ -412,11 +396,7 @@ def _rewrite_provider_type(config: LlmRewriteConfig) -> str:
 
 
 def _rewrite_model(config: LlmRewriteConfig) -> str:
-  provider = config.provider
-  if isinstance(provider, LiteRtRewriteProvider):
-    return provider.model_path
-
-  return provider.model
+  return config.provider.model
 
 
 def _langfuse_usage_details(rewrite_result: RewriteResult) -> dict[str, int] | None:
