@@ -16,6 +16,31 @@ members = [
   "packages/wire",
 ]
 
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+indent-width = 2
+extend-exclude = ["openspec"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "TID", "W"]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.ruff.lint.isort]
+known-first-party = ["active_listener", "eavesdrop"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+exclude = ["*.md"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
 [tool.basedpyright]
 typeCheckingMode = "recommended"
 include = [

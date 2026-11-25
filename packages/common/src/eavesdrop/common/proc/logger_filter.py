@@ -49,7 +49,11 @@ class LoggerFilterProcessor:
     :param event_dict: The log event dictionary.
     :return: The event_dict if the event should be processed.
     """
-    if logger.name == self.logger_name or logger.name.startswith(f"{self.logger_name}."):
+    if (
+      logger.name == self.logger_name
+      or logger.name.startswith(f"{self.logger_name}.")
+      or logger.name.startswith(f"{self.logger_name}/")
+    ):
       return event_dict
 
     raise DropEvent(f"Filtered out by LoggerFilterProcessor, logger={logger.name}")

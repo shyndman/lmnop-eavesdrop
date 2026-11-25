@@ -10,48 +10,28 @@ from eavesdrop.server.transcription.utils import (
 from eavesdrop.wire import Segment, TranscriptionMessage, Word, serialize_message
 
 
-def _segment(*, start: float, end: float, time_offset: float) -> Segment:
+def _segment(*, start: float, end: float) -> Segment:
   return Segment(
     id=1,
     start=start,
     end=end,
     text="hello",
     words=None,
-    time_offset=time_offset,
     completed=False,
   )
 
 
 def test_finalize_recording_timestamps_direct() -> None:
   word = Word(start=0.1, end=0.5, word="a")
-  segment = _segment(start=0.0, end=1.0, time_offset=0.0)
+  segment = _segment(start=0.0, end=1.0)
   segment.words = [word]
 
   _ = finalize_recording_timestamps([segment], 50.0)
 
   assert segment.start == 50.0
   assert segment.end == 51.0
-  assert segment.time_offset == 50.0
   assert word.start == 50.1
   assert word.end == 50.5
-
-
-def test_segment_recording_relative_times_apply_offset_beyond_30_seconds() -> None:
-  segment = _segment(start=2.5, end=4.0, time_offset=31.25)
-
-  assert abs(segment.absolute_start_time - 33.75) < 1e-9
-  assert abs(segment.absolute_end_time - 35.25) < 1e-9
-
-
-def test_recording_relative_times_remain_monotonic_across_window_boundaries() -> None:
-  first = _segment(start=2.0, end=4.0, time_offset=28.0)
-  second = _segment(start=0.1, end=1.1, time_offset=32.0)
-
-  assert abs(first.absolute_start_time - 30.0) < 1e-9
-  assert abs(first.absolute_end_time - 32.0) < 1e-9
-  assert abs(second.absolute_start_time - 32.1) < 1e-9
-  assert abs(second.absolute_end_time - 33.1) < 1e-9
-  assert second.absolute_start_time > first.absolute_end_time
 
 
 def test_transcription_message_serializes_flattened_timestamps() -> None:
@@ -61,7 +41,6 @@ def test_transcription_message_serializes_flattened_timestamps() -> None:
     end=45.0,
     text="hello",
     words=None,
-    time_offset=40.0,
     completed=False,
   )
   message = TranscriptionMessage(stream="s1", segments=[segment], language="en")
@@ -90,7 +69,6 @@ def test_transcription_message_word_timestamps_share_recording_timeline() -> Non
         word="word",
       )
     ],
-    time_offset=40.0,
     completed=False,
   )
   message = TranscriptionMessage(stream="s1", segments=[segment], language="en")

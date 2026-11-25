@@ -21,8 +21,6 @@ def test_transcription_tracers_remain_operational_without_langfuse_credentials(
   with session.trace_pipeline():
     with session.trace_vad_stage() as tracer:
       tracer(speech_chunks, sample_rate=16000, total_samples=24000)
-    with session.trace_feature_stage() as tracer:
-      tracer()
     with session.trace_inference_stage() as tracer:
       tracer()
     with session.trace_segment_stage() as tracer:
@@ -31,7 +29,6 @@ def test_transcription_tracers_remain_operational_without_langfuse_credentials(
   assert session.recording_id == "rec-1"
   assert set(session.stage_timings) == {
     "audio_preprocessing",
-    "feature_extraction",
     "model_inference",
     "segment_processing",
     "total_pipeline",

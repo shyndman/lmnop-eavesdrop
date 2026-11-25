@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
-from types import SimpleNamespace
 from typing import cast, final
 
 import pytest
@@ -14,7 +13,6 @@ from pydantic_ai.usage import RunUsage
 import active_listener.infra.rewrite as rewrite_module
 from active_listener.app.ports import RewriteResult
 from active_listener.infra.rewrite import (
-  LiteRtRewriteClient,
   LoadedRewritePromptFile,
   PydanticAiRewriteClient,
   RewriteClientError,
@@ -24,85 +22,6 @@ from active_listener.infra.rewrite import (
   load_rewrite_prompt,
   resolve_active_listener_override_prompt_path,
 )
-
-
-@final
-class StubConversation:
-  def __init__(self, *, messages: list[rewrite_module.LiteRtMessage], response: object) -> None:
-    self.messages: list[rewrite_module.LiteRtMessage] = messages
-    self.response: object = response
-    self.sent_prompts: list[str] = []
-    self.entered: bool = False
-    self.exited: bool = False
-
-  def __enter__(self) -> StubConversation:
-    self.entered = True
-    return self
-
-  def __exit__(
-    self,
-    exc_type: type[BaseException] | None,
-    exc: BaseException | None,
-    traceback: object | None,
-  ) -> bool | None:
-    _ = exc_type
-    _ = exc
-    _ = traceback
-    self.exited = True
-    return None
-
-  def send_message(self, prompt: str) -> rewrite_module.LiteRtResponse:
-    self.sent_prompts.append(prompt)
-    if isinstance(self.response, Exception):
-      raise self.response
-    return cast(rewrite_module.LiteRtResponse, self.response)
-
-
-@final
-class StubBackend:
-  CPU: str = "cpu"
-
-
-@final
-class StubEngine:
-  created: list[StubEngine] = []
-  conversations: list[StubConversation] = []
-  responses: list[object] = []
-  init_error: Exception | None = None
-  close_calls: int = 0
-
-  def __init__(self, model_path: str, *, backend: object) -> None:
-    if self.__class__.init_error is not None:
-      raise self.__class__.init_error
-
-    self.model_path: str = model_path
-    self.backend: object = backend
-    self.__class__.created.append(self)
-
-  def __enter__(self) -> StubEngine:
-    return self
-
-  def __exit__(
-    self,
-    exc_type: type[BaseException] | None,
-    exc: BaseException | None,
-    traceback: object | None,
-  ) -> bool | None:
-    _ = exc_type
-    _ = exc
-    _ = traceback
-    self.__class__.close_calls += 1
-    return None
-
-  def create_conversation(
-    self,
-    *,
-    messages: list[rewrite_module.LiteRtMessage],
-  ) -> StubConversation:
-    response = self.__class__.responses.pop(0)
-    conversation = StubConversation(messages=messages, response=response)
-    self.__class__.conversations.append(conversation)
-    return conversation
 
 
 @dataclass(frozen=True)
@@ -181,18 +100,9 @@ class StubAgent:
 
 @pytest.fixture(autouse=True)
 def reset_stubs() -> None:
-  StubEngine.created.clear()
-  StubEngine.conversations.clear()
-  StubEngine.responses.clear()
-  StubEngine.init_error = None
-  StubEngine.close_calls = 0
   StubAgent.init_calls.clear()
   StubAgent.responses.clear()
   StubAgent.run_calls.clear()
-
-
-def test_dependency_import_resolves() -> None:
-  assert "litert_lm" in rewrite_module.__dict__
 
 
 def test_load_rewrite_prompt_reads_markdown_contents(tmp_path: Path) -> None:
@@ -328,134 +238,12 @@ def test_resolve_active_listener_override_prompt_path_uses_home_config_dir_when_
   )
 
 
-@pytest.mark.asyncio
-async def test_rewrite_client_uses_fresh_conversation_per_request(
-  monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  monkeypatch.setattr(
-    rewrite_module,
-    "litert_lm",
-    SimpleNamespace(Engine=StubEngine, Backend=StubBackend),
-  )
-  StubEngine.responses.extend(
-    [
-      {"content": [{"type": "text", "text": '{"text":"rewritten alpha","corrections":{}}'}]},
-      {"content": [{"type": "text", "text": '{"text":"rewritten beta","corrections":{}}'}]},
-    ]
-  )
+def test_structured_rewrite_output_schema_includes_attribute_docstrings() -> None:
+  schema = StructuredRewriteOutput.model_json_schema()
+  properties = cast(dict[str, dict[str, object]], schema["properties"])
 
-  client = LiteRtRewriteClient(model_path="/tmp/rewrite/model.litertlm")
-  first = await client.rewrite_text(instructions="Prompt A", transcript="alpha")
-  second = await client.rewrite_text(instructions="Prompt B", transcript="beta")
-  await client.close()
-
-  assert first == RewriteResult(
-    text="rewritten alpha",
-    model="/tmp/rewrite/model.litertlm",
-    input_tokens=None,
-    output_tokens=None,
-    cost=None,
-    corrections={},
-  )
-  assert second == RewriteResult(
-    text="rewritten beta",
-    model="/tmp/rewrite/model.litertlm",
-    input_tokens=None,
-    output_tokens=None,
-    cost=None,
-    corrections={},
-  )
-  assert len(StubEngine.created) == 1
-  assert StubEngine.created[0].model_path == "/tmp/rewrite/model.litertlm"
-  assert len(StubEngine.conversations) == 2
-  assert StubEngine.conversations[0].messages == [
-    {"role": "system", "content": [{"type": "text", "text": "Prompt A"}]}
-  ]
-  assert StubEngine.conversations[1].messages == [
-    {"role": "system", "content": [{"type": "text", "text": "Prompt B"}]}
-  ]
-  assert StubEngine.conversations[0].sent_prompts == ["alpha"]
-  assert StubEngine.conversations[1].sent_prompts == ["beta"]
-  assert StubEngine.close_calls == 1
-
-
-@pytest.mark.asyncio
-async def test_rewrite_client_extracts_documented_response_shape(
-  monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  monkeypatch.setattr(
-    rewrite_module,
-    "litert_lm",
-    SimpleNamespace(Engine=StubEngine, Backend=StubBackend),
-  )
-  StubEngine.responses.append(
-    {
-      "content": [
-        {"type": "text", "text": '{"text":"Hello'},
-        {"type": "image"},
-        {"type": "text", "text": ', world","corrections":{"helo":"hello"}}'},
-      ]
-    }
-  )
-
-  client = LiteRtRewriteClient(model_path="/tmp/rewrite/model.litertlm")
-  rewritten = await client.rewrite_text(instructions="Rewrite this transcript.", transcript="alpha")
-
-  assert rewritten == RewriteResult(
-    text="Hello, world",
-    model="/tmp/rewrite/model.litertlm",
-    input_tokens=None,
-    output_tokens=None,
-    cost=None,
-    corrections={"helo": "hello"},
-  )
-
-
-@pytest.mark.asyncio
-async def test_rewrite_client_rejects_empty_output(monkeypatch: pytest.MonkeyPatch) -> None:
-  monkeypatch.setattr(
-    rewrite_module,
-    "litert_lm",
-    SimpleNamespace(Engine=StubEngine, Backend=StubBackend),
-  )
-  StubEngine.responses.append({"content": [{"type": "text", "text": "   "}]})
-
-  client = LiteRtRewriteClient(model_path="/tmp/rewrite/model.litertlm")
-
-  with pytest.raises(RewriteClientError, match="empty output"):
-    _ = await client.rewrite_text(instructions="Rewrite this transcript.", transcript="alpha")
-
-
-@pytest.mark.asyncio
-async def test_rewrite_client_propagates_model_errors(monkeypatch: pytest.MonkeyPatch) -> None:
-  monkeypatch.setattr(
-    rewrite_module,
-    "litert_lm",
-    SimpleNamespace(Engine=StubEngine, Backend=StubBackend),
-  )
-  StubEngine.responses.append(RuntimeError("boom"))
-
-  client = LiteRtRewriteClient(model_path="/tmp/rewrite/model.litertlm")
-
-  with pytest.raises(RewriteClientError, match="rewrite request failed"):
-    _ = await client.rewrite_text(instructions="Rewrite this transcript.", transcript="alpha")
-
-
-def test_rewrite_client_fails_fast_when_engine_initialization_fails(
-  monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  monkeypatch.setattr(
-    rewrite_module,
-    "litert_lm",
-    SimpleNamespace(Engine=StubEngine, Backend=StubBackend),
-  )
-  StubEngine.init_error = RuntimeError("bad bundle")
-
-  with pytest.raises(
-    RewriteClientError,
-    match="failed to initialize LiteRT rewrite model: /tmp/rewrite/model.litertlm",
-  ):
-    _ = LiteRtRewriteClient(model_path="/tmp/rewrite/model.litertlm")
+  assert "rewritten" in str(properties["text"].get("description", ""))
+  assert "recurring" in str(properties["corrections"].get("description", ""))
 
 
 @pytest.mark.asyncio
@@ -536,9 +324,7 @@ async def test_pydantic_ai_rewrite_client_rejects_empty_output(
 ) -> None:
   monkeypatch.setattr(rewrite_module, "Agent", StubAgent)
   StubAgent.responses.append(
-    StubPydanticAiRunResult(
-      output=StructuredRewriteOutput.model_construct(text="", corrections={})
-    )
+    StubPydanticAiRunResult(output=StructuredRewriteOutput.model_construct(text="", corrections={}))
   )
 
   client = PydanticAiRewriteClient(model="openai:gpt-4.1-mini")
@@ -556,5 +342,5 @@ async def test_pydantic_ai_rewrite_client_propagates_model_errors(
 
   client = PydanticAiRewriteClient(model="openai:gpt-4.1-mini")
 
-  with pytest.raises(RewriteClientError, match="rewrite request failed"):
+  with pytest.raises(RewriteClientError, match="rewrite request failed: boom"):
     _ = await client.rewrite_text(instructions="Prompt A", transcript="alpha")

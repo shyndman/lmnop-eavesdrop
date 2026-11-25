@@ -1,5 +1,5 @@
 keyboard_name: "AT Translated Set 2 keyboard"
-host: "home-brainbox"
+host: "localhost"
 port: 9090
 audio_device: "default"
 ffmpeg_path: null
@@ -7,5 +7,5 @@ ffmpeg_path: null
 llm_rewrite:
   prompt_path: "prompts/rewrite_prompt.md"
   provider:
-    type: "litert"
-    model_path: "models/rewrite.litertlm"
+    type: "pydantic_ai"
+    model: "google-gla:gemini-3.1-flash-lite"

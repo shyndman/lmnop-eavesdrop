@@ -6,14 +6,95 @@ tasks:
     dotenv: ['.env']
     dir: .
     cmds:
-      - uv sync --all-extras --all-groups --project packages/active-listener
-      - uv run --project packages/active-listener active-listener --config-path packages/active-listener/config.yaml {{.CLI_ARGS}}
+      - uv sync --all-packages --all-extras --all-groups
+      - uv run --no-sync --package active-listener active-listener --config-path packages/active-listener/config.yaml {{.CLI_ARGS}}
+
+  install-server-service:
+    desc: Install or update the eavesdrop-server user systemd service
+    dir: .
+    cmds:
+      - uv sync --all-packages --all-extras --all-groups
+      - |
+        .venv/bin/python - <<'PY'
+        import shutil
+        from pathlib import Path
+
+        repo_root = Path.cwd()
+        unit_template = repo_root / "packages/server/systemd/eavesdrop-server.service.in"
+        unit_destination = Path.home() / ".config/systemd/user/eavesdrop-server.service"
+        config_source = repo_root / "packages/server/config.yaml"
+        config_destination = Path.home() / ".config/eavesdrop/server.yaml"
+
+        uv_bin = shutil.which("uv")
+        if uv_bin is None:
+          raise SystemExit("uv not found on PATH; cannot build service unit")
+
+        config_destination.parent.mkdir(parents=True, exist_ok=True)
+        if not config_destination.exists():
+          config_destination.write_text(config_source.read_text(encoding="utf-8"), encoding="utf-8")
+
+        unit_text = unit_template.read_text(encoding="utf-8")
+        unit_text = unit_text.replace("@REPO_ROOT@", str(repo_root))
+        unit_text = unit_text.replace("@UV_BIN@", uv_bin)
+        unit_text = unit_text.replace("@CONFIG_PATH@", str(config_destination))
+        unit_destination.parent.mkdir(parents=True, exist_ok=True)
+        unit_destination.write_text(unit_text, encoding="utf-8")
+
+        print(f"Installed {unit_destination}")
+        print(f"Using config path {config_destination}")
+        PY
+      - systemctl --user daemon-reload
+      - systemctl --user enable eavesdrop-server.service
+      - |
+        if systemctl --user is-active --quiet eavesdrop-server.service; then
+          systemctl --user restart eavesdrop-server.service
+        else
+          systemctl --user start eavesdrop-server.service
+        fi
+      - |
+        deadline=$((SECONDS + 60))
+        while [ "$SECONDS" -lt "$deadline" ]; do
+          if systemctl --user is-active --quiet eavesdrop-server.service; then
+            sleep 5
+            if systemctl --user is-active --quiet eavesdrop-server.service; then
+              systemctl --user status eavesdrop-server.service --no-pager
+              exit 0
+            fi
+          fi
+          sleep 2
+        done
+        systemctl --user status eavesdrop-server.service --no-pager
+        journalctl --user -u eavesdrop-server.service -n 100 --no-pager
+        exit 1
+
+  uninstall-server-service:
+    desc: Stop, disable, and remove the eavesdrop-server user systemd service
+    dir: .
+    cmds:
+      - systemctl --user disable --now eavesdrop-server.service || true
+      - rm -f "$HOME/.config/systemd/user/eavesdrop-server.service"
+      - systemctl --user daemon-reload
+      - |
+        if systemctl --user is-enabled eavesdrop-server.service >/dev/null 2>&1; then
+          echo "eavesdrop-server.service is still enabled"
+          exit 1
+        fi
+      - |
+        if systemctl --user is-active --quiet eavesdrop-server.service; then
+          systemctl --user status eavesdrop-server.service --no-pager
+          exit 1
+        fi
+
+  follow-server-service-logs:
+    desc: Follow the eavesdrop-server logs without journal metadata
+    cmds:
+      - journalctl --user -u eavesdrop-server.service -o cat --follow
 
   install-active-listener-service:
     desc: Install or update the active-listener user systemd service
     dir: .
     cmds:
-      - uv sync --all-extras --all-groups --project packages/active-listener
+      - uv sync --all-packages --all-extras --all-groups
       - |
         .venv/bin/python - <<'PY'
         import shutil
@@ -135,8 +216,8 @@ tasks:
         fi
 
   follow-active-listener-service-logs:
-    desc: follow the active listener logs, formatted without journal cruft
-    cmds: 
+    desc: Follow the active-listener logs without journal metadata
+    cmds:
       - journalctl --user -u active-listener.service -o cat --follow
 
   prepare-active-listener-ui-gnome:
@@ -172,22 +253,10 @@ tasks:
         pnpm run wayland:test
 
   prepare-client-lib:
-    desc: Install client library dependencies
-    dir: packages/client
+    desc: Install workspace client dependencies
+    dir: .
     cmds:
-      - uv sync --all-extras --all-groups
-
-  transcribe-file:
-    desc: Transcribe a local audio file (set audio_file=/path/to/audio.wav)
-    deps: [prepare-client-lib]
-    dir: packages/client
-    vars:
-      host: '{{default "localhost" .host}}'
-      port: '{{default "9090" .port}}'
-    requires:
-      vars: [audio_file]
-    cmds:
-      - uv run python -m eavesdrop.client.transcribe_file_cli --audio-file "{{.audio_file}}" --host "{{.host}}" --port {{.port}} {{.CLI_ARGS}}
+      - uv sync --all-packages --all-extras --all-groups
 
   run-mic-client:
     desc: Start microphone transcription client
@@ -198,117 +267,30 @@ tasks:
       port: '{{default "9090" .port}}'
       audio_device: '{{default "default" .audio_device}}'
     cmds:
-      - uv run python examples/simple_transcriber.py --server "{{.host}}:{{.port}}" --audio-device "{{.audio_device}}" {{.CLI_ARGS}}
+      - uv run --no-sync --package eavesdrop-client python examples/simple_transcriber.py --server "{{.host}}:{{.port}}" --audio-device "{{.audio_device}}" {{.CLI_ARGS}}
 
   prepare-server:
-    desc: Install server transcription dependencies for CPU or host Vulkan recognition
+    desc: Install server CPU transcription and VAD dependencies
     dir: .
     cmds:
-      - uv sync --package eavesdrop-server --extra transcription
+      - uv sync --all-packages --all-extras --all-groups
 
   typecheck:
     desc: Run the workspace type checker
     dir: .
     cmds:
-      - uv run basedpyright
+      - uv run --no-sync basedpyright
 
   typecheck-server:
-    desc: Run the server type checker with optional transcription dependencies
-    dir: packages/server
+    desc: Run the server type checker with transcription dependencies synced
+    dir: .
     cmds:
-      - uv run --extra transcription basedpyright
+      - uv run --no-sync basedpyright packages/server
 
   run-server:
     desc: Start the transcription server with local config
     deps: [prepare-server]
     dotenv: ['.env']
-    dir: packages/server
-    cmds:
-      - uv run --extra transcription eavesdrop-server --config config.yaml
-
-  build-cpu-base-image:
-    desc: Build the CPU base image with Torch/audio for standalone Silero VAD
     dir: .
-    vars:
-      CPU_BASE_IMAGE: '{{default "eavesdrop-cpu-base" .CPU_BASE_IMAGE}}'
     cmds:
-      - docker build --progress=plain -f packages/server/docker/Dockerfile.cpu-base -t {{.CPU_BASE_IMAGE}} .
-
-  build-server-image:
-    desc: Build the Orukeet server with CPU and Vulkan inference
-    dir: .
-    vars:
-      SERVER_IMAGE: '{{default "ghcr.io/shyndman/lmnop-eavesdrop:latest" .SERVER_IMAGE}}'
-      CPU_BASE_IMAGE: '{{default "eavesdrop-cpu-base" .CPU_BASE_IMAGE}}'
-      SKIP_CACHE: '{{default "false" .SKIP_CACHE}}'
-    cmds:
-      - task: build-cpu-base-image
-      - docker build {{if eq .SKIP_CACHE "true"}}--no-cache {{end}}--progress=plain
-          -f packages/server/docker/Dockerfile
-          --build-arg BASE_IMAGE={{.CPU_BASE_IMAGE}}
-          -t {{.SERVER_IMAGE}} .
-
-  run-server-image:
-    desc: Run the server container using the configured CPU or Vulkan backend
-    deps: [build-server-image]
-    dotenv: ['.env']
-    dir: .
-    vars: &server_container_vars
-      SERVER_IMAGE: '{{default "ghcr.io/shyndman/lmnop-eavesdrop:latest" .SERVER_IMAGE}}'
-      LOG_LEVEL: '{{default "INFO" .LOG_LEVEL}}'
-      SERVER_CONFIG: '{{default (printf "%s/packages/server/config.yaml" .ROOT_DIR) .SERVER_CONFIG}}'
-      SERVER_DEVICE:
-        sh: >-
-          uv run --package eavesdrop-server python -c
-          'import sys, yaml; from pathlib import Path; from eavesdrop.server.config import EavesdropConfig;
-          print(EavesdropConfig.model_validate(yaml.safe_load(Path(sys.argv[1]).read_text())).transcription.device)'
-          '{{.SERVER_CONFIG}}'
-    cmds:
-      - docker run --interactive --tty
-        --rm
-        {{if eq .SERVER_DEVICE "vulkan"}}--device /dev/dri{{end}}
-        --publish '9090:9090'
-        --name eavesdrop
-        --env LOG_LEVEL='{{.LOG_LEVEL}}'
-        --env LANGFUSE_PUBLIC_KEY
-        --env LANGFUSE_SECRET_KEY
-        --env LANGFUSE_BASE_URL
-        --volume "$HOME/.cache/lmnop/eavesdrop-models:/root/.cache/eavesdrop"
-        --volume "{{.SERVER_CONFIG}}:/app/config.yaml:ro"
-        --env EAVESDROP_CONFIG=/app/config.yaml
-        {{.SERVER_IMAGE}}
-
-  run-server-image-persistent:
-    desc: Run the configured CPU or Vulkan server as a background container
-    deps: [build-server-image]
-    dotenv: ['.env']
-    dir: .
-    vars: *server_container_vars
-    cmds:
-      - |
-        if docker inspect -f '{{"{{"}}.State.Running{{"}}"}}' eavesdrop >/dev/null 2>&1 && [ "$(docker inspect -f '{{"{{"}}.State.Running{{"}}"}}' eavesdrop)" = "true" ]; then
-          docker stop eavesdrop
-        fi
-      - docker rm eavesdrop || true
-      - docker run --detach
-        --restart always
-        {{if eq .SERVER_DEVICE "vulkan"}}--device /dev/dri{{end}}
-        --publish '9090:9090'
-        --name eavesdrop
-        --env LOG_LEVEL='{{.LOG_LEVEL}}'
-        --env LANGFUSE_PUBLIC_KEY
-        --env LANGFUSE_SECRET_KEY
-        --env LANGFUSE_BASE_URL
-        --volume "$HOME/.cache/lmnop/eavesdrop-models:/root/.cache/eavesdrop"
-        --volume "{{.SERVER_CONFIG}}:/app/config.yaml:ro"
-        --env EAVESDROP_CONFIG=/app/config.yaml
-        {{.SERVER_IMAGE}}
-
-  stop-server-image:
-    desc: Stop the running server container if needed, then remove it
-    cmds:
-      - |
-        if docker inspect -f '{{"{{"}}.State.Running{{"}}"}}' eavesdrop >/dev/null 2>&1 && [ "$(docker inspect -f '{{"{{"}}.State.Running{{"}}"}}' eavesdrop)" = "true" ]; then
-          docker stop eavesdrop
-        fi
-      - docker rm eavesdrop || true
+      - uv run --no-sync --package eavesdrop-server eavesdrop-server --config packages/server/config.yaml {{.CLI_ARGS}}

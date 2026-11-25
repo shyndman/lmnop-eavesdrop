@@ -8,14 +8,11 @@ dependencies = [
   "eavesdrop-common",
   "eavesdrop-wire",
   "langfuse>=4.5.1",
-  "netifaces>=0.11.0",
   "numpy<2",
-  "psutil",
   "pydantic>=2",
   "pyyaml>=6.0",
   "soundfile",
   "structlog>=25.4.0",
-  "websocket-client>=1.8.0",
   "websockets>=13.0",
 ]
 license = {text = "MIT"}
@@ -34,9 +31,6 @@ transcription = [
     "huggingface-hub>=0.36,<2",
     "sherpa-onnx==1.13.4",
     "sherpa-onnx-core==1.13.4",
-    "silero-vad[onnx-cpu]>=6.2,<7",
-    "torch==2.9.1",
-    "torchaudio==2.9.1",
 ]
 
 [build-system]
@@ -88,7 +82,7 @@ indent-width = 2
 ban-relative-imports = "all"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "W"]
+select = ["E", "F", "I", "W", "TID"]
 ignore = []
 
 [tool.ruff.lint.isort]
@@ -100,17 +94,5 @@ indent-style = "space"
 line-ending = "auto"
 
 [tool.uv.sources]
-torch = { index = "pytorch-cpu" }
-torchaudio = { index = "pytorch-cpu" }
 eavesdrop-wire = { workspace = true }
 eavesdrop-common = { workspace = true }
-
-[[tool.uv.index]]
-name = "pypi"
-url = "https://pypi.org/simple"
-default = true
-
-[[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true

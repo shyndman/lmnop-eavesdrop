@@ -135,38 +135,42 @@ class NerdStyles:
   kv_value: ClassVar[str] = MAGENTA
 
 
-def _relative_time_processor(
-  _logger: structlog.stdlib.BoundLogger, _method_name: str, event_dict: EventDict
-) -> EventDict:
-  """Add relative timestamp since program start with hours:minutes:seconds.milliseconds format."""
-  elapsed = time.time() - _PROGRAM_START_TIME
+def _make_relative_time_processor(*, use_color: bool) -> Processor:
+  """Create a processor formatting relative elapsed time since program start.
 
-  # Calculate hours, minutes, seconds
-  hours = int(elapsed // 3600)
-  minutes = int((elapsed % 3600) // 60)
-  seconds = elapsed % 60
+  :param use_color: Whether to include ANSI color escape sequences.
+  :type use_color: bool
+  :returns: Structlog processor injecting ``timestamp``.
+  :rtype: Processor
+  """
 
-  # ANSI color codes: \x1b[2m for dim/gray, \x1b[90m for darker gray, \x1b[0m to reset
-  gray = "\x1b[2m"  # Normal gray (like original timestamp)
-  dark_gray = "\x1b[90m"  # Darker gray for zeros
-  reset = "\x1b[0m"
+  def _relative_time_processor(
+    _logger: structlog.stdlib.BoundLogger, _method_name: str, event_dict: EventDict
+  ) -> EventDict:
+    elapsed = time.time() - _PROGRAM_START_TIME
 
-  separator = f"{gray}:{reset}"
+    hours = int(elapsed // 3600)
+    minutes = int((elapsed % 3600) // 60)
+    seconds = elapsed % 60
 
-  # Format hours with darker gray if zero, normal gray otherwise
-  hours_str = f"{gray}{hours:02d}{reset}{separator}" if hours != 0 else ""
+    if use_color:
+      gray = "\x1b[2m"
+      dark_gray = "\x1b[90m"
+      reset = "\x1b[0m"
+      separator = f"{gray}:{reset}"
+      hours_str = f"{gray}{hours:02d}{reset}{separator}" if hours != 0 else ""
+      minutes_str = f"{gray}{minutes:02d}{reset}{separator}" if minutes != 0 or hours != 0 else ""
+      seconds_str = f"{gray}{seconds:06.3f}{reset}"
+      time_str = f"{dark_gray}+{reset}{hours_str}{minutes_str}{seconds_str}"
+    else:
+      hours_str = f"{hours:02d}:" if hours != 0 else ""
+      minutes_str = f"{minutes:02d}:" if minutes != 0 or hours != 0 else ""
+      time_str = f"+{hours_str}{minutes_str}{seconds:06.3f}"
 
-  # Format minutes with darker gray if zero, normal gray otherwise
-  minutes_str = f"{gray}{minutes:02d}{reset}{separator}" if minutes != 0 and hours != 0 else ""
+    event_dict["timestamp"] = time_str
+    return event_dict
 
-  # Always show seconds in normal gray
-  seconds_str = f"{gray}{seconds:06.3f}{reset}"
-
-  # Colons in normal gray too
-  time_str = f"{dark_gray}+{reset}{hours_str}{minutes_str}{seconds_str}"
-
-  event_dict["timestamp"] = time_str
-  return event_dict
+  return cast(Processor, _relative_time_processor)
 
 
 def _compact_level_processor(
@@ -252,15 +256,25 @@ def setup_logging(
     structlog.stdlib.add_logger_name,
     structlog.stdlib.add_log_level,
     *filters,
-    _debug_event_colorer,  # Run before level processing
-    _compact_level_processor,
-    structlog.stdlib.PositionalArgumentsFormatter(),
-    structlog.stdlib.ExtraAdder(),
-    FloatPrecisionProcessor(digits=3),
-    _relative_time_processor,
-    structlog.processors.StackInfoRenderer(),
-    # structlog.processors.format_exc_info,
   ]
+
+  if not json_output:
+    shared_processors.extend(
+      [
+        _debug_event_colorer,  # Run before level processing
+        _compact_level_processor,
+      ]
+    )
+
+  shared_processors.extend(
+    [
+      structlog.stdlib.PositionalArgumentsFormatter(),
+      structlog.stdlib.ExtraAdder(),
+      FloatPrecisionProcessor(digits=3),
+      _make_relative_time_processor(use_color=not json_output),
+      structlog.processors.StackInfoRenderer(),
+    ]
+  )
 
   # Add correlation ID if provided
   if correlation_id:

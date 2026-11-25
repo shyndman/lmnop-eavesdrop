@@ -29,7 +29,6 @@ def _segment(
   *,
   start: float = 0.0,
   end: float = 0.1,
-  time_offset: float = 0.0,
   words: list[Word] | None = None,
 ) -> Segment:
   return Segment(
@@ -38,7 +37,6 @@ def _segment(
     end=end,
     text=text,
     words=words,
-    time_offset=time_offset,
     completed=True,
   )
 
@@ -167,10 +165,10 @@ def test_apply_segment_reduction_accumulates_word_state() -> None:
     state,
     reduce_new_segments(
       [
-        _segment(1, "  hello  ", start=0.0, end=0.4, time_offset=10.0),
-        _segment(2, "   ", start=0.4, end=0.7, time_offset=10.0),
-        _segment(3, "world", start=0.1, end=0.6, time_offset=10.5),
-        _segment(4, "tail", start=0.6, end=0.8, time_offset=10.5),
+        _segment(1, "  hello  ", start=10.0, end=10.4),
+        _segment(2, "   ", start=10.4, end=10.7),
+        _segment(3, "world", start=10.6, end=11.1),
+        _segment(4, "tail", start=11.1, end=11.3),
       ],
       last_id=None,
     ),

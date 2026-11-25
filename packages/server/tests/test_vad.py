@@ -1,245 +1,223 @@
-"""Model-independent contracts for the standalone Silero VAD adapter."""
+"""Contracts for standalone sherpa-onnx Silero v5 ONNX VAD wrapper."""
 
+import hashlib
 import os
 from dataclasses import dataclass, field
-from typing import NamedTuple
-from unittest.mock import patch
+from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
-from eavesdrop.server.transcription.models import SpeechChunk, VadParameters
+from eavesdrop.server.transcription import vad
+from eavesdrop.server.transcription.models import VadParameters
 from eavesdrop.server.transcription.utils import FloatAudio
-from eavesdrop.server.transcription.vad import SileroSpeechDetector
 
 
 @dataclass
-class FakeTorchThreads:
-  """Record changes to the host's Torch thread policy.
-
-  :param count: Initial host thread count.
-  """
-
-  count: int = 8
-  restored_counts: list[int] = field(default_factory=list)
-
-  def get_num_threads(self) -> int:
-    """Return the current host thread count."""
-    return self.count
-
-  def set_num_threads(self, count: int) -> None:
-    """Record and apply a thread-policy restoration.
-
-    :param count: Requested host thread count.
-    """
-    self.restored_counts.append(count)
-    self.count = count
-
-
-class DetectionCall(NamedTuple):
-  """Capture the waveform, model, and exact arguments supplied to Silero."""
-
-  audio: FloatAudio
-  model: object
-  sampling_rate: int
-  threshold: float
-  neg_threshold: float | None
-  min_speech_duration_ms: int
-  max_speech_duration_s: float
-  min_silence_duration_ms: int
-  speech_pad_ms: int
+class _FakeSpeechSegment:
+  start: int
+  samples: list[float]
 
 
 @dataclass
-class FakeSileroRuntime:
-  """Record model loading and return original-waveform speech intervals.
+class _FakeDetector:
+  config: object
+  buffer_size_in_seconds: float
+  accepted: list[FloatAudio] = field(default_factory=list)
+  flushed: int = 0
+  resets: int = 0
+  raise_on_accept: bool = False
+  segments: list[_FakeSpeechSegment] = field(default_factory=list)
+  _queue: list[_FakeSpeechSegment] = field(default_factory=list, init=False)
 
-  :param speech: Prepared speech intervals in original input samples.
-  """
+  def accept_waveform(self, samples: FloatAudio) -> None:
+    if self.raise_on_accept:
+      raise RuntimeError("vad failure")
+    self.accepted.append(samples.copy())
 
-  speech: list[SpeechChunk] = field(default_factory=list)
-  model: object = field(default_factory=object)
-  load_calls: list[bool] = field(default_factory=list)
-  detect_calls: list[DetectionCall] = field(default_factory=list)
+  def flush(self) -> None:
+    self.flushed += 1
+    self._queue = list(self.segments)
 
-  def load_silero_vad(self, *, onnx: bool) -> object:
-    """Record the chosen backend and return the prepared model.
+  def empty(self) -> bool:
+    return len(self._queue) == 0
 
-    :param onnx: Whether to use the ONNX backend.
-    :returns: Prepared model passed through to detection.
-    """
-    self.load_calls.append(onnx)
-    return self.model
+  @property
+  def front(self) -> _FakeSpeechSegment:
+    return self._queue[0]
 
-  def get_speech_timestamps(
-    self,
-    audio: FloatAudio,
-    model: object,
-    *,
-    sampling_rate: int,
-    threshold: float,
-    neg_threshold: float | None,
-    min_speech_duration_ms: int,
-    max_speech_duration_s: float,
-    min_silence_duration_ms: int,
-    speech_pad_ms: int,
-  ) -> list[SpeechChunk]:
-    """Record all detection arguments and return prepared sample intervals.
+  def pop(self) -> None:
+    _ = self._queue.pop(0)
 
-    :param audio: Original input waveform.
-    :param model: Previously loaded VAD model.
-    :param sampling_rate: Waveform sample rate.
-    :param threshold: Speech probability threshold.
-    :param neg_threshold: Silence probability threshold.
-    :param min_speech_duration_ms: Minimum speech duration.
-    :param max_speech_duration_s: Maximum speech duration.
-    :param min_silence_duration_ms: Minimum silence duration.
-    :param speech_pad_ms: Padding around detected speech.
-    :returns: Speech boundaries in original input samples.
-    """
-    self.detect_calls.append(
-      DetectionCall(
-        audio,
-        model,
-        sampling_rate,
-        threshold,
-        neg_threshold,
-        min_speech_duration_ms,
-        max_speech_duration_s,
-        min_silence_duration_ms,
-        speech_pad_ms,
-      )
+  def reset(self) -> None:
+    self.resets += 1
+    self._queue.clear()
+
+
+@dataclass
+class _FakeSherpa:
+  silero_calls: list[dict[str, object]] = field(default_factory=list)
+  vad_calls: list[dict[str, object]] = field(default_factory=list)
+  detectors: list[_FakeDetector] = field(default_factory=list)
+  next_segments: list[list[_FakeSpeechSegment]] = field(default_factory=list)
+
+  def SileroVadModelConfig(self, **kwargs: object) -> SimpleNamespace:
+    self.silero_calls.append(kwargs)
+    return SimpleNamespace(**kwargs)
+
+  def VadModelConfig(self, **kwargs: object) -> SimpleNamespace:
+    self.vad_calls.append(kwargs)
+    return SimpleNamespace(**kwargs)
+
+  def VoiceActivityDetector(
+    self, config: object, *, buffer_size_in_seconds: float
+  ) -> _FakeDetector:
+    segments = self.next_segments.pop(0) if self.next_segments else []
+    detector = _FakeDetector(
+      config=config,
+      buffer_size_in_seconds=buffer_size_in_seconds,
+      segments=segments,
     )
-    return self.speech.copy()
+    self.detectors.append(detector)
+    return detector
 
 
-class ImportCall(NamedTuple):
-  """Capture telemetry settings at the moment a dependency is imported."""
-
-  name: str
-  ort_telemetry_disabled: str | None
-  hub_telemetry_disabled: str | None
-
-
-@dataclass
-class FakeImports:
-  """Simulate Silero's import-time Torch thread mutation without heavy imports.
-
-  :param torch: Host thread-policy double.
-  :param silero: Prepared Silero runtime.
-  :param fail_silero_import: Whether the Silero import raises after changing threads.
-  """
-
-  torch: FakeTorchThreads
-  silero: FakeSileroRuntime
-  fail_silero_import: bool = False
-  calls: list[ImportCall] = field(default_factory=list)
-
-  def import_module(self, name: str) -> FakeTorchThreads | FakeSileroRuntime:
-    """Record import-time environment and simulate dependency initialization.
-
-    :param name: Requested dependency module.
-    :returns: Prepared Torch or Silero runtime.
-    :raises ImportError: If the simulated Silero import fails.
-    :raises AssertionError: If an unexpected dependency is imported.
-    """
-    self.calls.append(
-      ImportCall(
-        name, os.environ.get("ORT_DISABLE_TELEMETRY"), os.environ.get("HF_HUB_DISABLE_TELEMETRY")
-      )
-    )
-    if name == "torch":
-      return self.torch
-    if name == "silero_vad":
-      self.torch.count = 1
-      if self.fail_silero_import:
-        raise ImportError("Simulated Silero import failure")
-      return self.silero
-    raise AssertionError(f"Unexpected runtime import: {name}")
-
-
-def test_initialization_disables_telemetry_restores_threads_and_loads_onnx(
-  monkeypatch: pytest.MonkeyPatch,
+def test_vad_model_path_verifies_pinned_sha256(
+  tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-  """Imports see opt-outs, and Silero cannot leave Torch limited to one thread.
+  model_file = tmp_path / vad.VAD_FILENAME
+  payload = b"silero-v5-onnx"
+  _ = model_file.write_bytes(payload)
+  checksum = hashlib.sha256(payload).hexdigest()
 
-  :param monkeypatch: Restore environment variables after this test.
-  """
-  monkeypatch.setenv("ORT_DISABLE_TELEMETRY", "0")
-  monkeypatch.setenv("HF_HUB_DISABLE_TELEMETRY", "0")
-  torch = FakeTorchThreads(count=8)
-  silero = FakeSileroRuntime()
-  imports = FakeImports(torch, silero)
+  downloads: list[tuple[str, str, str]] = []
 
-  with patch("eavesdrop.server.transcription.vad.import_module", new=imports.import_module):
-    _ = SileroSpeechDetector()
+  def fake_download(*, repo_id: str, filename: str, revision: str) -> str:
+    downloads.append((repo_id, filename, revision))
+    return str(model_file)
 
-  assert imports.calls == [ImportCall("torch", "1", "1"), ImportCall("silero_vad", "1", "1")]
-  assert torch.count == 8
-  assert torch.restored_counts == [8]
-  assert silero.load_calls == [True]
-
-
-def test_failed_silero_import_restores_threads_and_propagates_error(
-  monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  """A partial dependency import cannot change the host's thread policy.
-
-  :param monkeypatch: Restore environment variables after this test.
-  """
-  monkeypatch.setenv("ORT_DISABLE_TELEMETRY", "0")
-  monkeypatch.setenv("HF_HUB_DISABLE_TELEMETRY", "0")
-  torch = FakeTorchThreads(count=6)
-  silero = FakeSileroRuntime()
-  imports = FakeImports(torch, silero, fail_silero_import=True)
-
-  with patch("eavesdrop.server.transcription.vad.import_module", new=imports.import_module):
-    with pytest.raises(ImportError, match="Simulated Silero import failure"):
-      _ = SileroSpeechDetector()
-
-  assert torch.count == 6
-  assert torch.restored_counts == [6]
-  assert silero.load_calls == []
-
-
-def test_detect_passes_all_parameters_and_preserves_original_sample_offsets(
-  monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  """VAD forwards its configuration and retains gaps on the input sample timeline.
-
-  :param monkeypatch: Restore environment variables after this test.
-  """
-  monkeypatch.setenv("ORT_DISABLE_TELEMETRY", "0")
-  monkeypatch.setenv("HF_HUB_DISABLE_TELEMETRY", "0")
-  speech: list[SpeechChunk] = [
-    {"start": 1600, "end": 4800},
-    {"start": 16000, "end": 24000},
-  ]
-  silero = FakeSileroRuntime(speech)
-  imports = FakeImports(FakeTorchThreads(), silero)
-  audio = np.linspace(-0.5, 0.5, num=32000, dtype=np.float32)
-  parameters = VadParameters(
-    threshold=0.72,
-    neg_threshold=0.33,
-    min_speech_duration_ms=120,
-    max_speech_duration_s=4.5,
-    min_silence_duration_ms=650,
-    speech_pad_ms=240,
+  monkeypatch.delenv("HF_HUB_DISABLE_XET", raising=False)
+  monkeypatch.setattr(vad, "VAD_SHA256", checksum)
+  monkeypatch.setattr(
+    vad,
+    "import_module",
+    lambda _name: SimpleNamespace(hf_hub_download=fake_download),
   )
 
-  with patch("eavesdrop.server.transcription.vad.import_module", new=imports.import_module):
-    detector = SileroSpeechDetector()
-  result = detector.detect(audio, parameters)
+  resolved = vad.vad_model_path()
 
-  assert result == speech
-  assert len(silero.detect_calls) == 1
-  call = silero.detect_calls[0]
-  assert call.audio is audio
-  assert call.model is silero.model
-  assert call.sampling_rate == 16000
-  assert call.threshold == 0.72
-  assert call.neg_threshold == 0.33
-  assert call.min_speech_duration_ms == 120
-  assert call.max_speech_duration_s == 4.5
-  assert call.min_silence_duration_ms == 650
-  assert call.speech_pad_ms == 240
+  assert resolved == model_file
+  assert os.environ["HF_HUB_DISABLE_XET"] == "1"
+  assert downloads == [(vad.VAD_REPO_ID, vad.VAD_FILENAME, vad.VAD_REVISION)]
+
+
+def test_vad_model_path_rejects_checksum_mismatch(
+  tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  model_file = tmp_path / vad.VAD_FILENAME
+  _ = model_file.write_bytes(b"corrupt")
+
+  monkeypatch.setattr(
+    vad,
+    "import_module",
+    lambda _name: SimpleNamespace(hf_hub_download=lambda **_kwargs: str(model_file)),
+  )
+
+  with pytest.raises(ValueError, match="SHA256"):
+    _ = vad.vad_model_path()
+
+
+def test_detector_feeds_512_sample_windows_pads_tail_and_caches_by_params(
+  tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  model_file = tmp_path / vad.VAD_FILENAME
+  _ = model_file.write_bytes(b"ok")
+
+  fake_sherpa = _FakeSherpa(
+    next_segments=[
+      [_FakeSpeechSegment(start=512, samples=[0.1] * 400)],
+      [_FakeSpeechSegment(start=0, samples=[0.2] * 300)],
+    ]
+  )
+  telemetry_calls = 0
+
+  def fake_disable_telemetry() -> None:
+    nonlocal telemetry_calls
+    telemetry_calls += 1
+
+  monkeypatch.setattr(vad, "disable_runtime_telemetry", fake_disable_telemetry)
+  monkeypatch.setattr(vad, "vad_model_path", lambda: model_file)
+  monkeypatch.setattr(vad, "import_module", lambda _name: fake_sherpa)
+
+  speech_detector = vad.SileroSpeechDetector()
+  params_a = VadParameters(
+    threshold=0.45,
+    min_silence_duration_ms=800,
+    min_speech_duration_ms=100,
+    max_speech_duration_s=15.0,
+  )
+  params_b = VadParameters(
+    threshold=0.45,
+    min_silence_duration_ms=1200,
+    min_speech_duration_ms=100,
+    max_speech_duration_s=15.0,
+  )
+
+  audio = np.arange(700, dtype=np.float32)
+  first = speech_detector.detect(audio, params_a)
+  second = speech_detector.detect(np.ones(600, dtype=np.float32), params_a)
+  third = speech_detector.detect(np.ones(512, dtype=np.float32), params_b)
+
+  assert telemetry_calls == 1
+  assert len(fake_sherpa.detectors) == 2
+
+  assert fake_sherpa.silero_calls[0] == {
+    "model": str(model_file),
+    "threshold": 0.45,
+    "min_silence_duration": 0.8,
+    "min_speech_duration": 0.1,
+    "window_size": vad.VAD_WINDOW_SIZE,
+    "max_speech_duration": 15.0,
+  }
+  assert fake_sherpa.silero_calls[1]["min_silence_duration"] == 1.2
+  assert fake_sherpa.vad_calls[0]["provider"] == "cpu"
+  assert fake_sherpa.vad_calls[0]["num_threads"] == 1
+  assert fake_sherpa.vad_calls[0]["sample_rate"] == 16000
+
+  det_a = fake_sherpa.detectors[0]
+  assert [len(win) for win in det_a.accepted] == [512, 512, 512, 512]
+  assert all(det_a.accepted[1][i] == 0.0 for i in range(700 - 512, 512))
+  assert det_a.flushed == 2
+  assert det_a.resets == 4
+
+  assert first == [{"start": 512, "end": 700}]
+  assert second == [{"start": 512, "end": 600}]
+  assert third == [{"start": 0, "end": 300}]
+
+
+def test_detector_empty_audio_short_circuits_and_errors_reset_state(
+  tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  model_file = tmp_path / vad.VAD_FILENAME
+  _ = model_file.write_bytes(b"ok")
+  fake_sherpa = _FakeSherpa()
+
+  monkeypatch.setattr(vad, "vad_model_path", lambda: model_file)
+  monkeypatch.setattr(vad, "import_module", lambda _name: fake_sherpa)
+
+  speech_detector = vad.SileroSpeechDetector()
+  params = VadParameters()
+
+  assert speech_detector.detect(np.zeros(0, dtype=np.float32), params) == []
+  assert fake_sherpa.detectors == []
+
+  # Force a detector creation that raises inside accept_waveform and verify reset() still runs.
+  _ = speech_detector.detect(np.zeros(512, dtype=np.float32), params)
+  detector = fake_sherpa.detectors[0]
+  detector.raise_on_accept = True
+
+  with pytest.raises(RuntimeError, match="vad failure"):
+    _ = speech_detector.detect(np.ones(512, dtype=np.float32), params)
+
+  assert detector.resets == 4

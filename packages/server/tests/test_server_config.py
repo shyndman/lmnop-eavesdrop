@@ -72,11 +72,9 @@ class TestTranscriptionConfig:
     assert config.use_vad is True
     assert config.send_last_n_segments == 10
     assert config.vad_parameters.threshold == 0.5
-    assert config.vad_parameters.neg_threshold is None
     assert config.vad_parameters.min_speech_duration_ms == 0
-    assert config.vad_parameters.max_speech_duration_s == float("inf")
+    assert config.vad_parameters.max_speech_duration_s == 15.0
     assert config.vad_parameters.min_silence_duration_ms == 800
-    assert config.vad_parameters.speech_pad_ms == 400
     assert isinstance(config.buffer, BufferConfig)
 
   def test_vad_parameters_validate_and_align(self):
@@ -86,20 +84,16 @@ class TestTranscriptionConfig:
         "silence_completion_threshold": 1.2,
         "vad_parameters": {
           "threshold": 0.4,
-          "neg_threshold": 0.25,
           "min_speech_duration_ms": 50,
           "max_speech_duration_s": 12.5,
-          "speech_pad_ms": 250,
         },
       }
     )
 
     assert config.vad_parameters.threshold == 0.4
-    assert config.vad_parameters.neg_threshold == 0.25
     assert config.vad_parameters.min_speech_duration_ms == 50
     assert config.vad_parameters.max_speech_duration_s == 12.5
     assert config.vad_parameters.min_silence_duration_ms == 1200
-    assert config.vad_parameters.speech_pad_ms == 250
 
   def test_min_silence_duration_rejection(self):
     """Test that min_silence_duration_ms cannot be configured directly."""
@@ -144,10 +138,13 @@ class TestTranscriptionConfig:
     [
       {"model": "nvidia/parakeet-tdt-0.6b-v2"},
       {"device": "cuda"},
-      {"device": "auto"},
+      {"device": "vulkan"},
+      {"device": "cpu"},
+      {"vad_parameters": {"neg_threshold": 0.25}},
+      {"vad_parameters": {"speech_pad_ms": 250}},
     ],
   )
-  def test_removed_checkpoint_and_devices_are_rejected(self, settings: dict[str, str]) -> None:
+  def test_removed_checkpoint_and_devices_are_rejected(self, settings: dict[str, object]) -> None:
     with pytest.raises(ValueError):
       TranscriptionConfig.model_validate(settings)
 
@@ -160,12 +157,12 @@ class TestEavesdropConfig:
   """Test EavesdropConfig integration."""
 
   def test_eavesdrop_config_defaults(self):
-    """Test that EavesdropConfig creates with nested defaults."""
+    """Test that EavesdropConfig creates with nested defaults and rejects rtsp."""
     config = EavesdropConfig()
 
     assert isinstance(config.transcription, TranscriptionConfig)
-    assert isinstance(config.rtsp.streams, dict)
-    assert len(config.rtsp.streams) == 0
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+      EavesdropConfig.model_validate({"rtsp": {"streams": {}}})
 
 
 class TestConfigFileLoading:
@@ -180,11 +177,6 @@ transcription:
   buffer:
     sample_rate: 16000
     clip_audio: true
-
-rtsp:
-  streams:
-    office: "rtsp://camera1:554/stream"
-    lobby: "rtsp://camera2:554/stream"
 """
     fake_filesystem.create_file("/test/config.yaml", contents=config_data)
     config = load_config_from_file(Path("/test/config.yaml"))
@@ -193,9 +185,6 @@ rtsp:
     assert config.transcription.use_vad is False
     assert config.transcription.buffer.sample_rate == 16000
     assert config.transcription.buffer.clip_audio is True
-    assert len(config.rtsp.streams) == 2
-    assert "office" in config.rtsp.streams
-    assert "lobby" in config.rtsp.streams
 
   def test_load_empty_config_file(self, fake_filesystem):
     """Test error handling for empty config file."""

@@ -36,6 +36,7 @@ class _LoggerDouble(Protocol):
 
 class _SinkLike(Protocol):
   logger: structlog.stdlib.BoundLogger
+  _closed: bool
 
   async def disconnect(self) -> None: ...
 
@@ -77,11 +78,6 @@ def _create_sink(websocket: _FakeWebSocket) -> tuple[_SinkLike, _LoggerDouble]:
   return sink, cast(_LoggerDouble, raw_logger)
 
 
-def _is_sink_closed(sink: _SinkLike) -> bool:
-  """Read sink close state without relying on private-attribute typing."""
-  return cast(bool, getattr(sink, "_closed"))
-
-
 @pytest.mark.asyncio
 async def test_disconnect_skips_message_when_socket_not_open() -> None:
   """Disconnect teardown must not attempt application data on closed sockets."""
@@ -91,7 +87,7 @@ async def test_disconnect_skips_message_when_socket_not_open() -> None:
   await sink.disconnect()
 
   assert websocket.send_calls == 0
-  assert _is_sink_closed(sink) is True
+  assert sink._closed is True
   logger.info.assert_called_once_with("WebSocket transcription sink disconnected")
 
 
@@ -107,7 +103,7 @@ async def test_disconnect_suppresses_disconnect_send_failure() -> None:
   await sink.disconnect()
 
   assert websocket.send_calls == 1
-  assert _is_sink_closed(sink) is True
+  assert sink._closed is True
   logger.exception.assert_not_called()
   logger.info.assert_called_once_with("WebSocket transcription sink disconnected")
 

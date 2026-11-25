@@ -6,11 +6,10 @@ Python client library for connecting to eavesdrop transcription services.
 
 from eavesdrop.client.audio import AudioCapture
 from eavesdrop.client.connection import WebSocketConnection
-from eavesdrop.client.core import EavesdropClient, FileTranscriptionResult
+from eavesdrop.client.core import EavesdropClient
 from eavesdrop.client.events import (
   ConnectedEvent,
   DisconnectedEvent,
-  LanguageDetectionEvent,
   LiveClientEvent,
   ReconnectedEvent,
   ReconnectingEvent,
@@ -19,7 +18,6 @@ from eavesdrop.client.events import (
 
 __all__ = [
   "EavesdropClient",
-  "FileTranscriptionResult",
   "AudioCapture",
   "WebSocketConnection",
   "ConnectedEvent",
@@ -27,6 +25,5 @@ __all__ = [
   "ReconnectingEvent",
   "ReconnectedEvent",
   "TranscriptionEvent",
-  "LanguageDetectionEvent",
   "LiveClientEvent",
 ]

@@ -5,6 +5,7 @@ Handles buffering of audio frames with configurable cleanup and processing param
 """
 
 import threading
+from collections import deque
 
 import numpy as np
 import structlog
@@ -17,195 +18,132 @@ Float32Audio = NDArray[np.float32]
 
 
 class AudioStreamBuffer:
-  """
-  Manages audio frame buffering for streaming transcription.
+  """Manages audio frame buffering for streaming transcription.
 
-  This class handles the continuous addition of audio frames, automatic buffer
-  cleanup to prevent excessive memory usage, and extraction of audio chunks
-  for transcription processing.
+  Buffer times are offsets from buffer zero. In live WebSocket mode the client
+  resets the buffer at each accepted recording boundary, so buffer zero is also
+  recording-relative zero for the active recording.
 
-  Timeline model:
-    Buffer times are offsets from this buffer's zero. In live WebSocket mode
-    the client resets the buffer at each accepted recording boundary, so buffer
-    zero is also recording-relative zero for the active recording. Absolute
-    sample indexes are sample-rate projections of that same buffer timeline;
-    NumPy indexes remain buffer-relative array positions.
-
-  Thread Safety:
-    All public methods and properties are thread-safe and protected by an
-    internal lock. Multiple threads can safely call any combination of methods
-    concurrently.
-
-  TODOs:
-    - Add comprehensive invariant checking with assertions instead of defensive max(0, ...)
-    - Eliminate code duplication by extracting _get_processed_samples_offset() helper
-    - Add extensive unit tests with concurrent access stress testing
-    - Implement property-based testing to verify buffer state math
-    - Consider making locks more granular for better performance if needed
-    - Add debug logging for buffer state transitions during development
+  :param config: Buffer sizing, cleanup, and processing threshold configuration.
+  :type config: BufferConfig
   """
 
   def __init__(self, config: BufferConfig) -> None:
-    """
-    Initialize the audio stream buffer.
-
-    :param
-        config: Configuration for buffer behavior including sample rate,
-                cleanup policies, and processing thresholds.
-    """
     self.config: BufferConfig = config
     self.logger: structlog.stdlib.BoundLogger = get_logger("snd/buf")
-
-    # Audio buffer state
-    self.frames_np: Float32Audio | None = None
-    """Raw audio data as a NumPy array. None when buffer is empty."""
-
+    self._chunks: deque[Float32Audio] = deque()
+    self._total_samples: int = 0
     self.buffer_start_time: float = 0.0
-    """
-    Buffer offset for the start of the frames_np buffer in seconds.
-    Tracks how much audio has been discarded from buffer zero due to cleanup.
-    In live WebSocket mode this is also recording-relative seconds for the
-    active recording because recording boundaries reset the buffer.
-    """
-
     self.processed_up_to_time: float = 0.0
-    """
-    Buffer offset for processed audio in seconds.
-    Marks the boundary between processed and unprocessed audio within the buffer.
-    Always >= buffer_start_time. In live mode this is recording-relative seconds
-    for the active recording.
-    """
-
-    # Thread synchronization
     self.lock: threading.Lock = threading.Lock()
-    """Protects buffer state from concurrent access."""
+
+  @property
+  def frames_np(self) -> Float32Audio | None:
+    """Return buffered audio as a contiguous array, or ``None`` when empty."""
+    with self.lock:
+      return self._flatten_chunks_locked()
+
+  def _flatten_chunks_locked(self) -> Float32Audio | None:
+    if self._total_samples == 0:
+      return None
+
+    if len(self._chunks) == 1:
+      return self._chunks[0]
+
+    compacted = np.concatenate(tuple(self._chunks), axis=0)
+    self._chunks.clear()
+    self._chunks.append(compacted)
+    return compacted
+
+  def _trim_prefix_locked(self, samples_to_remove: int) -> None:
+    remaining = min(max(0, samples_to_remove), self._total_samples)
+    self._total_samples -= remaining
+    while remaining > 0 and self._chunks:
+      head = self._chunks[0]
+      head_len = head.shape[0]
+      if head_len <= remaining:
+        _ = self._chunks.popleft()
+        remaining -= head_len
+      else:
+        self._chunks[0] = head[remaining:]
+        remaining = 0
 
   def add_frames(self, frame_np: Float32Audio) -> None:
-    """
-    Add new audio frames to the end of the buffer.
+    """Append new float32 audio frames, trimming oldest audio above the buffer limit.
 
-    Appends the provided audio data to the internal buffer and performs
-    automatic cleanup if the buffer exceeds the maximum duration threshold.
-    When cleanup occurs, removes the oldest audio data to prevent unbounded
-    memory growth.
-
-    :param
-        frame_np: Audio data as float32 NumPy array, normalized to [-1.0, 1.0].
-                  Expected to be 1D array at the configured sample rate.
+    :param frame_np: Mono float32 PCM samples at the configured sample rate.
+    :type frame_np: Float32Audio
     """
     with self.lock:
       max_buffer_samples = self.config.max_buffer_duration * self.config.sample_rate
-      if self.frames_np is not None and self.frames_np.shape[0] > max_buffer_samples:
-        # Remove old audio data and advance the buffer/recording-relative start offset.
+      if self._total_samples > max_buffer_samples:
         self.buffer_start_time += self.config.cleanup_duration
         samples_to_remove = int(self.config.cleanup_duration * self.config.sample_rate)
-        self.frames_np = self.frames_np[samples_to_remove:]
+        self._trim_prefix_locked(samples_to_remove)
 
-        # Update timestamp offset if it hasn't progressed
-        # This indicates no speech activity has been processed
         if self.processed_up_to_time < self.buffer_start_time:
           self.processed_up_to_time = self.buffer_start_time
 
-      if self.frames_np is None:
-        self.frames_np = frame_np.copy()
-      else:
-        self.frames_np = np.concatenate((self.frames_np, frame_np), axis=0)
+      if frame_np.shape[0] > 0:
+        self._chunks.append(frame_np.copy())
+        self._total_samples += frame_np.shape[0]
 
   def get_chunk_for_processing(self) -> tuple[Float32Audio, float, float]:
-    """
-    Extract all unprocessed audio data from the buffer.
+    """Extract all unprocessed audio data from the buffer.
 
-    Returns all audio data that hasn't been processed yet, starting from
-    the processed_up_to_time boundary to the end of the buffer. This
-    represents the "next chunk" ready for transcription.
-
-    :returns:
-        A tuple containing:
-        - audio_data: Unprocessed audio as float32 NumPy array, or empty array if none.
-        - duration: Duration of the returned audio chunk in seconds.
-        - start_time: Buffer offset where this chunk begins. In live WebSocket
-          mode this is recording-relative seconds for the active recording.
-
-    Note:
-        The returned array is always a copy, so modifications won't affect
-        the internal buffer state.
+    :returns: Tuple of ``(audio_copy, duration_seconds, chunk_start_time)``.
+    :rtype: tuple[Float32Audio, float, float]
     """
     with self.lock:
-      if self.frames_np is None:
+      if self._total_samples == 0:
         return np.array([], dtype=np.float32), 0.0, self.processed_up_to_time
 
       processed_offset = self.processed_up_to_time - self.buffer_start_time
       buffer_relative_start_index = max(0, int(processed_offset * self.config.sample_rate))
-      input_bytes = self.frames_np[buffer_relative_start_index:].copy()
       chunk_start_time = self.processed_up_to_time
+      if buffer_relative_start_index >= self._total_samples:
+        return np.array([], dtype=np.float32), 0.0, chunk_start_time
+
+      flattened = self._flatten_chunks_locked()
+      assert flattened is not None
+      input_bytes = flattened[buffer_relative_start_index:].copy()
 
     duration = input_bytes.shape[0] / self.config.sample_rate
     return input_bytes, duration, chunk_start_time
 
   def get_buffer_end_sample(self) -> int:
-    """Return the current absolute sample index at the end of the buffer.
+    """Return the current recording-relative sample index at the end of the buffer.
 
-    In live WebSocket mode this absolute index is recording-relative because
-    the buffer is reset to sample zero at each accepted recording boundary.
-
-    :returns: Absolute sample index representing the current buffered-audio end.
+    :returns: Sample index representing the current buffered-audio end.
     :rtype: int
     """
     with self.lock:
-      buffered_sample_count = 0 if self.frames_np is None else self.frames_np.shape[0]
-      return int(self.buffer_start_time * self.config.sample_rate) + buffered_sample_count
+      return int(self.buffer_start_time * self.config.sample_rate) + self._total_samples
 
   def advance_processed_boundary(self, offset: float) -> None:
-    """
-    Mark a portion of audio as processed by advancing the processed boundary.
+    """Advance ``processed_up_to_time`` forward by ``offset`` seconds.
 
-    Moves the processed_up_to_time forward by the specified duration,
-    indicating that this amount of audio has been successfully transcribed
-    and no longer needs processing.
-
-    :param
-        offset: Duration in seconds to advance the processed boundary.
-                Must be positive. Typically matches the duration of audio
-                that was just transcribed.
-
-    Note:
-        This is typically called after successful transcription to "consume"
-        the processed audio from the buffer's perspective. For live WebSocket
-        recordings, the resulting boundary is recording-relative.
+    :param offset: Positive duration in seconds to consume.
+    :type offset: float
     """
     with self.lock:
       self.processed_up_to_time += offset
 
   def clip_if_stalled(self) -> None:
-    """
-    Force-advance the processed boundary if transcription has stalled too long.
-
-    When the unprocessed audio exceeds max_stall_duration, this method
-    assumes that no valid speech segments exist in the stalled audio and
-    skips most of it by advancing the processed boundary. This prevents
-    the buffer from getting stuck on problematic audio sections.
-
-    The method leaves the last 5 seconds of buffer unprocessed to avoid
-    potentially clipping active speech.
-
-    Behavior:
-        - Only operates if clip_audio config option is enabled
-        - Triggers when unprocessed audio > max_stall_duration
-        - Advances processed_up_to_time to (buffer_end - 5.0 seconds)
-    """
+    """Force-advance the processed boundary if unprocessed audio exceeds ``max_stall_duration``."""
     if not self.config.clip_audio:
       return
 
     with self.lock:
-      if self.frames_np is None:
+      if self._total_samples == 0:
         return
 
       processed_offset = self.processed_up_to_time - self.buffer_start_time
-      buffer_relative_unprocessed_start = int(processed_offset * self.config.sample_rate)
-      unprocessed_samples = self.frames_np[buffer_relative_unprocessed_start:].shape[0]
+      buffer_relative_unprocessed_start = max(0, int(processed_offset * self.config.sample_rate))
+      unprocessed_samples = max(0, self._total_samples - buffer_relative_unprocessed_start)
 
       if unprocessed_samples > self.config.max_stall_duration * self.config.sample_rate:
-        duration = self.frames_np.shape[0] / self.config.sample_rate
+        duration = self._total_samples / self.config.sample_rate
         unprocessed_duration = unprocessed_samples / self.config.sample_rate
         clipped_duration = unprocessed_duration - 5.0
 
@@ -220,52 +158,41 @@ class AudioStreamBuffer:
         self.processed_up_to_time = self.buffer_start_time + duration - 5.0
 
   def reset(self) -> None:
-    """
-    Reset the buffer to its initial empty state.
-
-    Clears all audio data and resets timeline tracking to zero.
-    This is typically used when starting a new transcription session
-    or recovering from errors. In live WebSocket mode it is called at recording
-    boundaries, making buffer zero equal recording-relative zero.
-    """
+    """Reset the buffer to its initial empty state at recording zero."""
     with self.lock:
-      self.frames_np = None
+      self._chunks.clear()
+      self._total_samples = 0
       self.buffer_start_time = 0.0
       self.processed_up_to_time = 0.0
 
   def discard_unprocessed_audio(self) -> float:
     """Discard buffered audio at and after the processed boundary.
 
-    Live utterance cancellation drops only the unprocessed tail; the preserved
-    processed boundary remains recording-relative for the active recording.
-
     :returns: Duration in seconds discarded from the unprocessed tail.
     :rtype: float
     """
     with self.lock:
-      if self.frames_np is None:
+      if self._total_samples == 0:
         self.buffer_start_time = self.processed_up_to_time
         return 0.0
 
       processed_offset = self.processed_up_to_time - self.buffer_start_time
-      buffer_relative_processed_index = max(0, int(processed_offset * self.config.sample_rate))
       buffer_relative_processed_index = min(
-        buffer_relative_processed_index, self.frames_np.shape[0]
+        max(0, int(processed_offset * self.config.sample_rate)),
+        self._total_samples,
       )
-      discarded_samples = self.frames_np.shape[0] - buffer_relative_processed_index
+      discarded_samples = self._total_samples - buffer_relative_processed_index
 
-      self.frames_np = None
+      self._chunks.clear()
+      self._total_samples = 0
       self.buffer_start_time = self.processed_up_to_time
 
     return discarded_samples / self.config.sample_rate
 
   def discard_through_sample(self, boundary_sample: int) -> float:
-    """Discard buffered audio through an absolute sample boundary.
+    """Discard buffered audio through a recording-relative sample boundary.
 
-    In live WebSocket mode ``boundary_sample`` is recording-relative because
-    flush boundaries are captured from a buffer reset at recording start.
-
-    :param boundary_sample: Absolute sample index through which buffered audio is discarded.
+    :param boundary_sample: Sample index through which buffered audio is discarded.
     :type boundary_sample: int
     :returns: Duration in seconds discarded from the unprocessed tail.
     :rtype: float
@@ -274,7 +201,7 @@ class AudioStreamBuffer:
       sample_rate = self.config.sample_rate
       processed_sample = int(self.processed_up_to_time * sample_rate)
 
-      if self.frames_np is None:
+      if self._total_samples == 0:
         if boundary_sample > processed_sample:
           boundary_time = boundary_sample / sample_rate
           self.buffer_start_time = boundary_time
@@ -282,7 +209,7 @@ class AudioStreamBuffer:
         return 0.0
 
       buffer_start_sample = int(self.buffer_start_time * sample_rate)
-      buffer_end_sample = buffer_start_sample + self.frames_np.shape[0]
+      buffer_end_sample = buffer_start_sample + self._total_samples
       discard_end_sample = min(max(boundary_sample, buffer_start_sample), buffer_end_sample)
       buffer_relative_samples_to_remove = discard_end_sample - buffer_start_sample
       discarded_unprocessed_samples = max(0, discard_end_sample - processed_sample)
@@ -290,10 +217,7 @@ class AudioStreamBuffer:
       if buffer_relative_samples_to_remove <= 0:
         return 0.0
 
-      if buffer_relative_samples_to_remove >= self.frames_np.shape[0]:
-        self.frames_np = None
-      else:
-        self.frames_np = self.frames_np[buffer_relative_samples_to_remove:]
+      self._trim_prefix_locked(buffer_relative_samples_to_remove)
 
       boundary_time = max(self.buffer_start_time, discard_end_sample / sample_rate)
       self.buffer_start_time = boundary_time
@@ -304,36 +228,20 @@ class AudioStreamBuffer:
 
   @property
   def available_duration(self) -> float:
-    """
-    Duration of unprocessed audio available for transcription in seconds.
-
-    This represents the amount of audio that has been added to the buffer
-    but hasn't been processed yet - essentially the "work queue" for
-    transcription.
-
-    :returns:
-        Duration in seconds from processed_up_to_time to the end of the buffer.
-        Returns 0.0 if buffer is empty or fully processed.
-
-    Note:
-        When this value approaches 0, it indicates transcription is "caught up"
-        to live audio input.
-    """
+    """Duration of unprocessed audio available for transcription in seconds."""
     with self.lock:
-      if self.frames_np is None:
+      if self._total_samples == 0:
         return 0.0
       offset_diff = self.processed_up_to_time - self.buffer_start_time
-      buffer_relative_processed_index = int(offset_diff * self.config.sample_rate)
-      samples_available = max(0, self.frames_np.shape[0] - buffer_relative_processed_index)
+      buffer_relative_processed_index = max(0, int(offset_diff * self.config.sample_rate))
+      samples_available = max(0, self._total_samples - buffer_relative_processed_index)
       return samples_available / self.config.sample_rate
 
   @property
   def total_duration(self) -> float:
     """Total duration of audio in buffer in seconds."""
     with self.lock:
-      if self.frames_np is None:
-        return 0.0
-      return self.frames_np.shape[0] / self.config.sample_rate
+      return self._total_samples / self.config.sample_rate
 
   @property
   def processed_duration(self) -> float:

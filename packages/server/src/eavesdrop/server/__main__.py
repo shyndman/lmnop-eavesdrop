@@ -1,5 +1,3 @@
-# basedpyright: reportUnusedCallResult=false
-
 import argparse
 import asyncio
 import os

@@ -1,4 +1,4 @@
-"""Config-selected Orukeet CPU or Vulkan inference with standalone Silero VAD."""
+"""Config-selected Orukeet CPU INT8 inference with standalone sherpa-onnx Silero VAD."""
 
 import hashlib
 import os
@@ -15,7 +15,6 @@ from eavesdrop.common import get_logger
 from eavesdrop.server.config import TranscriptionConfig
 from eavesdrop.server.transcription.models import SpeechChunk, TranscriptionInfo
 from eavesdrop.server.transcription.orukeet_timestamps import Hypothesis, native_segments
-from eavesdrop.server.transcription.orukeet_vulkan import VulkanRecognizer
 from eavesdrop.server.transcription.session import TranscriptionSession
 from eavesdrop.server.transcription.utils import (
   SAMPLE_RATE,
@@ -142,8 +141,8 @@ def model_assets() -> Path:
 class OrukeetTranscriber:
   """Serialize recognition while preserving recording time across VAD gaps.
 
-  :param model: Loaded CPU or Vulkan recognition backend.
-  :param detector: Standalone VAD detector, or None when VAD is disabled.
+  :param model: Loaded CPU INT8 recognition backend.
+  :param detector: Standalone VAD detector, or None when injected in unit tests.
   """
 
   def __init__(self, model: RecognitionBackend, detector: SpeechDetector | None) -> None:
@@ -153,38 +152,34 @@ class OrukeetTranscriber:
 
   @classmethod
   def load(cls, config: TranscriptionConfig) -> "OrukeetTranscriber":
-    """Load the configured CPU INT8 ONNX or Vulkan Q8 GGUF recognizer.
+    """Load the CPU INT8 ONNX recognizer and standalone Silero VAD.
 
-    :param config: Validated model and VAD settings.
+    :param config: Validated model settings.
     :returns: Ready shared inference adapter.
     """
     disable_runtime_telemetry()
     try:
-      logger.info("Loading Orukeet", model=config.model, device=config.device)
-      model: RecognitionBackend
-      if config.device == "vulkan":
-        model = VulkanRecognizer()
-      else:
-        sherpa = cast(SherpaModule, cast(object, import_module("sherpa_onnx")))
-        assets = model_assets()
-        model = _CPURecognizer(
-          sherpa.OfflineRecognizer.from_transducer(
-            encoder=str(assets / "encoder.int8.onnx"),
-            decoder=str(assets / "decoder.int8.onnx"),
-            joiner=str(assets / "joiner.int8.onnx"),
-            tokens=str(assets / "tokens.txt"),
-            model_type="nemo_transducer",
-            feature_dim=128,
-            sample_rate=SAMPLE_RATE,
-            provider="cpu",
-            decoding_method="greedy_search",
-          )
+      logger.info("Loading Orukeet CPU INT8", model=config.model)
+      sherpa = cast(SherpaModule, cast(object, import_module("sherpa_onnx")))
+      assets = model_assets()
+      model = _CPURecognizer(
+        sherpa.OfflineRecognizer.from_transducer(
+          encoder=str(assets / "encoder.int8.onnx"),
+          decoder=str(assets / "decoder.int8.onnx"),
+          joiner=str(assets / "joiner.int8.onnx"),
+          tokens=str(assets / "tokens.txt"),
+          model_type="nemo_transducer",
+          feature_dim=128,
+          sample_rate=SAMPLE_RATE,
+          provider="cpu",
+          decoding_method="greedy_search",
         )
-      adapter = cls(model, SileroSpeechDetector() if config.use_vad else None)
-      logger.info("Orukeet ready", model=config.model, device=config.device)
+      )
+      adapter = cls(model, SileroSpeechDetector())
+      logger.info("Orukeet CPU INT8 ready", model=config.model)
       return adapter
     except Exception:
-      logger.exception("Failed to load Orukeet", device=config.device)
+      logger.exception("Failed to load Orukeet")
       raise
 
   def transcribe(
@@ -233,7 +228,7 @@ class OrukeetTranscriber:
     return segments, TranscriptionInfo(
       duration=duration,
       duration_after_vad=sum(s["end"] - s["start"] for s in speech) / SAMPLE_RATE,
-      speech_chunks=speech if config.use_vad else [],
+      speech_chunks=speech if config.use_vad else None,
     )
 
   def _transcribe_span(

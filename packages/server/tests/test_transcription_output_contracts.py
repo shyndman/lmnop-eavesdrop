@@ -37,9 +37,6 @@ class RecordingSink:
   async def send_error(self, error: str) -> None:
     return
 
-  async def send_language_detection(self, language: str, probability: float) -> None:
-    return
-
   async def send_server_ready(self, backend: str) -> None:
     return
 
@@ -52,7 +49,6 @@ def _segment(
   start: float,
   end: float,
   text: str,
-  time_offset: float,
   completed: bool = False,
 ) -> Segment:
   """Build a lightweight segment fixture with explicit timing and completion flags."""
@@ -62,18 +58,22 @@ def _segment(
     end=end,
     text=text,
     words=None,
-    time_offset=time_offset,
     completed=completed,
   )
 
 
 def _create_processor(
-  *, send_last_n_segments: int, session: TranscriptionSession, sink: RecordingSink
+  *,
+  send_last_n_segments: int,
+  session: TranscriptionSession,
+  sink: RecordingSink,
+  use_vad: bool = True,
 ) -> StreamingTranscriptionProcessor:
   """Create a processor wired to in-memory collaborators only."""
   config = TranscriptionConfig(
     send_last_n_segments=send_last_n_segments,
     silence_completion_threshold=0.8,
+    use_vad=use_vad,
   )
   buffer = AudioStreamBuffer(BufferConfig(sample_rate=16000))
   return StreamingTranscriptionProcessor(
@@ -116,7 +116,7 @@ async def test_output_envelope_keeps_tail_incomplete_without_completed_history()
   processor = _create_processor(send_last_n_segments=3, session=session, sink=sink)
 
   await processor._handle_transcription_output(
-    result=[_segment(start=0.2, end=0.9, text="draft", time_offset=12.0)],
+    result=[_segment(start=0.2, end=0.9, text="draft")],
     duration=0.2,
     speech_chunks=None,
   )
@@ -137,20 +137,14 @@ async def test_send_last_n_limits_completed_history_and_appends_synthetic_tail()
   sink = RecordingSink()
   processor = _create_processor(send_last_n_segments=2, session=session, sink=sink)
 
-  session.add_completed_segment(
-    _segment(start=0.0, end=0.3, text="one", time_offset=0.0, completed=True)
-  )
-  session.add_completed_segment(
-    _segment(start=0.3, end=0.6, text="two", time_offset=0.0, completed=True)
-  )
-  session.add_completed_segment(
-    _segment(start=0.6, end=0.9, text="three", time_offset=0.0, completed=True)
-  )
+  session.add_completed_segment(_segment(start=0.0, end=0.3, text="one", completed=True))
+  session.add_completed_segment(_segment(start=0.3, end=0.6, text="two", completed=True))
+  session.add_completed_segment(_segment(start=0.6, end=0.9, text="three", completed=True))
 
   await processor._handle_transcription_output(
     result=[
-      _segment(start=0.0, end=0.5, text="fresh", time_offset=1.2),
-      _segment(start=0.5, end=0.8, text="final", time_offset=1.2),
+      _segment(start=0.0, end=0.5, text="fresh"),
+      _segment(start=0.5, end=0.8, text="final"),
     ],
     duration=1.0,
     speech_chunks=None,
@@ -176,8 +170,8 @@ async def test_recording_relative_timestamps_remain_monotonic_across_multiple_up
 
   await processor._handle_transcription_output(
     result=[
-      _segment(start=30.0, end=31.0, text="alpha", time_offset=30.0),
-      _segment(start=31.0, end=31.2, text="draft", time_offset=30.0),
+      _segment(start=30.0, end=31.0, text="alpha"),
+      _segment(start=31.0, end=31.2, text="draft"),
     ],
     duration=0.2,
     speech_chunks=None,
@@ -185,8 +179,8 @@ async def test_recording_relative_timestamps_remain_monotonic_across_multiple_up
 
   await processor._handle_transcription_output(
     result=[
-      _segment(start=31.6, end=32.2, text="bravo", time_offset=31.5),
-      _segment(start=32.2, end=32.5, text="charlie", time_offset=31.5),
+      _segment(start=31.6, end=32.2, text="bravo"),
+      _segment(start=32.2, end=32.5, text="charlie"),
     ],
     duration=1.0,
     speech_chunks=None,
@@ -225,7 +219,6 @@ async def test_silence_completion_converts_vad_chunk_times_to_recording_timeline
         start=28.614,
         end=32.974,
         text="account I can't remember what it's called",
-        time_offset=26.934,
       )
     ],
     duration=8.612,
@@ -251,7 +244,6 @@ async def test_incomplete_tail_blocks_silence_advancement_past_completed_history
       start=22.534,
       end=26.934,
       text="I also have a retirement account",
-      time_offset=19.154,
       completed=True,
     )
   )
@@ -263,7 +255,6 @@ async def test_incomplete_tail_blocks_silence_advancement_past_completed_history
         start=28.614,
         end=34.000,
         text="account I can't remember what it's called",
-        time_offset=26.934,
       )
     ],
     duration=8.612,
@@ -297,7 +288,7 @@ async def test_live_results_carry_current_recording_id() -> None:
   )
 
   await processor._handle_transcription_output(
-    result=[_segment(start=0.0, end=0.4, text="draft", time_offset=0.0)],
+    result=[_segment(start=0.0, end=0.4, text="draft")],
     duration=0.2,
     speech_chunks=None,
   )
@@ -328,7 +319,7 @@ async def test_cancelled_generation_drops_stale_transcription_result() -> None:
       status=TranscriptionPassStatus.TRANSCRIBED,
       chunk_start_sample=0,
       chunk_sample_count=int(0.5 * buffer.config.sample_rate),
-      segments=[_segment(start=0.0, end=0.4, text="draft", time_offset=0.0)],
+      segments=[_segment(start=0.0, end=0.4, text="draft")],
       info=None,
       processing_time=0.0,
       audio_duration=0.5,
@@ -374,7 +365,7 @@ async def test_recording_boundary_drops_stale_transcription_result_before_mutati
       status=TranscriptionPassStatus.TRANSCRIBED,
       chunk_start_sample=0,
       chunk_sample_count=int(0.5 * buffer.config.sample_rate),
-      segments=[_segment(start=0.0, end=0.4, text="stale", time_offset=0.0)],
+      segments=[_segment(start=0.0, end=0.4, text="stale")],
       info=None,
       processing_time=0.0,
       audio_duration=0.5,
@@ -398,8 +389,8 @@ async def test_flush_force_complete_converts_tail_to_completed_history() -> None
 
   await processor._handle_transcription_output(
     result=[
-      _segment(start=0.0, end=0.4, text="alpha", time_offset=4.0),
-      _segment(start=0.4, end=0.7, text="draft", time_offset=4.0),
+      _segment(start=0.0, end=0.4, text="alpha"),
+      _segment(start=0.4, end=0.7, text="draft"),
     ],
     duration=0.2,
     speech_chunks=None,
@@ -447,7 +438,7 @@ async def test_flush_completion_discards_audio_through_accepted_boundary() -> No
       status=TranscriptionPassStatus.TRANSCRIBED,
       chunk_start_sample=int(2.0 * buffer.config.sample_rate),
       chunk_sample_count=int(3.0 * buffer.config.sample_rate),
-      segments=[_segment(start=2.2, end=2.8, text="committed", time_offset=2.0)],
+      segments=[_segment(start=2.2, end=2.8, text="committed")],
       info=None,
       processing_time=0.0,
       audio_duration=3.0,
@@ -473,7 +464,7 @@ async def test_flush_without_force_complete_preserves_existing_incomplete_tail()
   )
 
   await processor._handle_transcription_output(
-    result=[_segment(start=0.2, end=0.9, text="draft", time_offset=12.0)],
+    result=[_segment(start=0.2, end=0.9, text="draft")],
     duration=0.2,
     speech_chunks=None,
     flush_complete=True,
@@ -491,3 +482,46 @@ async def test_flush_without_force_complete_preserves_existing_incomplete_tail()
   assert output_segments[-1].completed is False
   assert processor.buffer.available_duration == 0.0
   assert processor.buffer.total_duration == 0.0
+
+
+@pytest.mark.asyncio
+async def test_empty_flush_completion_preserves_recording_timeline() -> None:
+  """Empty flush results emit a single synthetic tail without advancing buffer time."""
+  session = create_session("stream-1")
+  sink = RecordingSink()
+  processor = _create_processor(send_last_n_segments=3, session=session, sink=sink)
+  processor.buffer.advance_processed_boundary(2.0)
+
+  await processor._handle_transcription_output(
+    result=[],
+    duration=0.5,
+    speech_chunks=None,
+    flush_complete=True,
+  )
+
+  flush_result = sink.results[-1]
+  tail = flush_result.segments[-1]
+  assert flush_result.flush_complete is True
+  assert tail.completed is False
+  assert tail.text == ""
+  assert tail.start == pytest.approx(2.5)
+  assert tail.end == pytest.approx(2.5)
+  assert processor.buffer.processed_up_to_time == pytest.approx(2.0)
+
+
+@pytest.mark.asyncio
+async def test_use_vad_false_does_not_complete_segment_by_silence() -> None:
+  """Disabling VAD suppresses the silence-based heuristic completion on trailing segments."""
+  session = create_session("stream-1")
+  sink = RecordingSink()
+  processor = _create_processor(send_last_n_segments=3, session=session, sink=sink, use_vad=False)
+
+  await processor._handle_transcription_output(
+    result=[_segment(start=0.1, end=1.0, text="still speaking")],
+    duration=2.0,
+    speech_chunks=None,
+  )
+
+  assert session.completed_segments == []
+  assert [segment.text for segment in sink.results[-1].segments] == ["still speaking"]
+  assert sink.results[-1].segments[-1].completed is False

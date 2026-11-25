@@ -5,17 +5,17 @@ Provides clean public API for converting between wire protocol message objects
 and JSON strings, hiding the implementation details of Pydantic serialization.
 """
 
-from pydantic import BaseModel, Field, TypeAdapter
+from typing import Annotated
 
-from .messages import (
+from pydantic import Field, TypeAdapter
+
+from eavesdrop.wire.messages import (
   DisconnectMessage,
   ErrorMessage,
   FlushControlMessage,
   HealthCheckRequest,
-  LanguageDetectionMessage,
   RecordingStartedMessage,
   ServerReadyMessage,
-  StreamStatusMessage,
   TranscriptionMessage,
   TranscriptionSetupMessage,
   UtteranceCancelledMessage,
@@ -23,45 +23,38 @@ from .messages import (
 
 type Message = (
   TranscriptionMessage
-  | StreamStatusMessage
   | ErrorMessage
   | RecordingStartedMessage
   | FlushControlMessage
   | UtteranceCancelledMessage
-  | LanguageDetectionMessage
   | ServerReadyMessage
   | DisconnectMessage
   | HealthCheckRequest
   | TranscriptionSetupMessage
 )
 
-
-class _MessageCodec(BaseModel):
-  """Private message wrapper type for deserializing the discriminated union of message types."""
-
-  message: Message = Field(discriminator="type")
+_MESSAGE_ADAPTER: TypeAdapter[Message] = TypeAdapter(
+  Annotated[Message, Field(discriminator="type")]
+)
 
 
 def serialize_message(message: Message) -> str:
-  """
-  Serialize a wire protocol message to JSON string.
+  """Serialize a wire protocol message to JSON string.
 
-  :param message: Any wire protocol message instance
-  :returns: JSON string representation of the message
+  :param message: Any wire protocol message instance.
+  :type message: Message
+  :returns: JSON string representation of the message.
+  :rtype: str
   """
-  message_type = type(message)
-  adapter = TypeAdapter(message_type)
-  return adapter.dump_json(message, exclude_none=True).decode("utf-8")
+  return _MESSAGE_ADAPTER.dump_json(message, exclude_none=True).decode("utf-8")
 
 
 def deserialize_message(json_str: str) -> Message:
-  """
-  Deserialize a JSON string to wire protocol message.
+  """Deserialize a JSON string to wire protocol message.
 
-  :param json_str: JSON string containing the message
-  :returns: Deserialized message instance of the appropriate type
+  :param json_str: JSON string containing the message.
+  :type json_str: str
+  :returns: Deserialized message instance of the appropriate type.
+  :rtype: Message
   """
-  # Wrap the incoming message in the expected MessageCodec structure
-  wrapped_json = f'{{"message": {json_str}}}'
-  codec = _MessageCodec.model_validate_json(wrapped_json)
-  return codec.message
+  return _MESSAGE_ADAPTER.validate_json(json_str)

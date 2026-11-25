@@ -9,7 +9,6 @@ from active_listener.config.loader import (
   resolve_default_active_listener_config_path,
 )
 from active_listener.config.models import (
-  LiteRtRewriteProvider,
   LlmRewriteConfig,
   PydanticAiRewriteProvider,
 )
@@ -24,7 +23,9 @@ def _write_config(
   include_ffmpeg_path: bool = False,
 ) -> None:
   path.parent.mkdir(parents=True, exist_ok=True)
-  resolved_provider_block = _litert_provider_block() if provider_block is None else provider_block
+  resolved_provider_block = (
+    _pydantic_ai_provider_block() if provider_block is None else provider_block
+  )
   llm_rewrite_lines = [
     "llm_rewrite:",
     f'  prompt_path: "{prompt_path}"',
@@ -54,17 +55,7 @@ def _write_config(
   )
 
 
-def _litert_provider_block(*, model_path: str = "models/rewrite.litertlm") -> str:
-  return "\n".join(
-    [
-      "  provider:",
-      "    type: litert",
-      f'    model_path: "{model_path}"',
-    ]
-  )
-
-
-def _pydantic_ai_provider_block(*, model: str = "openai:gpt-4.1-mini") -> str:
+def _pydantic_ai_provider_block(*, model: str = "google-gla:gemini-3.1-flash-lite") -> str:
   return "\n".join(
     [
       "  provider:",
@@ -120,28 +111,29 @@ def test_load_active_listener_config_resolves_relative_rewrite_paths_against_con
 
   assert config.llm_rewrite == LlmRewriteConfig(
     prompt_path=str(config_path.parent / "prompts" / "rewrite_prompt.md"),
-    provider=LiteRtRewriteProvider(
-      type="litert",
-      model_path=str(config_path.parent / "models" / "rewrite.litertlm"),
+    provider=PydanticAiRewriteProvider(
+      type="pydantic_ai",
+      model="google-gla:gemini-3.1-flash-lite",
     ),
   )
 
 
 def test_load_active_listener_config_preserves_absolute_rewrite_paths(tmp_path: Path) -> None:
-  model_path = tmp_path / "models" / "rewrite.litertlm"
   prompt_path = tmp_path / "prompts" / "rewrite_prompt.md"
   config_path = tmp_path / "configs" / "active-listener.yaml"
   _write_config(
     config_path,
     prompt_path=str(prompt_path),
-    provider_block=_litert_provider_block(model_path=str(model_path)),
   )
 
   config = load_active_listener_config(config_path=str(config_path), overrides={})
 
   assert config.llm_rewrite == LlmRewriteConfig(
     prompt_path=str(prompt_path),
-    provider=LiteRtRewriteProvider(type="litert", model_path=str(model_path)),
+    provider=PydanticAiRewriteProvider(
+      type="pydantic_ai",
+      model="google-gla:gemini-3.1-flash-lite",
+    ),
   )
 
 
@@ -183,9 +175,9 @@ def test_load_active_listener_config_uses_default_xdg_path_for_relative_rewrite_
 
   assert config.llm_rewrite == LlmRewriteConfig(
     prompt_path=str(config_path.parent / "prompts" / "rewrite_prompt.md"),
-    provider=LiteRtRewriteProvider(
-      type="litert",
-      model_path=str(config_path.parent / "models" / "rewrite.litertlm"),
+    provider=PydanticAiRewriteProvider(
+      type="pydantic_ai",
+      model="google-gla:gemini-3.1-flash-lite",
     ),
   )
 
@@ -197,27 +189,6 @@ def test_load_active_listener_config_allows_omitted_ffmpeg_path(tmp_path: Path) 
   config = load_active_listener_config(config_path=str(config_path), overrides={})
 
   assert config.ffmpeg_path is None
-
-
-def test_load_active_listener_config_preserves_absolute_symlink_model_path(tmp_path: Path) -> None:
-  model_dir = tmp_path / "models"
-  model_dir.mkdir()
-  real_model_path = model_dir / "bundle.bin"
-  _ = real_model_path.write_text("model", encoding="utf-8")
-  symlink_model_path = model_dir / "rewrite.litertlm"
-  symlink_model_path.symlink_to(real_model_path)
-
-  config_path = tmp_path / "configs" / "active-listener.yaml"
-  _write_config(
-    config_path, provider_block=_litert_provider_block(model_path=str(symlink_model_path))
-  )
-
-  config = load_active_listener_config(config_path=str(config_path), overrides={})
-
-  assert config.llm_rewrite == LlmRewriteConfig(
-    prompt_path=str(config_path.parent / "prompts" / "rewrite_prompt.md"),
-    provider=LiteRtRewriteProvider(type="litert", model_path=str(symlink_model_path)),
-  )
 
 
 def test_load_active_listener_config_disables_rewrite_when_block_missing(tmp_path: Path) -> None:
@@ -270,10 +241,27 @@ def test_load_active_listener_config_rejects_missing_provider_type(tmp_path: Pat
     provider_block="\n".join(
       [
         "  provider:",
-        '    model_path: "models/rewrite.litertlm"',
+        '    model: "google-gla:gemini-3.1-flash-lite"',
       ]
     ),
   )
 
   with pytest.raises(ValueError, match="type"):
+    _ = load_active_listener_config(config_path=str(config_path), overrides={})
+
+
+def test_load_active_listener_config_rejects_litert_provider(tmp_path: Path) -> None:
+  config_path = tmp_path / "configs" / "active-listener.yaml"
+  _write_config(
+    config_path,
+    provider_block="\n".join(
+      [
+        "  provider:",
+        "    type: litert",
+        '    model_path: "models/rewrite.litertlm"',
+      ]
+    ),
+  )
+
+  with pytest.raises(ValueError, match="pydantic_ai"):
     _ = load_active_listener_config(config_path=str(config_path), overrides={})

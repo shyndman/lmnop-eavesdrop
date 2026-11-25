@@ -149,6 +149,8 @@ export class TranscriptOverlayView {
 
     const x = Math.floor(monitor.x + (monitor.width - OVERLAY_WIDTH_PX) / 2);
     const y = this.getAnchoredOverlayY(this.overlay.height, monitor);
+    const overlayActor = this.overlayActor(this.overlay);
+    overlayActor.remove_all_transitions();
 
     if (this.overlay.visible) {
       this.overlay.set_position(x, y);
@@ -159,8 +161,6 @@ export class TranscriptOverlayView {
       return true;
     }
 
-    const overlayActor = this.overlayActor(this.overlay);
-    overlayActor.remove_all_transitions();
     this.overlay.set_position(x, y);
     this.overlay.opacity = 0;
     this.overlay.show();

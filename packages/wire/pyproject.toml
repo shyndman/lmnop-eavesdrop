@@ -44,7 +44,7 @@ indent-width = 2
 ban-relative-imports = "all"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "W"]
+select = ["E", "F", "I", "W", "TID"]
 ignore = []
 
 [tool.ruff.lint.isort]

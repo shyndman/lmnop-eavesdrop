@@ -5,10 +5,9 @@ from __future__ import annotations
 import logging
 import os
 
+from clypi import Command, arg
 from sanitary import Sanitizer
 from structlog.stdlib import BoundLogger
-
-from clypi import Command, arg
 from typing_extensions import override
 
 from active_listener.app.ports import ActiveListenerRuntimeError

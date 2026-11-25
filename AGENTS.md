@@ -4,11 +4,11 @@ The rules in @CODE_STYLE.md are an imperative. Failure to follow them will repre
 
 ## Project Overview
 
-Eavesdrop is a real-time audio transcription system using Orukeet through sherpa-onnx on CPU (INT8 ONNX) or NeMo-Speech.cpp on Vulkan (Q8 GGUF). Monorepo with six packages:
+Eavesdrop is a real-time local audio transcription system using Orukeet CPU INT8 ONNX via `sherpa-onnx` and standalone `sherpa-onnx` Silero v5 ONNX VAD. Monorepo with six packages:
 
 | Package | Description |
 |---------|-------------|
-| `server` | Core transcription server (WebSocket, RTSP, Orukeet integration) |
+| `server` | Core transcription server (WebSocket, Orukeet integration) |
 | `client` | Python client library for streaming transcription |
 | `wire` | Shared Pydantic message types and protocol definitions |
 | `common` | Shared Python utilities and data structures |
@@ -92,13 +92,12 @@ Check package configuration for test commands — don't assume.
 
 ## Transcription Runtime
 
-- Fixed model: `oruk/orukeet`, pinned CPU INT8 ONNX or Vulkan Q8 GGUF assets; English client contract
-- Runtime dependencies are opt-in: `uv sync --package eavesdrop-server --extra transcription`
+- Fixed model: `oruk/orukeet` CPU INT8 ONNX assets via `sherpa-onnx`, paired with standalone `sherpa-onnx` Silero v5 ONNX VAD (`csukuangfj/vad` `silero_vad_v5.onnx`); English client contract
+- Runtime dependencies are opt-in: `uv sync --all-packages --all-extras --all-groups` (or `uv sync --package eavesdrop-server --extra transcription`)
 - Declare matching `sherpa-onnx` and `sherpa-onnx-core` dependencies explicitly; uv otherwise omits the native ONNX shared library
 - Keep normal unit tests independent of model downloads and inference runtime availability
-- Preserve native timing: CPU token onsets/durations on the 80 ms encoder grid; Vulkan word times converted from milliseconds; original recording offsets across VAD gaps
-- Deploy in Docker or directly on the host; `transcription.device` selects `cpu` (default) or `vulkan` (Linux x86_64, GPU 0)
-- Docker uses the repository-root `uv.lock` and `/opt/venv`; the final image includes Mesa Vulkan drivers and the run tasks grant `/dev/dri` only for `device: vulkan`
+- Preserve native timing: CPU token onsets/durations on the 80 ms encoder grid on original recording offsets across VAD gaps
+- Deploy locally as user systemd services via `task install-server-service` and `task install-active-listener-service` (both using `uv run --no-sync` against the root workspace `.venv`)
 
 ## Agent skills
 

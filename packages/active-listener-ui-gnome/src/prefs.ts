@@ -62,11 +62,11 @@ function ensureParentDirectory(file: Gio.File): void {
   parent.make_directory_with_parents(null);
 }
 
-function writeFileContentsUtf8(file: Gio.File, contents: string): Promise<void> {
+async function writeFileContentsUtf8(file: Gio.File, contents: string): Promise<void> {
   ensureParentDirectory(file);
 
   const encodedContents = new TextEncoder().encode(contents);
-  return new Promise((resolve, reject) => {
+  await new Promise<void>((resolve, reject) => {
     file.replace_contents_bytes_async(
       new GLib.Bytes(encodedContents),
       null,
@@ -219,8 +219,11 @@ export default class ActiveListenerPreferences extends ExtensionPreferences {
   private readonly revertButton = new Gtk.Button({ label: 'Revert' });
   private initialPromptContents = '';
   private persistedPromptContents = '';
+  private overrideExistsOnDisk = false;
   private autosaveSourceId: number | null = null;
   private autosaveInFlight = false;
+  private activeAutosavePromise: Promise<void> | null = null;
+  private closeFlushState: 'idle' | 'flushing' | 'ready_to_close' = 'idle';
   private promptRevision = 0;
   private updatingPromptContents = false;
 
@@ -257,9 +260,25 @@ export default class ActiveListenerPreferences extends ExtensionPreferences {
     });
 
     window.connect('close-request', () => {
+      if (this.closeFlushState === 'ready_to_close') {
+        return false;
+      }
+
+      if (this.closeFlushState === 'flushing') {
+        console.info('Active Listener prefs deferred close while autosave flush is in progress');
+        return true;
+      }
+
       this.cancelPendingAutosave();
-      void this.flushAutosave();
-      return false;
+
+      const hasUnsavedChanges = this.getCurrentPromptContents() !== this.persistedPromptContents;
+      if (!hasUnsavedChanges && this.activeAutosavePromise === null) {
+        return false;
+      }
+
+      this.closeFlushState = 'flushing';
+      void this.flushBeforeClose(window);
+      return true;
     });
 
     await this.initializePromptContents().catch(() => undefined);
@@ -326,12 +345,14 @@ export default class ActiveListenerPreferences extends ExtensionPreferences {
   private async loadPromptContents(): Promise<LoadedPrompt> {
     const overrideFile = getPromptOverrideFile();
     if (overrideFile.query_exists(null)) {
+      this.overrideExistsOnDisk = true;
       return {
         contents: await loadFileContentsUtf8(overrideFile),
         source: 'override',
       };
     }
 
+    this.overrideExistsOnDisk = false;
     return (await loadConfiguredPromptContents()) ?? {
       contents: '',
       source: 'empty',
@@ -396,38 +417,77 @@ export default class ActiveListenerPreferences extends ExtensionPreferences {
     this.cancelPendingAutosave();
     this.setActionSensitivity(false);
     this.setPromptContents(this.initialPromptContents);
-    await this.flushAutosave();
+    if (this.overrideExistsOnDisk) {
+      await this.flushAutosave();
+    } else {
+      this.syncActionSensitivity();
+    }
   }
 
-  private async flushAutosave(): Promise<void> {
+  private async flushBeforeClose(
+    window: Parameters<ExtensionPreferences['fillPreferencesWindow']>[0],
+  ): Promise<void> {
+    try {
+      if (this.activeAutosavePromise !== null) {
+        await this.activeAutosavePromise;
+      }
+
+      while (this.getCurrentPromptContents() !== this.persistedPromptContents) {
+        const previousPersisted = this.persistedPromptContents;
+        await this.flushAutosave();
+        if (this.persistedPromptContents === previousPersisted && this.activeAutosavePromise === null) {
+          break;
+        }
+        if (this.activeAutosavePromise !== null) {
+          await this.activeAutosavePromise;
+        }
+      }
+    } finally {
+      this.cancelPendingAutosave();
+      this.closeFlushState = 'ready_to_close';
+      window.close();
+    }
+  }
+
+  private flushAutosave(): Promise<void> {
     if (this.autosaveInFlight) {
       this.scheduleAutosave();
-      return;
+      return this.activeAutosavePromise ?? Promise.resolve();
     }
 
     const contents = this.getCurrentPromptContents();
     if (contents === this.persistedPromptContents) {
       this.syncActionSensitivity();
-      return;
+      return Promise.resolve();
     }
 
     const revision = this.promptRevision;
     this.autosaveInFlight = true;
 
-    try {
-      await writeFileContentsUtf8(getPromptOverrideFile(), contents);
-      this.persistedPromptContents = contents;
-      if (revision !== this.promptRevision) {
-        this.scheduleAutosave();
-      }
+    const writePromise = (async () => {
+      // Yield once so activeAutosavePromise is assigned before any failure runs finally.
+      await Promise.resolve();
 
-      console.info(`Active Listener prefs autosaved rewrite prompt to ${getPromptOverridePath()}`);
-    } catch (error) {
-      console.error('Active Listener prefs failed to autosave rewrite prompt', error);
-    } finally {
-      this.autosaveInFlight = false;
-      this.syncActionSensitivity();
-    }
+      try {
+        await writeFileContentsUtf8(getPromptOverrideFile(), contents);
+        this.persistedPromptContents = contents;
+        this.overrideExistsOnDisk = true;
+        if (revision !== this.promptRevision) {
+          this.scheduleAutosave();
+        }
+
+        console.info(`Active Listener prefs autosaved rewrite prompt to ${getPromptOverridePath()}`);
+      } catch (error) {
+        console.error('Active Listener prefs failed to autosave rewrite prompt', error);
+      } finally {
+        this.autosaveInFlight = false;
+        this.activeAutosavePromise = null;
+        this.syncActionSensitivity();
+      }
+    })();
+
+    this.activeAutosavePromise = writePromise;
+    return writePromise;
   }
 
   private setActionSensitivity(sensitive: boolean): void {

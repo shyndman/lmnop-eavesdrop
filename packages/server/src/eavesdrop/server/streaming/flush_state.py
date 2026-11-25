@@ -88,7 +88,6 @@ class LiveSessionFlushState:
       )
       self._pending_flush = pending_flush
       self._wakeup.set()
-      self._interrupt.set()
       return pending_flush
 
   def pending(self) -> PendingFlush | None:

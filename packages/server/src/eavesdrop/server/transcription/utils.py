@@ -42,11 +42,7 @@ def finalize_recording_timestamps(
   segments: Iterable[Segment],
   absolute_stream_start: float,
 ) -> Iterable[Segment]:
-  """Ensures all segments and words have recording-relative timestamps.
-
-  This is the final canonical timestamp boundary for WebSocket/live output. It
-  adds the recording-level offset to chunk-local timestamps and updates the
-  internal time_offset field for compatibility.
+  """Ensure all segments and words have recording-relative timestamps.
 
   :param segments: The transcribed segments to normalize.
   :type segments: Iterable[Segment]
@@ -58,7 +54,6 @@ def finalize_recording_timestamps(
   for segment in segments:
     segment.start += absolute_stream_start
     segment.end += absolute_stream_start
-    segment.time_offset = absolute_stream_start
 
     if segment.words:
       for word in segment.words:

@@ -14,7 +14,6 @@ dependencies = [
     "evdev>=1.9.3",
     "jsoncgx>=1.1",
     "langfuse>=4.5.1",
-    "litert-lm>=0.10,<0.11",
     "numpy<2",
     "pydantic>=2",
     "pydantic-ai-slim[google]>=1.87.0",
@@ -57,8 +56,11 @@ target-version = "py312"
 indent-width = 2
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "W"]
+select = ["E", "F", "I", "TID", "W"]
 ignore = []
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
 
 [tool.ruff.lint.isort]
 known-first-party = ["active_listener", "eavesdrop"]
