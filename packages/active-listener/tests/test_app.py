@@ -115,15 +115,34 @@ def _rewrite_config() -> LlmRewriteConfig:
   )
 
 
-def _config(*, rewrite_enabled: bool = False) -> ActiveListenerConfig:
+def _config(
+  *,
+  rewrite_enabled: bool = False,
+  ffmpeg_path: str | None = None,
+) -> ActiveListenerConfig:
   return ActiveListenerConfig(
     keyboard_name="Exact Keyboard",
     host="localhost",
     port=9090,
     audio_device="default",
-    ffmpeg_path=None,
+    ffmpeg_path=ffmpeg_path,
     llm_rewrite=_rewrite_config() if rewrite_enabled else None,
   )
+
+
+@pytest.fixture
+def fake_ffmpeg_path(tmp_path: Path) -> str:
+  """Create an executable ffmpeg stub so bootstrap tests do not rely on host PATH.
+
+  :param tmp_path: Temporary test directory.
+  :type tmp_path: Path
+  :returns: Path to the executable stub.
+  :rtype: str
+  """
+  ffmpeg_path = tmp_path / "ffmpeg"
+  _ = ffmpeg_path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+  ffmpeg_path.chmod(0o755)
+  return str(ffmpeg_path)
 
 
 def _prompt(
@@ -682,14 +701,16 @@ def _service(
 
 
 @pytest.mark.asyncio
-async def test_create_service_connects_client_and_initializes_emitter() -> None:
+async def test_create_service_connects_client_and_initializes_emitter(
+  fake_ffmpeg_path: str,
+) -> None:
   keyboard = FakeKeyboard()
   emitter = FakeEmitter()
   client = FakeClient()
   dbus_service = FakeDbusService()
 
   service = await create_service(
-    _config(),
+    _config(ffmpeg_path=fake_ffmpeg_path),
     dbus_service=dbus_service,
     keyboard_resolver=lambda _name: keyboard,
     client_factory=lambda _config, _on_capture: client,
@@ -705,9 +726,11 @@ async def test_create_service_connects_client_and_initializes_emitter() -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_service_defaults_llm_runtime_active_when_rewrite_is_configured() -> None:
+async def test_create_service_defaults_llm_runtime_active_when_rewrite_is_configured(
+  fake_ffmpeg_path: str,
+) -> None:
   service = await create_service(
-    _config(rewrite_enabled=True),
+    _config(rewrite_enabled=True, ffmpeg_path=fake_ffmpeg_path),
     dbus_service=FakeDbusService(),
     keyboard_resolver=lambda _name: FakeKeyboard(),
     client_factory=lambda _config, _on_capture: FakeClient(),
@@ -720,7 +743,9 @@ async def test_create_service_defaults_llm_runtime_active_when_rewrite_is_config
 
 
 @pytest.mark.asyncio
-async def test_create_service_passes_capture_callback_into_client_factory() -> None:
+async def test_create_service_passes_capture_callback_into_client_factory(
+  fake_ffmpeg_path: str,
+) -> None:
   keyboard = FakeKeyboard()
   emitter = FakeEmitter()
   captured_callbacks: list[Callable[[bytes], None]] = []
@@ -733,7 +758,7 @@ async def test_create_service_passes_capture_callback_into_client_factory() -> N
     return FakeClient()
 
   service = await create_service(
-    _config(),
+    _config(ffmpeg_path=fake_ffmpeg_path),
     dbus_service=FakeDbusService(),
     keyboard_resolver=lambda _name: keyboard,
     client_factory=client_factory,
@@ -756,6 +781,7 @@ async def test_create_service_fails_fast_on_keyboard_resolution_error() -> None:
 @pytest.mark.asyncio
 async def test_create_service_fails_fast_on_connect_error(
   monkeypatch: pytest.MonkeyPatch,
+  fake_ffmpeg_path: str,
 ) -> None:
   logger = RecordingLogger()
   keyboard = FakeKeyboard()
@@ -769,7 +795,7 @@ async def test_create_service_fails_fast_on_connect_error(
     match="could not connect to eavesdrop server at ws://localhost:9090: server unavailable",
   ):
     _ = await create_service(
-      _config(),
+      _config(ffmpeg_path=fake_ffmpeg_path),
       keyboard_resolver=lambda _name: keyboard,
       client_factory=lambda _config, _on_capture: client,
       emitter_factory=lambda: FakeEmitter(),
@@ -785,13 +811,15 @@ async def test_create_service_fails_fast_on_connect_error(
 
 
 @pytest.mark.asyncio
-async def test_create_service_fails_fast_when_rewrite_client_cannot_initialize() -> None:
+async def test_create_service_fails_fast_when_rewrite_client_cannot_initialize(
+  fake_ffmpeg_path: str,
+) -> None:
   keyboard = FakeKeyboard()
   client = FakeClient()
 
   with pytest.raises(ActiveListenerRuntimeError, match="bad model"):
     _ = await create_service(
-      _config(rewrite_enabled=True),
+      _config(rewrite_enabled=True, ffmpeg_path=fake_ffmpeg_path),
       keyboard_resolver=lambda _name: keyboard,
       client_factory=lambda _config, _on_capture: client,
       emitter_factory=lambda: FakeEmitter(),
@@ -1399,7 +1427,9 @@ def test_capture_callback_records_audio_only_while_buffer_is_active() -> None:
 
 
 @pytest.mark.asyncio
-async def test_spectrum_emission_flows_through_dbus_while_recording() -> None:
+async def test_spectrum_emission_flows_through_dbus_while_recording(
+  fake_ffmpeg_path: str,
+) -> None:
   keyboard = FakeKeyboard()
   emitter = FakeEmitter()
   dbus_service = FakeDbusService()
@@ -1413,7 +1443,7 @@ async def test_spectrum_emission_flows_through_dbus_while_recording() -> None:
     return FakeClient()
 
   service = await create_service(
-    _config(),
+    _config(ffmpeg_path=fake_ffmpeg_path),
     dbus_service=dbus_service,
     keyboard_resolver=lambda _name: keyboard,
     client_factory=client_factory,
@@ -1473,7 +1503,9 @@ async def test_run_service_emits_fatal_error_once_on_startup_failure() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_service_emits_fatal_error_once_on_runtime_failure() -> None:
+async def test_run_service_emits_fatal_error_once_on_runtime_failure(
+  fake_ffmpeg_path: str,
+) -> None:
   keyboard = FakeKeyboard(
     queued_events=[
       _keyboard_event(KeyboardEventKind.CAPSLOCK_DOWN),
@@ -1485,7 +1517,7 @@ async def test_run_service_emits_fatal_error_once_on_runtime_failure() -> None:
 
   with pytest.raises(RuntimeError, match="stop failed"):
     await run_service(
-      _config(),
+      _config(ffmpeg_path=fake_ffmpeg_path),
       dbus_service=dbus_service,
       keyboard_resolver=lambda _name: keyboard,
       client_factory=lambda _config, _on_capture: client,
