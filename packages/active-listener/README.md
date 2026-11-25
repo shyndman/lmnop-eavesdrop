@@ -26,7 +26,7 @@ Eavesdrop's GNOME Shell extension (`packages/active-listener-ui-gnome`). The ext
 this session-bus interface under `org.gnome.Shell`:
 
 - `/org/gnome/Shell/Extensions/Eavesdrop` (`org.gnome.Shell.Extensions.Eavesdrop`):
-  `GetFocusedWindow`, `GetClipboardText`, and `SetClipboardText`
+  `GetFocusedWindow`, `GetClipboardContent`, `SetClipboardContent`, and `SetClipboardText`
 
 Paste-key injection uses the existing `ydotoold.service`. Startup requires its
 socket at `${XDG_RUNTIME_DIR}/.ydotool_socket`, and the daemon requires usable

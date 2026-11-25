@@ -48,6 +48,13 @@ class FocusedWindow(NamedTuple):
   wm_class: str
 
 
+class ClipboardSnapshot(NamedTuple):
+  """Captured clipboard payload restored after staged dictation chunks are pasted."""
+
+  mime_type: str
+  data: bytes
+
+
 class DesktopExtensionInterface(
   DbusInterfaceCommon,
   interface_name=DESKTOP_DBUS_INTERFACE_NAME,
@@ -58,8 +65,14 @@ class DesktopExtensionInterface(
   def get_focused_window(self) -> tuple[int, str]:
     raise NotImplementedError
 
-  @dbus_method(result_signature="s", method_name="GetClipboardText")
-  def get_clipboard_text(self) -> str:
+  @dbus_method(result_signature="say", method_name="GetClipboardContent")
+  def get_clipboard_content(self) -> tuple[str, bytes]:
+    raise NotImplementedError
+
+  @dbus_method(input_signature="say", method_name="SetClipboardContent")
+  def set_clipboard_content(self, mime_type: str, data: bytes) -> None:
+    _ = mime_type
+    _ = data
     raise NotImplementedError
 
   @dbus_method(input_signature="s", method_name="SetClipboardText")
@@ -167,33 +180,46 @@ class GnomeShellExtensionTextEmitter:
     )
     return focused_window
 
-  def _snapshot_clipboard(self) -> str:
+  def _snapshot_clipboard(self) -> ClipboardSnapshot:
     _logger.debug("snapshotting clipboard before emission")
     try:
-      clipboard_content = self._call_with_rebind(
-        operation="clipboard_get_text",
-        call=lambda: self._require_desktop().get_clipboard_text(),
+      mime_type, data = self._call_with_rebind(
+        operation="clipboard_get_content",
+        call=lambda: self._require_desktop().get_clipboard_content(),
       )
     except Exception:
       _logger.exception("clipboard snapshot failed")
       raise
 
-    _logger.debug("clipboard snapshot captured")
-    return clipboard_content
+    snapshot = ClipboardSnapshot(mime_type=mime_type, data=data)
+    _logger.debug(
+      "clipboard snapshot captured",
+      mime_type=snapshot.mime_type,
+      byte_length=len(snapshot.data),
+    )
+    return snapshot
 
-  def _restore_clipboard(self, clipboard_content: str) -> None:
+  def _restore_clipboard(self, snapshot: ClipboardSnapshot) -> None:
+    if snapshot.mime_type == "":
+      _logger.debug("skipping clipboard restore for empty snapshot")
+      return
+
     _logger.debug(
       "waiting before clipboard restore",
       delay_ms=CLIPBOARD_RESTORE_DELAY_MS,
+      mime_type=snapshot.mime_type,
     )
     time.sleep(CLIPBOARD_RESTORE_DELAY_MS / 1000)
 
-    _logger.debug("restoring clipboard after emission")
+    _logger.debug("restoring clipboard after emission", mime_type=snapshot.mime_type)
     self._call_with_rebind(
-      operation="clipboard_restore_text",
-      call=lambda: self._require_desktop().set_clipboard_text(clipboard_content),
+      operation="clipboard_restore_content",
+      call=lambda: self._require_desktop().set_clipboard_content(
+        snapshot.mime_type,
+        snapshot.data,
+      ),
     )
-    _logger.debug("clipboard restore completed")
+    _logger.debug("clipboard restore completed", mime_type=snapshot.mime_type)
 
   def _write_clipboard_chunk(self, *, chunk_index: int, chunk: str) -> None:
     _logger.debug(
@@ -320,7 +346,6 @@ class GnomeShellExtensionTextEmitter:
     :raises RuntimeError: If ``initialize()`` has not run yet.
     """
 
-    _ = self._require_desktop()
     focused_window = self._snapshot_focused_window()
     paste_keys = _select_paste_keys(focused_window.wm_class)
     chunks = _chunk_text(text)
@@ -344,7 +369,7 @@ class GnomeShellExtensionTextEmitter:
       )
       return
 
-    original_clipboard_content = self._snapshot_clipboard()
+    original_clipboard = self._snapshot_clipboard()
     emission_succeeded = False
     try:
       self._emit_chunks(
@@ -355,7 +380,7 @@ class GnomeShellExtensionTextEmitter:
       emission_succeeded = True
     finally:
       try:
-        self._restore_clipboard(original_clipboard_content)
+        self._restore_clipboard(original_clipboard)
       except Exception:
         if emission_succeeded:
           _logger.exception("clipboard restore failed after successful emission")

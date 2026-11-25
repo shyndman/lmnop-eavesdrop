@@ -9,7 +9,14 @@ import pydotool
 import pytest
 from sdbus import SdBusUnmappedMessageError
 
-from active_listener.infra.emitter import MAX_EMIT_CHUNK_LENGTH, GnomeShellExtensionTextEmitter
+from active_listener.infra.emitter import (
+  DBUS_BUS_NAME,
+  DESKTOP_OBJECT_PATH,
+  MAX_EMIT_CHUNK_LENGTH,
+  GnomeShellExtensionTextEmitter,
+)
+
+TEXT_MIME_TYPE = "text/plain;charset=utf-8"
 
 
 @dataclass
@@ -23,14 +30,17 @@ class RecordingBus:
 @dataclass
 class RecordingDesktopProxy:
   focused_windows: list[tuple[int, str]] = field(default_factory=lambda: [(42, "org.gnome.dspy")])
-  current_content: str = ""
+  current_content: tuple[str, bytes] = (TEXT_MIME_TYPE, b"seed")
   focused_window_calls: int = 0
-  get_clipboard_text_calls: int = 0
+  get_clipboard_content_calls: int = 0
   set_clipboard_text_calls: int = 0
-  set_contents: list[str] = field(default_factory=list)
+  set_clipboard_content_calls: int = 0
+  staged_texts: list[str] = field(default_factory=list)
+  restored_contents: list[tuple[str, bytes]] = field(default_factory=list)
   fail_on_focused_window: bool = False
-  fail_on_get_clipboard_text: bool = False
+  fail_on_get_clipboard_content: bool = False
   fail_at_set_clipboard_text_call: int | None = None
+  fail_on_set_clipboard_content: bool = False
 
   def get_focused_window(self) -> tuple[int, str]:
     self.focused_window_calls += 1
@@ -40,9 +50,9 @@ class RecordingDesktopProxy:
       return self.focused_windows[0]
     return self.focused_windows.pop(0)
 
-  def get_clipboard_text(self) -> str:
-    self.get_clipboard_text_calls += 1
-    if self.fail_on_get_clipboard_text:
+  def get_clipboard_content(self) -> tuple[str, bytes]:
+    self.get_clipboard_content_calls += 1
+    if self.fail_on_get_clipboard_content:
       raise RuntimeError("clipboard unavailable")
     return self.current_content
 
@@ -50,8 +60,15 @@ class RecordingDesktopProxy:
     self.set_clipboard_text_calls += 1
     if self.fail_at_set_clipboard_text_call == self.set_clipboard_text_calls:
       raise RuntimeError("clipboard unavailable")
-    self.current_content = text
-    self.set_contents.append(text)
+    self.current_content = (TEXT_MIME_TYPE, text.encode("utf-8"))
+    self.staged_texts.append(text)
+
+  def set_clipboard_content(self, mime_type: str, data: bytes) -> None:
+    self.set_clipboard_content_calls += 1
+    if self.fail_on_set_clipboard_content:
+      raise RuntimeError("clipboard unavailable")
+    self.current_content = (mime_type, data)
+    self.restored_contents.append((mime_type, data))
 
 
 @dataclass
@@ -72,38 +89,25 @@ class RecordingYdotool:
       raise RuntimeError("key injection failed")
 
 
-@dataclass(frozen=True)
-class LogRecord:
-  event: str
-  fields: dict[str, object]
-
-
 class RecordingLogger:
   def __init__(self) -> None:
-    self.debug_messages: list[str] = []
-    self.info_messages: list[str] = []
-    self.warning_messages: list[str] = []
     self.exception_messages: list[str] = []
-    self.debug_records: list[LogRecord] = []
-    self.info_records: list[LogRecord] = []
-    self.warning_records: list[LogRecord] = []
-    self.exception_records: list[LogRecord] = []
 
   def debug(self, event: str, **kwargs: object) -> None:
-    self.debug_messages.append(event)
-    self.debug_records.append(LogRecord(event=event, fields=kwargs))
+    _ = event
+    _ = kwargs
 
   def info(self, event: str, **kwargs: object) -> None:
-    self.info_messages.append(event)
-    self.info_records.append(LogRecord(event=event, fields=kwargs))
+    _ = event
+    _ = kwargs
 
   def warning(self, event: str, **kwargs: object) -> None:
-    self.warning_messages.append(event)
-    self.warning_records.append(LogRecord(event=event, fields=kwargs))
+    _ = event
+    _ = kwargs
 
   def exception(self, event: str, **kwargs: object) -> None:
+    _ = kwargs
     self.exception_messages.append(event)
-    self.exception_records.append(LogRecord(event=event, fields=kwargs))
 
 
 def _install_proxy(
@@ -117,8 +121,8 @@ def _install_proxy(
   def build_desktop_proxy(
     *, service_name: str, object_path: str, bus: RecordingBus
   ) -> RecordingDesktopProxy:
-    _ = service_name
-    _ = object_path
+    assert service_name == DBUS_BUS_NAME
+    assert object_path == DESKTOP_OBJECT_PATH
     _ = bus
     return desktop
 
@@ -146,7 +150,7 @@ def test_emitter_initializes_once_without_validating_proxy(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
   bus = RecordingBus()
-  desktop = RecordingDesktopProxy(current_content="seed")
+  desktop = RecordingDesktopProxy()
   ydotool = _install_proxy(monkeypatch, bus=bus, desktop=desktop)
 
   emitter = GnomeShellExtensionTextEmitter()
@@ -154,7 +158,7 @@ def test_emitter_initializes_once_without_validating_proxy(
   emitter.initialize()
 
   assert desktop.focused_window_calls == 0
-  assert desktop.get_clipboard_text_calls == 0
+  assert desktop.get_clipboard_content_calls == 0
   assert bus.close_calls == 0
   assert ydotool.init_calls == ["/run/user/test-id/.ydotool_socket"]
 
@@ -182,15 +186,16 @@ def test_emitter_uses_ctrl_shift_v_for_terminal_apps(
   wm_class: str,
 ) -> None:
   bus = RecordingBus()
-  desktop = RecordingDesktopProxy(focused_windows=[(42, wm_class)], current_content="seed")
+  desktop = RecordingDesktopProxy(focused_windows=[(42, wm_class)])
   ydotool = _install_proxy(monkeypatch, bus=bus, desktop=desktop)
 
   emitter = GnomeShellExtensionTextEmitter()
   emitter.initialize()
   emitter.emit_text("hello")
 
-  assert desktop.get_clipboard_text_calls == 1
-  assert desktop.set_contents == ["hello", "seed"]
+  assert desktop.get_clipboard_content_calls == 1
+  assert desktop.staged_texts == ["hello"]
+  assert desktop.restored_contents == [(TEXT_MIME_TYPE, b"seed")]
   assert ydotool.key_combination_calls == [
     [pydotool.KEY_LEFTCTRL, pydotool.KEY_LEFTSHIFT, pydotool.KEY_V]
   ]
@@ -198,15 +203,47 @@ def test_emitter_uses_ctrl_shift_v_for_terminal_apps(
 
 def test_emitter_uses_ctrl_v_for_non_terminal_apps(monkeypatch: pytest.MonkeyPatch) -> None:
   bus = RecordingBus()
-  desktop = RecordingDesktopProxy(focused_windows=[(77, "org.gnome.dspy")], current_content="seed")
+  desktop = RecordingDesktopProxy(focused_windows=[(77, "org.gnome.dspy")])
   ydotool = _install_proxy(monkeypatch, bus=bus, desktop=desktop)
 
   emitter = GnomeShellExtensionTextEmitter()
   emitter.initialize()
   emitter.emit_text("hello")
 
-  assert desktop.get_clipboard_text_calls == 1
-  assert desktop.set_contents == ["hello", "seed"]
+  assert desktop.get_clipboard_content_calls == 1
+  assert desktop.staged_texts == ["hello"]
+  assert desktop.restored_contents == [(TEXT_MIME_TYPE, b"seed")]
+  assert ydotool.key_combination_calls == [[pydotool.KEY_LEFTCTRL, pydotool.KEY_V]]
+
+
+def test_emitter_preserves_binary_clipboard_content(monkeypatch: pytest.MonkeyPatch) -> None:
+  png_bytes = b"\x89PNG\r\n\x1a\nfake-image"
+  bus = RecordingBus()
+  desktop = RecordingDesktopProxy(current_content=("image/png", png_bytes))
+  ydotool = _install_proxy(monkeypatch, bus=bus, desktop=desktop)
+
+  emitter = GnomeShellExtensionTextEmitter()
+  emitter.initialize()
+  emitter.emit_text("hello")
+
+  assert desktop.staged_texts == ["hello"]
+  assert desktop.restored_contents == [("image/png", png_bytes)]
+  assert ydotool.key_combination_calls == [[pydotool.KEY_LEFTCTRL, pydotool.KEY_V]]
+
+
+def test_emitter_skips_restore_when_clipboard_was_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+  bus = RecordingBus()
+  desktop = RecordingDesktopProxy(current_content=("", b""))
+  sleep_calls: list[float] = []
+  ydotool = _install_proxy(monkeypatch, bus=bus, desktop=desktop, sleep_calls=sleep_calls)
+
+  emitter = GnomeShellExtensionTextEmitter()
+  emitter.initialize()
+  emitter.emit_text("hello")
+
+  assert desktop.staged_texts == ["hello"]
+  assert desktop.restored_contents == []
+  assert sleep_calls == []
   assert ydotool.key_combination_calls == [[pydotool.KEY_LEFTCTRL, pydotool.KEY_V]]
 
 
@@ -214,10 +251,7 @@ def test_emitter_snapshots_focused_window_once_per_emission(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
   bus = RecordingBus()
-  desktop = RecordingDesktopProxy(
-    focused_windows=[(99, "kitty"), (1234, "org.gnome.dspy")],
-    current_content="seed",
-  )
+  desktop = RecordingDesktopProxy(focused_windows=[(99, "kitty"), (1234, "org.gnome.dspy")])
   ydotool = _install_proxy(monkeypatch, bus=bus, desktop=desktop)
 
   emitter = GnomeShellExtensionTextEmitter()
@@ -225,9 +259,9 @@ def test_emitter_snapshots_focused_window_once_per_emission(
   emitter.emit_text("a" * (MAX_EMIT_CHUNK_LENGTH + 1))
 
   assert desktop.focused_window_calls == 1
-  assert desktop.get_clipboard_text_calls == 1
-  assert [len(chunk) for chunk in desktop.set_contents[:-1]] == [MAX_EMIT_CHUNK_LENGTH, 1]
-  assert desktop.set_contents[-1] == "seed"
+  assert desktop.get_clipboard_content_calls == 1
+  assert [len(chunk) for chunk in desktop.staged_texts] == [MAX_EMIT_CHUNK_LENGTH, 1]
+  assert desktop.restored_contents == [(TEXT_MIME_TYPE, b"seed")]
   assert ydotool.key_combination_calls == [
     [pydotool.KEY_LEFTCTRL, pydotool.KEY_LEFTSHIFT, pydotool.KEY_V],
     [pydotool.KEY_LEFTCTRL, pydotool.KEY_LEFTSHIFT, pydotool.KEY_V],
@@ -236,7 +270,7 @@ def test_emitter_snapshots_focused_window_once_per_emission(
 
 def test_emitter_chunks_text_at_max_length(monkeypatch: pytest.MonkeyPatch) -> None:
   bus = RecordingBus()
-  desktop = RecordingDesktopProxy(current_content="seed")
+  desktop = RecordingDesktopProxy()
   sleep_calls: list[float] = []
   ydotool = _install_proxy(monkeypatch, bus=bus, desktop=desktop, sleep_calls=sleep_calls)
 
@@ -244,26 +278,27 @@ def test_emitter_chunks_text_at_max_length(monkeypatch: pytest.MonkeyPatch) -> N
   emitter.initialize()
   emitter.emit_text("a" * ((MAX_EMIT_CHUNK_LENGTH * 2) + 1))
 
-  assert [len(chunk) for chunk in desktop.set_contents[:-1]] == [
+  assert [len(chunk) for chunk in desktop.staged_texts] == [
     MAX_EMIT_CHUNK_LENGTH,
     MAX_EMIT_CHUNK_LENGTH,
     1,
   ]
-  assert desktop.set_contents[-1] == "seed"
+  assert desktop.restored_contents == [(TEXT_MIME_TYPE, b"seed")]
   assert sleep_calls == [0.15, 0.15, 0.75]
   assert len(ydotool.key_combination_calls) == 3
 
 
 def test_emitter_preserves_newlines_inside_chunk(monkeypatch: pytest.MonkeyPatch) -> None:
   bus = RecordingBus()
-  desktop = RecordingDesktopProxy(current_content="seed")
+  desktop = RecordingDesktopProxy()
   ydotool = _install_proxy(monkeypatch, bus=bus, desktop=desktop)
 
   emitter = GnomeShellExtensionTextEmitter()
   emitter.initialize()
   emitter.emit_text("hello\nworld")
 
-  assert desktop.set_contents == ["hello\nworld", "seed"]
+  assert desktop.staged_texts == ["hello\nworld"]
+  assert desktop.restored_contents == [(TEXT_MIME_TYPE, b"seed")]
   assert ydotool.key_combination_calls == [[pydotool.KEY_LEFTCTRL, pydotool.KEY_V]]
 
 
@@ -271,7 +306,7 @@ def test_emitter_restores_clipboard_after_key_injection_failure(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
   bus = RecordingBus()
-  desktop = RecordingDesktopProxy(current_content="seed")
+  desktop = RecordingDesktopProxy()
   ydotool = RecordingYdotool(fail_at_key_combination_call=2)
   _install_proxy(monkeypatch, bus=bus, desktop=desktop, ydotool=ydotool)
 
@@ -281,11 +316,11 @@ def test_emitter_restores_clipboard_after_key_injection_failure(
   with pytest.raises(RuntimeError, match="key injection failed"):
     emitter.emit_text("a" * ((MAX_EMIT_CHUNK_LENGTH * 2) + 1))
 
-  assert [len(chunk) for chunk in desktop.set_contents[:-1]] == [
+  assert [len(chunk) for chunk in desktop.staged_texts] == [
     MAX_EMIT_CHUNK_LENGTH,
     MAX_EMIT_CHUNK_LENGTH,
   ]
-  assert desktop.set_contents[-1] == "seed"
+  assert desktop.restored_contents == [(TEXT_MIME_TYPE, b"seed")]
   assert len(ydotool.key_combination_calls) == 2
 
 
@@ -312,7 +347,10 @@ def test_emitter_rebinds_after_disconnected_bus_during_emit(
       "Transport endpoint is not connected",
     ),
   )
-  second_desktop = RecordingDesktopProxy(focused_windows=[(77, "org.gnome.dspy")])
+  second_desktop = RecordingDesktopProxy(
+    focused_windows=[(77, "org.gnome.dspy")],
+    current_content=("", b""),
+  )
   buses = [first_bus, second_bus]
   desktop_proxies = [first_desktop, second_desktop]
 
@@ -322,8 +360,8 @@ def test_emitter_rebinds_after_disconnected_bus_during_emit(
   def build_desktop_proxy(
     *, service_name: str, object_path: str, bus: RecordingBus
   ) -> RecordingDesktopProxy:
-    _ = service_name
-    _ = object_path
+    assert service_name == DBUS_BUS_NAME
+    assert object_path == DESKTOP_OBJECT_PATH
     _ = bus
     return desktop_proxies.pop(0)
 
@@ -346,8 +384,9 @@ def test_emitter_rebinds_after_disconnected_bus_during_emit(
 
   assert first_bus.close_calls == 1
   assert second_bus.close_calls == 0
-  assert second_desktop.get_clipboard_text_calls == 1
-  assert second_desktop.set_contents == ["hello", ""]
+  assert second_desktop.get_clipboard_content_calls == 1
+  assert second_desktop.staged_texts == ["hello"]
+  assert second_desktop.restored_contents == []
   assert ydotool.key_combination_calls == [[pydotool.KEY_LEFTCTRL, pydotool.KEY_V]]
 
 
@@ -355,7 +394,7 @@ def test_emitter_restores_clipboard_after_chunk_write_failure(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
   bus = RecordingBus()
-  desktop = RecordingDesktopProxy(current_content="seed", fail_at_set_clipboard_text_call=2)
+  desktop = RecordingDesktopProxy(fail_at_set_clipboard_text_call=2)
   ydotool = _install_proxy(monkeypatch, bus=bus, desktop=desktop)
 
   emitter = GnomeShellExtensionTextEmitter()
@@ -364,8 +403,9 @@ def test_emitter_restores_clipboard_after_chunk_write_failure(
   with pytest.raises(RuntimeError, match="clipboard unavailable"):
     emitter.emit_text("a" * ((MAX_EMIT_CHUNK_LENGTH * 2) + 1))
 
-  assert desktop.get_clipboard_text_calls == 1
-  assert desktop.set_contents == ["a" * MAX_EMIT_CHUNK_LENGTH, "seed"]
+  assert desktop.get_clipboard_content_calls == 1
+  assert desktop.staged_texts == ["a" * MAX_EMIT_CHUNK_LENGTH]
+  assert desktop.restored_contents == [(TEXT_MIME_TYPE, b"seed")]
   assert ydotool.key_combination_calls == [[pydotool.KEY_LEFTCTRL, pydotool.KEY_V]]
 
 
@@ -373,7 +413,7 @@ def test_emitter_logs_restore_failure_without_failing_successful_emit(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
   bus = RecordingBus()
-  desktop = RecordingDesktopProxy(current_content="seed", fail_at_set_clipboard_text_call=2)
+  desktop = RecordingDesktopProxy(fail_on_set_clipboard_content=True)
   logger = RecordingLogger()
   _install_proxy(monkeypatch, bus=bus, desktop=desktop)
   monkeypatch.setattr("active_listener.infra.emitter._logger", logger)
@@ -382,8 +422,9 @@ def test_emitter_logs_restore_failure_without_failing_successful_emit(
   emitter.initialize()
   emitter.emit_text("hello")
 
-  assert desktop.get_clipboard_text_calls == 1
-  assert desktop.set_contents == ["hello"]
+  assert desktop.get_clipboard_content_calls == 1
+  assert desktop.staged_texts == ["hello"]
+  assert desktop.restored_contents == []
   assert logger.exception_messages == ["clipboard restore failed after successful emission"]
 
 
@@ -391,7 +432,7 @@ def test_emitter_aborts_when_clipboard_snapshot_fails(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
   bus = RecordingBus()
-  desktop = RecordingDesktopProxy(fail_on_get_clipboard_text=True)
+  desktop = RecordingDesktopProxy(fail_on_get_clipboard_content=True)
   ydotool = _install_proxy(monkeypatch, bus=bus, desktop=desktop)
 
   emitter = GnomeShellExtensionTextEmitter()
@@ -400,8 +441,9 @@ def test_emitter_aborts_when_clipboard_snapshot_fails(
   with pytest.raises(RuntimeError, match="clipboard unavailable"):
     emitter.emit_text("hello")
 
-  assert desktop.get_clipboard_text_calls == 1
-  assert desktop.set_contents == []
+  assert desktop.get_clipboard_content_calls == 1
+  assert desktop.staged_texts == []
+  assert desktop.restored_contents == []
   assert ydotool.key_combination_calls == []
 
 
