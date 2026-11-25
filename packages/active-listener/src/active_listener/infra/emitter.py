@@ -6,10 +6,9 @@ import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import ClassVar, Protocol, TypeVar, cast
+from typing import NamedTuple, Protocol, TypeVar, cast
 
 import pydotool
-from pydantic import BaseModel, ConfigDict
 from sdbus import (
   DbusInterfaceCommon,
   SdBus,
@@ -21,14 +20,12 @@ from sdbus import (
 from eavesdrop.common import get_logger
 
 DBUS_BUS_NAME = "org.gnome.Shell"
-WINDOWS_OBJECT_PATH = "/org/gnome/Shell/Extensions/Windows"
-CLIPBOARD_OBJECT_PATH = "/org/gnome/Shell/Extensions/Clipboard"
-WINDOWS_DBUS_INTERFACE_NAME = "org.gnome.Shell.Extensions.Windows"
-CLIPBOARD_DBUS_INTERFACE_NAME = "org.gnome.Shell.Extensions.Clipboard"
+DESKTOP_OBJECT_PATH = "/org/gnome/Shell/Extensions/Eavesdrop"
+DESKTOP_DBUS_INTERFACE_NAME = "org.gnome.Shell.Extensions.Eavesdrop"
 YDOTOOL_SOCKET_NAME = ".ydotool_socket"
-KITTY_WM_CLASS = "kitty"
+TERMINAL_PASTE_WM_CLASSES: frozenset[str] = frozenset({"kitty", "so.stencil.tern"})
 DEFAULT_PASTE_KEYS = [pydotool.KEY_LEFTCTRL, pydotool.KEY_V]
-KITTY_PASTE_KEYS = [
+TERMINAL_PASTE_KEYS = [
   pydotool.KEY_LEFTCTRL,
   pydotool.KEY_LEFTSHIFT,
   pydotool.KEY_V,
@@ -44,53 +41,30 @@ _logger = get_logger("al/emit")
 ProxyCallResult = TypeVar("ProxyCallResult")
 
 
-class FocusedWindow(BaseModel):
-  model_config: ClassVar[ConfigDict] = ConfigDict(strict=True, extra="allow")
+class FocusedWindow(NamedTuple):
+  """Focused desktop window metadata returned by the Eavesdrop GNOME extension."""
 
   id: int
-  title: str
   wm_class: str
-  wm_class_instance: str
-  pid: int
-  maximized: bool
-  frame_type: int
-  window_type: int
-  layer: int
-  monitor: int
-  role: str
-  width: int
-  height: int
-  x: int
-  y: int
-  in_current_workspace: bool
-  canclose: bool
-  canmaximize: bool
-  canminimize: bool
-  canshade: bool
-  moveable: bool
-  resizeable: bool
-  has_focus: bool
-  focus: bool
-  workspace: int
 
 
-class WindowsExtensionInterface(DbusInterfaceCommon, interface_name=WINDOWS_DBUS_INTERFACE_NAME):
-  @dbus_method(method_name="GetFocusedWindowSync")
-  def get_focused_window_sync(self) -> str:
-    raise NotImplementedError
-
-
-class ClipboardExtensionInterface(
+class DesktopExtensionInterface(
   DbusInterfaceCommon,
-  interface_name=CLIPBOARD_DBUS_INTERFACE_NAME,
+  interface_name=DESKTOP_DBUS_INTERFACE_NAME,
 ):
-  @dbus_method(method_name="GetCurrentContent")
-  def get_current_content(self) -> str:
+  """D-Bus interface exported by the Eavesdrop GNOME Shell extension."""
+
+  @dbus_method(result_signature="ts", method_name="GetFocusedWindow")
+  def get_focused_window(self) -> tuple[int, str]:
     raise NotImplementedError
 
-  @dbus_method("s", method_name="SetContent")
-  def set_content(self, content: str) -> None:
-    _ = content
+  @dbus_method(result_signature="s", method_name="GetClipboardText")
+  def get_clipboard_text(self) -> str:
+    raise NotImplementedError
+
+  @dbus_method(input_signature="s", method_name="SetClipboardText")
+  def set_clipboard_text(self, text: str) -> None:
+    _ = text
     raise NotImplementedError
 
 
@@ -114,13 +88,9 @@ def _chunk_text(text: str) -> tuple[str, ...]:
   )
 
 
-def _parse_focused_window(payload: str) -> FocusedWindow:
-  return FocusedWindow.model_validate_json(payload, strict=True)
-
-
 def _select_paste_keys(wm_class: str) -> list[int]:
-  if wm_class == KITTY_WM_CLASS:
-    return KITTY_PASTE_KEYS
+  if wm_class in TERMINAL_PASTE_WM_CLASSES:
+    return TERMINAL_PASTE_KEYS
   return DEFAULT_PASTE_KEYS
 
 
@@ -132,28 +102,22 @@ def _is_disconnected_bus_error(exc: Exception) -> bool:
 
 @dataclass
 class GnomeShellExtensionTextEmitter:
-  """Stage text through Vicinae's clipboard API and paste it through ydotool."""
+  """Stage text through Eavesdrop's GNOME Shell extension and paste it through ydotool."""
 
   _initialized: bool = False
   _bus: SdBus | None = None
-  _windows: WindowsExtensionInterface | None = None
-  _clipboard: ClipboardExtensionInterface | None = None
+  _desktop: DesktopExtensionInterface | None = None
 
-  def _bind_proxies(self) -> None:
+  def _bind_proxy(self) -> None:
     bus: SdBus | None = None
     try:
       _logger.debug("opening emitter session bus", bus_name=DBUS_BUS_NAME)
       bus = sd_bus_open_user()
-      _logger.debug("binding windows proxy", object_path=WINDOWS_OBJECT_PATH)
-      windows = WindowsExtensionInterface(
+
+      _logger.debug("binding desktop extension proxy", object_path=DESKTOP_OBJECT_PATH)
+      desktop = DesktopExtensionInterface(
         service_name=DBUS_BUS_NAME,
-        object_path=WINDOWS_OBJECT_PATH,
-        bus=bus,
-      )
-      _logger.debug("binding clipboard proxy", object_path=CLIPBOARD_OBJECT_PATH)
-      clipboard = ClipboardExtensionInterface(
-        service_name=DBUS_BUS_NAME,
-        object_path=CLIPBOARD_OBJECT_PATH,
+        object_path=DESKTOP_OBJECT_PATH,
         bus=bus,
       )
     except Exception:
@@ -163,45 +127,57 @@ class GnomeShellExtensionTextEmitter:
       raise
 
     self._bus = bus
-    self._windows = windows
-    self._clipboard = clipboard
+    self._desktop = desktop
     self._initialized = True
     _logger.info("emitter initialized")
 
-  def _close_proxies(self) -> None:
+  def _close_proxy(self) -> None:
     if self._bus is not None:
       self._bus.close()
 
     self._bus = None
-    self._windows = None
-    self._clipboard = None
+    self._desktop = None
     self._initialized = False
 
-  def _rebind_proxies(self, *, operation: str) -> None:
-    _logger.warning("emitter bus disconnected, rebinding proxies", operation=operation)
-    self._close_proxies()
-    self._bind_proxies()
+  def _rebind_proxy(self, *, operation: str) -> None:
+    _logger.warning("emitter bus disconnected, rebinding proxy", operation=operation)
+    self._close_proxy()
+    self._bind_proxy()
 
-  def _require_windows(self) -> WindowsExtensionInterface:
-    if not self._initialized or self._windows is None:
+  def _require_desktop(self) -> DesktopExtensionInterface:
+    if not self._initialized or self._desktop is None:
       raise RuntimeError("GnomeShellExtensionTextEmitter.initialize() must run before emit_text()")
-    return self._windows
+    return self._desktop
 
-  def _require_clipboard(self) -> ClipboardExtensionInterface:
-    if not self._initialized or self._clipboard is None:
-      raise RuntimeError("GnomeShellExtensionTextEmitter.initialize() must run before emit_text()")
-    return self._clipboard
+  def _snapshot_focused_window(self) -> FocusedWindow:
+    try:
+      window_id, wm_class = self._call_with_rebind(
+        operation="focused_window_snapshot",
+        call=lambda: self._require_desktop().get_focused_window(),
+      )
+    except Exception:
+      _logger.exception("focused window snapshot failed")
+      raise
+
+    focused_window = FocusedWindow(id=window_id, wm_class=wm_class)
+    _logger.debug(
+      "focused window snapshot captured",
+      window_id=focused_window.id,
+      wm_class=focused_window.wm_class,
+    )
+    return focused_window
 
   def _snapshot_clipboard(self) -> str:
     _logger.debug("snapshotting clipboard before emission")
     try:
       clipboard_content = self._call_with_rebind(
-        operation="clipboard_get_current_content",
-        call=lambda: self._require_clipboard().get_current_content(),
+        operation="clipboard_get_text",
+        call=lambda: self._require_desktop().get_clipboard_text(),
       )
     except Exception:
       _logger.exception("clipboard snapshot failed")
       raise
+
     _logger.debug("clipboard snapshot captured")
     return clipboard_content
 
@@ -211,12 +187,62 @@ class GnomeShellExtensionTextEmitter:
       delay_ms=CLIPBOARD_RESTORE_DELAY_MS,
     )
     time.sleep(CLIPBOARD_RESTORE_DELAY_MS / 1000)
+
     _logger.debug("restoring clipboard after emission")
     self._call_with_rebind(
-      operation="clipboard_restore_content",
-      call=lambda: self._require_clipboard().set_content(clipboard_content),
+      operation="clipboard_restore_text",
+      call=lambda: self._require_desktop().set_clipboard_text(clipboard_content),
     )
     _logger.debug("clipboard restore completed")
+
+  def _write_clipboard_chunk(self, *, chunk_index: int, chunk: str) -> None:
+    _logger.debug(
+      "writing chunk to clipboard",
+      chunk_index=chunk_index,
+      chunk_length=len(chunk),
+    )
+    try:
+      self._call_with_rebind(
+        operation="clipboard_set_text",
+        call=lambda: self._require_desktop().set_clipboard_text(chunk),
+      )
+    except Exception:
+      _logger.exception(
+        "clipboard chunk write failed",
+        chunk_index=chunk_index,
+        chunk_length=len(chunk),
+      )
+      raise
+
+    _logger.debug(
+      "clipboard chunk written",
+      chunk_index=chunk_index,
+      chunk_length=len(chunk),
+    )
+
+  def _send_paste_shortcut(
+    self,
+    *,
+    chunk_index: int,
+    window_id: int,
+    paste_keys: list[int],
+  ) -> None:
+    _logger.debug(
+      "sending paste shortcut",
+      chunk_index=chunk_index,
+      window_id=window_id,
+      key_codes=paste_keys,
+    )
+    try:
+      pydotool.key_combination(paste_keys)
+    except Exception:
+      _logger.exception(
+        "paste shortcut send failed",
+        chunk_index=chunk_index,
+        window_id=window_id,
+        key_codes=paste_keys,
+      )
+      raise
 
   def _emit_chunks(
     self,
@@ -226,45 +252,13 @@ class GnomeShellExtensionTextEmitter:
     chunks: tuple[str, ...],
   ) -> None:
     for chunk_index, chunk in enumerate(chunks, start=1):
-      _logger.debug(
-        "writing chunk to clipboard",
-        chunk_index=chunk_index,
-        chunk_length=len(chunk),
-      )
-      try:
-        self._call_with_rebind(
-          operation="clipboard_set_content",
-          call=lambda: self._require_clipboard().set_content(chunk),
-        )
-      except Exception:
-        _logger.exception(
-          "clipboard chunk write failed",
-          chunk_index=chunk_index,
-          chunk_length=len(chunk),
-        )
-        raise
-      _logger.debug(
-        "clipboard chunk written",
-        chunk_index=chunk_index,
-        chunk_length=len(chunk),
-      )
-
-      _logger.debug(
-        "sending paste shortcut",
+      self._write_clipboard_chunk(chunk_index=chunk_index, chunk=chunk)
+      self._send_paste_shortcut(
         chunk_index=chunk_index,
         window_id=focused_window.id,
-        key_codes=paste_keys,
+        paste_keys=paste_keys,
       )
-      try:
-        pydotool.key_combination(paste_keys)
-      except Exception:
-        _logger.exception(
-          "paste shortcut send failed",
-          chunk_index=chunk_index,
-          window_id=focused_window.id,
-          key_codes=paste_keys,
-        )
-        raise
+
       if chunk_index < len(chunks):
         _logger.debug(
           "waiting for pasted chunk to settle",
@@ -286,7 +280,7 @@ class GnomeShellExtensionTextEmitter:
       if not _is_disconnected_bus_error(exc):
         raise
 
-    self._rebind_proxies(operation=operation)
+    self._rebind_proxy(operation=operation)
     return call()
 
   def initialize(self) -> None:
@@ -302,7 +296,7 @@ class GnomeShellExtensionTextEmitter:
       return
 
     socket_path = os.path.join(os.environ["XDG_RUNTIME_DIR"], YDOTOOL_SOCKET_NAME)
-    self._bind_proxies()
+    self._bind_proxy()
     try:
       _logger.debug("initializing ydotool client", socket_path=socket_path)
       # HACK: python-ydotool 1.1.1 documents and implements the socket-path
@@ -312,7 +306,7 @@ class GnomeShellExtensionTextEmitter:
       initialize_ydotool = cast(Callable[[str], None], pydotool.init)
       initialize_ydotool(socket_path)
     except Exception:
-      self._close_proxies()
+      self._close_proxy()
       _logger.exception("ydotool initialization failed", socket_path=socket_path)
       raise
 
@@ -326,26 +320,11 @@ class GnomeShellExtensionTextEmitter:
     :raises RuntimeError: If ``initialize()`` has not run yet.
     """
 
-    _ = self._require_windows()
-    _ = self._require_clipboard()
-
-    try:
-      focused_window_payload = self._call_with_rebind(
-        operation="focused_window_snapshot",
-        call=lambda: self._require_windows().get_focused_window_sync(),
-      )
-      focused_window = _parse_focused_window(focused_window_payload)
-    except Exception:
-      _logger.exception("focused window snapshot invalid")
-      raise
-
+    _ = self._require_desktop()
+    focused_window = self._snapshot_focused_window()
     paste_keys = _select_paste_keys(focused_window.wm_class)
     chunks = _chunk_text(text)
-    _logger.debug(
-      "focused window snapshot captured",
-      window_id=focused_window.id,
-      wm_class=focused_window.wm_class,
-    )
+
     _logger.debug(
       "paste shortcut selected",
       window_id=focused_window.id,
