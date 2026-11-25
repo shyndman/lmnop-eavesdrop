@@ -62,11 +62,11 @@ function ensureParentDirectory(file: Gio.File): void {
   parent.make_directory_with_parents(null);
 }
 
-function writeFileContentsUtf8(file: Gio.File, contents: string): Promise<void> {
+async function writeFileContentsUtf8(file: Gio.File, contents: string): Promise<void> {
   ensureParentDirectory(file);
 
   const encodedContents = new TextEncoder().encode(contents);
-  return new Promise((resolve, reject) => {
+  await new Promise<void>((resolve, reject) => {
     file.replace_contents_bytes_async(
       new GLib.Bytes(encodedContents),
       null,
@@ -223,7 +223,7 @@ export default class ActiveListenerPreferences extends ExtensionPreferences {
   private autosaveSourceId: number | null = null;
   private autosaveInFlight = false;
   private activeAutosavePromise: Promise<void> | null = null;
-  private closingAfterFlush = false;
+  private closeFlushState: 'idle' | 'flushing' | 'ready_to_close' = 'idle';
   private promptRevision = 0;
   private updatingPromptContents = false;
 
@@ -260,17 +260,23 @@ export default class ActiveListenerPreferences extends ExtensionPreferences {
     });
 
     window.connect('close-request', () => {
-      this.cancelPendingAutosave();
-      if (this.closingAfterFlush) {
+      if (this.closeFlushState === 'ready_to_close') {
         return false;
       }
+
+      if (this.closeFlushState === 'flushing') {
+        console.info('Active Listener prefs deferred close while autosave flush is in progress');
+        return true;
+      }
+
+      this.cancelPendingAutosave();
 
       const hasUnsavedChanges = this.getCurrentPromptContents() !== this.persistedPromptContents;
       if (!hasUnsavedChanges && this.activeAutosavePromise === null) {
         return false;
       }
 
-      this.closingAfterFlush = true;
+      this.closeFlushState = 'flushing';
       void this.flushBeforeClose(window);
       return true;
     });
@@ -438,6 +444,7 @@ export default class ActiveListenerPreferences extends ExtensionPreferences {
       }
     } finally {
       this.cancelPendingAutosave();
+      this.closeFlushState = 'ready_to_close';
       window.close();
     }
   }
@@ -458,6 +465,9 @@ export default class ActiveListenerPreferences extends ExtensionPreferences {
     this.autosaveInFlight = true;
 
     const writePromise = (async () => {
+      // Yield once so activeAutosavePromise is assigned before any failure runs finally.
+      await Promise.resolve();
+
       try {
         await writeFileContentsUtf8(getPromptOverrideFile(), contents);
         this.persistedPromptContents = contents;

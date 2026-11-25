@@ -3627,3 +3627,70 @@ async def test_run_propagates_producer_task_exception() -> None:
 
   assert harness.client.disconnect_calls == 1
   assert harness.keyboard.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_run_cancels_idle_signal_waiter_on_cancellation() -> None:
+  class WaitingKeyboard(FakeKeyboard):
+    @override
+    async def events(self) -> AsyncIterator[KeyboardControlEvent]:
+      _ = await asyncio.Future()
+      yield _keyboard_event(KeyboardEventKind.CAPSLOCK_DOWN)
+
+  class WaitingClient(FakeClient):
+    @override
+    async def _iterate_events(self) -> AsyncIterator[AppEvent]:
+      _ = await asyncio.Future()
+      for event in self.events:
+        yield event
+
+  harness = _service(keyboard=WaitingKeyboard(), client=WaitingClient())
+  current_task = asyncio.current_task()
+  run_task = asyncio.create_task(harness.service.run())
+
+  for _ in range(5):
+    await asyncio.sleep(0)
+
+  _ = run_task.cancel()
+  with pytest.raises(asyncio.CancelledError):
+    await run_task
+
+  remaining_tasks = [task for task in asyncio.all_tasks() if task is not current_task]
+  assert remaining_tasks == []
+  assert harness.client.disconnect_calls == 1
+  assert harness.keyboard.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_finalize_recording_skips_audio_encode_without_recording_observation(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  client = FakeClient(
+    flush_results=[
+      _message(
+        _segment(1, "alpha", completed=True),
+        _segment(2, "tail", completed=False),
+      )
+    ]
+  )
+  harness = _service(client=client)
+  encode_calls = 0
+
+  def fail_if_called(*_args: object, **_kwargs: object) -> bytes | None:
+    nonlocal encode_calls
+    encode_calls += 1
+    raise AssertionError("encode_recording_audio should not be called without observation")
+
+  monkeypatch.setattr(
+    "active_listener.recording.finalizer.encode_recording_audio",
+    fail_if_called,
+  )
+
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  harness.recording_audio_buffer.append(_sine_wave_bytes(440.0, 32))
+  _ = await harness.service.handle_action(AppAction.START_OR_FINISH)
+  await harness.service.wait_for_background_tasks()
+
+  assert encode_calls == 0
+  assert harness.emitter.emitted == ["alpha "]
+  assert harness.dbus_service.signals == []

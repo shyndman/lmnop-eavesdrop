@@ -219,18 +219,24 @@ class RecordingFinalizer:
           text_length=len(final_text),
           source=emitted_text_source,
         )
-        archived_audio: bytes | None = None
-        try:
-          archived_audio = await asyncio.to_thread(
-            encode_recording_audio,
-            finished_recording.captured_audio,
-            ffmpeg_path=self.config.ffmpeg_path,
+        if recording_observation is None:
+          self.logger.debug(
+            "skipping recording audio encode without active observation",
+            stream=message.stream,
           )
-        except Exception as exc:
-          self.logger.exception("recording audio encode failed", stream=message.stream)
-          await self.dbus_service.audio_archive_failed(str(exc))
-        audio_attachment = build_langfuse_audio_attachment(audio_bytes=archived_audio)
-        if recording_observation is not None:
+        else:
+          archived_audio: bytes | None = None
+          try:
+            archived_audio = await asyncio.to_thread(
+              encode_recording_audio,
+              finished_recording.captured_audio,
+              ffmpeg_path=self.config.ffmpeg_path,
+            )
+          except Exception as exc:
+            self.logger.exception("recording audio encode failed", stream=message.stream)
+            await self.dbus_service.audio_archive_failed(str(exc))
+
+          audio_attachment = build_langfuse_audio_attachment(audio_bytes=archived_audio)
           output_payload: dict[str, object] = {"emitted_text": final_text}
           if audio_attachment is not None:
             output_payload["captured_audio"] = audio_attachment

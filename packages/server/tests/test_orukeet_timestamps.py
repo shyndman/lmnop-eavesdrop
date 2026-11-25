@@ -106,3 +106,42 @@ def test_non_sentence_periods_do_not_split_segments() -> None:
 
   assert len(segments) == 1
   assert segments[0].text == result.text
+
+
+@pytest.mark.parametrize(
+  ("text", "tokens"),
+  [
+    ("Ask Dr. Smith today.", ["▁Ask", "▁Dr.", "▁Smith", "▁today", "."]),
+    ("Use e.g. GitHub today.", ["▁Use", "▁e.g.", "▁GitHub", "▁today", "."]),
+    (
+      "J. R. R. Tolkien wrote it.",
+      ["▁J.", "▁R.", "▁R.", "▁Tolkien", "▁wrote", "▁it", "."],
+    ),
+    ("Visit U.S. Congress soon.", ["▁Visit", "▁U.S.", "▁Congress", "▁soon", "."]),
+  ],
+)
+def test_abbreviations_and_initials_before_capitalized_words_do_not_split(
+  text: str,
+  tokens: list[str],
+) -> None:
+  starts = [round(0.08 * (index + 1), 2) for index in range(len(tokens))]
+  durations = [0.08] * (len(tokens) - 1) + [0.0]
+  result = Result(text, tokens, starts, durations)
+
+  segments = native_segments(result, starts[-1] + 0.5)
+
+  assert len(segments) == 1
+  assert segments[0].text == text
+
+
+def test_real_sentence_after_abbreviation_still_splits() -> None:
+  result = Result(
+    "Ask Dr. Smith today. He knows.",
+    ["▁Ask", "▁Dr.", "▁Smith", "▁today", ".", "▁He", "▁knows", "."],
+    [0.08, 0.16, 0.24, 0.32, 0.4, 0.56, 0.64, 0.72],
+    [0.08, 0.08, 0.08, 0.08, 0.0, 0.08, 0.08, 0.0],
+  )
+
+  segments = native_segments(result, 1.0)
+
+  assert [segment.text for segment in segments] == ["Ask Dr. Smith today.", " He knows."]

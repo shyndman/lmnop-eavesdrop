@@ -10,8 +10,65 @@ from eavesdrop.wire import Segment, Word
 
 # TDT's maximum four-frame duration at the 80 ms encoder stride.
 MAX_TOKEN_DURATION = 0.32
-_SENTENCE_END_PATTERN = re.compile(r'[.!?]["\')\]”’]*$')
+_LEADING_WRAPPER_CHARS = "\"'([“‘"
+_TRAILING_WRAPPER_CHARS = "\"')]”’"
+_STRONG_SENTENCE_END_PATTERN = re.compile(r'[!?]["\')\]”’]*$')
+_PERIOD_SENTENCE_END_PATTERN = re.compile(r'\.["\')\]”’]*$')
 _SENTENCE_START_PATTERN = re.compile(r'^["\'(\[“‘]*[A-Z]')
+_SINGLE_INITIAL_PATTERN = re.compile(r"^[A-Za-z]\.$")
+_MULTI_PERIOD_ABBREVIATION_PATTERN = re.compile(r"^(?:[A-Za-z]+\.){2,}$")
+_NON_SENTENCE_ABBREVIATIONS: frozenset[str] = frozenset(
+  {
+    "approx.",
+    "apt.",
+    "apr.",
+    "aug.",
+    "ave.",
+    "blvd.",
+    "ch.",
+    "co.",
+    "corp.",
+    "ct.",
+    "dec.",
+    "dept.",
+    "dr.",
+    "est.",
+    "etc.",
+    "feb.",
+    "fig.",
+    "fri.",
+    "inc.",
+    "jan.",
+    "jr.",
+    "jul.",
+    "jun.",
+    "ln.",
+    "ltd.",
+    "mar.",
+    "mon.",
+    "mr.",
+    "mrs.",
+    "ms.",
+    "no.",
+    "nov.",
+    "oct.",
+    "prof.",
+    "rd.",
+    "sat.",
+    "sec.",
+    "sep.",
+    "sept.",
+    "sr.",
+    "st.",
+    "ste.",
+    "sun.",
+    "thu.",
+    "tue.",
+    "vol.",
+    "vs.",
+    "wed.",
+  }
+)
 logger = get_logger("orukeet/timestamps")
 
 
@@ -78,12 +135,28 @@ def _group_words(text: str, pieces: list[tuple[int, int, float, float]]) -> list
   return words
 
 
+def _is_non_sentence_period(word: str) -> bool:
+  core = word.lstrip(_LEADING_WRAPPER_CHARS).rstrip(_TRAILING_WRAPPER_CHARS)
+  return bool(
+    _SINGLE_INITIAL_PATTERN.fullmatch(core)
+    or _MULTI_PERIOD_ABBREVIATION_PATTERN.fullmatch(core)
+    or core.lower() in _NON_SENTENCE_ABBREVIATIONS
+  )
+
+
 def _is_sentence_boundary(current_word: Word, next_word: Word) -> bool:
   current_stripped = current_word.word.strip()
   next_stripped = next_word.word.strip()
-  return bool(
-    _SENTENCE_END_PATTERN.search(current_stripped) and _SENTENCE_START_PATTERN.match(next_stripped)
-  )
+  if not _SENTENCE_START_PATTERN.match(next_stripped):
+    return False
+
+  if _STRONG_SENTENCE_END_PATTERN.search(current_stripped):
+    return True
+
+  if not _PERIOD_SENTENCE_END_PATTERN.search(current_stripped):
+    return False
+
+  return not _is_non_sentence_period(current_stripped)
 
 
 def _split_sentence_segments(words: list[Word]) -> list[Segment]:

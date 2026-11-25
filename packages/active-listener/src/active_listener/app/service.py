@@ -140,7 +140,14 @@ class ActiveListenerService:
             cast(asyncio.Task[object], signal_task),
             *(cast(asyncio.Task[object], task) for task in active_producers),
           }
-          done, _ = await asyncio.wait(wait_tasks, return_when=asyncio.FIRST_COMPLETED)
+          try:
+            done, _ = await asyncio.wait(wait_tasks, return_when=asyncio.FIRST_COMPLETED)
+          except BaseException:
+            if not signal_task.done():
+              self.logger.debug("cancelling idle signal queue waiter")
+              _ = signal_task.cancel()
+            _ = await asyncio.gather(signal_task, return_exceptions=True)
+            raise
 
           if signal_task in done:
             signal = await signal_task
