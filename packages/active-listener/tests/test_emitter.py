@@ -23,12 +23,11 @@ def _focused_window_payload(*, window_id: int = 42, wm_class: str = "org.gnome.d
       "wm_class_instance": wm_class,
       "pid": 333381,
       "maximized": True,
-      "display": {},
       "frame_type": 0,
       "window_type": 0,
       "layer": 2,
       "monitor": 1,
-      "role": None,
+      "role": "",
       "width": 1692,
       "height": 1096,
       "x": 2560,
@@ -41,6 +40,7 @@ def _focused_window_payload(*, window_id: int = 42, wm_class: str = "org.gnome.d
       "moveable": True,
       "resizeable": False,
       "has_focus": True,
+      "focus": True,
       "workspace": 0,
     }
   )

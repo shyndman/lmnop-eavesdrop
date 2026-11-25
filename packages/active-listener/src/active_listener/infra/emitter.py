@@ -44,10 +44,6 @@ _logger = get_logger("al/emit")
 ProxyCallResult = TypeVar("ProxyCallResult")
 
 
-class FocusedWindowDisplay(BaseModel):
-  model_config: ClassVar[ConfigDict] = ConfigDict(strict=True, extra="allow")
-
-
 class FocusedWindow(BaseModel):
   model_config: ClassVar[ConfigDict] = ConfigDict(strict=True, extra="allow")
 
@@ -57,12 +53,11 @@ class FocusedWindow(BaseModel):
   wm_class_instance: str
   pid: int
   maximized: bool
-  display: FocusedWindowDisplay
   frame_type: int
   window_type: int
   layer: int
   monitor: int
-  role: str | None
+  role: str
   width: int
   height: int
   x: int
@@ -75,6 +70,7 @@ class FocusedWindow(BaseModel):
   moveable: bool
   resizeable: bool
   has_focus: bool
+  focus: bool
   workspace: int
 
 
