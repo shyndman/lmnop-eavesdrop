@@ -4,6 +4,7 @@ import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 
 import { buildActiveListenerLogCommand } from './active-listener-log-command.js';
 import { ActiveListenerServiceClient } from './active-listener-service-client.js';
+import { DesktopDbusService } from './desktop-dbus-service.js';
 import { PanelIndicator } from './panel-indicator.js';
 import { callActiveListenerServiceManager, type SystemdMethodName } from './systemd-manager.js';
 import { TranscriptOverlayController } from './transcript-overlay.js';
@@ -14,8 +15,12 @@ export default class ActiveListenerIndicatorExtension extends Extension {
   private indicator: PanelIndicator | null = null;
   private overlay: TranscriptOverlayController | null = null;
   private serviceClient: ActiveListenerServiceClient | null = null;
+  private desktopDbusService: DesktopDbusService | null = null;
 
   enable(): void {
+    this.desktopDbusService = new DesktopDbusService();
+    this.desktopDbusService.enable();
+
     this.overlay = new TranscriptOverlayController();
     this.indicator = new PanelIndicator(this.metadata.name, this.path, {
       toggleRecording: () => {
@@ -62,6 +67,9 @@ export default class ActiveListenerIndicatorExtension extends Extension {
   }
 
   disable(): void {
+    this.desktopDbusService?.destroy();
+    this.desktopDbusService = null;
+
     this.serviceClient?.destroy();
     this.serviceClient = null;
 

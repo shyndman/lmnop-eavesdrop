@@ -22,19 +22,16 @@ That task:
 ## Desktop integration dependencies
 
 `active-listener` stages committed text and reads focused-window metadata through
-Vicinae's GNOME Shell extension. The extension must export these session-bus
-methods under `org.gnome.Shell`:
+Eavesdrop's GNOME Shell extension (`packages/active-listener-ui-gnome`). The extension exports
+this session-bus interface under `org.gnome.Shell`:
 
-- `/org/gnome/Shell/Extensions/Windows`: `GetFocusedWindowSync`
-- `/org/gnome/Shell/Extensions/Clipboard`: `GetCurrentContent` and `SetContent`
+- `/org/gnome/Shell/Extensions/Eavesdrop` (`org.gnome.Shell.Extensions.Eavesdrop`):
+  `GetFocusedWindow`, `GetClipboardText`, and `SetClipboardText`
 
 Paste-key injection uses the existing `ydotoold.service`. Startup requires its
 socket at `${XDG_RUNTIME_DIR}/.ydotool_socket`, and the daemon requires usable
 `/dev/uinput` access. The active-listener user unit starts and orders itself
 after `ydotoold.service`.
-
-Vicinae reference implementation:
-<https://github.com/dagimg-dot/vicinae-gnome-extension>
 
 The canonical runtime paths are:
 
@@ -121,14 +118,13 @@ Follow logs:
 journalctl --user -u active-listener.service -f
 ```
 
-Check the Vicinae D-Bus objects:
+Check the Eavesdrop GNOME extension desktop D-Bus object:
 
 ```bash
-gdbus introspect --session --dest org.gnome.Shell --object-path /org/gnome/Shell/Extensions/Windows
-gdbus introspect --session --dest org.gnome.Shell --object-path /org/gnome/Shell/Extensions/Clipboard
+gdbus introspect --session --dest org.gnome.Shell --object-path /org/gnome/Shell/Extensions/Eavesdrop
 ```
 
-The service is owned by `graphical-session.target`, so a fresh graphical login is the normal auto-start path. If GNOME Shell or the Vicinae extension is transiently unavailable during login, systemd retry behavior is expected to recover the service.
+The service is owned by `graphical-session.target`, so a fresh graphical login is the normal auto-start path. If GNOME Shell or the Eavesdrop extension is transiently unavailable during login, systemd retry behavior is expected to recover the service.
 
 ## Manual development run
 
